@@ -1,0 +1,112 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// 1. 시스템 글로벌 설정 (헤드라인, 레이아웃 등)
+model SystemConfig {
+  id              String   @id @default("global")
+  main_headline   String   @default("서비스 센터")
+  sub_headline    String   @default("AX 기반 스마트 오피스 모듈을 선택하세요.")
+  home_grid_cols  Int      @default(4)
+  layout_type     String   @default("horizontal") // "horizontal" 또는 "vertical"
+  updatedAt       DateTime @updatedAt
+}
+
+// 2. 사용자 모델
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String
+  password  String
+  roles     Json     @default("[\"LV_3\"]")
+  status    String   @default("Pending")
+  unit_id   String?
+  unit      OrgUnit? @relation(fields: [unit_id], references: [id])
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// 3. 조직/부서 모델
+model OrgUnit {
+  id         String    @id @default(cuid())
+  unit_name  String
+  unit_type  String
+  sort_order Int       @default(0)
+  parent_id  String?
+  parent     OrgUnit?  @relation("UnitHierarchy", fields: [parent_id], references: [id])
+  children   OrgUnit[] @relation("UnitHierarchy")
+  users      User[]
+  is_active  Boolean   @default(true)
+  is_deleted Boolean   @default(false)
+}
+
+// 4. 인터페이스/메뉴 설정 모델 (v2.1 마스터 거버넌스 강화)
+model InterfaceConfig {
+  id               String   @id @default(cuid())
+  level            Int
+  name             String
+  description      String?  @default("")
+  path             String   @unique
+  icon             String?  @default("📦")
+  sort_order       Int      @default(0)
+  is_active        Boolean  @default(true)
+  is_visible       Boolean  @default(true)
+  parent_id        String?
+  parent           InterfaceConfig?  @relation("MenuHierarchy", fields: [parent_id], references: [id])
+  children         InterfaceConfig[] @relation("MenuHierarchy")
+
+  // 👁️ [조회 거버넌스 - View Governance]
+  view_scopes      Json?    @default("[]") // ["OWN", "DEPT", "TOTAL"]
+  org_ids          Json?    @default("[]") // 부서 접근 제한 (Org Guard)
+
+  // ✍️ [편집 거버넌스 - Edit Governance v2.0]
+  edit_role_ids    Json?    @default("[]") // ["LV_2", "LV_3"] 편집 허용 직급
+  task_masters     Json?    @default("[]") // [{ email: "user@...", scope: "GLOBAL"|"DEPT" }] 통합 담당자 리스트
+
+  // 👑 [마스터 거버넌스 - Master Governance v2.1] - 🚨 신규 추가
+  is_master        Boolean  @default(false) // 동일 부모 내 1개만 지정 가능
+  master_editor_id String?                  // 마스터 담당자 ID
+
+  // 🖥️ [기타 UI 진입 설정 유지]
+  entry_sidebar    Boolean  @default(true)
+  entry_index_view Boolean  @default(true)
+  entry_l4_direct  Boolean  @default(false)
+
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+}
+
+// 기초 데이터 그룹 (소모품, 마케팅, 단위 등)
+model MasterGroup {
+  id          String       @id
+  name        String
+  description String?
+  sort_order  Int          @default(0) // 🚨 순서 정렬을 위해 추가
+  is_active   Boolean      @default(true)
+  codes       MasterCode[] 
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+}
+
+// 상세 코드 항목 (A4용지, 개(EA), 한생미디어 등)
+model MasterCode {
+  id          String      @id @default(cuid())
+  group_id    String
+  group       MasterGroup @relation(fields: [group_id], references: [id], onDelete: Cascade)
+  sort_order  Int         @default(1)
+  label       String
+  orgs        String[]    // 노출 조직 (배열 타입)
+  min_qty     String?
+  unit        String?
+  price       Float?
+  vendor      String?
+  is_active   Boolean     @default(true)
+  is_visible  Boolean     @default(true)
+  is_archived Boolean     @default(false)
+  in_use      Boolean     @default(false)
+}

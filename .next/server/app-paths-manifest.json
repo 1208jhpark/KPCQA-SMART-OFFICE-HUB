@@ -1,0 +1,12 @@
+{
+  "/api/admin/interface/route": "app/api/admin/interface/route.js",
+  "/api/auth/me/route": "app/api/auth/me/route.js",
+  "/api/admin/users/route": "app/api/admin/users/route.js",
+  "/api/admin/units/route": "app/api/admin/units/route.js",
+  "/api/admin/master-data/route": "app/api/admin/master-data/route.js",
+  "/(service)/home/page": "app/(service)/home/page.js",
+  "/(service)/asset/it/master/page": "app/(service)/asset/it/master/page.js",
+  "/(service)/asset/page": "app/(service)/asset/page.js",
+  "/(service)/asset/it/personal/page": "app/(service)/asset/it/personal/page.js",
+  "/admin/users/page": "app/admin/users/page.js"
+}
