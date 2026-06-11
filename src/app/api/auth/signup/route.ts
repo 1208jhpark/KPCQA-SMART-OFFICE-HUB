@@ -1,8 +1,6 @@
 import { NextResponse } from 'next/server';
-import { PrismaClient } from '@prisma/client';
+import prisma from '@/lib/prisma'; // ✅ 싱글톤 인스턴스 사용
 import bcrypt from 'bcryptjs';
-
-const prisma = new PrismaClient();
 
 export async function POST(req: Request) {
   try {
@@ -39,8 +37,11 @@ export async function POST(req: Request) {
 
     return NextResponse.json({ 
       message: "가입 성공", 
-      user: { email: user.email } 
-    });
+  user: { 
+    email: user.email, 
+    status: user.status // 🚀 이 정보를 넘겨줘야 프론트에서 분기 가능
+  } 
+});
 
   } catch (error) {
     console.error("회원가입 API 에러:", error);

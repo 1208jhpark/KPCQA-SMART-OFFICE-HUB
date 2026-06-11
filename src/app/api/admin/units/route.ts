@@ -1,7 +1,5 @@
 import { NextResponse } from 'next/server';
-import { PrismaClient } from '@prisma/client';
-
-const prisma = new PrismaClient();
+import prisma from '@/lib/prisma'; //
 
 // [GET] 조직 목록 및 소속 Lv.2 관리자 호출
 export async function GET(req: Request) {

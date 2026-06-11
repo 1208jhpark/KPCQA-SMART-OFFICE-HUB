@@ -1,8 +1,7 @@
-// src/app/api/admin/interface/route.ts 상단에 추가
 export const dynamic = 'force-dynamic'; // 🚨 최신 데이터 강제 로드 설정
 import { NextResponse } from 'next/server';
-import { PrismaClient } from '@prisma/client';
-const prisma = new PrismaClient();
+import prisma from '@/lib/prisma'; //
+
 export async function GET() {
   try {
     const interfaces = await prisma.interfaceConfig.findMany({

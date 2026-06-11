@@ -1,7 +1,5 @@
 import { NextResponse } from 'next/server';
-import { PrismaClient } from '@prisma/client';
-
-const prisma = new PrismaClient();
+import prisma from '@/lib/prisma'; //
 
 // [GET] 전체 사용자 목록 호출 (부서 활성 상태 포함)
 export async function GET() {

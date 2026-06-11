@@ -7,17 +7,28 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-// 1. 시스템 글로벌 설정 (헤드라인, 레이아웃 등)
+// -----------------------------------------------------------------
+// 1. 시스템 글로벌 설정
+// -----------------------------------------------------------------
 model SystemConfig {
-  id              String   @id @default("global")
-  main_headline   String   @default("서비스 센터")
-  sub_headline    String   @default("AX 기반 스마트 오피스 모듈을 선택하세요.")
-  home_grid_cols  Int      @default(4)
-  layout_type     String   @default("horizontal") // "horizontal" 또는 "vertical"
-  updatedAt       DateTime @updatedAt
+  id                      String   @id @default("global")
+  main_headline           String   @default("SMART OFFICE HUB")
+  sub_headline            String   @default("서비스 모듈을 선택하세요.")
+  home_grid_cols          Int      @default(4)
+  layout_type             String   @default("horizontal")
+  linked_sites            Json?    @default("[]")
+  audit_baseline          String   @default("")
+  global_mgmt_dept        String   @default("경영기획본부") 
+  client_category_group   String   @default("") 
+  supply_category_group   String   @default("") 
+  unit_category_group     String   @default("") 
+  it_category_group       String   @default("")
+  updatedAt               DateTime @updatedAt
 }
 
+// -----------------------------------------------------------------
 // 2. 사용자 모델
+// -----------------------------------------------------------------
 model User {
   id        String   @id @default(cuid())
   email     String   @unique
@@ -31,7 +42,9 @@ model User {
   updatedAt DateTime @updatedAt
 }
 
-// 3. 조직/부서 모델
+// -----------------------------------------------------------------
+// 3. 조직/부서 마스터
+// -----------------------------------------------------------------
 model OrgUnit {
   id         String    @id @default(cuid())
   unit_name  String
@@ -45,13 +58,15 @@ model OrgUnit {
   is_deleted Boolean   @default(false)
 }
 
-// 4. 인터페이스/메뉴 설정 모델 (v2.1 마스터 거버넌스 강화)
+// -----------------------------------------------------------------
+// 4. 시스템 메뉴 및 권한 제어
+// -----------------------------------------------------------------
 model InterfaceConfig {
   id               String   @id @default(cuid())
-  level            Int
+  path             String   @unique
+  level            Int      @default(4)
   name             String
   description      String?  @default("")
-  path             String   @unique
   icon             String?  @default("📦")
   sort_order       Int      @default(0)
   is_active        Boolean  @default(true)
@@ -59,48 +74,51 @@ model InterfaceConfig {
   parent_id        String?
   parent           InterfaceConfig?  @relation("MenuHierarchy", fields: [parent_id], references: [id])
   children         InterfaceConfig[] @relation("MenuHierarchy")
-
-  // 👁️ [조회 거버넌스 - View Governance]
-  view_scopes      Json?    @default("[]") // ["OWN", "DEPT", "TOTAL"]
-  org_ids          Json?    @default("[]") // 부서 접근 제한 (Org Guard)
-
-  // ✍️ [편집 거버넌스 - Edit Governance v2.0]
-  edit_role_ids    Json?    @default("[]") // ["LV_2", "LV_3"] 편집 허용 직급
-  task_masters     Json?    @default("[]") // [{ email: "user@...", scope: "GLOBAL"|"DEPT" }] 통합 담당자 리스트
-
-  // 👑 [마스터 거버넌스 - Master Governance v2.1] - 🚨 신규 추가
-  is_master        Boolean  @default(false) // 동일 부모 내 1개만 지정 가능
-  master_editor_id String?                  // 마스터 담당자 ID
-
-  // 🖥️ [기타 UI 진입 설정 유지]
+  view_scopes      Json?    @default("[]")
+  org_ids          Json?    @default("[]")
+  edit_role_ids    Json?    @default("[]")
+  edit_scopes      Json?    @default("[]") 
+  task_masters     Json?    @default("[]") 
+  view_role_ids    Json?
+  task_accesses    Json?
+  is_master        Boolean  @default(false)
+  master_editor_id String?                  
   entry_sidebar    Boolean  @default(true)
   entry_index_view Boolean  @default(true)
   entry_l4_direct  Boolean  @default(false)
-
+  l2_entry_mode    String?  @default("L3_DEFAULT")
+  show_header      Boolean  @default(false)
+  page_title       String?  
+  show_page_title  Boolean  @default(false) 
+  page_description String?  
+  show_page_desc   Boolean  @default(false) 
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 }
 
-// 기초 데이터 그룹 (소모품, 마케팅, 단위 등)
+// -----------------------------------------------------------------
+// 5, 6. 마스터 그룹 및 코드
+// -----------------------------------------------------------------
 model MasterGroup {
   id          String       @id
-  name        String
+  name        String       @unique
+  category    String?
   description String?
-  sort_order  Int          @default(0) // 🚨 순서 정렬을 위해 추가
+  sort_order  Int          @default(0)
   is_active   Boolean      @default(true)
-  codes       MasterCode[] 
+  codes       MasterCode[]
   createdAt   DateTime     @default(now())
   updatedAt   DateTime     @updatedAt
 }
 
-// 상세 코드 항목 (A4용지, 개(EA), 한생미디어 등)
 model MasterCode {
   id          String      @id @default(cuid())
   group_id    String
   group       MasterGroup @relation(fields: [group_id], references: [id], onDelete: Cascade)
-  sort_order  Int         @default(1)
   label       String
-  orgs        String[]    // 노출 조직 (배열 타입)
+  value       String?
+  sort_order  Int         @default(1)
+  orgs        String[]
   min_qty     String?
   unit        String?
   price       Float?
@@ -109,4 +127,208 @@ model MasterCode {
   is_visible  Boolean     @default(true)
   is_archived Boolean     @default(false)
   in_use      Boolean     @default(false)
+}
+
+// -----------------------------------------------------------------
+// 7. IT 정보 자산 관리 (수정됨 🚀)
+// -----------------------------------------------------------------
+model ITAsset {
+  id              String   @id @default(cuid())
+  category        String   
+  it_type         String   
+  dept            String   
+  user            String?  @default("공용")
+  code            String   @unique 
+  model           String
+  sn              String?
+  brand           String?
+  spec            String?
+  is_rental       String   @default("구매") 
+  rental_months   Int      @default(0)
+  purchase_price  Float    @default(0)
+  monthly_fee     Float    @default(0)
+  monthly_sub_fee Float    @default(0)
+  in_date         String?
+  start_date      String?
+  end_date        String?
+  first_bill      String?
+  cycle           Int      @default(48)
+  memo            String?  @default("-")
+  reg_date        String?
+  last_audit_date String?  @default("")
+  
+  // 🚀 아래 필드를 추가하여 오류 해결
+  is_active       Boolean  @default(true) 
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+// -----------------------------------------------------------------
+// 8, 9. 장비 관리 및 이력
+// -----------------------------------------------------------------
+model Equipment {
+  id                String   @id @default(cuid())
+  category          String   
+  name              String   
+  model_name        String   
+  brand             String?  
+  asset_no          String   @unique 
+  purpose           String?  
+  spec_summary      String?  
+  full_spec         String?  
+  thumbnail_url     String?  
+  gallery_urls      Json?    @default("[]") 
+  department        String?  
+  qty               Int      @default(1) 
+  purchase_date     DateTime? 
+  replace_cycle_mo  Int?     
+  last_replace_date DateTime?
+  next_replace_date DateTime?
+  calib_cycle_mo    Int      @default(12) 
+  next_calib_date   DateTime? 
+  calib_memo        String?  
+  status            String   @default("정상") 
+  manual_url        String?  
+  cert_url          String?  
+  etc_url           String?  
+  etc_memo          String?  
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  histories         CalibrationHistory[]
+}
+
+model CalibrationHistory {
+  id              String   @id @default(cuid())
+  equipment_id    String
+  equipment       Equipment @relation(fields: [equipment_id], references: [id], onDelete: Cascade)
+  calib_request_date String?   
+  calib_date      DateTime 
+  agency          String   
+  content         String?  
+  result          String   
+  cost            Float?   @default(0) 
+  estimate_url    String?  
+  cert_file_url   String?  
+  receipt_url     String?  
+  next_calib_date DateTime? 
+  memo            String?   
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+// -----------------------------------------------------------------
+// 10~13. 마케팅 물품 관리
+// -----------------------------------------------------------------
+model MarketingItem {
+  id            String   @id @default(cuid())
+  owner_type    String   @default("CENTER") 
+  owner_dept    String?  
+  name          String   
+  unit_price    Float    @default(0) 
+  current_stock Int      @default(0) 
+  alert_qty     Int      @default(0) 
+  image_url     String?  @default("") 
+  description   String?  @default("") 
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  distributions MarketingDistribution[]
+  purchases     MarketingPurchase[] 
+}
+
+model MarketingDistribution {
+  id              String   @id @default(cuid())
+  item_id         String
+  item            MarketingItem @relation(fields: [item_id], references: [id])
+  client_id       String?
+  client_master   MarketingClient? @relation(fields: [client_id], references: [id])
+  client_name     String   
+  client_dept     String?  
+  qty             Int      @default(1)
+  purpose         String?  
+  sender_name     String   
+  sender_dept     String   
+  dist_date       DateTime @default(now()) 
+  createdAt       DateTime @default(now())
+}
+
+model MarketingClient {
+  id          String   @id @default(cuid())
+  name        String   
+  location    String?  
+  category    String?  
+  departments Json?    @default("[]") 
+  is_active   Boolean  @default(true) 
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  distributions MarketingDistribution[]
+}
+
+model MarketingPurchase {
+  id              String   @id @default(cuid())
+  item_id         String
+  item            MarketingItem @relation(fields: [item_id], references: [id], onDelete: Cascade)
+  qty             Int      @default(0) 
+  unit_price      Float    @default(0) 
+  total_price     Float    @default(0) 
+  vendor          String?  
+  note            String?  
+  purchaser_name  String   
+  purchaser_dept  String   
+  purchase_date   DateTime @default(now()) 
+  createdAt       DateTime @default(now())
+}
+
+// -----------------------------------------------------------------
+// 📦 ASSET: 일반 소모품 관리 (수정됨 🚀)
+// -----------------------------------------------------------------
+model SupplyItem {
+  id              String   @id @default(cuid())
+  name            String
+  unit_price      Int      @default(0)
+  current_stock   Int      @default(0)
+  alert_qty       Int      @default(0)
+  owner_dept      String
+  category        String
+  description     String?  @db.Text
+  image_url       String?  @db.Text
+  is_active       Boolean  @default(true)
+  is_published    Boolean  @default(false) 
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  requests        SupplyRequest[]
+  purchases       SupplyPurchase[]
+}
+
+model SupplyPurchase {
+  id              String   @id @default(cuid())
+  item_id         String
+  qty             Int      
+  unit_price      Int      
+  total_price     Int      
+  vendor          String?  
+  note            String?  
+  purchase_date   DateTime @default(now()) 
+  purchaser_name  String   
+  purchaser_dept  String   
+  createdAt       DateTime @default(now())
+  item            SupplyItem @relation(fields: [item_id], references: [id], onDelete: Cascade)
+}
+
+model SupplyRequest {
+  id             String   @id @default(cuid())
+  item_id        String
+  item           SupplyItem @relation(fields: [item_id], references: [id], onDelete: Cascade)
+  qty            Int      
+  user_email     String   
+  user_name      String   
+  dept_name      String   
+  status         String   @default("PENDING") 
+  note           String?  @db.Text 
+  createdAt      DateTime @default(now())
+  
+  // 🚀 관리자 처리 필드들 (오류 해결 핵심)
+  admin_opinion  String?  
+  admin_name     String?  
+  admin_dept     String?  
+  updatedAt      DateTime @updatedAt 
 }

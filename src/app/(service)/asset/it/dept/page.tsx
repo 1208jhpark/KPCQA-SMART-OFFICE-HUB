@@ -1,4 +1,6 @@
-// 예시: export default가 반드시 있어야 합니다.
-export default function DeptPage() {
-    return <div>부서별 자산 관리 페이지</div>;
-  }
+import React from 'react';
+import L4PanelRenderer from '@/components/admin/L4PanelRenderer';
+
+export default function ItDeptPage() {
+  return <L4PanelRenderer />;
+}

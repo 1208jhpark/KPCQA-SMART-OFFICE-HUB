@@ -1,4 +1,4 @@
-// File: C:\Users\user\Desktop\cursor study\Smart Office Hub\src\app\api\admin\config\route.ts
+// File: C:\Smart Office Hub\src\app\api\admin\config\route.ts
 import * as entry from '../../../../../../src/app/api/admin/config/route.js'
 import type { NextRequest } from 'next/server.js'
 

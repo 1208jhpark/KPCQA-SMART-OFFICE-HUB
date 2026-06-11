@@ -1,59 +1,44 @@
 import { NextResponse } from 'next/server';
-import { PrismaClient } from '@prisma/client';
+import prisma from '@/lib/prisma';
 import { cookies } from 'next/headers';
 import jwt from 'jsonwebtoken';
 
-const prisma = new PrismaClient();
 const JWT_SECRET = process.env.JWT_SECRET || 'kpcqa_secret_key';
 
 export async function GET() {
   try {
     const cookieStore = await cookies();
     const token = cookieStore.get('token')?.value;
-
-    if (!token) {
-      console.log("❌ [AUTH/ME] 쿠키에 토큰이 없습니다.");
-      return NextResponse.json({ message: 'No Token' }, { status: 401 });
-    }
-
-    // 1. 토큰 복호화 및 로그 확인
+  
+    if (!token) return NextResponse.json({ message: 'No Token' }, { status: 401 });
+  
     const decoded: any = jwt.verify(token, JWT_SECRET);
-    console.log("🔍 [AUTH/ME] 토큰 복호화 결과:", decoded);
-
-    // 2. userId 혹은 id 둘 다 대응 가능하도록 처리 (로그인 로직에 따라 다를 수 있음)
-    const targetId = decoded.userId || decoded.id;
-
-    if (!targetId) {
-      console.log("❌ [AUTH/ME] 토큰에 ID 정보가 누락되었습니다.");
-      return NextResponse.json({ message: 'Invalid Token Payload' }, { status: 401 });
-    }
-
-    // 3. DB 조회 (email 필드 반드시 포함)
+    const userEmail = decoded.email; 
+  
+    // 🎯 [Cursor 규칙 1, 2 적용] include를 사용하여 unit과 parent 정보를 완벽하게 Join
     const user = await prisma.user.findUnique({
-      where: { id: targetId },
-      select: { 
-        name: true, 
-        email: true, 
-        roles: true 
+      where: { email: userEmail },
+      include: {
+        unit: {
+          include: {
+            parent: true 
+          }
+        }
       }
     });
-
-    if (!user) {
-      console.log(`❌ [AUTH/ME] ID(${targetId})에 해당하는 유저를 DB에서 찾을 수 없습니다.`);
-      return NextResponse.json({ message: 'User Not Found' }, { status: 404 });
-    }
-
-    console.log("✅ [AUTH/ME] 유저 정보 조회 성공:", user.email);
-
-    // 4. 프론트로 확실하게 반환
+  
+    if (!user) return NextResponse.json({ message: 'User Not Found' }, { status: 404 });
+  
     return NextResponse.json({
+      id: user.id,
       name: user.name,
       email: user.email,
-      roles: user.roles
+      roles: Array.isArray(user.roles) ? user.roles : JSON.parse(user.roles as string),
+      dept_id: user.unit_id,
+      unit: user.unit // Join된 조직 전체 정보를 프론트로 넘김
     });
-
-  } catch (error: any) {
-    console.error("🔥 [AUTH/ME] 에러 발생:", error.message);
-    return NextResponse.json({ message: 'Auth Error', error: error.message }, { status: 500 });
+  } catch (error) {
+    console.error("Auth Me Error:", error);
+    return NextResponse.json({ message: 'Auth Error' }, { status: 500 });
   }
 }

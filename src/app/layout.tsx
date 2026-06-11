@@ -16,7 +16,7 @@ export default function RootLayout({
   return (
     <html lang="ko">
       <body className={`${inter.className} antialiased`}>
-        {/* 루트에는 UI 요소를 두지 않고 children만 렌더링합니다. */}
+        {/* 루트 레이아웃에는 헤더를 넣지 않습니다. 하위 레이아웃에서 담당합니다. */}
         {children}
       </body>
     </html>

@@ -1,4 +1,4 @@
-// File: C:\Users\user\Desktop\cursor study\Smart Office Hub\src\app\(service)\asset\page.tsx
+// File: C:\Smart Office Hub\src\app\(service)\asset\page.tsx
 import * as entry from '../../../../../src/app/(service)/asset/page.js'
 import type { ResolvingMetadata, ResolvingViewport } from 'next/dist/lib/metadata/types/metadata-interface.js'
 
