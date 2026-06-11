@@ -229,6 +229,11 @@ model MarketingItem {
   alert_qty     Int      @default(0) 
   image_url     String?  @default("") 
   description   String?  @default("") 
+  
+  // 🚀 [추가해야 할 핵심 코드] 단위(unit)와 보관함(archive) 상태 저장용 필드
+  unit          String?  @default("EA")   
+  is_archived   Boolean? @default(false)  
+
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
   distributions MarketingDistribution[]

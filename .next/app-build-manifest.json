@@ -11,10 +11,10 @@
       "static/chunks/main-app.js",
       "static/chunks/app/(service)/layout.js"
     ],
-    "/(service)/survey/general/admin/page": [
+    "/(service)/marketing/distribution/catalog/page": [
       "static/chunks/webpack.js",
       "static/chunks/main-app.js",
-      "static/chunks/app/(service)/survey/general/admin/page.js"
+      "static/chunks/app/(service)/marketing/distribution/catalog/page.js"
     ],
     "/api/admin/interface/route": [
       "static/chunks/webpack.js",
@@ -31,100 +31,25 @@
       "static/chunks/main-app.js",
       "static/chunks/app/api/admin/units/route.js"
     ],
-    "/(service)/survey/general/admin/active-surveys/page": [
+    "/api/marketing/items/route": [
       "static/chunks/webpack.js",
       "static/chunks/main-app.js",
-      "static/chunks/app/(service)/survey/general/admin/active-surveys/page.js"
-    ],
-    "/api/admin/users/route": [
-      "static/chunks/webpack.js",
-      "static/chunks/main-app.js",
-      "static/chunks/app/api/admin/users/route.js"
-    ],
-    "/(service)/survey/general/admin/survey-builder/page": [
-      "static/chunks/webpack.js",
-      "static/chunks/main-app.js",
-      "static/chunks/app/(service)/survey/general/admin/survey-builder/page.js"
-    ],
-    "/(service)/survey/general/dashboard/page": [
-      "static/chunks/webpack.js",
-      "static/chunks/main-app.js",
-      "static/chunks/app/(service)/survey/general/dashboard/page.js"
-    ],
-    "/(public)/survey/public/[id]/page": [
-      "static/chunks/webpack.js",
-      "static/chunks/main-app.js",
-      "static/chunks/app/(public)/survey/public/[id]/page.js"
+      "static/chunks/app/api/marketing/items/route.js"
     ],
     "/api/admin/config/route": [
       "static/chunks/webpack.js",
       "static/chunks/main-app.js",
       "static/chunks/app/api/admin/config/route.js"
     ],
-    "/(service)/survey/general/my-submissions/page": [
+    "/api/admin/master-data/route": [
       "static/chunks/webpack.js",
       "static/chunks/main-app.js",
-      "static/chunks/app/(service)/survey/general/my-submissions/page.js"
+      "static/chunks/app/api/admin/master-data/route.js"
     ],
-    "/(service)/survey/general/admin/survey-history/page": [
+    "/api/marketing/distributions/route": [
       "static/chunks/webpack.js",
       "static/chunks/main-app.js",
-      "static/chunks/app/(service)/survey/general/admin/survey-history/page.js"
-    ],
-    "/(service)/survey/delivery/page": [
-      "static/chunks/webpack.js",
-      "static/chunks/main-app.js",
-      "static/chunks/app/(service)/survey/delivery/page.js"
-    ],
-    "/(service)/survey/delivery/dashboard/page": [
-      "static/chunks/webpack.js",
-      "static/chunks/main-app.js",
-      "static/chunks/app/(service)/survey/delivery/dashboard/page.js"
-    ],
-    "/(service)/survey/delivery/admin/page": [
-      "static/chunks/webpack.js",
-      "static/chunks/main-app.js",
-      "static/chunks/app/(service)/survey/delivery/admin/page.js"
-    ],
-    "/(service)/survey/delivery/admin/active-surveys/page": [
-      "static/chunks/webpack.js",
-      "static/chunks/main-app.js",
-      "static/chunks/app/(service)/survey/delivery/admin/active-surveys/page.js"
-    ],
-    "/(service)/survey/delivery/admin/survey-builder/page": [
-      "static/chunks/webpack.js",
-      "static/chunks/main-app.js",
-      "static/chunks/app/(service)/survey/delivery/admin/survey-builder/page.js"
-    ],
-    "/(service)/survey/delivery/my-submissions/page": [
-      "static/chunks/webpack.js",
-      "static/chunks/main-app.js",
-      "static/chunks/app/(service)/survey/delivery/my-submissions/page.js"
-    ],
-    "/(service)/home/page": [
-      "static/chunks/webpack.js",
-      "static/chunks/main-app.js",
-      "static/chunks/app/(service)/home/page.js"
-    ],
-    "/(service)/asset/page": [
-      "static/chunks/webpack.js",
-      "static/chunks/main-app.js",
-      "static/chunks/app/(service)/asset/page.js"
-    ],
-    "/(auth)/login/page": [
-      "static/chunks/webpack.js",
-      "static/chunks/main-app.js",
-      "static/chunks/app/(auth)/login/page.js"
-    ],
-    "/api/auth/login/route": [
-      "static/chunks/webpack.js",
-      "static/chunks/main-app.js",
-      "static/chunks/app/api/auth/login/route.js"
-    ],
-    "/(service)/survey/page": [
-      "static/chunks/webpack.js",
-      "static/chunks/main-app.js",
-      "static/chunks/app/(service)/survey/page.js"
+      "static/chunks/app/api/marketing/distributions/route.js"
     ]
   }
 }

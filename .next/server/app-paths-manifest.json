@@ -1,7 +1,10 @@
 {
-  "/(public)/survey/public/[id]/page": "app/(public)/survey/public/[id]/page.js",
-  "/(service)/survey/general/admin/active-surveys/page": "app/(service)/survey/general/admin/active-surveys/page.js",
-  "/(service)/survey/delivery/my-submissions/page": "app/(service)/survey/delivery/my-submissions/page.js",
-  "/(service)/survey/delivery/admin/active-surveys/page": "app/(service)/survey/delivery/admin/active-surveys/page.js",
-  "/(service)/survey/delivery/admin/page": "app/(service)/survey/delivery/admin/page.js"
+  "/api/admin/interface/route": "app/api/admin/interface/route.js",
+  "/api/auth/me/route": "app/api/auth/me/route.js",
+  "/api/admin/units/route": "app/api/admin/units/route.js",
+  "/api/marketing/items/route": "app/api/marketing/items/route.js",
+  "/api/admin/config/route": "app/api/admin/config/route.js",
+  "/api/admin/master-data/route": "app/api/admin/master-data/route.js",
+  "/api/marketing/distributions/route": "app/api/marketing/distributions/route.js",
+  "/(service)/marketing/distribution/catalog/page": "app/(service)/marketing/distribution/catalog/page.js"
 }

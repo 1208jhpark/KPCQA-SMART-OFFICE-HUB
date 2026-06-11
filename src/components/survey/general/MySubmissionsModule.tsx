@@ -186,10 +186,14 @@ export default function MySubmissionsModule() {
     const nextResponses = { ...myResponses, [activeFullScreenSurvey.id]: { submittedAt: submittedDate, answers: formData } };
     
     setMyResponses(nextResponses);
-    localStorage.setItem(`db_my_responses_${currentUser?.email}`, JSON.stringify(nextResponses));
-    localStorage.removeItem(`survey_draft_${activeFullScreenSurvey.id}_${currentUser?.email}`);
-    alert('✅ 설문 제출 및 수정 사항 반영이 완료되었습니다.');
-    setActiveFullScreenSurvey(null);
+
+    // 🚀 [수정됨] React 상태 업데이트 비동기 꼬임 방지
+    setTimeout(() => {
+      localStorage.setItem(`db_my_responses_${currentUser?.email}`, JSON.stringify(nextResponses));
+      localStorage.removeItem(`survey_draft_${activeFullScreenSurvey.id}_${currentUser?.email}`);
+      alert('✅ 설문 제출 및 수정 사항 반영이 완료되었습니다.');
+      setActiveFullScreenSurvey(null);
+    }, 0);
   };
      
   // 🚀 [신규 엔진 로직]: 섹션 분기 시스템
@@ -434,11 +438,21 @@ export default function MySubmissionsModule() {
               if (q.type === 'SECTION') return null;
               const ans = viewSurveyHistory.myAnswers?.[q.id];
               let ansStr = '내용 없음';
-              if (ans) {
-                if (typeof ans === 'object' && ans.fileName) ansStr = `📎 [첨부파일] ${ans.fileName}`;
-                else if (typeof ans === 'object' && ans.roadAddress) ansStr = `📍 [${ans.zipCode}] ${ans.roadAddress} ${ans.detailAddress || ''}`;
-                else if (Array.isArray(ans)) ansStr = ans.join(', ');
-                else ansStr = String(ans);
+              // 🚀 [수정됨] 객체 파싱 안정성 (undefined, null 체크 및 Array 분리)
+              if (ans !== undefined && ans !== null && ans !== '') {
+                if (typeof ans === 'object' && !Array.isArray(ans)) {
+                  if (ans.fileName) {
+                    ansStr = `📎 [첨부파일] ${ans.fileName}`;
+                  } else if (ans.roadAddress) {
+                    ansStr = `📍 [${ans.zipCode || '우편번호 없음'}] ${ans.roadAddress} ${ans.detailAddress || ''}`;
+                  } else {
+                    ansStr = JSON.stringify(ans);
+                  }
+                } else if (Array.isArray(ans)) {
+                  ansStr = ans.join(', ');
+                } else {
+                  ansStr = String(ans);
+                }
               }
               return (
                 <div key={q.id} className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm space-y-4">

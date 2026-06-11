@@ -111,34 +111,46 @@ export default function DeliveryMySubmissions() {
   const eligibleSurveys = useMemo(() => {
     const now = new Date();
     return surveys.filter(s => {
-      const isSubmitted = Boolean(myResponses[s.id]);
-      if (!isSubmitted) return false;
-     
+      // 🚀 1. 가장 핵심: 내가 이 공고에 폼을 제출한 이력이 없으면 무조건 상단 리스트에서 제외
+      if (!myResponses[s.id]) return false;
+
+      // 2. 관리자가 상태를 '완료'나 '보관됨'으로 바꿨으면 무조건 탈락 (상단에서 숨김)
+      if (s.status === '완료' || s.status === '보관됨') return false;
+
+      // 3. 운영 마감일(endDate)이 오늘보다 과거면 무조건 탈락
       if (s.endDate) {
         const endTarget = new Date(`${s.endDate} 23:59:59`);
         if (now > endTarget) return false;
       }
-     
+
+      // 4. 위 조건을 모두 통과한(내가 제출했고, 아직 진행 중인) 공고만 부서/권한 체크 후 노출
       return currentUser?.roles?.includes('LV_1') || checkHierarchy(s.target, currentUser?.unit?.unit_name);
     }).sort((a, b) => new Date(b.postDate).getTime() - new Date(a.postDate).getTime());
-  }, [surveys, currentUser, myResponses, unitsList]);
+  }, [surveys, currentUser, unitsList, myResponses]);
   
   const historyList = useMemo(() => {
     const now = new Date();
     return surveys.filter(s => {
-      const isSubmitted = Boolean(myResponses[s.id]);
-      if (!isSubmitted) return false;
-      
-      if (s.endDate) {
-        const endTarget = new Date(`${s.endDate} 23:59:59`);
-        if (now <= endTarget) return false; 
-      }
+      // 1. 기한이 지났는지 체크
+      const isExpired = s.endDate ? now > new Date(`${s.endDate} 23:59:59`) : false;
+
+      // 2. 상태가 완료/보관됨이거나, 기한이 만료되었으면 보관함으로 들어올 자격 충족(true)
+      const isClosed = s.status === '완료' || s.status === '보관됨' || isExpired;
+
+      if (!isClosed) return false; // 아직 쌩쌩하게 진행 중인 건 탈락 (보관함에 안 나옴)
       return true;
+
     }).map(s => ({
       ...s,
-      submittedAt: myResponses[s.id].submittedAt,
-      myAnswers: myResponses[s.id].answers
-    })).sort((a: any, b: any) => b.submittedAt.localeCompare(a.submittedAt));
+      // 내가 제출한 적이 없다면 에러가 나지 않도록 '미참여'라는 글자를 띄워줌
+      submittedAt: myResponses[s.id]?.submittedAt || '미참여(마감됨)',
+      myAnswers: myResponses[s.id]?.answers || null
+    })).sort((a: any, b: any) => {
+      // 정렬 시 '미참여' 글자 때문에 에러나는 것을 방지하는 안전 정렬
+      const dateA = a.submittedAt.includes('미참여') ? '0' : a.submittedAt;
+      const dateB = b.submittedAt.includes('미참여') ? '0' : b.submittedAt;
+      return dateB.localeCompare(dateA);
+    });
   }, [surveys, myResponses]);
      
   const filteredHistory = useMemo(() => {
