@@ -6,15 +6,20 @@
       "static/css/app/layout.css",
       "static/chunks/app/layout.js"
     ],
+    "/(auth)/login/page": [
+      "static/chunks/webpack.js",
+      "static/chunks/main-app.js",
+      "static/chunks/app/(auth)/login/page.js"
+    ],
     "/(service)/layout": [
       "static/chunks/webpack.js",
       "static/chunks/main-app.js",
       "static/chunks/app/(service)/layout.js"
     ],
-    "/(service)/marketing/distribution/catalog/page": [
+    "/(service)/asset/supplies/inventory/page": [
       "static/chunks/webpack.js",
       "static/chunks/main-app.js",
-      "static/chunks/app/(service)/marketing/distribution/catalog/page.js"
+      "static/chunks/app/(service)/asset/supplies/inventory/page.js"
     ],
     "/api/admin/interface/route": [
       "static/chunks/webpack.js",
@@ -31,25 +36,75 @@
       "static/chunks/main-app.js",
       "static/chunks/app/api/admin/units/route.js"
     ],
-    "/api/marketing/items/route": [
+    "/api/asset/supplies/inventory/route": [
       "static/chunks/webpack.js",
       "static/chunks/main-app.js",
-      "static/chunks/app/api/marketing/items/route.js"
+      "static/chunks/app/api/asset/supplies/inventory/route.js"
+    ],
+    "/admin/layout": [
+      "static/chunks/webpack.js",
+      "static/chunks/main-app.js",
+      "static/chunks/app/admin/layout.js"
+    ],
+    "/admin/page": [
+      "static/chunks/webpack.js",
+      "static/chunks/main-app.js",
+      "static/chunks/app/admin/page.js"
+    ],
+    "/admin/users/page": [
+      "static/chunks/webpack.js",
+      "static/chunks/main-app.js",
+      "static/chunks/app/admin/users/page.js"
+    ],
+    "/api/admin/users/route": [
+      "static/chunks/webpack.js",
+      "static/chunks/main-app.js",
+      "static/chunks/app/api/admin/users/route.js"
+    ],
+    "/admin/units/page": [
+      "static/chunks/webpack.js",
+      "static/chunks/main-app.js",
+      "static/chunks/app/admin/units/page.js"
+    ],
+    "/(service)/asset/supplies/dept/page": [
+      "static/chunks/webpack.js",
+      "static/chunks/main-app.js",
+      "static/chunks/app/(service)/asset/supplies/dept/page.js"
+    ],
+    "/api/asset/supplies/dept/route": [
+      "static/chunks/webpack.js",
+      "static/chunks/main-app.js",
+      "static/chunks/app/api/asset/supplies/dept/route.js"
+    ],
+    "/(service)/asset/page": [
+      "static/chunks/webpack.js",
+      "static/chunks/main-app.js",
+      "static/chunks/app/(service)/asset/page.js"
+    ],
+    "/(service)/asset/supplies/page": [
+      "static/chunks/webpack.js",
+      "static/chunks/main-app.js",
+      "static/chunks/app/(service)/asset/supplies/page.js"
+    ],
+    "/(service)/home/page": [
+      "static/chunks/webpack.js",
+      "static/chunks/main-app.js",
+      "static/chunks/app/(service)/home/page.js"
     ],
     "/api/admin/config/route": [
       "static/chunks/webpack.js",
       "static/chunks/main-app.js",
       "static/chunks/app/api/admin/config/route.js"
     ],
-    "/api/admin/master-data/route": [
+    "/admin/interface/page": [
       "static/chunks/webpack.js",
       "static/chunks/main-app.js",
-      "static/chunks/app/api/admin/master-data/route.js"
+      "static/chunks/app/admin/interface/page.js"
     ],
-    "/api/marketing/distributions/route": [
+    "/(service)/asset/outsourcing/page": [
       "static/chunks/webpack.js",
       "static/chunks/main-app.js",
-      "static/chunks/app/api/marketing/distributions/route.js"
+      "static/chunks/app/(service)/asset/outsourcing/page.js"
     ]
   }
 }

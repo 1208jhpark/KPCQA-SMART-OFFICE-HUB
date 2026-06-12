@@ -3,6 +3,18 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { saveAs } from 'file-saver';
+
+// 🚀 [UI 표준 지침] 전사 공통 Header 컴포넌트 분리 선언
+const HeaderLight = ({ title, count, children }: { title: string, count: number, children?: React.ReactNode }) => (
+  <div className="p-4 px-6 bg-slate-200/70 border-b border-slate-300 flex items-center justify-between">
+    <div className="flex items-center gap-2">
+      <div className="w-2.5 h-2.5 rounded-full bg-blue-600"></div>
+      <h2 className="text-xs font-black text-slate-800 tracking-tight">{title}</h2>
+      <span className="text-[11px] font-bold bg-slate-300/80 text-slate-700 px-2 py-0.5 rounded-md">{count}건</span>
+    </div>
+    {children}
+  </div>
+);
   
 export default function MySubmissionsModule() {
   const router = useRouter();
@@ -35,7 +47,7 @@ export default function MySubmissionsModule() {
       script.async = true;
       document.head.appendChild(script);
     }
-
+     
     const initializeData = async () => {
       try {
         const ts = Date.now();
@@ -117,9 +129,9 @@ export default function MySubmissionsModule() {
       const isSubmitted = Boolean(myResponses[s.id]);
       if (!isSubmitted) return false;
       
-      // 🚀 [버그수정]: 관리자가 "마감(완료)" 처리했거나 기한이 지나면 수정 불가 (대상 제외)
       if (s.status === '완료' || s.status === '보관됨') return false;
-      if (s.endDate && now > new Date(`${s.endDate} 23:59:59`)) return false;
+      // 🚀 크로스 브라우징 완벽 지원 (T 결합)
+      if (s.endDate && now > new Date(`${s.endDate}T23:59:59`)) return false;
       
       return currentUser?.roles?.includes('LV_1') || checkHierarchy(s.target, currentUser?.unit?.unit_name);
     }).sort((a, b) => new Date(b.postDate).getTime() - new Date(a.postDate).getTime());
@@ -131,8 +143,7 @@ export default function MySubmissionsModule() {
       const isSubmitted = Boolean(myResponses[s.id]);
       if (!isSubmitted) return false;
       
-      // 🚀 [버그수정]: 완료 상태이거나 기한 초과인 경우 모두 이력 보관함에 표시
-      const isExpired = s.endDate ? now > new Date(`${s.endDate} 23:59:59`) : false;
+      const isExpired = s.endDate ? now > new Date(`${s.endDate}T23:59:59`) : false;
       if (s.status !== '완료' && s.status !== '보관됨' && !isExpired) return false; 
       
       return true;
@@ -158,7 +169,6 @@ export default function MySubmissionsModule() {
     const builderData = localStorage.getItem(`survey_builder_${survey.id}`);
     const questions = builderData ? JSON.parse(builderData) : [];
     
-    // 섹션 초기화 매핑
     const sectionsOrder: (string | null)[] = [];
     if (questions.length > 0 && questions[0].type !== 'SECTION') sectionsOrder.push(null);
     questions.filter((q: any) => q.type === 'SECTION').forEach((s: any) => sectionsOrder.push(s.id));
@@ -187,7 +197,6 @@ export default function MySubmissionsModule() {
     
     setMyResponses(nextResponses);
 
-    // 🚀 [수정됨] React 상태 업데이트 비동기 꼬임 방지
     setTimeout(() => {
       localStorage.setItem(`db_my_responses_${currentUser?.email}`, JSON.stringify(nextResponses));
       localStorage.removeItem(`survey_draft_${activeFullScreenSurvey.id}_${currentUser?.email}`);
@@ -196,7 +205,6 @@ export default function MySubmissionsModule() {
     }, 0);
   };
      
-  // 🚀 [신규 엔진 로직]: 섹션 분기 시스템
   const activeQuestions = activeFullScreenSurvey?.questions || [];
   const hasSections = activeQuestions.some((q: any) => q.type === 'SECTION');
   const sectionsOrder: (string | null)[] = [];
@@ -217,7 +225,7 @@ export default function MySubmissionsModule() {
   return (
     <div className="w-full max-w-[1600px] mx-auto space-y-6 p-8 font-sans text-slate-900 pb-24 animate-fade-in text-[11px]">
       
-      {/* 상단 메인 대시 배너 */}
+      {/* 🚀 상단 메인 대시 배너 */}
       <div className="w-full bg-gradient-to-r from-blue-700 to-indigo-800 p-6 rounded-[2.5rem] text-white shadow-xl relative overflow-hidden flex flex-col justify-center min-h-[120px]">
         <div className="relative z-10">
           <p className="text-[10px] font-black uppercase tracking-widest text-blue-200 mb-1">My Eligible Surveys</p>
@@ -227,11 +235,8 @@ export default function MySubmissionsModule() {
       </div>
   
       <div className="bg-white border border-slate-200 rounded-[2.5rem] shadow-sm overflow-hidden mt-6">
-        <div className="p-4 px-6 bg-slate-200/70 border-b border-slate-300 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className="w-2.5 h-2.5 rounded-full bg-blue-600"></div><h2 className="text-xs font-black text-slate-800 tracking-tight">내가 제출한 설문 리스트</h2><span className="text-[11px] font-bold bg-slate-300/80 text-slate-700 px-2 py-0.5 rounded-md">{eligibleSurveys.length}건</span>
-          </div>
-        </div>
+        {/* 🚀 HeaderLight 컴포넌트 적용 */}
+        <HeaderLight title="내가 제출한 설문 리스트" count={eligibleSurveys.length} />
   
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse">
@@ -243,13 +248,35 @@ export default function MySubmissionsModule() {
             <tbody className="bg-white divide-y divide-slate-100 text-xs font-bold text-slate-700">
               {paginatedEligible.map((survey: any, index: number) => {
                 const isAnonymousAndSubmitted = survey.isAnonymous && Boolean(myResponses[survey.id]);
+
+                // 🚀 사파리 파싱 오류를 막기 위한 T 결합 형태
+                const endDateObj = survey.endDate ? new Date(`${survey.endDate}T23:59:59`) : null;
+                const timeDiff = endDateObj ? endDateObj.getTime() - new Date().getTime() : 0;
+                const daysDiff = Math.ceil(timeDiff / (1000 * 60 * 60 * 24));
+                const isUrgent = daysDiff > 0 && daysDiff <= 3;
+
                 return (
                   <tr key={survey.id} className="hover:bg-slate-50/50 transition-colors h-16">
-                    <td className="text-center text-slate-400 font-black pl-8">{eligibleSurveys.length - ((eligiblePage - 1) * itemsPerPage + index)}</td><td className="text-center font-mono text-slate-500">{100 + (Number(survey.id) || 0)}</td><td className="text-center font-mono text-slate-500">{survey.postDate}</td>
-                    <td className="px-4"><div className="flex items-center gap-3"><span className="font-black text-slate-900">{survey.title}</span><span className="shrink-0 bg-red-50 text-red-500 text-[8px] font-black px-1.5 py-0.5 rounded border border-red-100 animate-pulse">마감임박</span></div></td>
+                    <td className="text-center text-slate-400 font-black pl-8">{eligibleSurveys.length - ((eligiblePage - 1) * itemsPerPage + index)}</td>
+                    <td className="text-center font-mono text-slate-500">{100 + (Number(survey.id) || 0)}</td>
+                    <td className="text-center font-mono text-slate-500">{survey.postDate}</td>
+                    <td className="px-4">
+                      {/* 🚀 셀 높이 고정을 위한 h-16 적용 */}
+                      <div className="flex items-center gap-3 h-16">
+                        <span className="font-black text-slate-900 truncate">{survey.title}</span>
+                        {isUrgent && (
+                          <span className="shrink-0 bg-red-50 text-red-500 text-[8px] font-black px-1.5 py-0.5 rounded border border-red-100 animate-pulse">
+                            마감임박
+                          </span>
+                        )}
+                      </div>
+                    </td>
                     <td className="text-center"><span className={`px-2 py-0.5 border rounded text-[10px] ${survey.isAnonymous ? 'bg-slate-800 text-white font-black border-slate-950' : 'text-slate-400 border-slate-200'}`}>{survey.isAnonymous ? '익명' : '기명'}</span></td>
                     <td className="text-center text-slate-500 font-medium px-3">{survey.target}</td><td className="text-center text-slate-700 font-bold px-4 whitespace-nowrap">{myResponses[survey.id]?.submittedAt || '-'}</td>
-                    <td className="text-center font-mono text-slate-500 leading-relaxed whitespace-nowrap px-3"><div>{survey.startDate} ~</div><div className="text-red-500 font-bold">{survey.endDate}</div></td>
+                    <td className="text-center font-mono text-slate-500 leading-relaxed whitespace-nowrap px-3">
+                      <div>{survey.startDate} ~</div>
+                      <div className={isUrgent ? "text-red-500 font-bold" : "text-slate-600"}>{survey.endDate}</div>
+                    </td>
                     <td className="text-center pr-8"><button onClick={() => handleOpenSurvey(survey, true)} disabled={isAnonymousAndSubmitted} className={`w-full py-1.5 rounded-lg font-black text-[10px] transition-all shadow-sm border ${isAnonymousAndSubmitted ? 'bg-slate-50 border-slate-200 text-slate-300 cursor-not-allowed line-through' : 'bg-white border-blue-200 text-blue-600 hover:bg-blue-50'}`}>{isAnonymousAndSubmitted ? '🔒 익명 서식 변경 불가' : '✏️ 답변 내역 수정'}</button></td>
                   </tr>
                 );
@@ -267,16 +294,28 @@ export default function MySubmissionsModule() {
         )}
       </div>
      
-      <div onClick={() => setIsHistoryOpen(!isHistoryOpen)} className="w-full bg-gradient-to-r from-slate-700 to-slate-900 p-6 rounded-[2.5rem] text-white shadow-xl relative overflow-hidden flex items-center justify-between min-h-[120px] mt-12 cursor-pointer hover:brightness-95 active:scale-[0.99] transition-all select-none">
-        <div className="relative z-10"><p className="text-[10px] font-black uppercase tracking-widest text-slate-300 mb-1">Archive Repository (Click to Toggle)</p><h2 className="text-2xl font-black tracking-tight text-white flex items-center gap-3">나의 참여 이력 보관함<span className="text-xs bg-white/20 text-white px-2 py-0.5 rounded-full font-bold">{isHistoryOpen ? '▲ 접기' : '▼ 펼치기'}</span></h2><p className="text-slate-400 text-xs font-semibold mt-1 opacity-90">이미 공고 기한이 최종 마감되어 보관 처리된 결과 열람 전용 내역</p></div><div className="text-4xl pr-4 font-light opacity-50 select-none hidden md:block">{isHistoryOpen ? '📂' : '📁'}</div>
+      <div onClick={() => setIsHistoryOpen(!isHistoryOpen)} className="w-full bg-slate-800 p-6 rounded-[2.5rem] text-white shadow-lg relative overflow-hidden flex flex-col justify-center min-h-[120px] mt-12 cursor-pointer hover:brightness-95 active:scale-[0.99] transition-all select-none">
+        <div className="relative z-10">
+          <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-1">Archive Repository (Click to Toggle)</p>
+          <h2 className="text-2xl font-black tracking-tight text-white flex items-center gap-3">나의 참여 이력 보관함<span className="text-xs bg-white/20 text-white px-2 py-0.5 rounded-full font-bold">{isHistoryOpen ? '▲ 접기' : '▼ 펼치기'}</span></h2>
+          <p className="text-slate-300 text-xs font-semibold mt-2 opacity-90">이미 공고 기한이 최종 마감되어 보관 처리된 결과 열람 전용 내역</p>
+        </div>
       </div>
      
       {isHistoryOpen && (
         <div className="bg-white border border-slate-200 rounded-[2.5rem] shadow-sm overflow-hidden mt-6 animate-in fade-in slide-in-from-top-4 duration-300">
-          <div className="p-4 px-6 bg-slate-200/70 border-b border-slate-300 flex items-center justify-between">
-            <div className="flex items-center gap-2"><div className="w-2.5 h-2.5 rounded-full bg-indigo-600"></div><h2 className="text-xs font-black text-slate-800 tracking-tight">과거 완료 설문 명세 대장</h2><span className="text-[11px] font-bold bg-slate-300/80 text-slate-700 px-2 py-0.5 rounded-md">총 {filteredHistory.length}건</span></div>
-            <div className="flex items-center gap-2 text-xs font-bold text-slate-600"><span className="text-slate-500">연도 필터 :</span><select value={historyYear} onChange={(e) => { setHistoryYear(e.target.value); setHistoryPage(1); }} className="bg-white border border-slate-300 text-slate-700 rounded-xl px-3 py-1.5 font-black focus:outline-none focus:border-indigo-500 text-[11px] cursor-pointer shadow-sm transition-colors"><option value="ALL">전체 내역 보기</option><option value="2026">2026년도</option><option value="2025">2025년도</option></select></div>
-          </div>
+          {/* 🚀 HeaderLight 컴포넌트 적용 (필터 포함) */}
+          <HeaderLight title="과거 완료 설문 명세 대장" count={filteredHistory.length}>
+            <div className="flex items-center gap-2 text-xs font-bold text-slate-600">
+              <span className="text-slate-500">연도 필터 :</span>
+              <select value={historyYear} onChange={(e) => { setHistoryYear(e.target.value); setHistoryPage(1); }} className="bg-white border border-slate-300 text-slate-700 rounded-xl px-3 py-1.5 font-black focus:outline-none focus:border-indigo-500 text-[11px] cursor-pointer shadow-sm transition-colors">
+                <option value="ALL">전체 내역 보기</option>
+                <option value="2026">2026년도</option>
+                <option value="2025">2025년도</option>
+              </select>
+            </div>
+          </HeaderLight>
+
           <div className="overflow-x-auto">
             <table className="w-full text-left border-collapse">
               <thead className="bg-slate-100 text-slate-700 text-[10px] font-black uppercase tracking-widest border-b border-slate-200">
@@ -289,12 +328,35 @@ export default function MySubmissionsModule() {
                   const reverseNo = filteredHistory.length - ((historyPage - 1) * itemsPerPage + index);
                   return (
                     <tr key={survey.id} className="hover:bg-slate-50/50 transition-colors h-16">
-                      <td className="text-center text-slate-400 font-black pl-8">{reverseNo}</td><td className="text-center font-mono text-slate-500">{100 + (Number(survey.id) || 0)}</td><td className="text-center font-mono text-slate-500">{survey.postDate}</td>
-                      <td className="px-4"><div className="font-black text-slate-800 text-[12px]">{survey.title}</div><div className="text-[10px] text-slate-400 mt-0.5 font-bold">{survey.type || '일반 참여 서식'}</div></td>
-                      <td className="text-center"><span className={`px-2 py-0.5 border rounded text-[10px] ${survey.isAnonymous ? 'bg-slate-800 text-white font-black border-slate-950' : 'text-slate-400 border-slate-200'}`}>{survey.isAnonymous ? '익명' : '기명'}</span></td>
-                      <td className="text-center text-slate-500 font-medium px-3">{survey.target}</td><td className="text-center text-slate-700 font-bold px-4 whitespace-nowrap">{survey.submittedAt}</td>
-                      <td className="text-center font-mono text-slate-500 leading-relaxed whitespace-nowrap px-3"><div>{survey.startDate} ~</div><div className="text-slate-400 font-medium">{survey.endDate}</div></td>
-                      <td className="text-center pr-8"><button onClick={() => { const builderData = JSON.parse(localStorage.getItem(`survey_builder_${survey.id}`) || '[]'); setViewSurveyHistory({ ...survey, questions: builderData }); }} className="w-full py-1.5 bg-white border border-slate-200 rounded-lg font-black text-[10px] text-slate-600 hover:bg-slate-50 shadow-sm transition-all">🔍 과거 응답 기록 보기</button></td>
+                      <td className="text-center text-slate-400 font-black pl-8">{reverseNo}</td>
+                      <td className="text-center font-mono text-slate-500">{100 + (Number(survey.id) || 0)}</td>
+                      <td className="text-center font-mono text-slate-500">{survey.postDate}</td>
+                      <td className="px-4">
+                        <div className="font-black text-slate-800 text-[12px]">{survey.title}</div>
+                        <div className="text-[10px] text-slate-400 mt-0.5 font-bold">{survey.type || '일반 참여 서식'}</div>
+                      </td>
+                      <td className="text-center">
+                        <span className={`px-2 py-0.5 border rounded text-[10px] ${survey.isAnonymous ? 'bg-slate-800 text-white font-black border-slate-950' : 'text-slate-400 border-slate-200'}`}>
+                          {survey.isAnonymous ? '익명' : '기명'}
+                        </span>
+                      </td>
+                      <td className="text-center text-slate-500 font-medium px-3">{survey.target}</td>
+                      <td className="text-center text-slate-700 font-bold px-4 whitespace-nowrap">{survey.submittedAt}</td>
+                      <td className="text-center font-mono text-slate-500 leading-relaxed whitespace-nowrap px-3">
+                        <div>{survey.startDate} ~</div>
+                        <div className="text-slate-400 font-medium">{survey.endDate}</div>
+                      </td>
+                      <td className="text-center pr-8">
+                        <button 
+                          onClick={() => { 
+                            const builderData = JSON.parse(localStorage.getItem(`survey_builder_${survey.id}`) || '[]'); 
+                            setViewSurveyHistory({ ...survey, questions: builderData }); 
+                          }} 
+                          className="w-full py-1.5 bg-white border border-slate-200 rounded-lg font-black text-[10px] text-slate-600 hover:bg-slate-50 shadow-sm transition-all"
+                        >
+                          🔍 과거 응답 기록 보기
+                        </button>
+                      </td>
                     </tr>
                   );
                 })}
@@ -312,7 +374,7 @@ export default function MySubmissionsModule() {
         </div>
       )}
      
-      {/* 🚀 [신규 엔진 탑재] 설문 수정 풀스크린 에디터 (Dashboard/Public과 동일한 디자인/로직) */}
+      {/* 설문 수정 풀스크린 에디터 */}
       {activeFullScreenSurvey && (
         <div className="fixed inset-0 bg-slate-50 z-[500] overflow-y-auto flex flex-col text-[11px] animate-in slide-in-from-bottom-8 duration-300">
           <div className="sticky top-0 bg-white border-b border-slate-200 px-6 py-4 flex justify-between items-center shadow-sm z-10">
@@ -341,7 +403,7 @@ export default function MySubmissionsModule() {
                     {q.referenceLink && <a href={q.referenceLink} target="_blank" rel="noopener noreferrer" className="mt-2 inline-block px-2.5 py-1 bg-blue-50 text-blue-600 rounded text-[9px] font-black border border-blue-100 hover:bg-blue-100">🔗 관련 참고 링크 열기</a>}
                     {q.questionImageUrl && <img src={q.questionImageUrl} alt="guide" className="mt-3 max-h-40 rounded-xl object-contain border" />}
                   </div>
-
+     
                   {q.type === 'CHOICE_SINGLE' && (
                     <div className="space-y-2 pt-1">
                       {q.options?.map((opt: any, oIdx: number) => (
@@ -355,7 +417,7 @@ export default function MySubmissionsModule() {
                       ))}
                     </div>
                   )}
-
+     
                   {q.type === 'CHOICE_MULTI' && (
                     <div className="space-y-2 pt-1">
                       {q.options?.map((opt: any, oIdx: number) => (
@@ -366,7 +428,7 @@ export default function MySubmissionsModule() {
                       ))}
                     </div>
                   )}
-
+     
                   {q.type === 'TEXT_SHORT' && <input type="text" value={formData[q.id] || ''} onChange={(e) => handleInputChange(q.id, e.target.value)} className="w-full p-3 border border-slate-200 rounded-xl outline-none focus:border-blue-500 font-bold bg-slate-50 focus:bg-white text-xs" placeholder="답변 내용을 작성해 주세요." />}
                   {q.type === 'TEXT_LONG' && <textarea value={formData[q.id] || ''} onChange={(e) => handleInputChange(q.id, e.target.value)} className="w-full p-3 border border-slate-200 rounded-xl outline-none focus:border-blue-500 font-bold bg-slate-50 focus:bg-white text-xs min-h-[100px]" placeholder="세부적인 의견을 여러 줄로 입력하실 수 있습니다." />}
                   
@@ -381,7 +443,7 @@ export default function MySubmissionsModule() {
                       <span className="font-black text-slate-600">매우 우수</span>
                     </div>
                   )}
-
+     
                   {q.type === 'SEARCH_ADDRESS' && (
                     <div className="space-y-2 bg-slate-50 p-4 rounded-xl border">
                       <button type="button" onClick={() => openPostcodeEngine(q.id)} className="px-4 py-2 bg-slate-900 text-white font-black rounded-lg hover:bg-slate-800 transition-colors">🔍 주소지 검색 찾기</button>
@@ -391,9 +453,9 @@ export default function MySubmissionsModule() {
                       <input type="text" placeholder="상세 건물명 및 동/호수" value={formData[q.id]?.detailAddress || ''} onChange={(e) => setFormData(prev => ({...prev, [q.id]: { ...(prev[q.id] || {}), detailAddress: e.target.value }}))} className="w-full p-2.5 border rounded-lg bg-white outline-none focus:border-blue-500 font-bold" />
                     </div>
                   )}
-
+     
                   {q.type === 'CALENDAR' && <input type="date" value={formData[q.id] || ''} onChange={(e) => handleInputChange(q.id, e.target.value)} className="p-3 border rounded-xl bg-slate-50 font-black text-slate-700 outline-none focus:border-blue-500" />}
-
+     
                   {q.type === 'FILE' && (
                     <div className="space-y-3 p-4 bg-slate-50 border border-slate-200 rounded-xl">
                       {q.templateFileName && (
@@ -411,7 +473,7 @@ export default function MySubmissionsModule() {
                 </div>
               );
             })}
-
+     
             <div className="pt-4 flex justify-between gap-4">
               {hasSections && currentSectionIndex > 0 && <button type="button" onClick={() => setCurrentSectionId(sectionsOrder[currentSectionIndex - 1])} className="px-5 py-3.5 bg-white border border-slate-300 rounded-xl font-black text-slate-600 shadow-sm hover:bg-slate-50">◀ 이전 단계</button>}
               {!isLastSection ? (
@@ -424,7 +486,7 @@ export default function MySubmissionsModule() {
         </div>
       )}
      
-      {/* 🚀 [신규 엔진 탑재] 뷰어 모달 (주소/파일 객체가 깨지지 않고 예쁘게 나오도록 수정됨) */}
+      {/* 뷰어 모달 */}
       {viewSurveyHistory && (
         <div className="fixed inset-0 bg-slate-50 z-[500] overflow-y-auto flex flex-col animate-in slide-in-from-bottom-8 duration-300">
           <div className="sticky top-0 bg-white border-b border-slate-200 px-6 py-4 flex justify-between items-center shadow-sm z-10">
@@ -438,7 +500,6 @@ export default function MySubmissionsModule() {
               if (q.type === 'SECTION') return null;
               const ans = viewSurveyHistory.myAnswers?.[q.id];
               let ansStr = '내용 없음';
-              // 🚀 [수정됨] 객체 파싱 안정성 (undefined, null 체크 및 Array 분리)
               if (ans !== undefined && ans !== null && ans !== '') {
                 if (typeof ans === 'object' && !Array.isArray(ans)) {
                   if (ans.fileName) {

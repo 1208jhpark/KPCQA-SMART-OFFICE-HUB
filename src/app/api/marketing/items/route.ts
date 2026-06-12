@@ -23,9 +23,10 @@ export async function POST(req: Request) {
         name: body.name,
         unit_price: Number(body.unit_price) || 0,
         current_stock: Number(body.current_stock) || 0,
-        alert_qty: Number(body.alert_qty) || 0, // 🚀 신규 추가
+        alert_qty: Number(body.alert_qty) || 0, 
         description: body.description || '',
-        image_url: body.image_url || ''
+        image_url: body.image_url || '',
+        unit: body.unit || 'EA' // 🚀 누락되었던 unit 필드 추가!
       }
     });
     return NextResponse.json(newItem);
@@ -35,7 +36,8 @@ export async function POST(req: Request) {
 export async function PATCH(req: Request) {
   try {
     const body = await req.json();
-    const { id, name, unit_price, current_stock, alert_qty, description, image_url, owner_dept } = body;
+    // 🚀 구조 분해 할당에 unit, is_archived 명시적 추가
+    const { id, name, unit_price, current_stock, alert_qty, description, image_url, owner_dept, unit, is_archived } = body;
     if (!id) return NextResponse.json({ error: 'ID가 없습니다.' }, { status: 400 });
 
     const updatedItem = await prisma.marketingItem.update({
@@ -44,7 +46,9 @@ export async function PATCH(req: Request) {
         name, owner_dept, description, image_url,
         unit_price: Number(unit_price) || 0,
         current_stock: Number(current_stock) || 0,
-        alert_qty: Number(alert_qty) || 0, // 🚀 신규 추가
+        alert_qty: Number(alert_qty) || 0,
+        unit: unit !== undefined ? unit : undefined,                   // 🚀 unit 수정 반영
+        is_archived: is_archived !== undefined ? is_archived : undefined // 🚀 마감(종료) 및 복원 반영!
       }
     });
     return NextResponse.json(updatedItem);

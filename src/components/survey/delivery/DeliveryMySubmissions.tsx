@@ -2,36 +2,42 @@
   
 import React, { useState, useEffect, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
+
+// 🚀 [UI 표준] 전사 공통 헤더 컴포넌트
+const HeaderLight = ({ title, count, children }: { title: string, count: number, children?: React.ReactNode }) => (
+  <div className="p-4 px-6 bg-slate-200/70 border-b border-slate-300 flex items-center justify-between shrink-0">
+    <div className="flex items-center gap-2">
+      <div className="w-2.5 h-2.5 rounded-full bg-teal-600"></div>
+      <h2 className="text-xs font-black text-slate-800 tracking-tight">{title}</h2>
+      <span className="text-[11px] font-bold bg-slate-300/80 text-slate-700 px-2 py-0.5 rounded-md">{count}건</span>
+    </div>
+    {children}
+  </div>
+);
   
 export default function DeliveryMySubmissions() {
   const router = useRouter();
   
-  // 1. 공통 통합 상태 인프라 (권한 차단 상태 제거, 순수 데이터 상태만 유지)
   const [currentUser, setCurrentUser] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [pageConfig, setPageConfig] = useState<any>(null);
   
-  // 공용 데이터 매트릭스 버퍼
   const [surveys, setSurveys] = useState<any[]>([]);
   const [myResponses, setMyResponses] = useState<Record<string, any>>({}); 
   const [unitsList, setUnitsList] = useState<any[]>([]); 
   
-  // 모달 팝업 상태 제어 링커
   const [activeFullScreenSurvey, setActiveFullScreenSurvey] = useState<any | null>(null);
   const [viewSurveyHistory, setViewSurveyHistory] = useState<any | null>(null);
   const [formData, setFormData] = useState<Record<string, any>>({});
   
-  // 연도 필터 및 개별 페이징 표준
   const [historyYear, setHistoryYear] = useState<string>('ALL');
   const [eligiblePage, setEligiblePage] = useState<number>(1);
   const [historyPage, setHistoryPage] = useState<number>(1);
   const itemsPerPage = 5;
      
-  // 과거 완료 참여 이력 보관함 접기/펼치기 제어 상태
   const [isHistoryOpen, setIsHistoryOpen] = useState<boolean>(false);
      
   useEffect(() => {
-    // 🔥 카카오 주소 API 동적 인젝션 (수정 시 주소 검색용)
     if (typeof window !== 'undefined') {
       const scriptId = 'kakao-postcode-script-sub';
       if (!document.getElementById(scriptId)) {
@@ -46,35 +52,31 @@ export default function DeliveryMySubmissions() {
     const initializeUnifiedContext = async () => {
       try {
         const ts = Date.now();
-        // 🚀 L4PanelRenderer가 이미 권한을 검증했으므로, 여기서는 순수하게 내 데이터만 가져옵니다.
-        const [userRes, unitsRes] = await Promise.all([
+        const [userRes, unitsRes, configRes] = await Promise.all([
           fetch('/api/auth/me?t=' + ts, { cache: 'no-store' }),
-          fetch('/api/admin/units?active=true&t=' + ts, { cache: 'no-store' })
+          fetch('/api/admin/units?active=true&t=' + ts, { cache: 'no-store' }),
+          fetch('/api/admin/interface?t=' + ts)
         ]);
         
         const userData = userRes.ok ? await userRes.json() : null;
         const unitsData = unitsRes.ok ? await unitsRes.json() : [];
         setUnitsList(unitsData);
+
+        if (configRes.ok) {
+          const interfaces = await configRes.json();
+          const config = interfaces.find((m: any) => m.path === '/survey/delivery/my-submissions');
+          if (config) setPageConfig(config);
+        }
   
         if (userData) {
-          const myUnit = unitsData.find((u: any) => u.id === userData.dept_id);
-          userData.unit = myUnit || { unit_name: '소속없음' };
+          userData.unit = unitsData.find((u: any) => u.id === userData.dept_id) || { unit_name: '소속없음' };
           setCurrentUser(userData);
           
-          // 🌟 [핵심] 저장된 이메일 키를 사용하여 명확하게 배송 데이터 로드
           const dbKey = `db_my_delivery_responses_${userData.email}`;
           const storedResponses = localStorage.getItem(dbKey);
-          
           if (storedResponses) {
-              try {
-                  const parsed = JSON.parse(storedResponses);
-                  setMyResponses(parsed);
-              } catch (e) {
-                  console.error("데이터 파싱 에러:", e);
-                  setMyResponses({});
-              }
-          } else {
-              setMyResponses({});
+              try { setMyResponses(JSON.parse(storedResponses)); } 
+              catch (e) { setMyResponses({}); }
           }
         }
   
@@ -108,67 +110,48 @@ export default function DeliveryMySubmissions() {
     return false;
   };
   
+  // 🚀 [다이내믹 큐 라우팅 1] 대기 리스트: 승인완료(isApproved) 항목은 제외
   const eligibleSurveys = useMemo(() => {
     const now = new Date();
     return surveys.filter(s => {
-      // 🚀 1. 가장 핵심: 내가 이 공고에 폼을 제출한 이력이 없으면 무조건 상단 리스트에서 제외
-      if (!myResponses[s.id]) return false;
-
-      // 2. 관리자가 상태를 '완료'나 '보관됨'으로 바꿨으면 무조건 탈락 (상단에서 숨김)
+      const myRes = myResponses[s.id];
+      if (!myRes) return false; 
+      
+      // 💡 핵심 1: 내 신청 건이 이미 "승인 완료" 되었다면 대기 리스트에서 즉시 방출
+      if (myRes.isApproved) return false;
+     
       if (s.status === '완료' || s.status === '보관됨') return false;
-
-      // 3. 운영 마감일(endDate)이 오늘보다 과거면 무조건 탈락
-      if (s.endDate) {
-        const endTarget = new Date(`${s.endDate} 23:59:59`);
-        if (now > endTarget) return false;
-      }
-
-      // 4. 위 조건을 모두 통과한(내가 제출했고, 아직 진행 중인) 공고만 부서/권한 체크 후 노출
+      if (s.endDate && now > new Date(`${s.endDate}T23:59:59`)) return false;
+     
       return currentUser?.roles?.includes('LV_1') || checkHierarchy(s.target, currentUser?.unit?.unit_name);
     }).sort((a, b) => new Date(b.postDate).getTime() - new Date(a.postDate).getTime());
   }, [surveys, currentUser, unitsList, myResponses]);
   
+  // 🚀 [다이내믹 큐 라우팅 2] 보관함 리스트: 마감되었거나 승인완료(isApproved) 항목을 수집
   const historyList = useMemo(() => {
     const now = new Date();
     return surveys.filter(s => {
-      // 1. 기한이 지났는지 체크
-      const isExpired = s.endDate ? now > new Date(`${s.endDate} 23:59:59`) : false;
-
-      // 2. 상태가 완료/보관됨이거나, 기한이 만료되었으면 보관함으로 들어올 자격 충족(true)
-      const isClosed = s.status === '완료' || s.status === '보관됨' || isExpired;
-
-      if (!isClosed) return false; // 아직 쌩쌩하게 진행 중인 건 탈락 (보관함에 안 나옴)
+      const myRes = myResponses[s.id];
+      if (!myRes) return false;
+     
+      const isExpired = s.endDate ? now > new Date(`${s.endDate}T23:59:59`) : false;
+      const isGloballyClosed = s.status === '완료' || s.status === '보관됨' || isExpired;
+     
+      // 💡 핵심 2: 공고가 끝났거나 OR 내 신청이 "승인 완료" 되었다면 보관함으로 편입
+      if (!isGloballyClosed && !myRes.isApproved) return false; 
+      
       return true;
-
     }).map(s => ({
       ...s,
-      // 내가 제출한 적이 없다면 에러가 나지 않도록 '미참여'라는 글자를 띄워줌
-      submittedAt: myResponses[s.id]?.submittedAt || '미참여(마감됨)',
-      myAnswers: myResponses[s.id]?.answers || null
-    })).sort((a: any, b: any) => {
-      // 정렬 시 '미참여' 글자 때문에 에러나는 것을 방지하는 안전 정렬
-      const dateA = a.submittedAt.includes('미참여') ? '0' : a.submittedAt;
-      const dateB = b.submittedAt.includes('미참여') ? '0' : b.submittedAt;
-      return dateB.localeCompare(dateA);
-    });
+      submittedAt: myResponses[s.id].submittedAt,
+      myAnswers: myResponses[s.id].answers,
+      isApproved: myResponses[s.id].isApproved
+    })).sort((a: any, b: any) => b.submittedAt.localeCompare(a.submittedAt));
   }, [surveys, myResponses]);
      
-  const filteredHistory = useMemo(() => {
-    return historyList.filter(survey => {
-      if (historyYear === 'ALL') return true;
-      return survey.submittedAt.split('-')[0] === historyYear;
-    });
-  }, [historyList, historyYear]);
-     
-  const paginatedEligible = useMemo(() => {
-    const start = (eligiblePage - 1) * itemsPerPage;
-    return eligibleSurveys.slice(start, start + itemsPerPage);
-  }, [eligibleSurveys, eligiblePage]);
-     
-  const paginatedHistory = useMemo(() => {
-    const start = (historyPage - 1) * itemsPerPage;
-    return filteredHistory.slice(start, start + itemsPerPage);
-  }, [filteredHistory, historyPage]);
+  const filteredHistory = useMemo(() => historyList.filter(s => historyYear === 'ALL' || s.submittedAt.split('-')[0] === historyYear), [historyList, historyYear]);
+  const paginatedEligible = useMemo(() => eligibleSurveys.slice((eligiblePage - 1) * itemsPerPage, eligiblePage * itemsPerPage), [eligibleSurveys, eligiblePage]);
+  const paginatedHistory = useMemo(() => filteredHistory.slice((historyPage - 1) * itemsPerPage, historyPage * itemsPerPage), [filteredHistory, historyPage]);
      
   const totalEligiblePages = Math.ceil(eligibleSurveys.length / itemsPerPage);
   const totalHistoryPages = Math.ceil(filteredHistory.length / itemsPerPage);
@@ -222,25 +205,27 @@ export default function DeliveryMySubmissions() {
     if (!confirm(activeFullScreenSurvey.isEditMode ? '배송지 수정을 완료하시겠습니까?' : '배송지를 최종 제출하시겠습니까?')) return;
   
     const submittedDate = `${new Date().toISOString().split('T')[0]} ${new Date().toLocaleTimeString('ko-KR', { hour12: false })}`;
-
-    // 🚀 현재 차수를 확인하고, 수정 모드일 경우에만 차수를 1 올립니다.
     const currentCount = myResponses[activeFullScreenSurvey.id]?.revisionCount || 0;
     const newCount = activeFullScreenSurvey.isEditMode ? currentCount + 1 : currentCount;
     
     const nextResponses = {
       ...myResponses,
       [activeFullScreenSurvey.id]: { 
+        ...myResponses[activeFullScreenSurvey.id],
         submittedAt: submittedDate, 
         answers: formData,
-        revisionCount: newCount // 차수 데이터 추가
+        revisionCount: newCount 
       }
     };
     
     setMyResponses(nextResponses);
-    localStorage.setItem(`db_my_delivery_responses_${currentUser?.email}`, JSON.stringify(nextResponses));
-    localStorage.removeItem(`delivery_draft_${activeFullScreenSurvey.id}_${currentUser?.email}`);
-    alert('✅ 배송지 제출 및 수정 사항 반영이 완료되었습니다.');
-    setActiveFullScreenSurvey(null);
+    
+    setTimeout(() => {
+      localStorage.setItem(`db_my_delivery_responses_${currentUser?.email}`, JSON.stringify(nextResponses));
+      localStorage.removeItem(`delivery_draft_${activeFullScreenSurvey.id}_${currentUser?.email}`);
+      alert('✅ 배송지 제출 및 수정 사항 반영이 완료되었습니다.');
+      setActiveFullScreenSurvey(null);
+    }, 0);
   };
   
   const formatAnswerForView = (q: any, answers: any) => {
@@ -259,48 +244,48 @@ export default function DeliveryMySubmissions() {
   if (loading) return <div className="p-20 text-center font-black text-teal-600 animate-pulse text-xl uppercase tracking-widest">배송 제출 제어 모듈 동기화 중...</div>;
   
   return (
-    <div className="w-full max-w-[1600px] mx-auto space-y-6 p-8 font-sans text-slate-900 pb-24 animate-fade-in">
+    <div className="w-full max-w-[1600px] mx-auto space-y-6 p-8 font-sans text-slate-900 pb-24 animate-fade-in text-[11px]">
       
       {/* 상단 메인 대시 배너 */}
-      <div className="w-full bg-gradient-to-r from-teal-700 to-emerald-800 p-6 rounded-[2.5rem] text-white shadow-xl relative overflow-hidden flex flex-col justify-center min-h-[120px]">
+      <div className="w-full bg-gradient-to-r from-teal-700 to-emerald-800 p-6 rounded-[2.5rem] min-h-[120px] flex flex-col justify-center text-white shadow-xl relative overflow-hidden">
         <div className="relative z-10">
-          <p className="text-[10px] font-black uppercase tracking-widest text-teal-200 mb-1">My Eligible Delivery</p>
+          <p className="text-[10px] font-black uppercase tracking-widest text-teal-200 mb-1">My Pending Delivery</p>
           <h1 className="text-2xl font-black tracking-tight">{pageConfig?.page_title || '나의 배송 신청 내역'}</h1>
-          <p className="text-teal-100 text-xs font-semibold mt-1 opacity-90">
-            {pageConfig?.page_description || '접수한 배송내역 확인 및 출고 전 정보 수정'}
+          <p className="text-teal-100 text-xs font-semibold mt-2 opacity-90">
+            {pageConfig?.page_description || '접수한 배송내역 확인 및 출고 승인 대기 목록'}
           </p>
         </div>
       </div>
   
       {/* 🚀 대장 1: 기간 내 참여 및 정보 수정 가능 대장 */}
-      <div className="bg-white border border-slate-200 rounded-[2.5rem] shadow-sm overflow-hidden mt-6">
-        <div className="p-4 px-6 bg-slate-200/70 border-b border-slate-300 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className="w-2.5 h-2.5 rounded-full bg-teal-600"></div>
-            <h2 className="text-xs font-black text-slate-800 tracking-tight">출고 대기 중인 신청 리스트</h2>
-            <span className="text-[11px] font-bold bg-slate-300/80 text-slate-700 px-2 py-0.5 rounded-md">{eligibleSurveys.length}건</span>
-          </div>
-        </div>
+      <div className="mt-6 bg-white border border-slate-200 rounded-[2.5rem] shadow-sm overflow-hidden">
+        <HeaderLight title="출고 대기 중인 신청 리스트" count={eligibleSurveys.length} />
   
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse">
             <thead className="bg-slate-100 text-slate-700 text-[10px] font-black uppercase tracking-widest border-b border-slate-200">
               <tr>
-                <th className="py-4 pl-8 w-16 text-center">NO</th>
-                <th className="py-4 px-3 w-28 text-center">게시번호</th>
-                <th className="py-4 px-3 w-28 text-center">게시일</th>
-                <th className="py-4 px-4">게시명</th>
-                <th className="py-4 px-3 w-24 text-center">분류</th>
-                <th className="py-4 px-3 w-36 text-center">대상</th>
-                <th className="py-4 px-4 w-48 text-center">나의 접수 일시</th>
-                <th className="py-4 px-3 w-40 text-center">기간</th>
-                <th className="py-4 pr-8 w-44 text-center">상태 / 액션</th>
+                <th className="h-12 pl-8 w-16 text-center">NO</th>
+                <th className="h-12 px-3 w-28 text-center">게시번호</th>
+                <th className="h-12 px-3 w-28 text-center">게시일</th>
+                <th className="h-12 px-4">게시명</th>
+                <th className="h-12 px-3 w-24 text-center">분류</th>
+                <th className="h-12 px-3 w-36 text-center">대상</th>
+                <th className="h-12 px-4 w-48 text-center">나의 접수 일시</th>
+                <th className="h-12 px-3 w-40 text-center">기간</th>
+                <th className="h-12 pr-8 w-44 text-center">상태 / 액션</th>
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-slate-100 text-xs font-bold text-slate-700">
               {paginatedEligible.map((survey: any, index: number) => {
                 const submissionTimeStr = myResponses[survey.id]?.submittedAt || '-';
                 const reverseNo = eligibleSurveys.length - ((eligiblePage - 1) * itemsPerPage + index);
+                
+                // 마감임박 다이내믹 계산 처리
+                const endDateObj = survey.endDate ? new Date(`${survey.endDate}T23:59:59`) : null;
+                const timeDiff = endDateObj ? endDateObj.getTime() - new Date().getTime() : 0;
+                const daysDiff = Math.ceil(timeDiff / (1000 * 60 * 60 * 24));
+                const isUrgent = daysDiff > 0 && daysDiff <= 3 && survey.deliveryType !== 'ALWAYS';
   
                 return (
                   <tr key={survey.id} className="hover:bg-slate-50/50 transition-colors h-16">
@@ -308,74 +293,56 @@ export default function DeliveryMySubmissions() {
                     <td className="text-center font-mono text-slate-500">{100 + (Number(survey.id) || 0)}</td>
                     <td className="text-center font-mono text-slate-500">{survey.postDate}</td>
                     <td className="px-4">
-                      <div className="flex items-center gap-3">
-                        <span className="font-black text-slate-900">{survey.title}</span>
+                      <div className="flex items-center gap-3 h-16">
+                        <span className="font-black text-slate-900 truncate">{survey.title}</span>
+                        {isUrgent && <span className="shrink-0 bg-red-50 text-red-500 text-[8px] font-black px-1.5 py-0.5 rounded border border-red-100 animate-pulse">마감임박</span>}
                       </div>
                     </td>
-                    <td className="text-center py-4 px-3">
-                      <span className={`px-2 py-0.5 rounded text-[9px] font-black ${survey.deliveryType === 'ALWAYS' ? 'bg-pink-100 text-pink-700' : 'bg-amber-100 text-amber-700'}`}>
-                        {survey.deliveryType === 'ALWAYS' ? '상시' : '기간'}
+                    <td className="text-center">
+                      <span className={`px-2 py-0.5 rounded text-[9px] font-black ${survey.deliveryType === 'ALWAYS' ? 'bg-pink-100 text-pink-700 border border-pink-200' : 'bg-amber-100 text-amber-700 border border-amber-200'}`}>
+                        {survey.deliveryType === 'ALWAYS' ? '상시신청' : '기간한정'}
                       </span>
                     </td>
                     <td className="text-center text-slate-500 font-medium px-3">{survey.target}</td>
                     <td className="text-center text-teal-700 font-bold px-4 whitespace-nowrap">{submissionTimeStr}</td>
                     <td className="text-center font-mono text-slate-500 leading-relaxed whitespace-nowrap px-3">
-                      <div>{survey.startDate} ~</div>
-                      <div className="text-red-500 font-bold">{survey.endDate}</div>
+                      {survey.deliveryType === 'ALWAYS' ? (
+                        <div className="text-teal-600 font-black text-[10px] bg-teal-50 px-2 py-1 rounded">연중 상시</div>
+                      ) : (
+                        <>
+                          <div>{survey.startDate} ~</div>
+                          <div className={isUrgent ? "text-red-500 font-bold" : "text-slate-600"}>{survey.endDate}</div>
+                        </>
+                      )}
                     </td>
-                    <td className="text-center pr-8 py-2">
-                      <div className="flex flex-col gap-1.5 w-full">
-                        {myResponses[survey.id]?.isApproved ? (
-                          <span className="w-full py-1.5 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-lg font-black text-[10px]">✅ 승인완료</span>
-                        ) : myResponses[survey.id]?.isRevoked ? (
-                          // 🚀 새로 추가된 승인 취소 전용 빨간 뱃지
-                          <button 
-                            onClick={() => alert(`💡 관리자 승인 취소 사유:\n\n${myResponses[survey.id].feedbackMsg}`)}
-                            className="w-full py-1.5 bg-red-50 text-red-600 border border-red-300 rounded-lg font-black text-[10px] hover:bg-red-100 animate-pulse"
-                          >
-                            ⚠️ 보완필요(승인취소)
-                          </button>
+                    <td className="text-center pr-8">
+                      <div className="flex flex-col gap-1.5 w-full justify-center h-16">
+                        {myResponses[survey.id]?.isRevoked ? (
+                          <button onClick={() => alert(`💡 관리자 승인 취소 사유:\n\n${myResponses[survey.id].feedbackMsg}`)} className="w-full py-1.5 bg-red-50 text-red-600 border border-red-300 rounded-lg font-black text-[10px] hover:bg-red-100 animate-pulse">⚠️ 취소/보완필요</button>
                         ) : myResponses[survey.id]?.feedbackMsg ? (
-                          // 기존 보완 요청 노란 뱃지
-                          <button 
-                            onClick={() => alert(`💡 관리자 보완 요청 의견:\n\n${myResponses[survey.id].feedbackMsg}`)}
-                            className="w-full py-1.5 bg-amber-50 text-amber-700 border border-amber-300 rounded-lg font-black text-[10px] hover:bg-amber-100 animate-pulse"
-                          >
-                            ⚠️ 보완 필요(클릭)
-                          </button>
+                          <button onClick={() => alert(`💡 관리자 보완 요청 의견:\n\n${myResponses[survey.id].feedbackMsg}`)} className="w-full py-1.5 bg-amber-50 text-amber-700 border border-amber-300 rounded-lg font-black text-[10px] hover:bg-amber-100 animate-pulse">⚠️ 보완 필요</button>
                         ) : (
                           <span className="w-full py-1.5 bg-slate-50 text-slate-500 border border-slate-200 rounded-lg font-black text-[10px]">대기 중</span>
                         )}
-     
-                        <button 
-                          onClick={() => handleOpenSurvey(survey, true)} 
-                          disabled={myResponses[survey.id]?.isApproved}
-                          className={`w-full py-1.5 rounded-lg font-black text-[10px] transition-all shadow-sm border ${
-                            myResponses[survey.id]?.isApproved 
-                              ? 'bg-slate-100 text-slate-400 cursor-not-allowed border-slate-200' 
-                              : 'bg-white border-teal-200 text-teal-600 hover:bg-teal-50'
-                          }`}
-                        >
-                          {myResponses[survey.id]?.isApproved ? '수정불가' : '✏️ 답변 수정'}
-                        </button>
+                        <button onClick={() => handleOpenSurvey(survey, true)} className="w-full py-1.5 rounded-lg font-black text-[10px] transition-all shadow-sm border bg-white border-teal-200 text-teal-600 hover:bg-teal-50">✏️ 답변 수정</button>
                       </div>
                     </td>
                   </tr>
                 );
               })}
               {eligibleSurveys.length === 0 && (
-                <tr><td colSpan={9} className="py-16 text-center text-slate-400 font-bold bg-slate-50/30">현재 변경 가능한 활성 접수 내역이 없습니다.</td></tr>
+                <tr><td colSpan={9} className="py-16 text-center text-slate-400 font-bold bg-slate-50/30">현재 출고 대기 중이거나 수정 가능한 내역이 없습니다.</td></tr>
               )}
             </tbody>
           </table>
         </div>
         {totalEligiblePages > 1 && (
-          <div className="flex justify-center items-center gap-1.5 py-4 border-t border-slate-100 bg-white">
-            <button disabled={eligiblePage === 1} onClick={() => setEligiblePage(p => p - 1)} className="px-3 py-1 text-xs bg-white border border-slate-200 rounded-xl">이전</button>
+          <div className="flex justify-center items-center gap-1.5 pt-6 pb-6 border-t border-slate-100 bg-white">
+            <button disabled={eligiblePage === 1} onClick={() => setEligiblePage(p => p - 1)} className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 hover:bg-slate-50">이전</button>
             {Array.from({ length: totalEligiblePages }).map((_, i) => (
-              <button key={i} onClick={() => setEligiblePage(i + 1)} className={`w-7 h-7 rounded-xl text-xs font-black ${eligiblePage === i + 1 ? 'bg-slate-800 text-white' : 'bg-white text-slate-500 border'}`}>{i + 1}</button>
+              <button key={i} onClick={() => setEligiblePage(i + 1)} className={`w-8 h-8 rounded-xl font-black text-xs transition-all ${eligiblePage === i + 1 ? 'bg-slate-800 text-white shadow-sm scale-105' : 'bg-white border border-slate-200 text-slate-500 hover:bg-slate-50'}`}>{i + 1}</button>
             ))}
-            <button disabled={eligiblePage === totalEligiblePages} onClick={() => setEligiblePage(p => p + 1)} className="px-3 py-1 text-xs bg-white border border-slate-200 rounded-xl">다음</button>
+            <button disabled={eligiblePage === totalEligiblePages} onClick={() => setEligiblePage(p => p + 1)} className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 hover:bg-slate-50">다음</button>
           </div>
         )}
       </div>
@@ -383,59 +350,50 @@ export default function DeliveryMySubmissions() {
       {/* 아코디언 트리거 가이드 배너 */}
       <div 
         onClick={() => setIsHistoryOpen(!isHistoryOpen)}
-        className="w-full bg-gradient-to-r from-slate-700 to-slate-900 p-6 rounded-[2.5rem] text-white shadow-xl relative overflow-hidden flex items-center justify-between min-h-[120px] mt-12 cursor-pointer hover:brightness-95 active:scale-[0.99] transition-all select-none"
+        className="w-full bg-slate-800 p-6 rounded-[2.5rem] text-white shadow-lg relative overflow-hidden flex flex-col justify-center min-h-[120px] mt-12 cursor-pointer hover:brightness-95 active:scale-[0.99] transition-all select-none"
       >
         <div className="relative z-10">
-          <p className="text-[10px] font-black uppercase tracking-widest text-slate-300 mb-1">Archive Repository (Click to Toggle)</p>
+          <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-1">Archive Repository (Click to Toggle)</p>
           <h2 className="text-2xl font-black tracking-tight text-white flex items-center gap-3">
-            과거 배송 신청 명세서 보관함
+            과거/승인 완료 명세서 보관함
             <span className="text-xs bg-white/20 text-white px-2 py-0.5 rounded-full font-bold">
               {isHistoryOpen ? '▲ 접기' : '▼ 펼치기'}
             </span>
           </h2>
-          <p className="text-slate-400 text-xs font-semibold mt-1 opacity-90">배송 출고가 완료되었거나 기간이 마감된 열람 전용 내역입니다.</p>
-        </div>
-        <div className="text-4xl pr-4 font-light opacity-50 select-none hidden md:block">
-          {isHistoryOpen ? '📦' : '🗄️'}
+          <p className="text-slate-300 text-xs font-semibold mt-2 opacity-90">배송 출고(승인)가 완료되었거나, 공고가 완전히 마감된 내역입니다.</p>
         </div>
       </div>
      
-      {/* 대장 2: 과거 완료 참여 이력 대장 */}
+      {/* 대장 2: 과거 완료 및 승인 이력 대장 */}
       {isHistoryOpen && (
         <div className="bg-white border border-slate-200 rounded-[2.5rem] shadow-sm overflow-hidden mt-6 animate-in fade-in slide-in-from-top-4 duration-300">
-          <div className="p-4 px-6 bg-slate-200/70 border-b border-slate-300 flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <div className="w-2.5 h-2.5 rounded-full bg-slate-600"></div>
-              <h2 className="text-xs font-black text-slate-800 tracking-tight">완료 배송 대장</h2>
-              <span className="text-[11px] font-bold bg-slate-300/80 text-slate-700 px-2 py-0.5 rounded-md">총 {filteredHistory.length}건</span>
-            </div>
-            
+          <HeaderLight title="완료 및 승인 배송 대장" count={filteredHistory.length}>
             <div className="flex items-center gap-2 text-xs font-bold text-slate-600">
               <span className="text-slate-500">연도 필터 :</span>
               <select 
                 value={historyYear} 
                 onChange={(e) => { setHistoryYear(e.target.value); setHistoryPage(1); }} 
-                className="bg-white border border-slate-300 text-slate-700 rounded-xl px-3 py-1.5 font-black focus:outline-none focus:border-slate-500 text-[11px] cursor-pointer shadow-sm transition-colors"
+                className="text-[10px] font-bold bg-white border border-slate-300 rounded-lg px-2 py-1 outline-none focus:ring-1 focus:ring-slate-400 cursor-pointer"
               >
                 <option value="ALL">전체 내역 보기</option>
                 <option value="2026">2026년도</option>
                 <option value="2025">2025년도</option>
               </select>
             </div>
-          </div>
+          </HeaderLight>
      
           <div className="overflow-x-auto">
             <table className="w-full text-left border-collapse">
               <thead className="bg-slate-100 text-slate-700 text-[10px] font-black uppercase tracking-widest border-b border-slate-200">
                 <tr>
-                  <th className="py-4 pl-8 w-16 text-center">NO</th>
-                  <th className="py-4 px-3 w-28 text-center">게시번호</th>
-                  <th className="py-4 px-3 w-28 text-center">게시일</th>
-                  <th className="py-4 px-4">게시명</th>
-                  <th className="py-4 px-3 w-36 text-center">대상</th>
-                  <th className="py-4 px-4 w-48 text-center">접수 일시</th>
-                  <th className="py-4 px-3 w-40 text-center">기간</th>
-                  <th className="py-4 pr-8 w-44 text-center">명세서 확인</th>
+                  <th className="h-12 pl-8 w-16 text-center">NO</th>
+                  <th className="h-12 px-3 w-28 text-center">게시번호</th>
+                  <th className="h-12 px-3 w-28 text-center">게시일</th>
+                  <th className="h-12 px-4">게시명</th>
+                  <th className="h-12 px-3 w-36 text-center">대상</th>
+                  <th className="h-12 px-4 w-48 text-center">접수 일시</th>
+                  <th className="h-12 px-3 w-40 text-center">상태/기간</th>
+                  <th className="h-12 pr-8 w-44 text-center">명세서 확인</th>
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-slate-100 text-xs font-bold text-slate-700">
@@ -444,16 +402,20 @@ export default function DeliveryMySubmissions() {
                   return (
                     <tr key={survey.id} className="hover:bg-slate-50/50 transition-colors h-16">
                       <td className="text-center text-slate-400 font-black pl-8">{reverseNo}</td>
-                      <td className="text-center font-mono text-slate-500">{100 + (Number(survey.id) || 0)}</td>
-                      <td className="text-center font-mono text-slate-500">{survey.postDate}</td>
+                      <td className="text-center font-mono text-slate-500 px-3">{100 + (Number(survey.id) || 0)}</td>
+                      <td className="text-center font-mono text-slate-500 px-3">{survey.postDate}</td>
                       <td className="px-4">
                         <div className="font-black text-slate-800 text-[12px]">{survey.title}</div>
                       </td>
                       <td className="text-center text-slate-500 font-medium px-3">{survey.target}</td>
                       <td className="text-center text-slate-700 font-bold px-4 whitespace-nowrap">{survey.submittedAt}</td>
-                      <td className="text-center font-mono text-slate-500 leading-relaxed whitespace-nowrap px-3">
-                        <div>{survey.startDate} ~</div>
-                        <div className="text-slate-400 font-medium">{survey.endDate}</div>
+                      <td className="text-center font-mono px-3">
+                        {/* 🚀 승인 여부에 따라 보관함 내 표시 문구 변경 */}
+                        {survey.isApproved ? (
+                          <span className="bg-emerald-100 text-emerald-700 px-2 py-1 rounded text-[10px] font-black block w-fit mx-auto">출고 승인완료</span>
+                        ) : (
+                          <span className="bg-slate-100 text-slate-500 px-2 py-1 rounded text-[10px] font-black block w-fit mx-auto">공고 마감됨</span>
+                        )}
                       </td>
                       <td className="text-center pr-8">
                         <button 
@@ -470,24 +432,24 @@ export default function DeliveryMySubmissions() {
                   );
                 })}
                 {filteredHistory.length === 0 && (
-                  <tr><td colSpan={8} className="py-24 text-center text-slate-400 font-bold bg-slate-50/30">조건에 맞는 과거 완료 이력이 없습니다.</td></tr>
+                  <tr><td colSpan={8} className="py-24 text-center text-slate-400 font-bold bg-slate-50/30">보관 처리된 내역이 없습니다.</td></tr>
                 )}
               </tbody>
             </table>
           </div>
           {totalHistoryPages > 1 && (
-            <div className="flex justify-center items-center gap-1.5 py-4 border-t border-slate-100 bg-white">
-              <button disabled={historyPage === 1} onClick={() => setHistoryPage(p => p - 1)} className="px-3 py-1 text-xs bg-white border border-slate-200 rounded-xl">이전</button>
+            <div className="flex justify-center items-center gap-1.5 pt-6 pb-6 border-t border-slate-100 bg-white">
+              <button disabled={historyPage === 1} onClick={() => setHistoryPage(p => p - 1)} className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 hover:bg-slate-50">이전</button>
               {Array.from({ length: totalHistoryPages }).map((_, i) => (
-                <button key={i} onClick={() => setHistoryPage(i + 1)} className={`w-7 h-7 rounded-xl text-xs font-black ${historyPage === i + 1 ? 'bg-slate-800 text-white' : 'bg-white text-slate-500 border'}`}>{i + 1}</button>
+                <button key={i} onClick={() => setHistoryPage(i + 1)} className={`w-8 h-8 rounded-xl font-black text-xs transition-all ${historyPage === i + 1 ? 'bg-slate-800 text-white shadow-sm scale-105' : 'bg-white border border-slate-200 text-slate-500 hover:bg-slate-50'}`}>{i + 1}</button>
               ))}
-              <button disabled={historyPage === totalHistoryPages} onClick={() => setHistoryPage(p => p + 1)} className="px-3 py-1 text-xs bg-white border border-slate-200 rounded-xl">다음</button>
+              <button disabled={historyPage === totalHistoryPages} onClick={() => setHistoryPage(p => p + 1)} className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 hover:bg-slate-50">다음</button>
             </div>
           )}
         </div>
       )}
      
-      {/* 🌟 수정 모달 */}
+      {/* 🌟 수정 폼 풀스크린 모달 */}
       {activeFullScreenSurvey && (
         <div className="fixed inset-0 bg-slate-50 z-[500] overflow-y-auto flex flex-col animate-in slide-in-from-bottom-8 duration-300">
           <div className="sticky top-0 bg-white border-b border-slate-200 px-6 py-4 flex justify-between items-center shadow-sm z-10">
@@ -550,7 +512,7 @@ export default function DeliveryMySubmissions() {
         </div>
       )}
      
-      {/* 🌟 이력 뷰어 모달 */}
+      {/* 🌟 이력 열람 뷰어 모달 */}
       {viewSurveyHistory && (
         <div className="fixed inset-0 bg-slate-50 z-[500] overflow-y-auto flex flex-col animate-in slide-in-from-bottom-8 duration-300">
           <div className="sticky top-0 bg-white border-b border-slate-200 px-6 py-4 flex justify-between items-center shadow-sm z-10">

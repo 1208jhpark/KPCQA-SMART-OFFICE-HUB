@@ -2,9 +2,10 @@
   "/api/admin/interface/route": "app/api/admin/interface/route.js",
   "/api/auth/me/route": "app/api/auth/me/route.js",
   "/api/admin/units/route": "app/api/admin/units/route.js",
-  "/api/marketing/items/route": "app/api/marketing/items/route.js",
-  "/api/admin/config/route": "app/api/admin/config/route.js",
-  "/api/admin/master-data/route": "app/api/admin/master-data/route.js",
-  "/api/marketing/distributions/route": "app/api/marketing/distributions/route.js",
-  "/(service)/marketing/distribution/catalog/page": "app/(service)/marketing/distribution/catalog/page.js"
+  "/(auth)/login/page": "app/(auth)/login/page.js",
+  "/admin/interface/page": "app/admin/interface/page.js",
+  "/(service)/asset/supplies/inventory/page": "app/(service)/asset/supplies/inventory/page.js",
+  "/(service)/asset/supplies/dept/page": "app/(service)/asset/supplies/dept/page.js",
+  "/(service)/home/page": "app/(service)/home/page.js",
+  "/(service)/asset/outsourcing/page": "app/(service)/asset/outsourcing/page.js"
 }

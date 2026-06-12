@@ -2,7 +2,18 @@
      
 import React, { useState, useEffect, useMemo, useRef, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation'; 
-import * as XLSX from 'xlsx';
+
+// 🚀 [UI 표준] 전사 공통 헤더
+const HeaderLight = ({ title, count, children }: { title: string, count: number, children?: React.ReactNode }) => (
+  <div className="p-4 px-6 bg-slate-200/70 border-b border-slate-300 flex items-center justify-between shrink-0">
+    <div className="flex items-center gap-2">
+      <div className="w-2.5 h-2.5 rounded-full bg-indigo-600"></div>
+      <h2 className="text-xs font-black text-slate-800 tracking-tight">{title}</h2>
+      <span className="text-[11px] font-bold bg-slate-300/80 text-slate-700 px-2 py-0.5 rounded-md">{count}건</span>
+    </div>
+    {children}
+  </div>
+);
      
 function CatalogContent() {
   const router = useRouter();
@@ -19,7 +30,7 @@ function CatalogContent() {
   const [systemConfig, setSystemConfig] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   
-  const [unitOptions, setUnitOptions] = useState<string[]>(['EA']);
+  const [unitOptions, setUnitOptions] = useState<string[]>(['EA', 'BOX', 'SET']);
      
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedDept, setSelectedDept] = useState<string>('ALL');
@@ -32,8 +43,12 @@ function CatalogContent() {
     qty: 0, unit_price: 0, vendor: '', note: '', purchase_date: new Date().toISOString().split('T')[0]
   });
   
-  // 🚀 보관함 모달 제어 상태
-  const [showArchiveModal, setShowArchiveModal] = useState(false);
+  // 하단 배너 (종료된 물품) 필터 및 페이지네이션 상태
+  const [isEndedOpen, setIsEndedOpen] = useState<boolean>(false);
+  const [endedDeptFilter, setEndedDeptFilter] = useState<string>('ALL');
+  const [endedYearFilter, setEndedYearFilter] = useState<string>('ALL');
+  const [endedPage, setEndedPage] = useState<number>(1);
+  const itemsPerEndedPage = 10; 
      
   const initialForm = { name: '', unit_price: '', current_stock: '', alert_qty: '', owner_dept: '', description: '', image_url: '', owner_type: 'CENTER', unit: 'EA' };
   const [formData, setFormData] = useState(initialForm);
@@ -41,7 +56,6 @@ function CatalogContent() {
   useEffect(() => {
     const deptFromUrl = searchParams.get('dept');
     const searchFromUrl = searchParams.get('search');
-    
     if (deptFromUrl) setSelectedDept(deptFromUrl);
     if (searchFromUrl) setSearchQuery(searchFromUrl);
   }, [searchParams]);
@@ -50,14 +64,15 @@ function CatalogContent() {
      
   const fetchData = async () => {
     try {
+      const ts = Date.now();
       const [iRes, uRes, meRes, ifRes, sysRes, masterRes, dRes] = await Promise.all([
-        fetch('/api/marketing/items'),
-        fetch('/api/admin/units?active=true'),
-        fetch('/api/auth/me'),
-        fetch('/api/admin/interface'),
-        fetch('/api/admin/config'),
-        fetch('/api/admin/master-data'),
-        fetch('/api/marketing/distributions')
+        fetch('/api/marketing/items?t=' + ts),
+        fetch('/api/admin/units?active=true&t=' + ts),
+        fetch('/api/auth/me?t=' + ts),
+        fetch('/api/admin/interface?t=' + ts),
+        fetch('/api/admin/config?t=' + ts),
+        fetch('/api/admin/master-data?t=' + ts),
+        fetch('/api/marketing/distributions?t=' + ts)
       ]);
       
       let systemConfigData = null;
@@ -66,7 +81,7 @@ function CatalogContent() {
         setSystemConfig(sysData);
         systemConfigData = sysData;
       }
-
+     
       if (iRes.ok) setItems(await iRes.json());
       if (uRes.ok) setUnits(await uRes.json());
       if (dRes.ok) setDistributions(await dRes.json());
@@ -77,7 +92,7 @@ function CatalogContent() {
         const config = interfaces.find((m: any) => m.path === '/marketing/distribution/catalog');
         setInterfaceConfig(config);
       }
-
+     
       if (masterRes.ok && systemConfigData?.unit_category_group) {
         const masterData = await masterRes.json();
         const unitGroup = masterData.find((g: any) => g.id === systemConfigData.unit_category_group);
@@ -172,6 +187,8 @@ function CatalogContent() {
       alert('신규 물품이 등록되었습니다.');
       setFormData({ ...initialForm, unit: unitOptions[0] || 'EA' });
       fetchData();
+    } else {
+      alert('등록에 실패했습니다. DB 연결 상태를 확인해주세요.');
     }
   };
      
@@ -200,27 +217,25 @@ function CatalogContent() {
     const res = await fetch(`/api/marketing/items?id=${id}`, { method: 'DELETE' });
     if (res.ok) { alert('완전히 삭제되었습니다.'); fetchData(); }
   };
-
-  // 🚀 보관 처리 (Archive) 함수
-  const handleArchive = async (id: string) => {
-    if (!confirm('지급 이력이 존재하는 물품입니다.\n리스트에서 숨기고 "보관함"으로 이동하시겠습니까?')) return;
+     
+  const handleEndItem = async (id: string) => {
+    if (!confirm('지급 이력이 존재하는 물품입니다.\n현재 리스트에서 숨기고 "종료된 과거 내역"으로 처리하시겠습니까?')) return;
     const res = await fetch('/api/marketing/items', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id, is_archived: true })
     });
-    if (res.ok) { alert('보관함으로 이동되었습니다.'); fetchData(); }
+    if (res.ok) { alert('과거 내역으로 종료 처리되었습니다.'); fetchData(); }
   };
-
-  // 🚀 복원 처리 (Restore) 함수
+     
   const handleRestore = async (id: string) => {
-    if (!confirm('보관된 물품을 다시 활성화 하시겠습니까?')) return;
+    if (!confirm('종료된 상품을 다시 활성 물품 리스트로 복구하시겠습니까?')) return;
     const res = await fetch('/api/marketing/items', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id, is_archived: false })
     });
-    if (res.ok) { alert('리스트로 복원되었습니다.'); fetchData(); }
+    if (res.ok) { alert('활성 리스트로 복원되었습니다.'); fetchData(); }
   };
   
   const handlePurchaseSubmit = async (e: React.FormEvent) => {
@@ -245,10 +260,9 @@ function CatalogContent() {
       } else { alert('입고 처리 실패. DB 업데이트를 확인해주세요.'); }
     } catch (err) { alert('오류 발생'); }
   };
-
-  // 🚀 활성화된(보관되지 않은) 아이템과 보관된 아이템 분리
+     
   const activeItems = useMemo(() => items.filter(item => !item.is_archived), [items]);
-  const archivedItems = useMemo(() => items.filter(item => item.is_archived), [items]);
+  const endedItems = useMemo(() => items.filter(item => item.is_archived), [items]); 
      
   const availableDepts = useMemo(() => {
     const activeDeptsInItems = new Set(activeItems.map(i => i.owner_dept).filter(Boolean));
@@ -257,6 +271,11 @@ function CatalogContent() {
     activeDeptsInItems.forEach(d => { if (!finalSet.has(d)) sortedByAdminUnit.push(d); });
     return sortedByAdminUnit;
   }, [activeItems, units]);
+
+  const availableEndedDepts = useMemo(() => {
+    const depts = new Set(endedItems.map(i => i.owner_dept).filter(Boolean));
+    return Array.from(depts).sort();
+  }, [endedItems]);
   
   const filteredActiveItems = useMemo(() => {
     return activeItems.filter(item => {
@@ -266,15 +285,21 @@ function CatalogContent() {
     });
   }, [activeItems, searchQuery, selectedDept]);
 
-  // 🚀 보관함 부서별 정렬 로직
-  const groupedArchivedItems = useMemo(() => {
-    const groups: Record<string, any[]> = {};
-    archivedItems.forEach(item => {
-      if (!groups[item.owner_dept]) groups[item.owner_dept] = [];
-      groups[item.owner_dept].push(item);
-    });
-    return groups;
-  }, [archivedItems]);
+  const filteredEndedItems = useMemo(() => {
+    return endedItems.filter(item => {
+      const matchDept = endedDeptFilter === 'ALL' || item.owner_dept === endedDeptFilter;
+      const itemYear = new Date(item.updatedAt || item.createdAt).getFullYear().toString();
+      const matchYear = endedYearFilter === 'ALL' || itemYear === endedYearFilter;
+      return matchDept && matchYear;
+    }).sort((a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime());
+  }, [endedItems, endedDeptFilter, endedYearFilter]);
+
+  const paginatedEndedItems = useMemo(() => {
+    const start = (endedPage - 1) * itemsPerEndedPage;
+    return filteredEndedItems.slice(start, start + itemsPerEndedPage);
+  }, [filteredEndedItems, endedPage]);
+
+  const totalEndedPages = Math.ceil(filteredEndedItems.length / itemsPerEndedPage);
      
   if (loading) return <div className="p-10 text-center font-black animate-pulse text-indigo-400 mt-20 tracking-widest">Syncing Hub Master Data...</div>;
      
@@ -309,7 +334,7 @@ function CatalogContent() {
               <input type="number" placeholder="단가(원)" value={formData.unit_price} onChange={e=>setFormData({...formData, unit_price: e.target.value})} className="w-full p-2.5 text-xs font-bold border border-slate-200 rounded-xl outline-none focus:ring-2 ring-indigo-500 transition-all" />
               <input type="number" placeholder="초기수량" value={formData.current_stock} onChange={e=>setFormData({...formData, current_stock: e.target.value})} className="w-full p-2.5 text-xs font-bold border border-slate-200 rounded-xl outline-none focus:ring-2 ring-indigo-500 transition-all" />
               <input type="number" placeholder="재고확보기준수량" value={formData.alert_qty} onChange={e=>setFormData({...formData, alert_qty: e.target.value})} className="w-full p-2.5 text-xs font-bold border border-slate-200 rounded-xl outline-none focus:ring-2 ring-indigo-500 transition-all" title="이 수량 이하로 떨어지면 알림이 뜹니다." />
-              <select value={formData.unit} onChange={e=>setFormData({...formData, unit: e.target.value})} className="w-full p-2.5 text-xs font-bold border border-slate-200 rounded-xl outline-none bg-white focus:ring-2 ring-indigo-500 transition-all cursor-pointer">
+              <select value={formData.unit || ''} onChange={e=>setFormData({...formData, unit: e.target.value})} className="w-full p-2.5 text-xs font-bold border border-slate-200 rounded-xl outline-none bg-white focus:ring-2 ring-indigo-500 transition-all cursor-pointer">
                 {unitOptions.map(u => <option key={u} value={u}>{u}</option>)}
               </select>
               <input placeholder="상세 설명 (선택)" value={formData.description} onChange={e=>setFormData({...formData, description: e.target.value})} className="w-full p-2.5 text-xs font-bold border border-slate-200 rounded-xl outline-none focus:ring-2 ring-indigo-500 transition-all" />
@@ -320,17 +345,12 @@ function CatalogContent() {
         </div>
       )}
      
-      {/* 🚀 타이틀 & 보관함 보기 버튼 */}
       <div className="flex justify-between items-end pl-2 mt-8">
         <h3 className="font-black text-sm text-slate-800 flex items-center gap-2">
-          <span>🛍️</span> 물품 리스트
+          <span>🛍️</span> 활성 물품 리스트
         </h3>
-        <button onClick={() => setShowArchiveModal(true)} className="px-4 py-2 bg-slate-800 text-white rounded-xl text-xs font-black shadow-md hover:bg-slate-700 transition-colors flex items-center gap-2">
-          <span>📂</span> 미사용 보관함 보기
-        </button>
       </div>
-
-      {/* 필터 영역 */}
+     
       <div className="bg-slate-100 p-5 rounded-[2rem] border border-slate-200 shadow-inner flex flex-col md:flex-row justify-between items-center gap-4 mt-2 mb-6">
         <div className="flex items-center gap-3 w-full md:w-auto">
           <div className="flex gap-2 overflow-x-auto scrollbar-hide">
@@ -353,22 +373,20 @@ function CatalogContent() {
         </div>
       </div>
      
-      {/* 🚀 카탈로그 리스트 (갤러리 폼) */}
+      {/* 🚀 활성 카탈로그 리스트 */}
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
         {filteredActiveItems.map(item => {
           const isEditing = editingId === item.id;
           const currentData = isEditing ? editFormData : item;
           const canDistribute = checkDistributePermission(item.owner_dept);
           const canEditThisItem = checkEditPermission(item.owner_dept);
-          const currentUnit = item.unit || 'EA';
           
-          // 🚀 해당 아이템이 지급 신청된 이력이 있는지 검사
+          const currentUnit = currentData.unit || 'EA';
           const hasDistributed = distributions.some(d => d.item_id === item.id || (d.item && d.item.id === item.id));
      
           return (
             <div key={item.id} className={`flex flex-col sm:flex-row p-6 bg-white border rounded-[2rem] transition-all shadow-sm relative group ${isEditing ? 'border-indigo-500 ring-4 ring-indigo-50 z-50' : 'border-slate-200 hover:shadow-md'}`}>
               
-              {/* 좌측: 이미지 영역 */}
               <div 
                 onClick={() => isEditing && editFileInputRef.current?.click()}
                 className={`w-full sm:w-36 h-36 shrink-0 bg-slate-50 rounded-2xl flex items-center justify-center overflow-hidden border border-slate-100 relative ${isEditing ? 'cursor-pointer' : ''}`}
@@ -389,9 +407,7 @@ function CatalogContent() {
                 )}
               </div>
      
-              {/* 중앙: 상세 정보 및 관리자 전용 액션 영역 */}
               <div className="flex-1 flex flex-col justify-between sm:ml-6 mt-4 sm:mt-0">
-                
                 <div className="space-y-3">
                   <div className="flex items-start justify-between">
                     {isEditing ? (
@@ -408,34 +424,37 @@ function CatalogContent() {
        
                   <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-[11px]">
                     <div className="flex flex-col">
-                      <span className="text-slate-400 font-bold uppercase text-[9px] mb-0.5">Unit Price</span>
+                      {/* 🚀 라벨 수정: 단가(원) */}
+                      <span className="text-slate-400 font-bold uppercase text-[9px] mb-0.5">단가(원)</span>
                       {isEditing ? (
                          <input type="number" value={currentData.unit_price} onChange={e=>setEditFormData({...editFormData, unit_price: e.target.value})} className="font-mono font-black text-slate-700 bg-slate-50 p-1.5 rounded outline-none border border-slate-200" />
                       ) : <span className="font-mono font-black text-slate-700 text-sm">{currentData.unit_price.toLocaleString()} <span className="text-[9px] font-bold">KRW</span></span>}
                     </div>
                     
                     <div className="flex flex-col">
-                      <span className="text-slate-400 font-bold uppercase text-[9px] mb-0.5">In Stock</span>
+                      {/* 🚀 라벨 수정: 재고 */}
+                      <span className="text-slate-400 font-bold uppercase text-[9px] mb-0.5">재고</span>
                       {isEditing ? (
                          <input type="number" value={currentData.current_stock} onChange={e=>setEditFormData({...editFormData, current_stock: e.target.value})} className="font-mono font-black text-indigo-600 bg-slate-50 p-1.5 rounded outline-none border border-slate-200" />
                       ) : (
                         <span className={`font-mono font-black text-sm ${currentData.current_stock <= (currentData.alert_qty || 0) && currentData.alert_qty > 0 ? 'text-red-500' : 'text-indigo-600'}`}>
-                          {currentData.current_stock} <span className="text-[9px] font-bold">{currentUnit}</span>
+                          {currentData.current_stock} <span className="text-[10px] font-bold pl-1">{currentUnit}</span>
                         </span>
                       )}
                     </div>
                   </div>
-
+     
                   {!isEditing && (
                     <div className="text-[10px] text-slate-500 font-medium line-clamp-1 bg-slate-50 p-1.5 rounded">
                       {currentData.description || '상세 설명 없음'}
                     </div>
                   )}
-
+     
                   {isEditing && (
                     <div className="grid grid-cols-2 gap-2 mt-2 pt-2 border-t border-slate-100">
                       <div className="flex flex-col">
-                        <span className="text-red-400 font-bold text-[9px] mb-0.5">알림 기준 수량</span>
+                        {/* 🚀 라벨 수정: 재고확보 기준수량 */}
+                        <span className="text-red-400 font-bold text-[9px] mb-0.5">재고확보 기준수량</span>
                         <input type="number" value={currentData.alert_qty} onChange={e=>setEditFormData({...editFormData, alert_qty: Number(e.target.value)})} className="font-mono font-black text-red-600 bg-red-50 p-1.5 rounded outline-none border border-red-100 text-[10px]" />
                       </div>
                       
@@ -444,7 +463,7 @@ function CatalogContent() {
                         <div onClick={() => { if (hasDistributed) alert('⚠️ 1회 이상 지급 신청된 물품의 단위는 수정할 수 없습니다.\n단위가 변경된 상품은 신규 상품으로 등록해 주세요.'); }}>
                           <select 
                             disabled={hasDistributed}
-                            value={currentData.unit} 
+                            value={currentData.unit || ''} 
                             onChange={e=>setEditFormData({...editFormData, unit: e.target.value})} 
                             className={`font-black text-slate-700 bg-slate-50 p-1.5 rounded outline-none border border-slate-200 text-[10px] w-full ${hasDistributed ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}
                           >
@@ -452,7 +471,7 @@ function CatalogContent() {
                           </select>
                         </div>
                       </div>
-
+     
                       <div className="col-span-2 flex flex-col">
                         <span className="text-slate-400 font-bold text-[9px] mb-0.5">부서 변경</span>
                         <select value={currentData.owner_dept} onChange={e=>setEditFormData({...editFormData, owner_dept: e.target.value})} className="font-black text-slate-700 bg-slate-50 p-1.5 rounded outline-none border border-slate-200 text-[10px]">
@@ -471,7 +490,7 @@ function CatalogContent() {
                     </div>
                   )}
                 </div>
-
+     
                 <div className="mt-4 pt-3 border-t border-slate-100 flex gap-2">
                   {isEditing ? (
                     <>
@@ -487,11 +506,10 @@ function CatalogContent() {
                         >📦 입고</button>
                         <button onClick={() => handleOpenEdit(item)} className="px-3 py-1.5 bg-white border border-slate-200 text-slate-600 rounded-md text-[10px] font-black hover:bg-slate-100 transition-colors">✏️ 수정</button>
                         
-                        {/* 🚀 삭제 또는 보관함 버튼 동적 렌더링 */}
                         {!hasDistributed ? (
                           <button onClick={() => handleDelete(item.id)} className="px-3 py-1.5 bg-red-50 text-red-500 rounded-md text-[10px] font-black hover:bg-red-500 hover:text-white transition-colors">🗑️ 삭제</button>
                         ) : (
-                          <button onClick={() => handleArchive(item.id)} className="px-3 py-1.5 bg-slate-800 text-white rounded-md text-[10px] font-black hover:bg-black transition-colors">📦 보관</button>
+                          <button onClick={() => handleEndItem(item.id)} className="px-3 py-1.5 bg-slate-800 text-white rounded-md text-[10px] font-black hover:bg-black transition-colors">🛑 종료(마감)</button>
                         )}
                       </>
                     )
@@ -521,11 +539,11 @@ function CatalogContent() {
       
       {filteredActiveItems.length === 0 && (
         <div className="py-20 text-center font-black text-slate-400 bg-slate-50 border border-dashed border-slate-200 rounded-[2rem]">
-          조건에 맞는 물품이 없습니다.
+          조건에 맞는 활성 물품이 없습니다.
         </div>
       )}
      
-      {/* 🚀 재고 보충(입고) 모달 */}
+      {/* 재고 보충(입고) 모달 */}
       {purchaseModal && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[200] flex items-center justify-center p-4" onClick={() => setPurchaseModal(null)}>
           <div className="bg-white w-[420px] p-8 rounded-[2rem] shadow-2xl flex flex-col border" onClick={e=>e.stopPropagation()}>
@@ -580,57 +598,139 @@ function CatalogContent() {
         </div>
       )}
 
-      {/* 🚀 미사용 보관함(Archive) 뷰어 모달 */}
-      {showArchiveModal && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[300] flex items-center justify-center p-6" onClick={() => setShowArchiveModal(false)}>
-          <div className="bg-slate-50 w-full max-w-[1000px] h-[85vh] rounded-[2.5rem] shadow-2xl flex flex-col overflow-hidden border border-slate-300 animate-in zoom-in-95 duration-200" onClick={e=>e.stopPropagation()}>
-            <div className="bg-slate-800 p-6 flex justify-between items-center text-white shrink-0">
-              <div>
-                <h3 className="text-xl font-black tracking-tight flex items-center gap-2"><span>📂</span> 미사용 물품 보관함</h3>
-                <p className="text-[11px] text-slate-400 mt-1 uppercase tracking-widest font-bold">Archived Catalog Items</p>
+      {/* 전사 표준 아코디언 트리거: 종료된 물품 과거 이력 */}
+      <div 
+        onClick={() => setIsEndedOpen(!isEndedOpen)}
+        className="w-full bg-slate-800 p-6 rounded-[2.5rem] text-white shadow-lg relative overflow-hidden flex flex-col justify-center min-h-[120px] mt-12 cursor-pointer hover:brightness-95 active:scale-[0.99] transition-all select-none"
+      >
+        <div className="relative z-10">
+          <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-1">Ended Items History (Click to Toggle)</p>
+          <h2 className="text-2xl font-black tracking-tight text-white flex items-center gap-3">
+            종료된 과거 물품 내역
+            <span className="text-xs bg-white/20 text-white px-2 py-0.5 rounded-full font-bold">
+              {isEndedOpen ? '▲ 접기' : '▼ 펼치기'}
+            </span>
+          </h2>
+          <p className="text-slate-300 text-xs font-semibold mt-2 opacity-90">재고가 소진되었거나 지급이 완전히 종료되어 과거 이력으로 남은 상품 목록입니다.</p>
+        </div>
+      </div>
+
+      {/* 종료된 물품 리스트 및 필터 영역 */}
+      {isEndedOpen && (
+        <div className="bg-white border border-slate-200 rounded-[2.5rem] shadow-sm overflow-hidden mt-6 animate-in fade-in slide-in-from-top-4 duration-300">
+          <HeaderLight title="종료 물품 리스트" count={filteredEndedItems.length}>
+            <div className="flex items-center gap-4 text-xs font-bold text-slate-600">
+              <div className="flex items-center gap-2">
+                <span className="text-slate-500">연도 :</span>
+                <select 
+                  value={endedYearFilter} 
+                  onChange={(e) => { setEndedYearFilter(e.target.value); setEndedPage(1); }} 
+                  className="bg-white border border-slate-300 text-slate-700 rounded-xl px-3 py-1.5 font-black focus:outline-none focus:border-indigo-500 text-[11px] cursor-pointer shadow-sm transition-colors"
+                >
+                  <option value="ALL">전체 내역 보기</option>
+                  <option value="2026">2026년</option>
+                  <option value="2025">2025년</option>
+                </select>
               </div>
-              <button onClick={() => setShowArchiveModal(false)} className="w-10 h-10 flex items-center justify-center bg-white/10 hover:bg-white/20 rounded-full text-xl transition-colors">✕</button>
+              <div className="flex items-center gap-2">
+                <span className="text-slate-500">조직 :</span>
+                <select 
+                  value={endedDeptFilter} 
+                  onChange={(e) => { setEndedDeptFilter(e.target.value); setEndedPage(1); }} 
+                  className="bg-white border border-slate-300 text-slate-700 rounded-xl px-3 py-1.5 font-black focus:outline-none focus:border-indigo-500 text-[11px] cursor-pointer shadow-sm transition-colors"
+                >
+                  <option value="ALL">전체</option>
+                  {availableEndedDepts.map(dept => (
+                    <option key={dept} value={dept}>{dept}</option>
+                  ))}
+                </select>
+              </div>
             </div>
-            
-            <div className="flex-1 overflow-y-auto p-6 space-y-8">
-              {Object.keys(groupedArchivedItems).length === 0 ? (
-                <div className="py-32 text-center text-slate-400 font-black text-lg">보관된 물품이 없습니다.</div>
-              ) : (
-                Object.entries(groupedArchivedItems).map(([dept, items]) => (
-                  <div key={dept} className="bg-white border border-slate-200 rounded-[2rem] overflow-hidden shadow-sm">
-                    <div className="bg-slate-100 p-4 border-b border-slate-200 flex items-center gap-3">
-                      <span className="bg-indigo-100 text-indigo-700 text-[10px] font-black px-3 py-1.5 rounded-lg shadow-sm">{dept}</span>
-                      <span className="text-xs font-bold text-slate-500">총 {items.length}건 보관 중</span>
-                    </div>
-                    <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-4">
-                      {items.map(item => (
-                        <div key={item.id} className="flex gap-4 p-4 border border-slate-100 rounded-2xl bg-slate-50/50 hover:bg-white hover:border-slate-300 transition-colors group">
-                          <div className="w-20 h-20 bg-slate-100 rounded-xl flex items-center justify-center overflow-hidden shrink-0 border border-slate-200 grayscale group-hover:grayscale-0 transition-all">
-                            {item.image_url ? <img src={item.image_url} className="w-full h-full object-cover opacity-60 group-hover:opacity-100" /> : <span className="text-[8px] font-black text-slate-300 uppercase">No Image</span>}
-                          </div>
-                          <div className="flex flex-col justify-center flex-1">
-                            <h4 className="font-black text-slate-700 text-sm line-clamp-1">{item.name}</h4>
-                            <div className="flex gap-4 mt-2">
-                              <span className="text-[10px] text-slate-500 font-bold">단가: <span className="font-mono text-slate-800">{item.unit_price.toLocaleString()}원</span></span>
-                              <span className="text-[10px] text-slate-500 font-bold">잔여재고: <span className="font-mono text-slate-800">{item.current_stock}{item.unit || 'EA'}</span></span>
+          </HeaderLight>
+
+          <div className="overflow-x-auto p-2">
+            {filteredEndedItems.length === 0 ? (
+              <div className="py-20 text-center font-black text-slate-400 bg-slate-50 rounded-2xl border border-dashed border-slate-200 m-4">
+                선택한 조건의 종료된 물품 내역이 없습니다.
+              </div>
+            ) : (
+              <table className="w-full text-left border-collapse min-w-[900px]">
+                <thead className="bg-slate-100 text-slate-700 text-[10px] font-black uppercase tracking-widest border-b border-slate-200">
+                  <tr>
+                    <th className="py-2 px-4 text-center w-16">NO</th>
+                    <th className="py-2 px-3 w-16 text-center">이미지</th>
+                    <th className="py-2 px-4">상품명</th>
+                    <th className="py-2 px-3 text-right">단가(원)</th>
+                    <th className="py-2 px-3 text-right">재고</th>
+                    <th className="py-2 px-4 w-48">상세설명</th>
+                    <th className="py-2 px-3 text-center">소속부서</th>
+                    <th className="py-2 px-3 text-center">종료일</th>
+                    <th className="py-2 px-4 text-center w-36">액션</th>
+                  </tr>
+                </thead>
+                <tbody className="bg-white divide-y divide-slate-100 text-xs font-bold text-slate-700">
+                  {paginatedEndedItems.map((item, index) => {
+                     const reverseNo = filteredEndedItems.length - ((endedPage - 1) * itemsPerEndedPage + index);
+                     const endDate = (item.updatedAt || item.createdAt)?.split('T')[0] || '-';
+                     
+                     // 🚀 권한 판별 변수
+                     const isLV1 = currentUser?.roles?.includes('LV_1');
+                     const canEditThisItem = checkEditPermission(item.owner_dept);
+
+                     return (
+                        <tr key={item.id} className="hover:bg-slate-50 transition-colors">
+                          <td className="px-4 py-2 text-center text-slate-400 font-black">{reverseNo}</td>
+                          <td className="px-3 py-2 text-center">
+                            <div className="w-10 h-10 mx-auto bg-slate-100 rounded-md overflow-hidden border border-slate-200 shadow-sm">
+                               {item.image_url ? (
+                                 <img src={item.image_url} className="w-full h-full object-cover opacity-80" alt="img" />
+                               ) : (
+                                 <span className="text-[6px] font-black flex items-center justify-center h-full text-slate-300">NO IMG</span>
+                               )}
                             </div>
-                          </div>
-                          <div className="flex items-center justify-center shrink-0 pr-2">
-                            <button onClick={() => handleRestore(item.id)} className="px-4 py-2 bg-white border border-slate-300 text-slate-600 rounded-xl text-[10px] font-black hover:bg-indigo-600 hover:text-white hover:border-indigo-600 transition-colors shadow-sm whitespace-nowrap">
-                              ↺ 메인 복원
-                            </button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
+                          </td>
+                          <td className="px-4 py-2 text-slate-800 line-clamp-1 border-none mt-2 block">{item.name}</td>
+                          <td className="px-3 py-2 text-right font-mono text-slate-600">{item.unit_price.toLocaleString()}</td>
+                          <td className="px-3 py-2 text-right font-mono text-slate-600">{item.current_stock} <span className="text-[9px] text-slate-400">{item.unit || 'EA'}</span></td>
+                          <td className="px-4 py-2"><div className="line-clamp-2 text-[10px] text-slate-500 font-medium">{item.description || '-'}</div></td>
+                          <td className="px-3 py-2 text-center"><span className="bg-slate-100 text-slate-500 border border-slate-200 px-2 py-0.5 rounded text-[9px] font-black">{item.owner_dept}</span></td>
+                          <td className="px-3 py-2 text-center text-slate-500 font-mono text-[11px]">{endDate}</td>
+                          <td className="px-4 py-2 text-center">
+                             {/* 🚀 버튼 좌우 나란히 배치 및 권한 연동 완료 */}
+                             <div className="flex flex-row gap-1.5 justify-center">
+                                {canEditThisItem && (
+                                  <button onClick={() => handleRestore(item.id)} className="flex-1 py-1.5 bg-white border border-slate-300 text-slate-600 rounded text-[9px] font-black hover:bg-slate-800 hover:text-white transition-colors shadow-sm whitespace-nowrap">
+                                    ↺ 복구
+                                  </button>
+                                )}
+                                {isLV1 && (
+                                  <button onClick={() => handleDelete(item.id)} className="flex-1 py-1.5 bg-red-50 text-red-500 border border-red-200 rounded text-[9px] font-black hover:bg-red-500 hover:text-white transition-colors whitespace-nowrap">
+                                    🗑️ 영구 삭제
+                                  </button>
+                                )}
+                             </div>
+                          </td>
+                        </tr>
+                     )
+                  })}
+                </tbody>
+              </table>
+            )}
           </div>
+
+          {/* 테이블 하단 10개 단위 페이지네이션 */}
+          {totalEndedPages > 1 && (
+            <div className="flex justify-center items-center gap-1.5 py-4 border-t border-slate-100 bg-white">
+              <button disabled={endedPage === 1} onClick={() => setEndedPage(p => p - 1)} className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 hover:bg-slate-50">이전</button>
+              {Array.from({ length: totalEndedPages }).map((_, i) => (
+                <button key={i} onClick={() => setEndedPage(i + 1)} className={`w-8 h-8 rounded-xl font-black text-xs transition-all ${endedPage === i + 1 ? 'bg-slate-800 text-white shadow-sm scale-105' : 'bg-white border border-slate-200 text-slate-500 hover:bg-slate-50'}`}>{i + 1}</button>
+              ))}
+              <button disabled={endedPage === totalEndedPages} onClick={() => setEndedPage(p => p + 1)} className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 hover:bg-slate-50">다음</button>
+            </div>
+          )}
         </div>
       )}
-
+     
     </div>
   );
 }
