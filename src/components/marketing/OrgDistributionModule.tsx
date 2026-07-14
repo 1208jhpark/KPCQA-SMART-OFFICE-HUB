@@ -291,17 +291,37 @@ function OrgDistributionContent() {
   return (
     <div className="w-full max-w-[1600px] mx-auto space-y-6 p-8 font-sans text-slate-900 pb-24 animate-fade-in">
       
-      {/* 🚀 최상위 조직 KPCQA 배너 (색상을 약간 묵직한 에메랄드/다크 톤으로 분리하여 부서 장부와 차별화) */}
-      <div className="w-full bg-gradient-to-r from-emerald-800 to-slate-900 p-6 rounded-[2.5rem] min-h-[120px] flex flex-col justify-center text-white shadow-xl relative overflow-hidden">
-        <div className="absolute top-[-50px] right-[-50px] w-64 h-64 bg-emerald-500 rounded-full blur-3xl opacity-20"></div>
-        <div className="relative z-10">
-          <p className="text-[10px] text-emerald-400 font-black uppercase tracking-widest mb-1">KPCQA Master Ledger</p>
-          <h1 className="text-2xl font-black tracking-tight">
-            <span>👑</span> KPCQA 전사 공용 자산 관리 대장
-          </h1>
-          <p className="text-emerald-100 text-xs font-semibold mt-2 opacity-90">타 부서의 개별 장부와 분리되어, 오직 KPCQA 명의로 묶인 공용 기념품의 입고(매입) 및 지급 내역만 독립적으로 모니터링합니다.</p>
-        </div>
-      </div>
+{/* 👑 [디자인 1원칙: 전사 마스터 통제실 = 짙은 녹색 테마 배너] KPCQA 전사 공용 자산 관리 대장 (박스 제거 및 서체 강조형 리파인) */}
+<div className="w-full bg-gradient-to-r from-emerald-900 to-teal-900 p-6 rounded-[2.5rem] min-h-[140px] flex flex-col justify-center text-white shadow-xl relative overflow-hidden group">
+  
+  {/* ✨ 에메랄드 통제실 전용 은은한 우측 상단 빛 번짐 효과 매칭 */}
+  <div className="absolute right-[-10px] top-[-10px] w-24 h-24 bg-white/10 rounded-full blur-2xl group-hover:scale-150 transition-transform duration-700"></div>
+
+  <div className="relative z-10 flex justify-between items-end w-full">
+    <div>
+      {/* 1. 상단 라벨 (mb-3 여백 & text-emerald-400 톤) */}
+      <h3 className="text-[10px] font-black uppercase tracking-widest text-emerald-400 mb-3">
+        KPCQA MASTER LEDGER
+      </h3>
+      
+      {/* 2. 메인 타이틀 (어색한 박스 뱃지 제거 ➡️ 텍스트 강조 구조로 완벽 피팅) */}
+      <h1 className="text-2xl font-black tracking-tight text-white leading-none flex items-center flex-wrap gap-2">
+        {/* 👑 KPCQA 시스템 고정 명칭 (글씨만 에메랄드 톤으로 포인트 강조) */}
+        <span className="text-emerald-400 shrink-0 select-none">
+          KPCQA
+        </span>
+        
+        {/* 🎯 메인 타이틀 텍스트 */}
+        <span className="text-white">전사 공용 자산 관리 대장</span>
+      </h1>
+      
+      {/* 3. 하단 설명 (mt-4 가독성 시스템) */}
+      <p className="text-emerald-100/90 text-xs font-semibold mt-4 opacity-90">
+        타 부서의 개별 장부와 철저히 분리되어, 오직 KPCQA 명의로 묶인 공용 기념품의 입고(매입) 및 지급 내역을 독립적으로 모니터링합니다.
+      </p>
+    </div>
+  </div>
+</div>
   
       {/* 실시간 요약 그래프 */}
       <div className="bg-white border border-slate-200 rounded-[2.5rem] shadow-sm p-6">

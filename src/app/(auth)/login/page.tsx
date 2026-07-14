@@ -28,8 +28,10 @@ export default function LoginPage() {
     <div className="min-h-screen flex items-center justify-center bg-[#F8FAFC] font-sans">
       <form onSubmit={handleLogin} className="p-12 bg-white rounded-[3rem] shadow-2xl w-full max-w-md border border-gray-100 animate-in fade-in zoom-in duration-300">
         <div className="text-center mb-10">
-          <h1 className="text-4xl font-black text-slate-900 tracking-tighter italic">SMART HUB</h1>
-          <p className="text-blue-500 text-[10px] font-black uppercase tracking-[0.3em] mt-2">Management System v1.8</p>
+        <h1 className="text-4xl font-black text-slate-900 tracking-tighter italic">
+   <br /> SMART OFFICE HUB
+</h1>
+          <p className="text-blue-500 text-[10px] font-black uppercase tracking-[0.3em] mt-2">KPCQA 통합 자산 및 업무 관리 플랫폼</p>
         </div>
 
         <div className="space-y-4">
@@ -37,7 +39,7 @@ export default function LoginPage() {
             <label className="text-[10px] font-black text-slate-400 ml-2 uppercase">Company Email</label>
             <input 
               type="email" 
-              placeholder="사내이메일을 입력하세요" 
+              placeholder="사내 공식 이메일을 입력하세요" 
               className="w-full p-5 bg-slate-50 rounded-2xl outline-none focus:ring-2 ring-blue-500 font-bold text-slate-700 transition-all" 
               onChange={e => setFormData({...formData, email: e.target.value})} 
               required 

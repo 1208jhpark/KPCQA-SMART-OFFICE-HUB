@@ -1,6 +1,5 @@
-import React from 'react';
 import L4PanelRenderer from '@/components/admin/L4PanelRenderer';
-
-export default function ItDeptPage() {
+     
+export default function Page() {
   return <L4PanelRenderer />;
 }

@@ -146,20 +146,21 @@ export default function ServiceHomePage() {
             <div className="h-px w-8 bg-slate-200/60 hidden md:block" />
           </div>
           
-          <div className="flex flex-wrap items-center justify-center gap-2">
-            {dynamicSites.map((site: any, idx: number) => (
+          {/* 🚀 수정 후: gap-3(간격넓힘), text-xs(글씨키움), text-slate-900(검정색), px-5 py-2.5(버튼크기키움), font-black(글씨더굵게) */}
+          <div className="flex flex-wrap items-center justify-center gap-3">
+          {dynamicSites.map((site: any, idx: number) => (
               <a 
                 key={idx} 
                 href={site.url}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="text-[9px] font-bold tracking-[0.15em] text-slate-500 bg-white/40 backdrop-blur-sm border border-slate-200/60 px-3.5 py-1.5 rounded-lg transition-all hover:bg-white hover:text-indigo-600 hover:border-indigo-300 hover:shadow-[0_6px_15px_rgba(99,102,241,0.05)] hover:-translate-y-0.5 shadow-sm active:scale-95 font-sans uppercase"
+                className="text-xs font-black tracking-widest text-slate-900 bg-white/60 backdrop-blur-sm border border-slate-300 px-5 py-2.5 rounded-xl transition-all hover:bg-white hover:text-indigo-600 hover:border-indigo-400 hover:shadow-md hover:-translate-y-0.5 shadow-sm active:scale-95 font-sans"
               >
                 {site.name}
               </a>
             ))}
             {dynamicSites.length === 0 && (
-              <span className="text-[11px] text-slate-400 italic py-2">연동 사이트를 등록해 주세요.</span>
+              <span className="text-xs text-slate-400 italic py-2">연동 사이트를 등록해 주세요.</span>
             )}
           </div>
   

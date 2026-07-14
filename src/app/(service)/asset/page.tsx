@@ -1,8 +1,8 @@
 'use client';
   
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
-
+  
 // 로딩 스켈레톤 (와이드 레이아웃 맞춤형 디자인)
 const LoadingSkeleton = () => (
   <div className="w-full max-w-6xl mx-auto py-16 px-6 space-y-6 animate-pulse">
@@ -17,78 +17,88 @@ const LoadingSkeleton = () => (
   
 export default function AssetIntegratedDashboard() {
   const [stats, setStats] = useState({
-    supplies: { pending: 0, critical: 0, total: 0 },
-    it: { pending: 0, critical: 0, total: 0 },
-    outsourcing: { pending: 0, completed: 0, total: 0 }
+    supplies: { myPending: 0, totalPending: 0 },
+    bizcard: { myPending: 0, totalPending: 0 }
   });
+  const [itActiveSurvey, setItActiveSurvey] = useState<any | null>(null);
   const [loading, setLoading] = useState(true);
+  const [originUrl, setOriginUrl] = useState('');
+  
+  // 🚀 [권한 통제 벨트]: 직급(LV)에 상관없이 이 유저가 관리자 업무 대상자인지 판별하는 마스터 상태
+  const [isManager, setIsManager] = useState(false);
   
   useEffect(() => {
+    setOriginUrl(window.location.origin);
+    
+    const getSafeArray = async (res: Response | null) => {
+      if (!res || !res.ok) return [];
+      try {
+        const data = await res.json();
+        return Array.isArray(data) ? data : (data.data || []);
+      } catch {
+        return [];
+      }
+    };
+
     const syncDashboardMetrics = async () => {
       try {
         const ts = Date.now();
-        // 🚀 유저 및 부서 조직 마스터 데이터 동기화
-        const [uRes, unitsRes] = await Promise.all([
-          fetch('/api/auth/me?t=' + ts, { cache: 'no-store' }).catch(() => null),
-          fetch('/api/admin/units?active=true&t=' + ts, { cache: 'no-store' }).catch(() => null)
+        const [uRes, unitsRes, supReqRes, itSurvRes, bizReqRes] = await Promise.all([
+          fetch(`/api/auth/me?t=${ts}`, { cache: 'no-store' }).catch(() => null),
+          fetch(`/api/admin/units?active=true&t=${ts}`, { cache: 'no-store' }).catch(() => null),
+          fetch(`/api/asset/supplies/master/requests?t=${ts}`, { cache: 'no-store' }).catch(() => null),
+          fetch(`/api/asset/it/audit?t=${ts}`, { cache: 'no-store' }).catch(() => null),
+          fetch(`/api/asset/businesscard/master/requests?t=${ts}`, { cache: 'no-store' }).catch(() => null)
         ]);
         
         const currentUser = uRes && uRes.ok ? await uRes.json() : null;
-        const unitsList = unitsRes && unitsRes.ok ? await unitsRes.json() : [];
   
         if (currentUser) {
-          const myUnit = unitsList.find((u: any) => u.id === currentUser.dept_id);
-          currentUser.unit = myUnit || { unit_name: '소속없음' };
-          const userDept = currentUser.unit.unit_name;
-
-          // -------------------------------------------------------------
-          // [1] 일반소모품 (Supplies) 실시간 메트릭 연산
-          // -------------------------------------------------------------
-          const storedSupplies = localStorage.getItem('db_assets_supplies_matrix');
-          const suppliesList = storedSupplies ? JSON.parse(storedSupplies) : [];
+          const userEmail = currentUser.email;
+          const userName = currentUser.name;
           
-          // 내 부서 자산으로 필터링 (최고관리자 LV_1은 전사 수량 관제)
-          const targetedSupplies = currentUser.roles?.includes('LV_1') 
-            ? suppliesList 
-            : suppliesList.filter((a: any) => a.dept === userDept);
-
-          const sTotal = targetedSupplies.length;
-          const sCritical = targetedSupplies.filter((a: any) => a.isCritical).length;
-          const sPending = targetedSupplies.filter((a: any) => a.status === 'In-Review').length;
-
+          // 관리자 권한 플래그 세팅
+          const hasManagerPermission = currentUser.roles?.includes('LV_1') || currentUser.roles?.includes('LV_2') || currentUser.isAssetAdmin === true;
+          setIsManager(hasManagerPermission);
+     
           // -------------------------------------------------------------
-          // [2] IT업무자산 (IT Assets) 실시간 메트릭 연산
+          // [1] 일반소모품 (Supplies) 메트릭 계산 (나의 대기 vs 전사 대기)
           // -------------------------------------------------------------
-          const storedIT = localStorage.getItem('db_assets_it_matrix');
-          const itList = storedIT ? JSON.parse(storedIT) : [];
+          const supRequests = await getSafeArray(supReqRes);
           
-          const targetedIT = currentUser.roles?.includes('LV_1') 
-            ? itList 
-            : itList.filter((a: any) => a.dept === userDept);
+          const mySupPending = supRequests.filter((r: any) => 
+            (r.userEmail === userEmail || r.email === userEmail) && 
+            (r.status === '대기중' || r.status === 'PENDING')
+          ).length;
 
-          const itTotal = targetedIT.length;
-          const itCritical = targetedIT.filter((a: any) => a.isCritical).length;
-          const itPending = targetedIT.filter((a: any) => a.status === 'In-Review').length;
-
+          const totalSupPending = supRequests.filter((r: any) => 
+            r.status === '대기중' || r.status === 'PENDING'
+          ).length;
+     
           // -------------------------------------------------------------
-          // [3] 외주업무서비스 (Outsourcing) 실시간 메트릭 연산 (단일 테이블 가동)
+          // [2] IT업무자산 (IT Assets) 실사 현황
           // -------------------------------------------------------------
-          const storedOutsourcing = localStorage.getItem('db_outsourcing_matrix');
-          const outsourcingList = storedOutsourcing ? JSON.parse(storedOutsourcing) : [];
+          const itSurveys = await getSafeArray(itSurvRes);
+          const activeSurvey = itSurveys.find((s: any) => s.status === '진행중');
+          setItActiveSurvey(activeSurvey || null);
+     
+          // -------------------------------------------------------------
+          // [3] 명함 신청 (Business Card) 메트릭 계산 (나의 대기 vs 전사 대기)
+          // -------------------------------------------------------------
+          const bizRequests = await getSafeArray(bizReqRes);
           
-          const targetedOutsourcing = currentUser.roles?.includes('LV_1') 
-            ? outsourcingList 
-            : outsourcingList.filter((o: any) => o.dept_name === userDept);
+          const myBizPending = bizRequests.filter((r: any) => 
+            (r.userEmail === userEmail || r.email === userEmail || r.userName === userName) && 
+            r.adminStatus === '대기중'
+          ).length;
 
-          const oTotal = targetedOutsourcing.length;
-          const oPending = targetedOutsourcing.filter((o: any) => o.status === 'PENDING' || o.status === 'APPROVED').length;
-          const oCompleted = targetedOutsourcing.filter((o: any) => o.status === 'COMPLETED').length;
-
-          // 메트릭스 전역 바인딩 타격
+          const totalBizPending = bizRequests.filter((r: any) => 
+            r.adminStatus === '대기중'
+          ).length;
+     
           setStats({
-            supplies: { pending: sPending, critical: sCritical, total: sTotal },
-            it: { pending: itPending, critical: itCritical, total: itTotal },
-            outsourcing: { pending: oPending, completed: oCompleted, total: oTotal }
+            supplies: { myPending: mySupPending, totalPending: totalSupPending },
+            bizcard: { myPending: myBizPending, totalPending: totalBizPending }
           });
         }
       } catch (err) {
@@ -104,89 +114,112 @@ export default function AssetIntegratedDashboard() {
   
   return (
     <div className="min-h-screen bg-slate-50 font-sans pb-24">
-      {/* 프리미엄 헤더 영역 (Dark 컨트롤 타워 백본) */}
       <div className="bg-slate-900 pt-16 pb-32 px-6">
         <div className="max-w-6xl mx-auto">
           <p className="text-indigo-400 font-black tracking-widest text-[11px] uppercase mb-4">Resource Command Center</p>
           <h1 className="text-4xl md:text-5xl font-extrabold text-white tracking-tight">
-            자산 및 외주업무 대시보드
+            경영기획센터 관리자산 대시보드
           </h1>
           <p className="text-slate-400 mt-4 font-medium max-w-2xl leading-relaxed">
-            KPCQA 전사 일반 비품 소모품 현황, IT 업무용 자산 대장 및 외주 연동 서비스를 통합 관제합니다.<br/>
-            하단 도메인 패널에서 실시간 물류 변동성 및 업무 처리 현황을 확인한 후 진입하세요.
+            KPCQA 전사가 신청가능한 비품 현황, 
+            <br /> 
+            IT 업무용 자산 대장 등 경영기획센터 제공 서비스를 통합 관제합니다.
+            <br />
+            하단 도메인 패널에서 목적에 맞는 버튼을 선택하여 진입하세요.
           </p>
         </div>
       </div>
   
-      {/* 메인 허브 패널 영역 (마이너스 임베디드 마진 배열 적용) */}
       <div className="max-w-6xl mx-auto px-6 -mt-16 space-y-6 relative z-10">
         
-        {/* [1] 일반소모품 대시보드 유닛 */}
+        {/* 🚀 [1] 일반소모품 대시보드 */}
         <WideHubPanel 
-          title="일반소모품 관리"
+          title="일반소모품"
           titleEn="General Office Supplies"
-          desc="사내 공통 소모품과 일반 비품의 실시간 재고를 파악하고, 부서별 비품 청구 및 출고 내역을 통제합니다."
+          desc="사내 공통 소모품과 일반 비품의 실시간 재고를 파악하고, 부서별 비품 청구 내역을 통제합니다."
           icon="📦"
           theme="amber"
-          stats={stats.supplies}
-          statLabel1="청구 승인대기"
-          statLabel2="재고 위험/경고"
-          link="/asset/supplies/inventory"
+          myPendingCount={stats.supplies.myPending}
+          totalPendingCount={stats.supplies.totalPending}
+          userLink="/asset/supplies/dept" 
+          adminLink="/asset/supplies/master/requests" 
+          isManager={isManager}
         />
   
-        {/* [2] IT업무자산 대시보드 유닛 */}
+        {/* 🚀 [2] IT업무자산 대시보드 */}
         <WideHubPanel 
-          title="IT 업무 자산 관리"
+          title="IT·업무자산"
           titleEn="IT Infrastructure Assets"
-          desc="임직원용 노트북, 모니터 등 전사 정보화 자산 대장을 추적하고 4년 만료 대상 장비의 교체 주기를 관제합니다."
-          icon="💻"
+          desc="임직원용 노트북, 모니터 등 전사 정보화 자산 대장을 추적하고 실사 조사를 관제합니다."
+          icon="🖥️"
           theme="indigo"
-          stats={stats.it}
-          statLabel1="교체 신청대기"
-          statLabel2="내구 만료장비"
-          link="/asset/it"
+          userLink="/asset/it/personal" 
+          adminLink="/asset/it/master/dashboard" 
+          isManager={isManager}
+          customContent={
+            <div className="flex flex-col justify-center w-full">
+              <p className="text-[11px] font-black text-indigo-400 uppercase tracking-widest mb-1">실사진행현황</p>
+              {itActiveSurvey ? (
+                <div className="text-xs font-bold text-slate-700 leading-relaxed bg-indigo-50/40 p-3 rounded-xl border border-indigo-100 w-[240px]">
+                  <span className="text-indigo-600 font-black text-sm block mb-1">실사 진행중 🚨</span>
+                  <span className="text-slate-500 text-[10px]">({itActiveSurvey.startDate} ~ {itActiveSurvey.endDate})</span>
+                  <div className="mt-2 text-[9px] bg-white p-1.5 rounded-lg border border-slate-200 truncate font-mono shadow-sm">
+                    <span className="text-slate-400 font-bold block mb-0.5">URL 경로:</span>
+                    <a href={`${originUrl}/audit/public/${itActiveSurvey.id}`} className="text-indigo-500 hover:underline">
+                      {`${originUrl}/audit/public/${itActiveSurvey.id.substring(0,8)}...`}
+                    </a>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex items-baseline gap-1 mt-1">
+                  <span className="text-sm mr-1 opacity-70">⏸️</span>
+                  <span className="text-2xl font-black text-slate-400 tracking-tighter">실사 대기중</span>
+                </div>
+              )}
+            </div>
+          }
         />
   
-        {/* [3] 외주업무서비스 대시보드 유닛 (통합 5대 서비스 관문) */}
+        {/* 🚀 [3] 명함 신청 대시보드 */}
         <WideHubPanel 
-          title="외주 업무 서비스"
-          titleEn="Outsourcing Operations"
-          desc="제본, 현판 제작, 문구 일괄구매, 기업 택배, 퀵 서비스 등 전사 5대 아웃소싱 비즈니스를 원스톱으로 관리합니다."
-          icon="🏍️"
+          title="명함 신청"
+          titleEn="Business Card Request"
+          desc="신규 입사자 및 승진, 정보 변경에 따른 임직원 명함 제작 신청 및 발주를 관리합니다."
+          icon="📇"
           theme="teal"
-          stats={{ pending: stats.outsourcing.pending, critical: stats.outsourcing.completed, total: stats.outsourcing.total }}
-          statLabel1="발주 진행중"
-          statLabel2="최종 정산완료"
-          link="/asset/outsourcing" // 🚀 새롭게 도달할 외주업무 통합 관문 허브 경로
+          myPendingCount={stats.bizcard.myPending}
+          totalPendingCount={stats.bizcard.totalPending}
+          userLink="/asset/businesscard/my-page" 
+          adminLink="/asset/businesscard/master/requests" 
+          isManager={isManager}
         />
   
       </div>
     </div>
   );
 }
-
+     // -------------------------------------------------------------
+// 🚀 전사 공통 인터페이스: 좌(나의 수치) / 우(전사 수치) 완벽 대칭 패널
 // -------------------------------------------------------------
-// 전사 공통 인터페이스: 와이드 형태의 프리미엄 관문 패널 컴포넌트
-// -------------------------------------------------------------
-const WideHubPanel = ({ title, titleEn, desc, icon, theme, stats, statLabel1, statLabel2, link }: any) => {
+const WideHubPanel = ({ title, titleEn, desc, icon, theme, myPendingCount, totalPendingCount, userLink, adminLink, isManager, customContent }: any) => {
   const colors: Record<string, any> = {
     amber: {
       iconBg: 'bg-amber-50 text-amber-600',
-      btnPrimary: 'bg-amber-600 hover:bg-amber-700 shadow-amber-600/30',
+      btnPrimary: 'bg-amber-600 hover:bg-amber-700 shadow-amber-600/20 text-white',
       badge: 'bg-amber-100 text-amber-700',
       warnColor: 'text-amber-600'
     },
     indigo: {
       iconBg: 'bg-indigo-50 text-indigo-600',
-      btnPrimary: 'bg-slate-900 hover:bg-slate-800 shadow-slate-900/30',
+      btnPrimary: 'bg-indigo-600 hover:bg-indigo-700 shadow-indigo-600/20 text-white',
       badge: 'bg-indigo-100 text-indigo-700',
       warnColor: 'text-indigo-600'
     },
     teal: {
       iconBg: 'bg-teal-50 text-teal-600',
-      btnPrimary: 'bg-teal-600 hover:bg-teal-700 shadow-teal-600/30',
+      btnPrimary: 'bg-teal-600 hover:bg-teal-700 shadow-teal-600/20 text-white',
       badge: 'bg-teal-100 text-teal-700',
-      warnColor: 'text-emerald-600'
+      warnColor: 'text-teal-600'
     }
   };
   const c = colors[theme];
@@ -194,7 +227,7 @@ const WideHubPanel = ({ title, titleEn, desc, icon, theme, stats, statLabel1, st
   return (
     <div className="bg-white rounded-[2rem] p-8 shadow-[0_8px_30px_rgb(0,0,0,0.03)] border border-slate-200/80 transition-all duration-300 hover:shadow-[0_20px_40px_rgb(0,0,0,0.07)] flex flex-col lg:flex-row items-center gap-10">
       
-      {/* 왼쪽 코어 설명 블록 */}
+      {/* 1. 왼쪽 코어 설명 블록 */}
       <div className="flex-1 flex gap-6 w-full lg:w-auto">
         <div className={`w-20 h-20 shrink-0 rounded-[1.5rem] flex items-center justify-center text-4xl shadow-sm ${c.iconBg}`}>
           {icon}
@@ -212,37 +245,48 @@ const WideHubPanel = ({ title, titleEn, desc, icon, theme, stats, statLabel1, st
         </div>
       </div>
   
-      {/* 중앙 리얼타임 데이터 현황 매트릭스 */}
-      <div className="flex gap-10 w-full lg:w-auto shrink-0 border-y lg:border-y-0 lg:border-l border-slate-100 py-6 lg:py-0 lg:pl-10">
-        <div className="flex flex-col justify-center min-w-[80px]">
-          <p className="text-[11px] font-black text-slate-400 uppercase tracking-widest mb-1">{statLabel1}</p>
-          <div className="flex items-baseline gap-1">
-            <span className="text-4xl font-black text-slate-800 tracking-tighter">{stats.pending}</span>
-            <span className="text-xs font-bold text-slate-400">/{stats.total}건</span>
-          </div>
-        </div>
-        
-        <div className="flex flex-col justify-center pl-10 border-l border-slate-100 min-w-[100px]">
-          <p className={`text-[11px] font-black uppercase tracking-widest mb-1 ${stats.critical > 0 && theme !== 'teal' ? 'text-rose-500 animate-pulse' : 'text-slate-400'}`}>
-            {statLabel2}
-          </p>
-          <div className="flex items-baseline gap-1">
-            {stats.critical > 0 && theme !== 'teal' && <span className="text-lg leading-none mr-1">⚠️</span>}
-            <span className={`text-4xl font-black tracking-tighter ${stats.critical > 0 && theme !== 'teal' ? 'text-rose-600' : c.warnColor}`}>
-              {stats.critical}
-            </span>
-            <span className="text-xs font-bold text-slate-400">건</span>
-          </div>
-        </div>
+      {/* 2. 중앙 리얼타임 데이터 현황 (너비 280px 확장 및 줄바꿈 방지) */}
+      <div className="flex gap-6 w-full lg:w-[280px] shrink-0 border-y lg:border-y-0 lg:border-l border-slate-100 py-6 lg:py-0 lg:pl-8">
+        {customContent ? (
+          customContent
+        ) : (
+          <>
+            {/* 좌측: 나의 신청대기 */}
+            <div className="flex flex-col justify-center min-w-[90px]">
+              <p className={`text-[11px] font-black uppercase tracking-widest mb-1 whitespace-nowrap ${c.warnColor}`}>나의 신청대기</p>
+              <div className="flex items-baseline gap-1">
+                <span className={`text-4xl font-black tracking-tighter ${c.warnColor}`}>{myPendingCount || 0}</span>
+                <span className={`text-xs font-bold ${c.warnColor} opacity-70`}>건</span>
+              </div>
+            </div>
+            
+            {/* 우측: 전사 신청대기 (불꽃 삭제) */}
+            <div className="flex flex-col justify-center pl-6 border-l border-slate-200 min-w-[90px]">
+              <p className="text-[11px] font-black uppercase tracking-widest mb-1 whitespace-nowrap text-slate-600">전사 신청대기</p>
+              <div className="flex items-baseline gap-1">
+                {/* 🔥 불꽃 아이콘 삭제됨 */}
+                <span className="text-4xl font-black tracking-tighter text-slate-800">{totalPendingCount || 0}</span>
+                <span className="text-xs font-bold text-slate-500">건</span>
+              </div>
+            </div>
+          </>
+        )}
       </div>
   
-      {/* 우측 단일 라우터 링크 진입 버튼 */}
-      <div className="flex flex-col justify-center gap-3 w-full lg:w-48 shrink-0">
+      {/* 3. 우측 듀얼 진입 라우터 링크 버튼 벨트 */}
+      <div className="flex flex-col justify-center gap-2 w-full lg:w-52 shrink-0">
         <Link 
-          href={link} 
-          className={`w-full flex items-center justify-center gap-2 py-5 rounded-2xl font-black text-xs text-white shadow-md uppercase tracking-wider transition-all active:scale-95 ${c.btnPrimary}`}
+          href={userLink} 
+          className={`w-full flex items-center justify-center gap-2 py-3.5 rounded-xl font-black text-xs shadow-sm uppercase tracking-wider transition-all active:scale-95 ${c.btnPrimary}`}
         >
-          현황판 진입 <span className="text-base leading-none">→</span>
+          👤 나의 신청 / 현황 <span className="text-sm leading-none">→</span>
+        </Link>
+        
+        <Link 
+          href={adminLink} 
+          className="w-full flex items-center justify-center gap-2 py-3.5 rounded-xl font-black text-xs text-slate-200 bg-slate-800 hover:bg-slate-900 border border-slate-700/60 shadow-sm uppercase tracking-wider transition-all active:scale-95"
+        >
+          ⚙️ 관리자 패널 제어 <span className="text-sm leading-none">→</span>
         </Link>
       </div>
   

@@ -12,13 +12,12 @@ const ModuleLoader = () => (
   
 // 2. 각 도메인 모듈 dynamic 컴포넌트 레이지 로딩 선언
 // --- [IT 업무자산] ---
-const ITMainModule = dynamic(() => import('../asset/it/ITMainModule').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
 const ITDeptModule = dynamic(() => import('../asset/it/DeptModule').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
 const ITPersonalModule = dynamic(() => import('../asset/it/PersonalModule').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
 const ITMasterDashboardModule = dynamic(() => import('../asset/it/MasterDashboardModule').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
 const ITMasterArchiveModule = dynamic(() => import('../asset/it/MasterArchiveModule').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
 const ITMasterRequestModule = dynamic(() => import('../asset/it/MasterRequestModule').then(m => m.default || m).catch(() => import('../asset/it/MasterRequestModule').then(m => m.default || m)), { loading: ModuleLoader, ssr: false });
-const ITNoticeModule = dynamic(() => import('../asset/it/NoticeModule').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
+const ITAuditModule = dynamic(() => import('../asset/it/AuditModule').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
      
 // --- [일반 소모품] ---
 const SuppliesInventoryModule = dynamic(() => import('../asset/supplies/InventoryModule').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
@@ -27,17 +26,32 @@ const SuppliesMasterDashboardModule = dynamic(() => import('../asset/supplies/Ma
 const SuppliesMasterArchiveModule = dynamic(() => import('../asset/supplies/MasterArchiveModule').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
 const SuppliesMasterPurchaseModule = dynamic(() => import('../asset/supplies/MasterPurchaseModule').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
 const SuppliesMasterRequestModule = dynamic(() => import('../asset/supplies/MasterRequestModule').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
-  
+ 
+// --- [명함 관리] ---
+const BusinessCardMyPage = dynamic(() => import('../asset/businesscard/BusinessCardMyPage').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
+const BusinessCardRequestPanel = dynamic(() => import('../asset/businesscard/BusinessCardRequestPanel').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
+const BusinessCardOrderPanel = dynamic(() => import('../asset/businesscard/BusinessCardOrderPanel').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
+const BusinessCardArchivePanel = dynamic(() => import('../asset/businesscard/BusinessCardArchivePanel').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
+
+
+// --- [부서 맞춤 제작물] ---
+const ProductionApplyForm = dynamic(() => import('../asset/production/ProductionApplyForm').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
+const ProductionApplyHistory = dynamic(() => import('../asset/production/ProductionApplyHistory').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
+const DeptOrderPanel = dynamic(() => import('../asset/production/DeptOrderPanel').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
+const DeptInvoiceVerifyPanel = dynamic(() => import('../asset/production/DeptInvoiceVerifyPanel').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
+const DeptArchivePanel = dynamic(() => import('../asset/production/DeptArchivePanel').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
+
+
 // --- [마케팅] ---
-const MarketingDashboard = dynamic(() => import('../marketing/DashboardModule').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
+const MarketingDashboard = dynamic(() => import('../../components/marketing/DashboardModule').then(m => m.default || m), { loading: ModuleLoader, ssr: false }); // 👈 절대경로(@/)나 상위 상대경로(../../)로 명확히 지정해 줍니다.
 const MarketingCatalog = dynamic(() => import('../marketing/CatalogModule').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
 const MarketingClientSearch = dynamic(() => import('../marketing/ClientSearchModule').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
-// 🚀 [명칭/경로 변경]: PurchaseModule 대신 신규 전사 통합 OrgDistributionModule 매핑
 const MarketingOrgDistribution = dynamic(() => import('@/components/marketing/OrgDistributionModule').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
 const MarketingRegister = dynamic(() => import('../marketing/RegisterModule').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
 const MarketingDeptDistribution = dynamic(() => import('../marketing/DeptDistributionModule').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
   
 // --- [일반 설문] ---
+const SurveyDashboard = dynamic(() => import('../survey/SurveyDashboard').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
 const SurveyDashboardContent = dynamic(() => import('../survey/general/SurveyDashboardContent').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
 const MySubmissionsModule = dynamic(() => import('../survey/general/MySubmissionsModule').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
 const AdminActiveSurveys = dynamic(() => import('../survey/general/AdminActiveSurveysModule').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
@@ -51,15 +65,12 @@ const AdminDeliveryHistory = dynamic(() => import('../survey/delivery/AdminDeliv
 const DeliveryDashboardContent = dynamic(() => import('../survey/delivery/DeliveryDashboardContent').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
 const DeliveryMySubmissions = dynamic(() => import('../survey/delivery/DeliveryMySubmissions').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
   
-// 3. 레지스트리 객체 명세 (절대 경로 1:1 매핑)
+// 3. 레지스트리 객체 명세 (🚀 스탭3 상위 경로와 하위 스탭4 컴포넌트 간의 고정 결합 원천 제거)
 export const ModuleRegistry: Record<string, React.ComponentType<any>> = {
   // [IT 자산 관리]
-  '/asset/it': ITMainModule,
   '/asset/it/dept': ITDeptModule,
   '/asset/it/personal': ITPersonalModule,
-  '/asset/it/notice': ITNoticeModule,
-  
-  '/asset/it/master': ITMasterDashboardModule, 
+  '/asset/it/master/audit': ITAuditModule,
   '/asset/it/master/dashboard': ITMasterDashboardModule,
   '/asset/it/master/archive': ITMasterArchiveModule,
   '/asset/it/master/requests': ITMasterRequestModule,
@@ -67,23 +78,34 @@ export const ModuleRegistry: Record<string, React.ComponentType<any>> = {
   // [일반 소모품 관리]
   '/asset/supplies/inventory': SuppliesInventoryModule,
   '/asset/supplies/dept': SuppliesDeptModule,
-  
-  '/asset/supplies/master': SuppliesMasterDashboardModule,
   '/asset/supplies/master/dashboard': SuppliesMasterDashboardModule,
   '/asset/supplies/master/archive': SuppliesMasterArchiveModule,
   '/asset/supplies/master/purchase': SuppliesMasterPurchaseModule,
   '/asset/supplies/master/requests': SuppliesMasterRequestModule,
   
+  // [명함 관리 모듈]
+  '/asset/businesscard/my-page': BusinessCardMyPage,
+  '/asset/businesscard/master/requests': BusinessCardRequestPanel,
+  '/asset/businesscard/master/order': BusinessCardOrderPanel,
+  '/asset/businesscard/master/archive': BusinessCardArchivePanel,
+
+  // [부서 맞춤 제작물]
+  '/asset/production/apply/request': ProductionApplyForm,
+  '/asset/production/apply/history': ProductionApplyHistory,
+  '/asset/production/dept-master/order': DeptOrderPanel,
+  '/asset/production/dept-master/verify': DeptInvoiceVerifyPanel,
+  '/asset/production/dept-master/archive': DeptArchivePanel,
+  
   // [마케팅]
   '/marketing/dashboard': MarketingDashboard,
   '/marketing/distribution/catalog': MarketingCatalog,
   '/marketing/distribution/client-search': MarketingClientSearch,
-  // 🚀 [연동 수정]: 전사 통합 자산 대장 모듈 컴포넌트로 교체 바인딩
   '/marketing/distribution/org': MarketingOrgDistribution,
   '/marketing/distribution/register': MarketingRegister,
   '/marketing/distribution/dept': MarketingDeptDistribution,
     
   // [일반 설문조사]
+  '/survey': SurveyDashboard,
   '/survey/general/dashboard': SurveyDashboardContent,
   '/survey/general/my-submissions': MySubmissionsModule, 
   '/survey/general/admin/active-surveys': AdminActiveSurveys,

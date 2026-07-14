@@ -17,36 +17,31 @@ export async function GET() {
   }
 }
 
-// 🚀 2. [신규 추가] 아카이브 자산 영구 삭제 (DELETE)
+// 🚀 2. [수정됨] 아카이브 자산 및 연관 기록 영구 삭제 (트랜잭션 처리)
 export async function DELETE(req: Request) {
   try {
-    // 1. URL 파라미터(?id=...)에서 ID 추출 (가장 안정적인 방식)
     const { searchParams } = new URL(req.url);
     let id = searchParams.get('id');
-
-    // 2. 혹시 Body({ id })로 넘어왔을 경우를 대비한 폴백(Fallback)
+    
     if (!id) {
       try {
         const body = await req.json();
         id = body.id;
-      } catch (e) {
-        // Body가 없으면 무시
-      }
+      } catch (e) {}
     }
+  
+    if (!id) return NextResponse.json({ error: 'ID 누락' }, { status: 400 });
 
-    // ID가 없으면 에러 반환
-    if (!id) {
-      return NextResponse.json({ error: '삭제할 자산의 ID가 전달되지 않았습니다.' }, { status: 400 });
-    }
-
-    // DB에서 해당 물품 데이터를 아예 영구적으로 파기합니다.
-    await prisma.supplyItem.delete({
-      where: { id }
-    });
-
-    return NextResponse.json({ success: true, message: '아카이브에서 영구 삭제되었습니다.' });
+    // ✅ 트랜잭션 사용: 연관된 모든 기록(입고, 신청)을 먼저 지우고 품목을 삭제
+    await prisma.$transaction([
+      prisma.supplyPurchase.deleteMany({ where: { item_id: id } }),
+      prisma.supplyRequest.deleteMany({ where: { item_id: id } }),
+      prisma.supplyItem.delete({ where: { id } })
+    ]);
+  
+    return NextResponse.json({ success: true, message: '영구 삭제 완료' });
   } catch (error) {
     console.error('Archive DELETE Error:', error);
-    return NextResponse.json({ error: '삭제 처리 중 서버 오류 발생' }, { status: 500 });
+    return NextResponse.json({ error: '삭제 처리 실패' }, { status: 500 });
   }
 }

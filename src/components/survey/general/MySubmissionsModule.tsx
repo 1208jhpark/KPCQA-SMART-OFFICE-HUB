@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { saveAs } from 'file-saver';
-
+     
 // 🚀 [UI 표준 지침] 전사 공통 Header 컴포넌트 분리 선언
 const HeaderLight = ({ title, count, children }: { title: string, count: number, children?: React.ReactNode }) => (
   <div className="p-4 px-6 bg-slate-200/70 border-b border-slate-300 flex items-center justify-between">
@@ -21,6 +21,7 @@ export default function MySubmissionsModule() {
   
   const [currentUser, setCurrentUser] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [pageConfig, setPageConfig] = useState<any>(null);
   
   const [surveys, setSurveys] = useState<any[]>([]);
   const [myResponses, setMyResponses] = useState<Record<string, any>>({}); 
@@ -37,9 +38,11 @@ export default function MySubmissionsModule() {
   const itemsPerPage = 5;
      
   const [isHistoryOpen, setIsHistoryOpen] = useState<boolean>(false);
+  const [zoomedImage, setZoomedImage] = useState<string | null>(null);
+     
+  const [stockUsage, setStockUsage] = useState<Record<string, Record<string, number>>>({});
      
   useEffect(() => {
-    // 카카오 API 인젝션
     if (typeof window !== 'undefined' && !document.getElementById('kakao-postcode-script')) {
       const script = document.createElement('script');
       script.id = 'kakao-postcode-script';
@@ -51,25 +54,74 @@ export default function MySubmissionsModule() {
     const initializeData = async () => {
       try {
         const ts = Date.now();
-        const [userRes, unitsRes] = await Promise.all([
-          fetch('/api/auth/me?t=' + ts, { cache: 'no-store' }),
-          fetch('/api/admin/units?active=true&t=' + ts, { cache: 'no-store' })
+        const [userRes, unitsRes, configRes, surveyRes] = await Promise.all([
+          fetch(`/api/auth/me?t=${ts}`, { cache: 'no-store' }),
+          fetch(`/api/admin/units?active=true&t=${ts}`, { cache: 'no-store' }),
+          fetch(`/api/admin/interface?t=${ts}`).catch(() => null),
+          fetch(`/api/survey/general?t=${ts}`, { cache: 'no-store' })
         ]);
         
         const userData = userRes.ok ? await userRes.json() : null;
         const unitsData = unitsRes.ok ? await unitsRes.json() : [];
         setUnitsList(unitsData);
+     
+        if (configRes && configRes.ok) {
+          const interfaces = await configRes.json();
+          const config = interfaces.find((m: any) => m.path === '/survey/general/my-submissions');
+          if (config) setPageConfig(config);
+        }
   
         if (userData) {
           const myUnit = unitsData.find((u: any) => u.id === userData.dept_id);
           userData.unit = myUnit || { unit_name: '소속없음' };
           setCurrentUser(userData);
-          const storedResponses = JSON.parse(localStorage.getItem(`db_my_responses_${userData.email}`) || '{}');
-          setMyResponses(storedResponses);
+          
+          const respRes = await fetch('/api/survey/general', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'GET_RESPONSES' }),
+            cache: 'no-store'
+          });
+          
+          if (respRes.ok) {
+            const dbResponses = await respRes.json();
+            const nextMyRes: Record<string, any> = {};
+            const usageMap: Record<string, Record<string, number>> = {};
+            
+            dbResponses.forEach((r: any) => {
+              if (r.answers) {
+                if (!usageMap[r.surveyId]) usageMap[r.surveyId] = {};
+                Object.entries(r.answers).forEach(([qId, val]) => {
+                  if (typeof val === 'string') {
+                    const key = `${qId}_${val}`;
+                    usageMap[r.surveyId][key] = (usageMap[r.surveyId][key] || 0) + 1;
+                  } else if (Array.isArray(val)) {
+                    val.forEach((item: string) => {
+                      const key = `${qId}_${item}`;
+                      usageMap[r.surveyId][key] = (usageMap[r.surveyId][key] || 0) + 1;
+                    });
+                  }
+                });
+              }
+     
+              if (r.userEmail === userData.email) {
+                nextMyRes[r.surveyId] = {
+                  submittedAt: r.submittedAt ? r.submittedAt.split('T')[0] + ' ' + new Date(r.submittedAt).toLocaleTimeString('ko-KR', { hour12: false }) : '-',
+                  answers: r.answers || {},
+                  isApproved: r.isApproved || false
+                };
+              }
+            });
+            setMyResponses(nextMyRes);
+            setStockUsage(usageMap);
+          }
         }
   
-        const storedSurveys = localStorage.getItem('admin_surveys_db');
-        if (storedSurveys) setSurveys(JSON.parse(storedSurveys));
+        if (surveyRes.ok) {
+          setSurveys(await surveyRes.json());
+        } else {
+          setSurveys([]);
+        }
   
       } catch (error) {
         console.error("Unified MySubmissions Engine Error:", error);
@@ -124,30 +176,33 @@ export default function MySubmissionsModule() {
   };
   
   const eligibleSurveys = useMemo(() => {
-    const now = new Date();
     return surveys.filter(s => {
-      const isSubmitted = Boolean(myResponses[s.id]);
-      if (!isSubmitted) return false;
+      const myRes = myResponses[s.id];
+      if (!myRes) return false;
+      if (myRes.isApproved) return false; 
       
+      // 💡 [수정] 오직 관리자가 '완료'나 '보관됨' 처리한 것만 제외 (시간 만료는 리스트에 남김)
       if (s.status === '완료' || s.status === '보관됨') return false;
-      // 🚀 크로스 브라우징 완벽 지원 (T 결합)
-      if (s.endDate && now > new Date(`${s.endDate}T23:59:59`)) return false;
       
       return currentUser?.roles?.includes('LV_1') || checkHierarchy(s.target, currentUser?.unit?.unit_name);
     }).sort((a, b) => new Date(b.postDate).getTime() - new Date(a.postDate).getTime());
-  }, [surveys, currentUser, myResponses, unitsList]);
-  
+  }, [surveys, currentUser, unitsList, myResponses]);
+     
   const historyList = useMemo(() => {
-    const now = new Date();
     return surveys.filter(s => {
-      const isSubmitted = Boolean(myResponses[s.id]);
-      if (!isSubmitted) return false;
+      const myRes = myResponses[s.id];
+      if (!myRes) return false;
+      if (myRes.isApproved) return true;
+      if (s.status === '진행중' || s.status === '게시중단') return false;
       
-      const isExpired = s.endDate ? now > new Date(`${s.endDate}T23:59:59`) : false;
-      if (s.status !== '완료' && s.status !== '보관됨' && !isExpired) return false; 
-      
-      return true;
-    }).map(s => ({ ...s, submittedAt: myResponses[s.id].submittedAt, myAnswers: myResponses[s.id].answers })).sort((a: any, b: any) => b.submittedAt.localeCompare(a.submittedAt));
+      // 💡 [수정] 관리자가 명시적으로 마감(완료/보관됨) 처리한 것만 보관함으로 이동
+      return s.status === '완료' || s.status === '보관됨';
+    }).map(s => ({
+      ...s,
+      submittedAt: myResponses[s.id].submittedAt,
+      myAnswers: myResponses[s.id].answers,
+      isApproved: myResponses[s.id].isApproved
+    })).sort((a: any, b: any) => b.submittedAt.localeCompare(a.submittedAt));
   }, [surveys, myResponses]);
      
   const filteredHistory = useMemo(() => historyList.filter(survey => historyYear === 'ALL' || survey.submittedAt.split('-')[0] === historyYear), [historyList, historyYear]);
@@ -160,51 +215,115 @@ export default function MySubmissionsModule() {
   const handleOpenSurvey = (survey: any, isEditMode: boolean) => {
     if (isEditMode && survey.isAnonymous) return alert('🔒 본 설문조사는 익명 보안 서식입니다. 제출 완료 후 답변 수정이 불가능합니다.');
     
-    if (isEditMode) setFormData(myResponses[survey.id]?.answers || {});
-    else {
-      const draft = localStorage.getItem(`survey_draft_${survey.id}_${currentUser?.email}`);
-      setFormData(draft ? JSON.parse(draft) : {});
+    if (isEditMode) {
+      setFormData(myResponses[survey.id]?.answers || {});
+    } else {
+      const draftRaw = localStorage.getItem(`survey_draft_${survey.id}_${currentUser?.email}`);
+      if (draftRaw) {
+        try {
+          const draft = JSON.parse(draftRaw);
+          if (draft.updatedAt === survey.updatedAt) {
+            setFormData(draft.answers || {});
+          } else {
+            console.warn("설문 내용이 변경되어 기존 임시 저장 데이터를 초기화합니다.");
+            setFormData({});
+            localStorage.removeItem(`survey_draft_${survey.id}_${currentUser?.email}`);
+          }
+        } catch (e) {
+          setFormData({});
+        }
+      } else {
+        setFormData({});
+      }
     }
     
-    const builderData = localStorage.getItem(`survey_builder_${survey.id}`);
-    const questions = builderData ? JSON.parse(builderData) : [];
+   let questions = [];
+   try {
+     questions = typeof survey.questions === 'string' 
+       ? JSON.parse(survey.questions) 
+       : (survey.questions || []);
+   } catch (e) {
+     console.error("문항 파싱 오류:", e);
+   }
     
     const sectionsOrder: (string | null)[] = [];
     if (questions.length > 0 && questions[0].type !== 'SECTION') sectionsOrder.push(null);
     questions.filter((q: any) => q.type === 'SECTION').forEach((s: any) => sectionsOrder.push(s.id));
     setCurrentSectionId(sectionsOrder.length > 0 ? sectionsOrder[0] : null);
-
+     
     setActiveFullScreenSurvey({ ...survey, questions, isEditMode });
   };
   
   const handleSaveDraft = () => {
     try {
-      localStorage.setItem(`survey_draft_${activeFullScreenSurvey.id}_${currentUser?.email}`, JSON.stringify(formData));
-      alert('💾 작성 중인 내용이 임시 저장되었습니다.');
+      const payload = {
+        updatedAt: activeFullScreenSurvey.updatedAt,
+        answers: formData
+      };
+      localStorage.setItem(`survey_draft_${activeFullScreenSurvey.id}_${currentUser?.email}`, JSON.stringify(payload));
+      alert('💾 작성 중인 내용이 안전하게 임시 저장되었습니다.');
     } catch (e) {
       alert('⚠️ 파일 용량 초과로 임시 저장이 실패했습니다.');
     }
   };
   
-  const handleSubmitForm = () => {
+  const handleSubmitForm = async () => {
     for (const q of activeFullScreenSurvey.questions) {
-      if (q.type !== 'SECTION' && q.isRequired && !formData[q.id]) return alert(`✏️ [${q.title}] 문항은 필수 응답 항목입니다.`);
+      if (q.type !== 'SECTION' && q.isRequired && (!formData[q.id] || formData[q.id].length === 0)) {
+        return alert(`✏️ [${q.title}] 문항은 필수 응답 항목입니다.`);
+      }
     }
     if (!confirm(activeFullScreenSurvey.isEditMode ? '답변 수정을 완료하시겠습니까?' : '설문을 최종 제출하시겠습니까?')) return;
   
-    const submittedDate = `${new Date().toISOString().split('T')[0]} ${new Date().toLocaleTimeString('ko-KR', { hour12: false })}`;
-    const nextResponses = { ...myResponses, [activeFullScreenSurvey.id]: { submittedAt: submittedDate, answers: formData } };
-    
-    setMyResponses(nextResponses);
-
-    setTimeout(() => {
-      localStorage.setItem(`db_my_responses_${currentUser?.email}`, JSON.stringify(nextResponses));
-      localStorage.removeItem(`survey_draft_${activeFullScreenSurvey.id}_${currentUser?.email}`);
-      alert('✅ 설문 제출 및 수정 사항 반영이 완료되었습니다.');
-      setActiveFullScreenSurvey(null);
-    }, 0);
-  };
+    try {
+      const res = await fetch('/api/survey/general', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'SUBMIT_RESPONSE',
+          surveyId: activeFullScreenSurvey.id,
+          userEmail: currentUser?.email,
+          answers: formData
+        })
+      });
      
+      if (res.ok) {
+        const submittedDate = `${new Date().toISOString().split('T')[0]} ${new Date().toLocaleTimeString('ko-KR', { hour12: false })}`;
+        const nextResponses = { 
+          ...myResponses, 
+          [activeFullScreenSurvey.id]: { submittedAt: submittedDate, answers: formData } 
+        };
+        
+        setMyResponses(nextResponses);
+        localStorage.removeItem(`survey_draft_${activeFullScreenSurvey.id}_${currentUser?.email}`);
+        
+        alert('✅ 설문 응답 및 수정 사항이 시스템에 성공적으로 제출되었습니다.');
+        setActiveFullScreenSurvey(null);
+        window.location.reload(); 
+      } else {
+        alert('❌ 서버 제출 처리에 실패했습니다.');
+      }
+    } catch (error) {
+      console.error(error);
+      alert('❌ 네트워크 통신 오류가 발생했습니다.');
+    }
+  };
+  
+  const formatAnswerForView = (q: any, answers: any) => {
+    if (!answers) return '응답 없음';
+    if (q.type === 'SEARCH_ADDRESS') {
+      const zip = answers[`${q.id}_zip`] || '';
+      const road = answers[`${q.id}_road`] || '';
+      const detail = answers[`${q.id}_detail`] || '';
+      return zip ? `[${zip}] ${road} ${detail}` : '입력된 주소가 없습니다.';
+    }
+    if (q.type === 'CALENDAR') return answers[q.id] || '미지정';
+    if (Array.isArray(answers[q.id])) return answers[q.id].join(', ');
+    if (q.type === 'FILE') return answers[q.id]?.fileName || '첨부파일 없음';
+    return answers[q.id] || '응답 없음';
+  };
+  
+  // 🚀 [복구]: 누락되었던 섹션/페이지 렌더링용 핵심 변수 복구
   const activeQuestions = activeFullScreenSurvey?.questions || [];
   const hasSections = activeQuestions.some((q: any) => q.type === 'SECTION');
   const sectionsOrder: (string | null)[] = [];
@@ -219,28 +338,52 @@ export default function MySubmissionsModule() {
     const lastSection = activeQuestions.slice(0, idx + 1).reverse().find((item: any) => item.type === 'SECTION');
     return (lastSection ? lastSection.id : null) === currentSectionId;
   });
-  
+     
   if (loading) return <div className="p-20 text-center font-black text-blue-600 animate-pulse text-xl uppercase tracking-widest">통합 제출 제어 모듈 동기화 중...</div>;
   
   return (
     <div className="w-full max-w-[1600px] mx-auto space-y-6 p-8 font-sans text-slate-900 pb-24 animate-fade-in text-[11px]">
       
-      {/* 🚀 상단 메인 대시 배너 */}
-      <div className="w-full bg-gradient-to-r from-blue-700 to-indigo-800 p-6 rounded-[2.5rem] text-white shadow-xl relative overflow-hidden flex flex-col justify-center min-h-[120px]">
-        <div className="relative z-10">
-          <p className="text-[10px] font-black uppercase tracking-widest text-blue-200 mb-1">My Eligible Surveys</p>
-          <h1 className="text-2xl font-black tracking-tight">나의 제출 및 수정 가능 내역</h1>
-          <p className="text-blue-100 text-xs font-semibold mt-1 opacity-90">제출한 조사내역 및 변경 가능 이력 확인</p>
-        </div>
-      </div>
+{/* 🔵 [디자인 1원칙: 공통신청 = 파란색 테마 배너] 명함 신청 배너 구조 & 스타일 완벽 이식 */}
+<div className="w-full bg-gradient-to-r from-blue-700 to-indigo-800 p-6 rounded-[2.5rem] min-h-[140px] flex flex-col justify-center text-white shadow-xl relative overflow-hidden">
+  <div className="relative z-10 flex justify-between items-end w-full">
+    <div>
+      {/* 1. 상단 라벨 (명함 배너와 매칭되는 텍스트 간격 mb-3) */}
+      <h3 className="text-[10px] font-black uppercase tracking-widest text-blue-200 mb-3"> 
+        MY ELIGIBLE SURVEYS & HISTORY
+      </h3>
+      
+      {/* 2. 메인 타이틀 (명함 코너의 '부서 박스 + 이름 님 텍스트' 스타일 100% 싱크로) */}
+      <h1 className="text-2xl font-black tracking-tight text-white leading-none flex items-center flex-wrap gap-2">
+        {/* 🏢 소속 부서 뱃지 (명함 배너의 블루 박스 볼륨을 파란색 그라데이션용으로 투명도 커스텀) */}
+        <span className="bg-white/10 border border-white/20 text-blue-100 px-4 py-2 rounded-2xl text-lg font-black tracking-tight shrink-0 shadow-sm">
+          {currentUser?.unit?.unit_name || '조직'}
+        </span>
+        
+        {/* 👤 사용자 이름 (명함의 text-slate-700 대비, 파란 배경에 맞춘 text-blue-100 톤 유지) */}
+        <span className="text-blue-100 shrink-0">{currentUser?.name || '임직원'} 님</span>{' '}
+        
+        {/* 🎯 메인 타이틀 텍스트 */}
+        <span className="text-white">나의 설문/조사 제출 내역</span>
+      </h1>
+      
+      {/* 3. 하단 설명 (명함의 하단 현재 모드 문법 스타일 가독성 주입 - mt-4) */}
+      <p className="text-blue-200 text-xs font-semibold mt-4 opacity-95 flex items-center gap-1">
+        <span>현재 상태:</span>
+        <span className="font-black text-white">
+          ✨ 제출내역 조회 및 공고 마감 전 변경 가능 이력 확인 중
+        </span>
+      </p>
+    </div>
+  </div>
+</div>
   
       <div className="bg-white border border-slate-200 rounded-[2.5rem] shadow-sm overflow-hidden mt-6">
-        {/* 🚀 HeaderLight 컴포넌트 적용 */}
         <HeaderLight title="내가 제출한 설문 리스트" count={eligibleSurveys.length} />
   
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse">
-            <thead className="bg-slate-100 text-slate-700 text-[10px] font-black uppercase tracking-widest border-b border-slate-200">
+          <thead className="bg-slate-100 text-slate-700 text-[10px] font-black uppercase tracking-widest border-b border-slate-200">
               <tr>
                 <th className="py-4 pl-8 w-16 text-center">NO</th><th className="py-4 px-3 w-28 text-center">게시번호</th><th className="py-4 px-3 w-28 text-center">게시일</th><th className="py-4 px-4">게시명</th><th className="py-4 px-3 w-24 text-center">익명여부</th><th className="py-4 px-3 w-36 text-center">대상</th><th className="py-4 px-4 w-48 text-center">나의 제출 일시</th><th className="py-4 px-3 w-40 text-center">기간</th><th className="py-4 pr-8 w-44 text-center">상태 / 액션</th>
               </tr>
@@ -248,36 +391,78 @@ export default function MySubmissionsModule() {
             <tbody className="bg-white divide-y divide-slate-100 text-xs font-bold text-slate-700">
               {paginatedEligible.map((survey: any, index: number) => {
                 const isAnonymousAndSubmitted = survey.isAnonymous && Boolean(myResponses[survey.id]);
-
-                // 🚀 사파리 파싱 오류를 막기 위한 T 결합 형태
-                const endDateObj = survey.endDate ? new Date(`${survey.endDate}T23:59:59`) : null;
-                const timeDiff = endDateObj ? endDateObj.getTime() - new Date().getTime() : 0;
-                const daysDiff = Math.ceil(timeDiff / (1000 * 60 * 60 * 24));
-                const isUrgent = daysDiff > 0 && daysDiff <= 3;
-
+                
+                // 💡 1. 마감 시간 및 만료 여부 정밀 체크
+                const hasValidDate = typeof survey.endDate === 'string' && survey.endDate.includes('-');
+                const rawTime = (survey.endTime || '').trim();
+                const timeStr = rawTime === '' ? '23:59' : rawTime;
+                
+                const deadline = hasValidDate ? new Date(`${survey.endDate.trim()}T${timeStr}:00`) : null;
+                const now = new Date();
+                const isTimeOver = deadline ? now > deadline : false;
+                
+                let dDayText = null;
+                
+                // 💡 2. 자정(00:00) 기준으로 순수 날짜 차이(D-Day) 계산
+                if (deadline && !isTimeOver) {
+                  const todayDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+                  const endDateDate = new Date(deadline.getFullYear(), deadline.getMonth(), deadline.getDate());
+                  const pureDaysDiff = Math.round((endDateDate.getTime() - todayDate.getTime()) / (1000 * 60 * 60 * 24));
+                  
+                  if (pureDaysDiff === 0) dDayText = "D-Day";
+                  else if (pureDaysDiff > 0 && pureDaysDiff <= 3) dDayText = `D-${pureDaysDiff}`;
+                }
+     
                 return (
-                  <tr key={survey.id} className="hover:bg-slate-50/50 transition-colors h-16">
+                  <tr key={survey.id} className={`transition-colors h-16 ${isTimeOver ? 'bg-slate-50/70 opacity-60 grayscale' : 'hover:bg-slate-50/50'}`}>
                     <td className="text-center text-slate-400 font-black pl-8">{eligibleSurveys.length - ((eligiblePage - 1) * itemsPerPage + index)}</td>
                     <td className="text-center font-mono text-slate-500">{100 + (Number(survey.id) || 0)}</td>
                     <td className="text-center font-mono text-slate-500">{survey.postDate}</td>
                     <td className="px-4">
-                      {/* 🚀 셀 높이 고정을 위한 h-16 적용 */}
                       <div className="flex items-center gap-3 h-16">
-                        <span className="font-black text-slate-900 truncate">{survey.title}</span>
-                        {isUrgent && (
-                          <span className="shrink-0 bg-red-50 text-red-500 text-[8px] font-black px-1.5 py-0.5 rounded border border-red-100 animate-pulse">
-                            마감임박
+                        <span className={`font-black truncate ${isTimeOver ? 'text-slate-500' : 'text-slate-900'}`}>{survey.title}</span>
+                        
+                        {/* 💡 [표출방식 일치] D-Day는 빨강, D-1~D-3은 노랑으로 세분화 및 통일 */}
+                        {dDayText && (
+                          <span className={`shrink-0 text-[8px] px-1.5 py-0.5 rounded font-black animate-pulse ${
+                            dDayText === 'D-Day' 
+                              ? 'bg-red-600 text-white' 
+                              : 'bg-amber-400 text-amber-950'
+                          }`}>
+                            {dDayText}
                           </span>
                         )}
+                        {isTimeOver && <span className="shrink-0 bg-slate-500 text-white text-[8px] px-1.5 py-0.5 rounded font-black">종료됨</span>}
                       </div>
                     </td>
                     <td className="text-center"><span className={`px-2 py-0.5 border rounded text-[10px] ${survey.isAnonymous ? 'bg-slate-800 text-white font-black border-slate-950' : 'text-slate-400 border-slate-200'}`}>{survey.isAnonymous ? '익명' : '기명'}</span></td>
-                    <td className="text-center text-slate-500 font-medium px-3">{survey.target}</td><td className="text-center text-slate-700 font-bold px-4 whitespace-nowrap">{myResponses[survey.id]?.submittedAt || '-'}</td>
+                    <td className="text-center text-slate-500 font-medium px-3">{survey.target}</td>
+                    <td className="text-center text-slate-700 font-bold px-4 whitespace-nowrap">{myResponses[survey.id]?.submittedAt || '-'}</td>
+                    
+                    {/* 💡 [기간 컬러 표기 일치] 마감 임박 상태에 맞춰 날짜 텍스트 컬러 완벽 매칭 */}
                     <td className="text-center font-mono text-slate-500 leading-relaxed whitespace-nowrap px-3">
                       <div>{survey.startDate} ~</div>
-                      <div className={isUrgent ? "text-red-500 font-bold" : "text-slate-600"}>{survey.endDate}</div>
+                      <div className={
+                        isTimeOver ? 'text-slate-400 font-bold' 
+                        : dDayText === 'D-Day' ? 'text-red-500 font-black' 
+                        : dDayText ? 'text-amber-500 font-black' 
+                        : 'text-slate-600'
+                      }>
+                        {survey.endDate} <span className="text-[8px]">({timeStr})</span>
+                      </div>
                     </td>
-                    <td className="text-center pr-8"><button onClick={() => handleOpenSurvey(survey, true)} disabled={isAnonymousAndSubmitted} className={`w-full py-1.5 rounded-lg font-black text-[10px] transition-all shadow-sm border ${isAnonymousAndSubmitted ? 'bg-slate-50 border-slate-200 text-slate-300 cursor-not-allowed line-through' : 'bg-white border-blue-200 text-blue-600 hover:bg-blue-50'}`}>{isAnonymousAndSubmitted ? '🔒 익명 서식 변경 불가' : '✏️ 답변 내역 수정'}</button></td>
+                    
+                    <td className="text-center pr-8">
+                      {isTimeOver ? (
+                        <button disabled className="w-full py-1.5 rounded-lg font-black text-[10px] shadow-sm border bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed">
+                          ⏰ 기간종료 (수정불가)
+                        </button>
+                      ) : (
+                        <button onClick={() => handleOpenSurvey(survey, true)} disabled={isAnonymousAndSubmitted} className={`w-full py-1.5 rounded-lg font-black text-[10px] transition-all shadow-sm border ${isAnonymousAndSubmitted ? 'bg-slate-50 border-slate-200 text-slate-300 cursor-not-allowed line-through' : 'bg-white border-blue-200 text-blue-600 hover:bg-blue-50'}`}>
+                          {isAnonymousAndSubmitted ? '🔒 익명 서식 변경 불가' : '✏️ 답변 내역 수정'}
+                        </button>
+                      )}
+                    </td>
                   </tr>
                 );
               })}
@@ -294,17 +479,37 @@ export default function MySubmissionsModule() {
         )}
       </div>
      
-      <div onClick={() => setIsHistoryOpen(!isHistoryOpen)} className="w-full bg-slate-800 p-6 rounded-[2.5rem] text-white shadow-lg relative overflow-hidden flex flex-col justify-center min-h-[120px] mt-12 cursor-pointer hover:brightness-95 active:scale-[0.99] transition-all select-none">
-        <div className="relative z-10">
-          <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-1">Archive Repository (Click to Toggle)</p>
-          <h2 className="text-2xl font-black tracking-tight text-white flex items-center gap-3">나의 참여 이력 보관함<span className="text-xs bg-white/20 text-white px-2 py-0.5 rounded-full font-bold">{isHistoryOpen ? '▲ 접기' : '▼ 펼치기'}</span></h2>
-          <p className="text-slate-300 text-xs font-semibold mt-2 opacity-90">이미 공고 기한이 최종 마감되어 보관 처리된 결과 열람 전용 내역</p>
-        </div>
-      </div>
+{/* 📁 슬림 규격으로 압축한 참여 이력 보관함 토글 바 (다크 그레이 시인성 확보 버전) */}
+<div 
+  onClick={() => setIsHistoryOpen(!isHistoryOpen)} 
+  className="w-full bg-slate-200 border border-slate-400 p-4 px-7 rounded-2xl shadow-sm mt-8 cursor-pointer hover:bg-slate-200/70 active:scale-[0.995] transition-all select-none flex items-center justify-between gap-6"
+>
+  <div className="flex items-center gap-4 flex-1 min-w-0">
+    {/* 🎯 타이틀 & 펼치기 상태 뱃지 (기본 다크 그레이 text-slate-800 적용) */}
+    <h2 className="text-base font-black tracking-tight text-slate-800 flex items-center gap-2.5 shrink-0">
+      📁 나의 참여 이력 보관함
+      <span className="text-[10px] bg-slate-200 text-slate-600 px-2 py-0.5 rounded-md font-bold border border-slate-300">
+        {isHistoryOpen ? '▲ 접기' : '▼ 펼치기'}
+      </span>
+    </h2>
+    
+    {/* 💡 구역 구분용 얇은 버티컬 라인 */}
+    <div className="w-px h-3.5 bg-slate-300 shrink-0 hidden md:block" />
+    
+    {/* 📝 서브 설명 (기본 slate-500으로 처음부터 또렷하게 노출) */}
+    <p className="text-slate-500 text-xs font-semibold opacity-90 truncate hidden md:block">
+      공고 기한이 최종 마감되어 보관 처리된 설문/조사 결과 열람 전용 내역
+    </p>
+  </div>
+
+  {/* 🚀 우측 영역 영문 라벨 */}
+  <p className="text-[9px] font-black uppercase tracking-widest text-slate-400 shrink-0 hidden sm:block">
+    Archive Repository
+  </p>
+</div>
      
       {isHistoryOpen && (
         <div className="bg-white border border-slate-200 rounded-[2.5rem] shadow-sm overflow-hidden mt-6 animate-in fade-in slide-in-from-top-4 duration-300">
-          {/* 🚀 HeaderLight 컴포넌트 적용 (필터 포함) */}
           <HeaderLight title="과거 완료 설문 명세 대장" count={filteredHistory.length}>
             <div className="flex items-center gap-2 text-xs font-bold text-slate-600">
               <span className="text-slate-500">연도 필터 :</span>
@@ -315,52 +520,70 @@ export default function MySubmissionsModule() {
               </select>
             </div>
           </HeaderLight>
-
+     
           <div className="overflow-x-auto">
             <table className="w-full text-left border-collapse">
-              <thead className="bg-slate-100 text-slate-700 text-[10px] font-black uppercase tracking-widest border-b border-slate-200">
+            <thead className="bg-slate-100 text-slate-700 text-[10px] font-black uppercase tracking-widest border-b border-slate-200">
                 <tr>
                   <th className="py-4 pl-8 w-16 text-center">NO</th><th className="py-4 px-3 w-28 text-center">게시번호</th><th className="py-4 px-3 w-28 text-center">게시일</th><th className="py-4 px-4">게시명</th><th className="py-4 px-3 w-24 text-center">익명여부</th><th className="py-4 px-3 w-36 text-center">대상</th><th className="py-4 px-4 w-48 text-center">나의 제출 일시</th><th className="py-4 px-3 w-40 text-center">기간</th><th className="py-4 pr-8 w-44 text-center">결과 열람</th>
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-slate-100 text-xs font-bold text-slate-700">
                 {paginatedHistory.map((survey: any, index: number) => {
-                  const reverseNo = filteredHistory.length - ((historyPage - 1) * itemsPerPage + index);
                   return (
                     <tr key={survey.id} className="hover:bg-slate-50/50 transition-colors h-16">
-                      <td className="text-center text-slate-400 font-black pl-8">{reverseNo}</td>
+                      <td className="text-center text-slate-400 font-black pl-8">
+                        {filteredHistory.length - ((historyPage - 1) * itemsPerPage + index)}
+                      </td>
                       <td className="text-center font-mono text-slate-500">{100 + (Number(survey.id) || 0)}</td>
                       <td className="text-center font-mono text-slate-500">{survey.postDate}</td>
                       <td className="px-4">
-                        <div className="font-black text-slate-800 text-[12px]">{survey.title}</div>
-                        <div className="text-[10px] text-slate-400 mt-0.5 font-bold">{survey.type || '일반 참여 서식'}</div>
+                        <div className="font-black text-slate-800 text-[12px] whitespace-pre-wrap line-clamp-1">
+                          {survey.title}
+                        </div>
                       </td>
                       <td className="text-center">
-                        <span className={`px-2 py-0.5 border rounded text-[10px] ${survey.isAnonymous ? 'bg-slate-800 text-white font-black border-slate-950' : 'text-slate-400 border-slate-200'}`}>
+                        <span className={`px-2 py-0.5 border rounded text-[10px] ${survey.isAnonymous ? 'bg-slate-700 text-white font-black border-slate-900' : 'text-slate-400 border-slate-200'}`}>
                           {survey.isAnonymous ? '익명' : '기명'}
                         </span>
                       </td>
                       <td className="text-center text-slate-500 font-medium px-3">{survey.target}</td>
-                      <td className="text-center text-slate-700 font-bold px-4 whitespace-nowrap">{survey.submittedAt}</td>
+                      <td className="text-center text-slate-700 font-bold px-4 whitespace-nowrap">
+                        {survey.submittedAt}
+                      </td>
+                      
+                      {/* 💡 [복구 및 가이드 반영]: 보관함 특성에 맞춰 임박 색상(노랑/빨강) 없이 차분한 slate-500 먹색 서체로 고정 */}
                       <td className="text-center font-mono text-slate-500 leading-relaxed whitespace-nowrap px-3">
                         <div>{survey.startDate} ~</div>
-                        <div className="text-slate-400 font-medium">{survey.endDate}</div>
+                        <div className="text-slate-500 font-medium">
+                          {survey.endDate} <span className="text-[8px]">({survey.endTime || '23:59'})</span>
+                        </div>
                       </td>
+                      
                       <td className="text-center pr-8">
                         <button 
-                          onClick={() => { 
-                            const builderData = JSON.parse(localStorage.getItem(`survey_builder_${survey.id}`) || '[]'); 
-                            setViewSurveyHistory({ ...survey, questions: builderData }); 
+                          onClick={() => {
+                            let builderQuestions = [];
+                            try {
+                              builderQuestions = typeof survey.questions === 'string' ? JSON.parse(survey.questions) : (survey.questions || []);
+                            } catch (e) { console.error("문항 파싱 오류:", e); }
+                            setViewSurveyHistory({ ...survey, questions: builderQuestions });
                           }} 
                           className="w-full py-1.5 bg-white border border-slate-200 rounded-lg font-black text-[10px] text-slate-600 hover:bg-slate-50 shadow-sm transition-all"
                         >
-                          🔍 과거 응답 기록 보기
+                          🔍 명세 기록 열람
                         </button>
                       </td>
                     </tr>
                   );
                 })}
-                {filteredHistory.length === 0 && <tr><td colSpan={9} className="py-24 text-center text-slate-400 font-bold bg-slate-50/30">조건에 맞는 과거 완료 이력이 없습니다.</td></tr>}
+                {filteredHistory.length === 0 && (
+                  <tr>
+                    <td colSpan={9} className="py-16 text-center text-slate-400 font-bold bg-slate-50/30">
+                      보관 처리된 완료 내역이 없습니다.
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
@@ -387,7 +610,16 @@ export default function MySubmissionsModule() {
               <button onClick={handleSaveDraft} className="px-5 py-2.5 bg-slate-800 text-white rounded-xl text-xs font-black shadow-sm">💾 중간 저장</button>
             </div>
           </div>
-          <div className="flex-1 w-full max-w-[800px] mx-auto py-10 px-4 pb-32 space-y-6">
+          <div className="flex-1 w-full max-w-[800px] mx-auto py-10 px-4 pb-32 space-y-6 relative">
+            {zoomedImage && (
+              <div className="fixed inset-0 z-[600] flex items-center justify-center bg-slate-900/90 backdrop-blur-sm p-4 cursor-zoom-out animate-in fade-in duration-200" onClick={() => setZoomedImage(null)}>
+                <div className="relative max-w-5xl max-h-[90vh] flex items-center justify-center">
+                  <img src={zoomedImage} alt="Zoomed Area" className="max-w-full max-h-[85vh] object-contain rounded-2xl shadow-2xl cursor-default" onClick={(e) => e.stopPropagation()} />
+                  <button className="absolute -top-12 right-0 text-white font-black text-lg bg-black/40 hover:bg-black/80 w-9 h-9 rounded-full flex items-center justify-center transition-colors" onClick={() => setZoomedImage(null)}>✕</button>
+                </div>
+              </div>
+            )}
+            
             {renderedQuestions.map((q: any) => {
               if (q.type === 'SECTION') return (
                 <div key={q.id} className="bg-blue-900 text-white p-5 rounded-2xl shadow-sm border border-blue-950 mb-2">
@@ -401,36 +633,96 @@ export default function MySubmissionsModule() {
                     <h4 className="font-black text-slate-800 text-xs flex items-center gap-1">{q.title} {q.isRequired && <span className="text-red-500 font-extrabold">*</span>}</h4>
                     {q.description && <p className="text-[10px] text-slate-400 mt-1 font-bold whitespace-pre-wrap">💡 {q.description}</p>}
                     {q.referenceLink && <a href={q.referenceLink} target="_blank" rel="noopener noreferrer" className="mt-2 inline-block px-2.5 py-1 bg-blue-50 text-blue-600 rounded text-[9px] font-black border border-blue-100 hover:bg-blue-100">🔗 관련 참고 링크 열기</a>}
-                    {q.questionImageUrl && <img src={q.questionImageUrl} alt="guide" className="mt-3 max-h-40 rounded-xl object-contain border" />}
+                    {q.questionImageUrl && <img src={q.questionImageUrl} alt="guide" onClick={() => setZoomedImage(q.questionImageUrl)} className="mt-3 max-h-40 rounded-xl object-contain border cursor-pointer hover:ring-2 hover:ring-blue-500 transition-all hover:scale-[1.01]" />}
                   </div>
      
                   {q.type === 'CHOICE_SINGLE' && (
                     <div className="space-y-2 pt-1">
-                      {q.options?.map((opt: any, oIdx: number) => (
-                        <label key={oIdx} className="flex items-center gap-3 p-3 bg-slate-50 border border-slate-200 rounded-xl cursor-pointer hover:bg-blue-50/40 transition-colors">
-                          <input type="radio" name={q.id} checked={formData[q.id] === opt.label} onChange={() => {
-                            handleInputChange(q.id, opt.label);
-                            if (opt.goToSectionId && opt.goToSectionId !== 'SUBMIT') setCurrentSectionId(opt.goToSectionId);
-                          }} className="w-3.5 h-3.5 accent-blue-600" />
-                          <div className="flex flex-col flex-1"><span className="font-bold text-slate-700">{opt.label}</span>{opt.referenceLink && <a href={opt.referenceLink} target="_blank" rel="noopener noreferrer" className="text-[9px] text-blue-500 hover:underline mt-0.5" onClick={e => e.stopPropagation()}>🔗 상세 명세 링크</a>}{opt.imageUrl && <img src={opt.imageUrl} className="mt-2 max-h-24 object-contain rounded border bg-white w-fit" />}</div>
-                        </label>
-                      ))}
+                      {q.options?.map((opt: any, oIdx: number) => {
+                        const limit = opt.stockLimit;
+                        let usedCount = stockUsage[activeFullScreenSurvey.id]?.[`${q.id}_${opt.label}`] || 0;
+                        
+                        const myPastAnswers = myResponses[activeFullScreenSurvey.id]?.answers || {};
+                        const wasCheckedByMe = myPastAnswers[q.id] === opt.label;
+                          
+                        if (wasCheckedByMe && usedCount > 0) {
+                          usedCount = usedCount - 1; 
+                        }
+       
+                        const isStockLimited = limit !== undefined && limit !== null && limit !== '';
+                        const remaining = isStockLimited ? Number(limit) - usedCount : null;
+                        const isOutOfStock = isStockLimited && remaining! <= 0;
+                        const isChecked = formData[q.id] === opt.label;
+
+                        return (
+                          <label key={oIdx} className={`flex items-center gap-3 p-3 bg-slate-50 border border-slate-200 rounded-xl transition-colors ${
+                            isOutOfStock 
+                            ? 'bg-slate-100 border-slate-200 opacity-60 cursor-not-allowed grayscale select-none' 
+                            : isChecked ? 'border-blue-500 bg-blue-50/30 cursor-pointer' : 'border-slate-200 hover:bg-blue-50/40 cursor-pointer'
+                          }`}>
+                            <input type="radio" name={q.id} disabled={isOutOfStock} checked={isChecked} onChange={() => {
+                              handleInputChange(q.id, opt.label);
+                              if (opt.goToSectionId && opt.goToSectionId !== 'SUBMIT') setCurrentSectionId(opt.goToSectionId);
+                            }} className="w-3.5 h-3.5 accent-blue-600" />
+                            <div className="flex flex-col flex-1">
+                              <span className={`font-bold ${isOutOfStock ? 'text-slate-400 line-through' : 'text-slate-700'}`}>{opt.label}</span>
+                              {isOutOfStock ? (
+                                <span className="text-[10px] w-fit mt-1 font-black bg-red-100 text-red-600 border border-red-200 px-1.5 py-0.5 rounded shadow-sm animate-pulse">SOLD OUT</span>
+                              ) : isStockLimited ? (
+                                <span className="text-[10px] w-fit mt-1 font-black text-pink-600 bg-pink-50 border border-pink-100 px-1.5 py-0.5 rounded shadow-sm">잔여: {remaining}개 {wasCheckedByMe && <span className="text-[9px] text-teal-600">(기존 내 선택)</span>}</span>
+                              ) : null}
+                              {opt.referenceLink && <a href={opt.referenceLink} target="_blank" rel="noopener noreferrer" className="text-[9px] text-blue-500 hover:underline mt-0.5 w-fit" onClick={e => e.stopPropagation()}>🔗 상세 명세 링크</a>}
+                              {opt.imageUrl && <img src={opt.imageUrl} onClick={(e) => { e.preventDefault(); e.stopPropagation(); setZoomedImage(opt.imageUrl); }} className="mt-2 max-h-24 object-contain rounded border bg-white w-fit cursor-pointer hover:ring-2 hover:ring-blue-500 transition-all hover:scale-[1.02]" />}
+                            </div>
+                          </label>
+                        )
+                      })}
                     </div>
                   )}
      
                   {q.type === 'CHOICE_MULTI' && (
                     <div className="space-y-2 pt-1">
-                      {q.options?.map((opt: any, oIdx: number) => (
-                        <label key={oIdx} className="flex items-center gap-3 p-3 bg-slate-50 border border-slate-200 rounded-xl cursor-pointer hover:bg-blue-50/40 transition-colors">
-                          <input type="checkbox" checked={(formData[q.id] || []).includes(opt.label)} onChange={(e) => handleCheckboxChange(q.id, opt.label, e.target.checked)} className="w-3.5 h-3.5 accent-blue-600 rounded" />
-                          <div className="flex flex-col flex-1"><span className="font-bold text-slate-700">{opt.label}</span>{opt.referenceLink && <a href={opt.referenceLink} target="_blank" rel="noopener noreferrer" className="text-[9px] text-blue-500 hover:underline mt-0.5" onClick={e => e.stopPropagation()}>🔗 관련 링크</a>}{opt.imageUrl && <img src={opt.imageUrl} className="mt-2 max-h-24 object-contain rounded border bg-white w-fit" />}</div>
-                        </label>
-                      ))}
+                      {q.options?.map((opt: any, oIdx: number) => {
+                        const limit = opt.stockLimit;
+                        let usedCount = stockUsage[activeFullScreenSurvey.id]?.[`${q.id}_${opt.label}`] || 0;
+                        
+                        const myPastAnswers = myResponses[activeFullScreenSurvey.id]?.answers || {};
+                        const wasCheckedByMe = (myPastAnswers[q.id] || []).includes(opt.label);
+                          
+                        if (wasCheckedByMe && usedCount > 0) {
+                          usedCount = usedCount - 1; 
+                        }
+       
+                        const isStockLimited = limit !== undefined && limit !== null && limit !== '';
+                        const remaining = isStockLimited ? Number(limit) - usedCount : null;
+                        const isOutOfStock = isStockLimited && remaining! <= 0;
+                        const isChecked = (formData[q.id] || []).includes(opt.label);
+
+                        return (
+                          <label key={oIdx} className={`flex items-center gap-3 p-3 bg-slate-50 border border-slate-200 rounded-xl transition-colors ${
+                            isOutOfStock 
+                            ? 'bg-slate-100 border-slate-200 opacity-60 cursor-not-allowed grayscale select-none' 
+                            : isChecked ? 'border-blue-500 bg-blue-50/30 cursor-pointer' : 'border-slate-200 hover:bg-blue-50/40 cursor-pointer'
+                          }`}>
+                            <input type="checkbox" disabled={isOutOfStock} checked={isChecked} onChange={(e) => handleCheckboxChange(q.id, opt.label, e.target.checked)} className="w-3.5 h-3.5 accent-blue-600 rounded" />
+                            <div className="flex flex-col flex-1">
+                              <span className={`font-bold ${isOutOfStock ? 'text-slate-400 line-through' : 'text-slate-700'}`}>{opt.label}</span>
+                              {isOutOfStock ? (
+                                <span className="text-[10px] w-fit mt-1 font-black bg-red-100 text-red-600 border border-red-200 px-1.5 py-0.5 rounded shadow-sm animate-pulse">SOLD OUT</span>
+                              ) : isStockLimited ? (
+                                <span className="text-[10px] w-fit mt-1 font-black text-pink-600 bg-pink-50 border border-pink-100 px-1.5 py-0.5 rounded shadow-sm">잔여: {remaining}개 {wasCheckedByMe && <span className="text-[9px] text-teal-600">(기존 내 선택)</span>}</span>
+                              ) : null}
+                              {opt.referenceLink && <a href={opt.referenceLink} target="_blank" rel="noopener noreferrer" className="text-[9px] text-blue-500 hover:underline mt-0.5 w-fit" onClick={e => e.stopPropagation()}>🔗 관련 링크</a>}
+                              {opt.imageUrl && <img src={opt.imageUrl} onClick={(e) => { e.preventDefault(); e.stopPropagation(); setZoomedImage(opt.imageUrl); }} className="mt-2 max-h-24 object-contain rounded border bg-white w-fit cursor-pointer hover:ring-2 hover:ring-blue-500 transition-all hover:scale-[1.02]" />}
+                            </div>
+                          </label>
+                        )
+                      })}
                     </div>
                   )}
      
                   {q.type === 'TEXT_SHORT' && <input type="text" value={formData[q.id] || ''} onChange={(e) => handleInputChange(q.id, e.target.value)} className="w-full p-3 border border-slate-200 rounded-xl outline-none focus:border-blue-500 font-bold bg-slate-50 focus:bg-white text-xs" placeholder="답변 내용을 작성해 주세요." />}
-                  {q.type === 'TEXT_LONG' && <textarea value={formData[q.id] || ''} onChange={(e) => handleInputChange(q.id, e.target.value)} className="w-full p-3 border border-slate-200 rounded-xl outline-none focus:border-blue-500 font-bold bg-slate-50 focus:bg-white text-xs min-h-[100px]" placeholder="세부적인 의견을 여러 줄로 입력하실 수 있습니다." />}
+                  {q.type === 'TEXT_LONG' && <textarea value={formData[q.id] || ''} onChange={(e) => handleInputChange(q.id, e.target.value)} className="w-full p-3 border border-slate-200 rounded-xl outline-none focus:border-blue-500 font-bold bg-slate-50 focus:bg-white text-xs min-h-[100px] whitespace-pre-wrap" placeholder="세부적인 의견을 여러 줄로 입력하실 수 있습니다." />}
                   
                   {q.type === 'SCALE' && (
                     <div className="flex items-center justify-between bg-slate-50 p-4 border border-slate-200 rounded-xl">
@@ -495,7 +787,16 @@ export default function MySubmissionsModule() {
               <h1 className="text-base font-black text-slate-800">{viewSurveyHistory.title}</h1>
             </div>
           </div>
-          <div className="flex-1 w-full max-w-[800px] mx-auto py-10 px-4 space-y-6 pb-32">
+          <div className="flex-1 w-full max-w-[800px] mx-auto py-10 px-4 space-y-6 pb-32 relative">
+            {zoomedImage && (
+              <div className="fixed inset-0 z-[600] flex items-center justify-center bg-slate-900/90 backdrop-blur-sm p-4 cursor-zoom-out animate-in fade-in duration-200" onClick={() => setZoomedImage(null)}>
+                <div className="relative max-w-5xl max-h-[90vh] flex items-center justify-center">
+                  <img src={zoomedImage} alt="Zoomed Area" className="max-w-full max-h-[85vh] object-contain rounded-2xl shadow-2xl cursor-default" onClick={(e) => e.stopPropagation()} />
+                  <button className="absolute -top-12 right-0 text-white font-black text-lg bg-black/40 hover:bg-black/80 w-9 h-9 rounded-full flex items-center justify-center transition-colors" onClick={() => setZoomedImage(null)}>✕</button>
+                </div>
+              </div>
+            )}
+            
             {viewSurveyHistory.questions?.map((q: any, i: number) => {
               if (q.type === 'SECTION') return null;
               const ans = viewSurveyHistory.myAnswers?.[q.id];
@@ -518,7 +819,7 @@ export default function MySubmissionsModule() {
               return (
                 <div key={q.id} className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm space-y-4">
                   <label className="block text-sm font-black text-slate-800">{q.title}</label>
-                  <div className="w-full p-4 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 text-sm">
+                  <div className="w-full p-4 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 text-sm whitespace-pre-wrap text-left">
                     {ansStr}
                   </div>
                 </div>

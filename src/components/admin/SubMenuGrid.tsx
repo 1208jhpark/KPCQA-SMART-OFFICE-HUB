@@ -1,31 +1,19 @@
 'use client';
-  
+
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { ModuleRegistry } from './Registry';
-  
-// JSON 안전 파싱 헬퍼
-const safeArray = (val: any) => {
-  if (!val) return [];
-  if (Array.isArray(val)) return val;
-  if (typeof val === 'string') {
-    try {
-      const parsed = JSON.parse(val);
-      return Array.isArray(parsed) ? parsed : [parsed];
-    } catch(e) {
-      return val.split(',').map((s:string) => s.trim().replace(/['"\[\]]/g, '')); 
-    }
-  }
-  return [val];
-};
-  
+// 🚀 통합 권한 엔진 임포트 (경로를 본인 환경에 맞게 확인하세요)
+import { checkMenuPermission } from '@/lib/permission-utils';
+
 export default function SubMenuGrid({ path }: { path: string }) {
   const router = useRouter(); 
   const [subMenus, setSubMenus] = useState<any[]>([]);
   const [parentInfo, setParentInfo] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [currentUser, setCurrentUser] = useState<any>(null);
+  const [unitsList, setUnitsList] = useState<any[]>([]);
   const [hasParentAccess, setHasParentAccess] = useState(false); 
     
   useEffect(() => {
@@ -39,19 +27,11 @@ export default function SubMenuGrid({ path }: { path: string }) {
         ]);
         
         let userData: any = uRes.ok ? await uRes.json() : { roles: ['GUEST'] };
-        const rolesArr = Array.isArray(userData.roles) ? userData.roles : (userData.roles ? JSON.parse(userData.roles) : []);
-        const firstRole = rolesArr[0] || userData.role || userData.level || 'LV_3';
-        
-        const myRoleRaw = String(firstRole).toUpperCase();
-        const myRole = myRoleRaw.includes('LV') 
-          ? (myRoleRaw.includes('_') ? myRoleRaw : myRoleRaw.replace(/LV/g, 'LV_').replace(/\./g, ''))
-          : myRoleRaw;
-  
-        userData.role = myRole;
-        setCurrentUser(userData);
-  
+        const fetchedUnits = unitsRes.ok ? await unitsRes.json() : [];
         const allData = await iRes.json();
-        const unitsList = unitsRes.ok ? await unitsRes.json() : []; 
+        
+        setUnitsList(fetchedUnits);
+        setCurrentUser(userData);
   
         const normalize = (p: string) => (p || "").trim().replace(/\/$/, "").toLowerCase();
         const targetPath = normalize(path);
@@ -59,69 +39,22 @@ export default function SubMenuGrid({ path }: { path: string }) {
         const currentParent = allData.find((item: any) => normalize(item.path) === targetPath);
         setParentInfo(currentParent);
   
-        const myId = userData.id || userData.userId || userData._id;
-        const myEmail = userData.email;
-        const myDept = userData.dept_id;
-  
-        const isOrgAllowed = (allowedOrgIds: string[], userDeptId: string) => {
-          if (!allowedOrgIds || allowedOrgIds.length === 0) return false;
-          if (!userDeptId) return false;
-          let currentId: string | null = userDeptId;
-          while (currentId) {
-            if (allowedOrgIds.includes(currentId)) return true;
-            const parentOrg = unitsList.find((u: any) => u.id === currentId);
-            currentId = parentOrg ? parentOrg.parent_id : null; 
-          }
-          return false;
-        };
-  
-        const pVScopes = safeArray(currentParent?.view_scopes);
-        const pOIds = safeArray(currentParent?.org_ids);
-        const pTAccess = safeArray(currentParent?.task_accesses);
-        const pTMasters = safeArray(currentParent?.task_masters);
-        const pERoles = safeArray(currentParent?.edit_role_ids);
-        const pVRoles = safeArray(currentParent?.view_role_ids);
-  
-        const isTopAdmin = myRole === 'LV_1'; 
-  
-        const isPMaster = currentParent?.master_editor_id === myId;
-        const isPEditor = pERoles.includes(myRole) || pTMasters.some((tm:any) => tm.email === myEmail);
-        const isPViewer = Boolean(
-          (pVRoles.includes(myRole)) || (pVScopes.includes('TOTAL')) || 
-          (pVScopes.includes('DEPT') && currentParent?.dept_id === myDept) || 
-          (pTAccess.some((ta: any) => ta.email === myEmail)) || (isOrgAllowed(pOIds, myDept)) 
-        );
-  
-        const canEnterParent = isTopAdmin || isPMaster || isPEditor || isPViewer || !currentParent; 
+        // 🚀 [핵심 1] 부모(현재 화면) 자체에 접근할 권한이 있는지 확인
+        const parentPermission = checkMenuPermission(userData, currentParent, allData, fetchedUnits);
+        
+        // 부모 설정이 아예 없거나, 권한이 있으면 통과
+        const canEnterParent = parentPermission.hasAccess || !currentParent;
         setHasParentAccess(canEnterParent);
   
         if (canEnterParent && currentParent) {
           const rawChildren = allData.filter((menu: any) => menu.parent_id === currentParent.id);
   
+          // 🚀 [핵심 2] 하위 메뉴들도 각각 권한 엔진을 태워서 내가 볼 수 있는 카드만 남김
           const filtered = rawChildren.filter((menu: any) => {
-            if (menu.is_visible === false) return false; 
+            if (menu.is_visible === false) return false; // 강제 숨김 처리된 메뉴는 제외
             
-            if (isTopAdmin) return true; 
-  
-            const vScopes = safeArray(menu.view_scopes);
-            const oIds = safeArray(menu.org_ids);
-            const tAccess = safeArray(menu.task_accesses);
-            const tMasters = safeArray(menu.task_masters);
-            const eRoles = safeArray(menu.edit_role_ids);
-            const vRoles = safeArray(menu.view_role_ids);
-  
-            const isMaster = menu.master_editor_id === myId;
-            const isEditor = eRoles.includes(myRole) || tMasters.some((tm: any) => tm.email === myEmail);
-            const isViewer = Boolean(
-              isPMaster || isPEditor || isPViewer || 
-              (vRoles.includes(myRole)) || 
-              (vScopes.includes('TOTAL')) || 
-              (vScopes.includes('DEPT') && menu.dept_id === myDept) || 
-              (tAccess.some((ta: any) => ta.email === myEmail)) || 
-              (isOrgAllowed(oIds, myDept))
-            );
-  
-            return isMaster || isEditor || isViewer;
+            const childPermission = checkMenuPermission(userData, menu, allData, fetchedUnits);
+            return childPermission.hasAccess;
           }).sort((a: any, b: any) => a.sort_order - b.sort_order);
   
           setSubMenus(filtered);
@@ -136,6 +69,7 @@ export default function SubMenuGrid({ path }: { path: string }) {
   }, [path]);
   
   useEffect(() => {
+    // 하위 메뉴로 즉시 점프하는 모드 (L3_DEFAULT)일 때, 필터링된 메뉴 중 첫 번째로 이동
     if ((parentInfo?.level === 1 || parentInfo?.level === 2) && parentInfo?.l2_entry_mode === 'L3_DEFAULT' && subMenus.length > 0) {
       router.replace(subMenus[0].path);
     }
@@ -169,7 +103,7 @@ export default function SubMenuGrid({ path }: { path: string }) {
         <div className="p-20 text-center bg-white border border-slate-200 rounded-[3rem] shadow-sm flex flex-col items-center justify-center min-h-[400px]">
           <div className="text-6xl mb-6 opacity-30">🔒</div>
           <h3 className="text-2xl font-black text-slate-800">접근 권한이 없습니다.</h3>
-          <p className="text-slate-500 text-sm mt-3 font-bold">시스템 관리자에게 접근 권한 승인을 요청하세요.</p>
+          <p className="text-slate-500 text-sm mt-3 font-bold">시스템 관리자에게 접근 권한 승인을 요청하거나 소속 부서를 확인하세요.</p>
         </div>
       </div>
     );
@@ -183,7 +117,7 @@ export default function SubMenuGrid({ path }: { path: string }) {
     if (!RawModule) return <div className="p-20 text-center text-slate-300 font-bold border-2 border-dashed border-slate-200 rounded-3xl bg-slate-50">연결된 레지스트리가 없는 모듈입니다. ({menuPath})</div>;
      
     const TargetModule = (RawModule as any).default || RawModule;
-    return <TargetModule config={parentInfo} />;
+    return <TargetModule config={parentInfo} currentUser={currentUser} />; // 🚀 모듈 내부에 currentUser 전달
   };
   
   // 하위 메뉴가 없을 때 (단일 모듈인 경우 Registry에서 직접 로드)
@@ -195,10 +129,9 @@ export default function SubMenuGrid({ path }: { path: string }) {
     if (RawModule) {
       const TargetModule = (RawModule as any).default || RawModule;
       return (
-        // 💡 [단일 모듈 보완]: w-full을 보충하여 가로 확장 안정화
         <div className="w-full max-w-[1600px] mx-auto p-8 md:p-10 animate-fade-in pb-20">
           {renderPageHeader()}
-          <TargetModule config={parentInfo} />
+          <TargetModule config={parentInfo} currentUser={currentUser} />
         </div>
       );
     }
@@ -223,9 +156,7 @@ export default function SubMenuGrid({ path }: { path: string }) {
   const isSingleView = parentInfo?.entry_l4_direct === true;
   
   return (
-    // 💡 [레이아웃 단일화 튜닝]: 단일화면 모드(isSingleView)일 때는 부모 패딩을 전면 제거('p-0')하여 자식 모듈들의 1600px 배너 칼각 선이 완벽하게 글로벌 탑바와 대칭을 이루도록 개선했습니다.
     <div className={`w-full max-w-[1600px] mx-auto animate-fade-in pb-20 ${isSingleView ? 'p-0' : 'p-8 md:p-10'}`}>
-      {/* 단일화면 모드일 때 페이지 타이틀 영역 좌우 여백을 자식 배너와 싱크 맞춤 */}
       {renderPageHeader(isSingleView ? 'px-8 md:px-0 mt-6' : '')}
       
       {isSingleView ? (

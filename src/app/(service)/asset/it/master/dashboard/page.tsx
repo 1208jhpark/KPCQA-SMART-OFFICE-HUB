@@ -1,9 +1,5 @@
-import AssetMasterDashboard from '../../../../../../components/asset/it/MasterDashboardModule';
-
-export default function ItMasterDashboardPage() {
-  return (
-    <div className="animate-fade-in">
-      <AssetMasterDashboard />
-    </div>
-  );
+import L4PanelRenderer from '@/components/admin/L4PanelRenderer';
+     
+export default function Page() {
+  return <L4PanelRenderer />;
 }

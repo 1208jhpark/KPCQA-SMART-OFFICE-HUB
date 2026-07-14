@@ -10,7 +10,8 @@ interface SurveyOption {
   label: string;
   imageUrl?: string;
   referenceLink?: string; 
-  goToSectionId?: string; // 🚀 세부 옵션용 섹션 이동 ID
+  goToSectionId?: string;
+  stockLimit?: number | null; // 🚀 신규 추가: 사은품/물품별 한정 재고 제한 수량
 }
      
 interface Question {
@@ -29,7 +30,7 @@ interface Question {
   detailAddress?: string;
   description?: string;
   referenceLink?: string;
-  goToSectionId?: string; // 🚀 모든 문항/섹션용 다음 이동 ID
+  goToSectionId?: string;
 }
   
 export default function AdminDeliveryBuilderModule() {
@@ -55,22 +56,36 @@ export default function AdminDeliveryBuilderModule() {
       const id = params.get('id');
       setSurveyId(id);
   
+      // 🚀 [DB 연동] DB에서 해당 공고의 questions 컬럼을 즉시 읽어옵니다.
       if (id) {
-        const storedData = localStorage.getItem(`delivery_builder_${id}`);
-        if (storedData) {
-          try {
-            const parsed = JSON.parse(storedData);
-            const migratedData = parsed.map((q: any) => ({
-              ...q,
-              options: q.options?.map((opt: any) => 
-                typeof opt === 'string' ? { label: opt, imageUrl: '', referenceLink: '', goToSectionId: '' } : opt
-              )
-            }));
-            setQuestions(migratedData);
-          } catch (e) {
-            console.error(e);
-          }
-        }
+        fetch('/api/survey/delivery')
+          .then(res => res.json())
+          .then(data => {
+            const currentSurvey = data.find((s: any) => s.id === id);
+            if (currentSurvey && currentSurvey.questions) {
+              try {
+                // DB에서 꺼낸 Json 데이터를 안전하게 파싱
+                const parsed = typeof currentSurvey.questions === 'string' 
+                  ? JSON.parse(currentSurvey.questions) 
+                  : currentSurvey.questions;
+                  
+                // 💡 [안정화 가드] 파싱된 결과가 배열이 아닐 경우를 대비해 예외 처리 가드 장착
+                const targetArray = Array.isArray(parsed) ? parsed : [];
+                  
+                const migratedData = targetArray.map((q: any) => ({
+                  ...q,
+                  options: q.options?.map((opt: any) => 
+                    typeof opt === 'string' 
+                      ? { label: opt, imageUrl: '', referenceLink: '', goToSectionId: '', stockLimit: null } 
+                      : { label: opt.label, imageUrl: opt.imageUrl || '', referenceLink: opt.referenceLink || '', goToSectionId: opt.goToSectionId || '', stockLimit: opt.stockLimit !== undefined ? opt.stockLimit : null }
+                  )
+                }));
+                setQuestions(migratedData);
+              } catch (e) {
+                console.error("문항 파싱 오류:", e);
+              }
+            }
+          });
       }
     }
   }, []);
@@ -101,20 +116,45 @@ export default function AdminDeliveryBuilderModule() {
     }
   };
   
-  // 🚀 [버그 수정 완료]: QuotaExceededError 용량 초과 방어 로직 탑재
-  const handleSaveSurvey = () => {
+  // 🚀 [DB 연동 완료]: QuotaExceededError 완전 해방! PostgreSQL 직접 저장 로직
+  const handleSaveSurvey = async () => {
     if (questions.length === 0) return alert('최소 1개 이상의 문항을 추가해주세요.');
     if (!surveyId) return alert('공고 ID가 유효하지 않습니다. 현황판에서 다시 진입해주세요.');
-
+     
+    // 💡 [용량 과부하 사전 방어] 이미지/파일 바이너리가 과도하게 커서 네트워크 페이로드가 터지는 현상 제어
     try {
-      localStorage.setItem(`delivery_builder_${surveyId}`, JSON.stringify(questions));
-      alert('✅ 배달 신청 양식 문항이 성공적으로 저장되었습니다.\n통합 공고 현황판 화면에서 배포를 확인하실 수 있습니다.');
-    } catch (error: any) {
-      if (error.name === 'QuotaExceededError' || error.code === 22) {
-        alert('❌ 저장 용량 초과 에러 (QuotaExceededError)\n\n원인: 첨부하신 이미지나 양식 파일의 용량이 너무 커서 브라우저 임시 저장 한도(약 5MB)를 초과했습니다.\n해결: 이미지를 지우거나 용량이 작은 이미지로 교체한 후 다시 저장해 주세요. (추후 DB 연동 시 자동 해결됩니다.)');
-      } else {
-        alert('❌ 데이터를 저장하는 중 알 수 없는 오류가 발생했습니다.');
+      const serializedLength = JSON.stringify(questions).length;
+      if (serializedLength > 4500000) { // 안전선 기준 약 4.5MB 제한
+        return alert('❌ 첨부된 문항 이미지 또는 양식 파일의 전체 용량이 너무 큽니다.\n이미지 해상도를 낮추거나 파일 용량을 압축하여 등록해주세요.');
       }
+    } catch (sizeError) {
+      console.error("용량 체크 프로세스 에러:", sizeError);
+    }
+     
+    try {
+      // 1. 기존 메타 정보를 보호하기 위해 DB에서 현재 공고 상태를 먼저 가져옴
+      const getRes = await fetch('/api/survey/delivery');
+      const surveys = await getRes.json();
+      const currentSurvey = surveys.find((s: any) => s.id === surveyId);
+       
+      if (!currentSurvey) return alert('해당 공고를 찾을 수 없습니다.');
+       
+      // 2. 기존 공고 정보에 생성된 questions 배열을 병합하여 API로 전송 (대용량 허용)
+      const payload = { ...currentSurvey, questions: questions };
+       
+      const res = await fetch('/api/survey/delivery', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+       
+      if (res.ok) {
+        alert('✅ 배달 신청 양식 문항이 DB에 성공적으로 저장되었습니다!');
+      } else {
+        alert('❌ 서버 인프라 저장에 실패했습니다.');
+      }
+    } catch (error) {
+      alert('❌ 네트워크 오류가 발생했습니다.');
     }
   };
   
@@ -128,7 +168,7 @@ export default function AdminDeliveryBuilderModule() {
      
     setQuestions(prev => [...prev, { 
       id: `Q_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`, type, title: defaultTitle, isRequired: type !== 'SECTION', 
-      options: type.includes('CHOICE') ? [{ label: '옵션 1', imageUrl: '', referenceLink: '', goToSectionId: '' }] : undefined, 
+      options: type.includes('CHOICE') ? [{ label: '옵션 1', imageUrl: '', referenceLink: '', goToSectionId: '', stockLimit: null }] : undefined, 
       scaleMax: type === 'SCALE' ? 5 : undefined,
       questionImageUrl: '',
       dummyDateValue: type === 'CALENDAR' ? new Date().toISOString().split('T')[0] : undefined,
@@ -139,7 +179,6 @@ export default function AdminDeliveryBuilderModule() {
     }]);
   };
   
-  // 🚀 [버그 수정 완료]: 함수형 업데이트(prev => ...) 적용으로 파일 삭제 무시 현상 해결
   const updateQuestion = (id: string, field: keyof Question, value: any) => {
     setQuestions(prev => prev.map(q => q.id === id ? { ...q, [field]: value } : q));
   };
@@ -158,7 +197,7 @@ export default function AdminDeliveryBuilderModule() {
     });
   };
   
-  const updateOption = (qId: string, optIndex: number, field: keyof SurveyOption, value: string) => {
+  const updateOption = (qId: string, optIndex: number, field: keyof SurveyOption, value: any) => {
     setQuestions(prev => prev.map(q => {
       if (q.id === qId && q.options) {
         const newOptions = [...q.options];
@@ -170,7 +209,7 @@ export default function AdminDeliveryBuilderModule() {
   };
   
   const addOption = (qId: string) => {
-    setQuestions(prev => prev.map(q => q.id === qId && q.options ? { ...q, options: [...q.options, { label: `옵션 ${q.options.length + 1}`, imageUrl: '', referenceLink: '', goToSectionId: '' }] } : q));
+    setQuestions(prev => prev.map(q => q.id === qId && q.options ? { ...q, options: [...q.options, { label: `옵션 ${q.options.length + 1}`, imageUrl: '', referenceLink: '', goToSectionId: '', stockLimit: null }] } : q));
   };
   
   const removeOption = (qId: string, optIndex: number) => {
@@ -223,7 +262,7 @@ export default function AdminDeliveryBuilderModule() {
      
     return `${yyyy}년 ${mm}월 ${dd}일 (${dayOfWeek})`;
   };
-
+     
   const availableSections = questions.filter(q => q.type === 'SECTION');
   
   return (
@@ -350,24 +389,35 @@ export default function AdminDeliveryBuilderModule() {
                         <input type="text" value={opt.label} onChange={(e) => updateOption(q.id, oIdx, 'label', e.target.value)} className="flex-1 border-b border-transparent hover:border-slate-200 focus:border-teal-500 outline-none py-1.5 text-xs text-slate-700 font-bold transition-all bg-transparent" />
                         
                         <input type="text" value={opt.referenceLink || ''} onChange={(e) => updateOption(q.id, oIdx, 'referenceLink', e.target.value)} className="w-40 px-2 py-1 bg-white border border-slate-200 rounded text-[10px] font-medium outline-none" placeholder="🔗 외부링크 URL" />
+     
+                        {/* 🚀 [신규 연동]: 사은품/물품 옵션별 재고 수량 지정 인프라 필드 추가 */}
+                        <div className="flex items-center gap-1 shrink-0 ml-1">
+                          <span className="text-[10px] font-black text-pink-500">📦 재고:</span>
+                          <input 
+                            type="number" 
+                            value={opt.stockLimit !== undefined && opt.stockLimit !== null ? opt.stockLimit : ''} 
+                            onChange={(e) => updateOption(q.id, oIdx, 'stockLimit', e.target.value ? Number(e.target.value) : null)} 
+                            className="w-16 px-2 py-1 bg-white border border-pink-200 rounded text-[10px] font-bold outline-none focus:border-pink-500 text-pink-600 placeholder:text-pink-200" 
+                            placeholder="무제한" 
+                            min="0"
+                          />
+                        </div>
 
                         <label className="cursor-pointer flex items-center justify-center px-3 py-1.5 border border-slate-300 rounded hover:border-teal-400 bg-white text-[10px] font-black text-slate-600 shrink-0 transition-colors">
                           {opt.imageUrl ? '이미지 변경' : '이미지 추가'}
                           <input type="file" className="hidden" accept="image/*" onChange={(e) => handleOptionImage(q.id, oIdx, e)} />
                         </label>
-                        {opt.imageUrl && (
-                          <button onClick={() => updateOption(q.id, oIdx, 'imageUrl', '')} className="text-[10px] text-red-400 font-black shrink-0">삭제</button>
-                        )}
+                        {opt.imageUrl && <button onClick={() => updateOption(q.id, oIdx, 'imageUrl', '')} className="text-[10px] text-red-400 font-black shrink-0">삭제</button>}
                         {q.options!.length > 1 && <button onClick={() => removeOption(q.id, oIdx)} className="text-slate-300 hover:text-red-500 px-2 transition-opacity font-black">✕</button>}
                       </div>
-
+     
                       {opt.imageUrl && <div className="ml-8 mt-1 relative w-fit"><img src={opt.imageUrl} className="h-16 rounded border object-cover" /></div>}
-
+     
                       {/* 🚀 옵션별 섹션 이동 분기 추가 */}
                       {availableSections.length > 0 && (
                         <div className="ml-8 flex items-center gap-2 border-t border-slate-200/60 pt-2 mt-1">
                           <span className="text-[10px] text-slate-400 font-bold">↳ 이 타겟 선택 시:</span>
-                          <select value={opt.goToSectionId || ''} onChange={(e) => updateOption(q.id, oIdx, 'goToSectionId', e.target.value)} className="p-1 border bg-white rounded text-[10px] outline-none text-teal-600 font-bold">
+                          <select value={opt.goToSectionId || ''} onChange={(e) => updateOption(q.id, oIdx, 'goToSectionId', e.target.value)} className="p-1 border bg-white rounded text-[10px] outline-none text-indigo-600 font-bold">
                             <option value="">다음 문항으로 계속 진행 (기본)</option>
                             <option value="SUBMIT">🏁 이대로 배송지 제출 및 종료</option>
                             {availableSections.map(s => <option key={s.id} value={s.id}>➔ 섹션: {s.title || '제목 없음'} (으)로 점프</option>)}
@@ -457,7 +507,7 @@ export default function AdminDeliveryBuilderModule() {
                   )}
                 </div>
               )}
-
+     
               {/* 🚀 모든 문항/섹션 하단 다음 이동 경로 제어 */}
               {availableSections.length > 0 && (
                  <div className={`mt-4 pt-3 border-t ${q.type === 'SECTION' ? 'border-teal-200/50' : 'border-slate-200/60'}`}>

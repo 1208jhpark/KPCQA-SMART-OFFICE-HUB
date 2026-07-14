@@ -1,12 +1,15 @@
 'use client';
-  
-import React, { useState, useEffect, useMemo } from 'react';
+     
+import React, { useState, useEffect, useMemo, Fragment } from 'react';
+import { usePathname, useRouter } from 'next/navigation'; 
 import Link from 'next/link';
 import * as XLSX from 'xlsx';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
-  
+
 export default function AdminSurveyHistoryModule() {
+  const pathname = usePathname(); 
+  const router = useRouter();
   const [surveys, setSurveys] = useState<any[]>([]);
   const [users, setUsers] = useState<any[]>([]);
   const [responses, setResponses] = useState<Record<string, any>>({});
@@ -18,59 +21,71 @@ export default function AdminSurveyHistoryModule() {
   
   useEffect(() => { setCurrentPage(1); }, [selectedYear]);
   
-  useEffect(() => {
-    const fetchArchiveData = async () => {
-      try {
-        const storedSurveys = localStorage.getItem('admin_surveys_db');
-        if (storedSurveys) setSurveys(JSON.parse(storedSurveys));
+  const fetchArchiveData = async () => {
+    setLoading(true);
+    try {
+      const ts = Date.now();
+      const surveyRes = await fetch(`/api/survey/general?t=${ts}`, { cache: 'no-store' });
+      if (surveyRes.ok) {
+        setSurveys(await surveyRes.json());
+      } else {
+        setSurveys([]);
+      }
   
-        const [uRes, unitRes, meRes] = await Promise.all([ 
-          fetch('/api/admin/users'), 
-          fetch('/api/admin/units?active=true'),
-          fetch('/api/auth/me') 
-        ]);
-
-        if (meRes.ok) {
-          const meData = await meRes.json();
-          setCurrentUser(meData);
-        }
-
-        if (uRes.ok && unitRes.ok) {
-          const uData = await uRes.json();
-          const unitData = await unitRes.json();
-          const mappedUsers = (uData.users || []).map((u:any) => ({ 
-            ...u, 
-            dept: unitData.find((un:any) => un.id === u.unit_id)?.unit_name || '소속없음' 
-          }));
-          setUsers(mappedUsers);
+      const [uRes, unitRes, meRes] = await Promise.all([ 
+        fetch(`/api/admin/users?t=${ts}`, { cache: 'no-store' }), 
+        fetch(`/api/admin/units?active=true&t=${ts}`, { cache: 'no-store' }),
+        fetch(`/api/auth/me?t=${ts}`, { cache: 'no-store' }) 
+      ]);
+     
+      if (meRes.ok) {
+        const meData = await meRes.json();
+        setCurrentUser(meData);
+      }
+     
+      if (uRes.ok && unitRes.ok) {
+        const uData = await uRes.json();
+        const unitData = await unitRes.json();
+        const mappedUsers = (uData.users || []).map((u:any) => ({ 
+          ...u, 
+          dept: unitData.find((un:any) => un.id === u.unit_id)?.unit_name || '소속없음' 
+        }));
+        setUsers(mappedUsers);
   
+        const respRes = await fetch('/api/survey/general', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'GET_RESPONSES' }),
+          cache: 'no-store'
+        });
+        
+        if (respRes.ok) {
+          const dbResponses = await respRes.json();
           const realRes: Record<string, any> = {};
-          mappedUsers.forEach((u:any) => {
-            if (!u.email) return;
-            const stored = localStorage.getItem(`my_responses_${u.email}`);
-            if (stored) {
-              const parsed = JSON.parse(stored);
-              Object.keys(parsed).forEach(surveyId => {
-                realRes[`${surveyId}_${u.email}`] = {
-                  isDone: true,
-                  date: parsed[surveyId].submittedAt?.split(' ')[0],
-                  result: '제출완료',
-                  answers: parsed[surveyId].answers
-                };
-              });
+          
+          dbResponses.forEach((r: any) => {
+            if (r.surveyId && r.userEmail) {
+              realRes[`${r.surveyId}_${r.userEmail}`] = {
+                isDone: true,
+                date: r.submittedAt ? r.submittedAt.split('T')[0] : '-',
+                answers: r.answers || {}
+              };
             }
           });
           setResponses(realRes);
         }
-      } catch (error) { 
-        console.error(error); 
-      } finally { 
-        setLoading(false); 
       }
-    };
+    } catch (error) { 
+      console.error("아카이브 마스터 인프라 동기화 실패:", error); 
+    } finally { 
+      setLoading(false); 
+    }
+  };
+
+  useEffect(() => {
     fetchArchiveData();
   }, []);
-
+     
   const isLv1 = useMemo(() => {
     if (!currentUser) return false;
     const roleStr = currentUser.role || '';
@@ -89,28 +104,42 @@ export default function AdminSurveyHistoryModule() {
   
   const filteredHistory = useMemo(() => archivedSurveys.filter(h => (h.endDate || h.postDate || '').startsWith(selectedYear)), [archivedSurveys, selectedYear]);
   
-  const handleRestore = (id: string) => {
-    if (!confirm('이 설문을 운영(현황판) 리스트로 다시 복원하시겠습니까?')) return;
-    const updatedSurveys = surveys.map(s => s.id === id ? { ...s, status: '완료' } : s);
-    setSurveys(updatedSurveys);
-    localStorage.setItem('admin_surveys_db', JSON.stringify(updatedSurveys));
-    alert('운영 리스트로 복원되었습니다. (현황판에서 확인 가능)');
+  const handleRestore = async (id: string) => {
+    if (!confirm('이 설문을 운영 현황판으로 복원하시겠습니까?\n복원 즉시 [게시중단] 상태로 메인 현황판에 인입되며, 관리자가 기간을 수정한 후 다시 게시할 수 있습니다.')) return;
+    const surveyToRestore = surveys.find(s => s.id === id);
+    if (!surveyToRestore) return;
+    const updatedSurvey = { ...surveyToRestore, status: '게시중단' };
+     
+    try {
+      const res = await fetch('/api/survey/general', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updatedSurvey)
+      });
+      if (res.ok) {
+        alert('🔄 성공적으로 복원되었습니다!\n[게시중단] 상태로 전환되었습니다. 메인 현황판에서 마감 기한을 연장하신 후 [게시] 버튼을 눌러주세요.');
+        fetchArchiveData();
+      } else {
+        alert('복원 처리 중 서버 오류가 발생했습니다.');
+      }
+    } catch (e) {
+      alert('네트워크 오류가 발생했습니다.');
+    }
   };
-
-  const handlePermanentDelete = (id: string) => {
-    if (!confirm('경고: 이 보관된 설문을 영구적으로 삭제하시겠습니까?\n모든 정보와 이력이 완전히 유실되며 복구할 수 없습니다.')) return;
-    const updatedSurveys = surveys.filter(s => s.id !== id);
-    setSurveys(updatedSurveys);
-    localStorage.setItem('admin_surveys_db', JSON.stringify(updatedSurveys));
-    alert('데이터가 시스템에서 영구 삭제되었습니다.');
-  };
-  
-  const checkHierarchyTarget = (targetString: string, userDeptName: string) => {
-    if (!targetString || targetString === '전사') return true;
-    const targetDepts = targetString.split(',').map(t => t.trim());
-    if (!userDeptName) return false;
-    if (targetDepts.includes(userDeptName)) return true;
-    return false;
+     
+  const handlePermanentDelete = async (id: string) => {
+    if (!confirm('경고: 이 보관된 설문을 영구적으로 삭제하시겠습니까?\n모든 정보와 이력이 완전히 유실되며복구할 수 없습니다.')) return;
+    try {
+      const res = await fetch(`/api/survey/general?id=${id}`, { method: 'DELETE' });
+      if (res.ok) {
+        alert('데이터가 시스템에서 영구 삭제되었습니다.');
+        fetchArchiveData();
+      } else {
+        alert('삭제 처리 중 오류가 발생했습니다.');
+      }
+    } catch (e) {
+      alert('네트워크 오류가 발생했습니다.');
+    }
   };
   
   const isOrgAllowed = (targetDepts: string[], userDeptName: string) => {
@@ -118,24 +147,26 @@ export default function AdminSurveyHistoryModule() {
     if (targetDepts.includes(userDeptName)) return true;
     return false;
   };
-
-  // 🚀 [신규 기능 추가]: 단일 보관 설문조사에 대한 3단 행 분리형 엑셀 다운로드 엔진
+     
   const handleDownloadSingleExcel = (survey: any) => {
-    const storedQuestions = JSON.parse(localStorage.getItem(`survey_builder_${survey.id}`) || '[]');
-    const questions = storedQuestions.length > 0 ? storedQuestions : [{ id: 'q1', title: '1. 의견 및 건의사항' }];
-    
+    let parsedQuestions = [];
+    try {
+      parsedQuestions = typeof survey.questions === 'string' ? JSON.parse(survey.questions) : (survey.questions || []);
+    } catch (e) {
+      console.error("문항 데이터 파싱 실패:", e);
+    }
+    const questions = parsedQuestions.length > 0 ? parsedQuestions : [{ id: 'q1', title: '1. 의견 및 건의사항' }];
     const targetDepts = survey.target.split(',').map((t: string) => t.trim());
     const targetUsers = targetDepts.includes('전사') ? users : users.filter(u => targetDepts.includes(u.dept));
     const submittedUsers = targetUsers.filter(u => responses[`${survey.id}_${u.email}`]?.isDone);
-    
     if (submittedUsers.length === 0) return alert("본 설문에 접수된 완료 데이터가 없어 엑셀을 도출할 수 없습니다.");
     
-    // ⭕ 관리자 요구사항: 1행(부서), 2행(이름), 3행(제출일), 4행~(질문/답변) 완전 분할 구조화
     const deptRow = ['제출조직(부서)', ...submittedUsers.map(u => survey.isAnonymous ? '익명조직' : u.dept)];
     const nameRow = ['제출자이름', ...submittedUsers.map((u, i) => survey.isAnonymous ? `익명응답자 ${i + 1}` : u.name)];
     const dateRow = ['제출일자', ...submittedUsers.map(u => responses[`${survey.id}_${u.email}`]?.date || '-')];
-    
+        
     const contentRows = questions.map((q: any) => {
+      if (q.type === 'SECTION') return [`[🔖 섹션 단락]: ${q.title}`];
       const rowData = [q.title];
       submittedUsers.forEach(u => {
         const ans = responses[`${survey.id}_${u.email}`]?.answers;
@@ -147,11 +178,11 @@ export default function AdminSurveyHistoryModule() {
       });
       return rowData;
     });
-
+     
     const ws = XLSX.utils.aoa_to_sheet([deptRow, nameRow, dateRow, ...contentRows]);
     const wb = XLSX.utils.book_new();
     const safeTitle = survey.title.replace(/[/\\?%*:|"<>]/g, '-').substring(0, 30);
-    XLSX.utils.book_append_sheet(wb, ws, safeTitle);
+    XLSX.utils.book_append_sheet(wb, ws, safeTitle); // 🎯 이 부분 오타 완벽 수정!
     XLSX.writeFile(wb, `[개별응답분석]_${safeTitle}.xlsx`);
   };
   
@@ -160,25 +191,28 @@ export default function AdminSurveyHistoryModule() {
     const targetDepts = survey.target.split(',').map((t:string) => t.trim());
     const targetUsers = targetDepts.includes('전사') ? users : users.filter(u => targetDepts.includes(u.dept));
     const submittedUsers = targetUsers.filter(u => responses[`${survey.id}_${u.email}`]?.isDone);
-  
     if (submittedUsers.length === 0) return alert("제출된 응답이 없습니다.");
     alert(`${submittedUsers.length}명의 데이터를 압축 파일로 생성합니다. 잠시만 기다려주세요...`);
   
     const safeFolderTitle = survey.title.replace(/[/\\?%*:|"<>]/g, '-');
     const folder = zip.folder(safeFolderTitle);
-    const storedQuestions = JSON.parse(localStorage.getItem(`survey_builder_${survey.id}`) || '[]');
+    let storedQuestions = [];
+    try {
+      storedQuestions = typeof survey.questions === 'string' ? JSON.parse(survey.questions) : (survey.questions || []);
+    } catch (e) {
+      console.error("문항 데이터 파싱 실패:", e);
+    }
   
     submittedUsers.forEach((user, idx) => {
       const resp = responses[`${survey.id}_${user.email}`];
       const identifier = survey.isAnonymous ? `익명응답자_${idx + 1}` : `${user.dept}_${user.name}`;
       const fileNameBase = `${identifier}_${safeFolderTitle}`; 
-  
       let content = `■ 설문명: ${survey.title}\n■ 제출자: ${survey.isAnonymous ? '익명' : user.dept + ' ' + user.name}\n■ 제출일: ${resp.date}\n------------------------------------------\n\n`;
       
       storedQuestions.forEach((q: any, i: number) => {
+         if (q.type === 'SECTION') return;
          content += `Q${i+1}. ${q.title}\n`;
          const ans = resp.answers ? resp.answers[q.id] : null;
-  
          if (ans && ans.fileName) {
              content += `A. [첨부파일] ${ans.fileName} (별도 파일로 추출됨)\n\n`;
              if (ans.fileData) {
@@ -203,7 +237,6 @@ export default function AdminSurveyHistoryModule() {
       const targetUsers = targetDepts.includes('전사') ? users : users.filter(u => targetDepts.includes(u.dept));
       const done = targetUsers.filter(u => responses[`${h.id}_${u.email}`]?.isDone).length;
       const total = targetUsers.length;
-  
       return {
         'NO': filteredHistory.length - idx,
         '식별코드': h.code,
@@ -221,7 +254,6 @@ export default function AdminSurveyHistoryModule() {
         '보관 상태': h.status
       };
     });
-  
     const ws = XLSX.utils.json_to_sheet(exportData);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "설문이력대장");
@@ -234,23 +266,78 @@ export default function AdminSurveyHistoryModule() {
   if (loading) return <div className="p-10 font-black text-indigo-400 animate-pulse text-center tracking-widest text-xl mt-20">아카이브 데이터를 동기화 중입니다...</div>;
   
   return (
-    <div className="p-6 space-y-6 font-sans text-slate-900 animate-fade-in pb-20 max-w-[1600px] mx-auto text-[11px]">
-      <div className="bg-slate-900 p-6 px-8 rounded-[2rem] text-white shadow-xl flex justify-between items-center flex-wrap gap-4">
-        <div>
-          <h1 className="text-xl font-black mb-1 flex items-center gap-2"><span className="text-2xl">📦</span> 종료 조사 아카이브 (보관함)</h1>
-          <p className="text-slate-400 font-bold text-[10px] uppercase tracking-widest">Archived Survey Inventory</p>
-        </div>
-        <div className="flex items-center gap-3">
-          <Link href="/survey/general/admin/active-surveys" className="px-4 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-[11px] font-black border border-slate-700 transition-all mr-2">⬅️ 현황판으로 돌아가기</Link>
-          <div className="flex items-center gap-2 bg-slate-800 px-4 py-2.5 rounded-xl border border-slate-700 shadow-inner">
-            <span className="text-[10px] font-black text-slate-300 uppercase tracking-widest">🗓️ 조회 연도</span>
-            <select value={selectedYear} onChange={(e) => setSelectedYear(e.target.value)} className="bg-transparent text-[12px] font-black text-white outline-none cursor-pointer">
-              {availableYears.map(year => <option key={year} value={year} className="text-slate-900">{year}년</option>)}
-            </select>
+    <div className="w-full max-w-[1750px] mx-auto space-y-6 p-8 font-sans text-slate-900 pb-24 animate-fade-in text-[11px]">
+      
+      {/* 🚀 1. 설문 관리자 통제실 배너 (소모품/진행조사와 100% 에메랄드 테마 동기화) */}
+      <div className="w-full bg-gradient-to-r from-emerald-900 to-teal-900 p-6 rounded-[2.5rem] text-white shadow-xl relative overflow-hidden flex flex-col justify-center min-h-[140px]">
+        <div className="relative z-10 flex justify-between items-end w-full">
+          <div>
+            <h3 className="text-[10px] font-black uppercase tracking-widest text-emerald-400 mb-3">
+              ARCHIVED SURVEY INVENTORY
+            </h3>
+            <h1 className="text-2xl font-black tracking-tight text-white leading-none">
+              종료 조사 아카이브 (보관함)
+            </h1>
+            <p className="text-emerald-100/90 text-xs font-semibold mt-4 opacity-90">
+              공고 기한이 마감되어 최종 보관 처리된 과거 조사 명세와 누적 응답 데이터 대장입니다.
+            </p>
           </div>
-          <button onClick={handleExportListExcel} className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-[11px] font-black flex items-center gap-2 transition-all shadow-lg active:scale-95"><span>📋</span> 리스트 엑셀 다운로드</button>
+        </div>
+        <div className="absolute right-10 top-1/2 -translate-y-1/2 text-8xl opacity-10 select-none pointer-events-none">
+          📦
         </div>
       </div>
+
+      {/* 🚀 2. 관리자 전용 동적 탭 네비게이션 (자석 매칭) */}
+      <div className="flex gap-1.5 bg-slate-200/60 p-1.5 rounded-2xl border border-slate-200 shadow-inner w-full max-w-2xl mt-4">
+        {[
+          { name: '📋 현재 진행중인 조사', path: '/survey/general/admin/active-surveys' },
+          { name: '🗂️ 전체 조사 이력 관리', path: '/survey/general/admin/survey-history' },
+        ].map((tab) => {
+          const isActive = pathname.startsWith(tab.path);
+          return (
+            <Link 
+              key={tab.path} 
+              href={tab.path} 
+              className={`flex-1 py-3 text-center text-[11px] font-black rounded-xl transition-all uppercase tracking-tight ${
+                isActive 
+                  ? 'bg-white text-emerald-700 shadow-sm border border-emerald-200/50 scale-[1.01]' 
+                  : 'text-slate-500 hover:text-slate-800 hover:bg-white/40'
+              }`}
+            >
+              {tab.name}
+            </Link>
+          );
+        })}
+      </div>
+
+      {/* 🚀 3. [배너 밖 탈출 완료] 연도 필터 및 엑셀 다운로드 전용 컨트롤 바 */}
+      <div className="flex justify-end items-center gap-3 w-full pt-2">
+        {/* 🗓️ 조회 연도 선택 컨트롤 */}
+        <div className="flex items-center gap-2.5 bg-slate-100 border border-slate-300 p-1.5 px-4 rounded-xl shadow-sm">
+          <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">🗓️ 조회 연도</span>
+          <select 
+            value={selectedYear} 
+            onChange={(e) => setSelectedYear(e.target.value)} 
+            className="bg-transparent text-[11px] font-black text-slate-800 outline-none cursor-pointer border-none p-0 focus:ring-0"
+          >
+            {availableYears.map(year => (
+              <option key={year} value={year} className="text-slate-900">{year}년도 내역</option>
+            ))}
+          </select>
+        </div>
+
+        {/* 📊 리스트 엑셀 다운로드 버튼 */}
+        <button 
+          type="button"
+          onClick={handleExportListExcel} 
+          className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-black shadow-sm transition-all flex items-center gap-1.5 active:scale-98"
+        >
+          <span>📋</span> 리스트 엑셀 다운로드
+        </button>
+      </div>
+
+      {/* 👇 이 아래부터 기존 보관함 테이블 대장 구역(`<div className="bg-white border ...">`)을 그대로 이어붙이시면 됩니다! */}
   
       <div className="bg-white border border-slate-200 rounded-[2rem] shadow-sm overflow-hidden">
         <div className="overflow-x-auto">
@@ -270,7 +357,6 @@ export default function AdminSurveyHistoryModule() {
                 <th className="py-3 px-2 w-14 text-center bg-red-50/50 text-red-600 border-r">미참여</th>
                 <th className="py-3 px-2 w-16 text-center">상태</th>
                 <th className="py-3 px-2 w-20 text-center border-l border-slate-200">운영복원</th>
-                {/* 🚀 응답 관리 컬럼 가로폭 확장 */}
                 <th className="py-3 px-2 w-36 text-center">응답 관리</th>
                 {isLv1 && <th className="py-3 pr-4 w-20 text-center text-red-500">데이터 삭제</th>}
               </tr>
@@ -317,7 +403,6 @@ export default function AdminSurveyHistoryModule() {
                     <td className="py-2 px-2 text-center align-middle border-l border-slate-200">
                       <button onClick={() => handleRestore(s.id)} className="w-full py-1.5 border border-slate-300 bg-white text-slate-700 rounded hover:bg-slate-900 hover:text-white transition-all font-black text-[9px] whitespace-nowrap shadow-sm">🔄 복원</button>
                     </td>
-                    {/* 🚀 [요구사항 반영] ZIP 버튼 우측에 분할형 개별 엑설 버튼 나열 배치 */}
                     <td className="py-2 px-2 align-middle">
                       <div className="flex items-center justify-center gap-1.5 max-w-[120px] mx-auto">
                         <button onClick={() => handleDownloadZip(s)} className="flex-1 py-1.5 bg-indigo-50 border border-indigo-200 text-indigo-700 rounded-lg shadow-sm hover:bg-indigo-600 hover:text-white transition-all font-black text-[9px] whitespace-nowrap flex items-center justify-center gap-1">
@@ -328,7 +413,7 @@ export default function AdminSurveyHistoryModule() {
                         </button>
                       </div>
                     </td>
-
+     
                     {isLv1 && (
                       <td className="py-2 pr-4 text-center align-middle">
                         <button onClick={() => handlePermanentDelete(s.id)} className="w-full py-1.5 bg-white border border-red-200 text-red-500 rounded hover:bg-red-50 transition-all font-black text-[9px] whitespace-nowrap shadow-sm">

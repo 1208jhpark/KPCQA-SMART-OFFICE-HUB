@@ -1,6 +1,5 @@
-import React from 'react';
-import L4PanelRenderer from '@/components/admin/L4PanelRenderer';
+import DashboardModule from '@/components/marketing/DashboardModule';
 
-export default function DeptPage() {
-  return <L4PanelRenderer />;
+export default function MarketingDashboardPage() {
+  return <DashboardModule />;
 }

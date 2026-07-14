@@ -1,3 +1,5 @@
-'use client';
-import SubMenuGrid from '@/components/admin/SubMenuGrid';
-export default function SurveyAdminPage() { return <SubMenuGrid path="/survey/general/admin" />; }
+import L4PanelRenderer from '@/components/admin/L4PanelRenderer';
+     
+export default function Page() {
+  return <L4PanelRenderer />;
+}

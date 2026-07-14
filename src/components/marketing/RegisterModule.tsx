@@ -238,14 +238,40 @@ function RegisterContent() {
   return (
     <div className="w-full max-w-[1600px] mx-auto space-y-6 p-8 font-sans text-slate-900 pb-24 animate-fade-in">
       
-      {/* 메인 정보성 대시 배너 */}
-      <div className="w-full bg-gradient-to-r from-blue-700 to-indigo-800 p-6 rounded-[2.5rem] min-h-[120px] flex flex-col justify-center text-white shadow-xl relative overflow-hidden">
-        <div className="relative z-10">
-          <p className="text-[10px] font-black uppercase tracking-widest text-blue-200 mb-1">GIFT DISTRIBUTION MANAGEMENT</p>
-          <h1 className="text-2xl font-black tracking-tight">{currentUser?.name || '관리자'} 님 기념품 지급 신청</h1>
-          <p className="text-blue-100 text-xs font-semibold mt-2 opacity-90">보유하고 있는 센터 및 본부 재고 내에서 고객사 대상 기념품 지급을 등록합니다.</p>
-        </div>
-      </div>
+{/* 🔵 [디자인 1원칙: 사용자 신청 = 파란색 테마 배너] 기념품 지급 신청 표준 배너 (min-h-[140px] 완벽 이식) */}
+<div className="w-full bg-gradient-to-r from-blue-700 to-indigo-800 p-6 rounded-[2.5rem] min-h-[140px] flex flex-col justify-center text-white shadow-xl relative overflow-hidden group">
+  
+  {/* ✨ 파란색 배너 전용 은은한 우측 상단 빛 번짐 효과 매칭 */}
+  <div className="absolute right-[-10px] top-[-10px] w-24 h-24 bg-white/10 rounded-full blur-2xl group-hover:scale-150 transition-transform duration-700"></div>
+
+  <div className="relative z-10 flex justify-between items-end w-full">
+    <div>
+      {/* 1. 상단 라벨 (소모품/명함 배너 표준 가이드인 mb-3 여백 & text-blue-200 톤) */}
+      <h3 className="text-[10px] font-black uppercase tracking-widest text-blue-200 mb-3"> 
+        GIFT DISTRIBUTION MANAGEMENT
+      </h3>
+      
+      {/* 2. 메인 타이틀 (소모품 규격과 100% 싱크로: 부서 박스 뱃지 + 사용자 이름 님) */}
+      <h1 className="text-2xl font-black tracking-tight text-white leading-none flex items-center flex-wrap gap-2.5">
+        {/* 🏢 소속 부서 뱃지 (소모품의 볼륨감과 투명도 커스텀 매칭, 대괄호 문자 원천 제거) */}
+        <span className="bg-white/10 border border-white/20 text-blue-100 px-4 py-2 rounded-2xl text-lg font-black tracking-tight shrink-0 shadow-sm">
+          {currentUser?.unit?.unit_name || '조직'}
+        </span>
+        
+        {/* 👤 사용자 이름 (파란 배경에 선명하게 대비되는 text-blue-100 톤 유지) */}
+        <span className="text-blue-100 shrink-0">{currentUser?.name || '임직원'} 님</span>{' '}
+        
+        {/* 🎯 메인 타이틀 텍스트 */}
+        <span className="text-white">기념품 지급 신청</span>
+      </h1>
+      
+      {/* 3. 하단 설명 (소모품과 완벽 대칭 mt-4 가독성 주입) */}
+      <p className="text-blue-200 text-xs font-semibold mt-4 opacity-95">
+        보유하고 있는 센터 및 본부 재고 내에서 고객사 대상 기념품 지급을 등록하고 관리합니다.
+      </p>
+    </div>
+  </div>
+</div>
      
       {/* 등록 폼 컨테이너 */}
       <div className="bg-white border border-slate-200 rounded-[2.5rem] shadow-sm p-6">

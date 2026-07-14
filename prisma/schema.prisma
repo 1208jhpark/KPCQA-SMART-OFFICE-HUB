@@ -1,12 +1,12 @@
 generator client {
   provider = "prisma-client-js"
 }
-
+     
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
 }
-
+     
 // -----------------------------------------------------------------
 // 1. 시스템 글로벌 설정
 // -----------------------------------------------------------------
@@ -22,42 +22,61 @@ model SystemConfig {
   client_category_group   String   @default("") 
   supply_category_group   String   @default("") 
   unit_category_group     String   @default("") 
-  it_category_group       String   @default("")
+  it_category_group       String   @default("") // IT 자산관리 > 범주 분류
+  it_rental_group         String   @default("") // IT 자산관리 > 조달 유형
+  it_master_group         String   @default("") // 🚀 추가: IT 자산관리 > 분류 마스터 데이터 전용 필드
+  job_duty_group          String   @default("")
+  job_grade_group         String   @default("")
   updatedAt               DateTime @updatedAt
 }
-
+     
 // -----------------------------------------------------------------
-// 2. 사용자 모델
+// 2. 사용자 모델 (직책/직급 분리 완전체)
 // -----------------------------------------------------------------
 model User {
-  id        String   @id @default(cuid())
-  email     String   @unique
-  name      String
-  password  String
-  roles     Json     @default("[\"LV_3\"]")
-  status    String   @default("Pending")
-  unit_id   String?
-  unit      OrgUnit? @relation(fields: [unit_id], references: [id])
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String   // 한글 성명
+  name_en      String   @default("") // 영문 성명
+  employee_no  String   @default("") // 사번
+  password     String
+  roles        Json     @default("[\"LV_3\"]")
+  status       String   @default("Pending")
+  unit_id      String?
+  unit         OrgUnit? @relation(fields: [unit_id], references: [id])
+  
+  // 💡 [개념 분리] 직책(보직) 마스터 연동 필드
+  duty         String   @default("") // 국문 직책 (예: 센터장)
+  duty_en      String   @default("") // 영문 직책 (예: Manager)
+  
+  // 💡 [개념 분리] 직급(자격) 마스터 연동 필드
+  grade        String   @default("") // 국문 직급 (예: 수석전문위원)
+  grade_en     String   @default("") // 영문 직급 (예: Chief Expert Advisor)
+  
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 }
 
 // -----------------------------------------------------------------
 // 3. 조직/부서 마스터
 // -----------------------------------------------------------------
 model OrgUnit {
-  id         String    @id @default(cuid())
-  unit_name  String
-  unit_type  String
-  sort_order Int       @default(0)
-  parent_id  String?
-  parent     OrgUnit?  @relation("UnitHierarchy", fields: [parent_id], references: [id])
-  children   OrgUnit[] @relation("UnitHierarchy")
-  users      User[]
-  is_active  Boolean   @default(true)
-  is_deleted Boolean   @default(false)
+  id           String    @id @default(cuid())
+  unit_name    String    // 국문 부서명 (예: 경영자산관리팀)
+  
+  // 💡 [신설] 명함 시스템 자동 링크용 영문 조직명 필드 추가
+  unit_name_en String    @default("") // 영문 부서명 (예: Management & Asset Team)
+  
+  unit_type    String
+  sort_order   Int       @default(0)
+  parent_id    String?
+  parent       OrgUnit?  @relation("UnitHierarchy", fields: [parent_id], references: [id])
+  children     OrgUnit[] @relation("UnitHierarchy")
+  users        User[]
+  is_active    Boolean   @default(true)
+  is_deleted   Boolean   @default(false)
 }
-
+ 
 // -----------------------------------------------------------------
 // 4. 시스템 메뉴 및 권한 제어
 // -----------------------------------------------------------------
@@ -95,7 +114,7 @@ model InterfaceConfig {
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 }
-
+     
 // -----------------------------------------------------------------
 // 5, 6. 마스터 그룹 및 코드
 // -----------------------------------------------------------------
@@ -110,7 +129,7 @@ model MasterGroup {
   createdAt   DateTime     @default(now())
   updatedAt   DateTime     @updatedAt
 }
-
+     
 model MasterCode {
   id          String      @id @default(cuid())
   group_id    String
@@ -128,14 +147,14 @@ model MasterCode {
   is_archived Boolean     @default(false)
   in_use      Boolean     @default(false)
 }
-
+     
 // -----------------------------------------------------------------
-// 7. IT 정보 자산 관리 (수정됨 🚀)
+// 7. IT 정보 자산 관리
 // -----------------------------------------------------------------
 model ITAsset {
   id              String   @id @default(cuid())
-  category        String   
-  it_type         String   
+  category        String   // <--- 여기에 범주(HW/SW 등) 저장
+  it_type         String   // <--- 여기에 분류(노트북 등) 저장
   dept            String   
   user            String?  @default("공용")
   code            String   @unique 
@@ -143,7 +162,7 @@ model ITAsset {
   sn              String?
   brand           String?
   spec            String?
-  is_rental       String   @default("구매") 
+  is_rental       String   @default("구매")  // <--- 여기에 조달유형(구매/렌탈) 저장
   rental_months   Int      @default(0)
   purchase_price  Float    @default(0)
   monthly_fee     Float    @default(0)
@@ -155,14 +174,13 @@ model ITAsset {
   cycle           Int      @default(48)
   memo            String?  @default("-")
   reg_date        String?
-  last_audit_date String?  @default("")
-  
-  // 🚀 아래 필드를 추가하여 오류 해결
   is_active       Boolean  @default(true) 
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
+  last_audit_date    String?   // 최근 실사 인증 완료일
+  audit_request_date String?   // 관리자 실사 독촉(요청)일
 }
-
+     
 // -----------------------------------------------------------------
 // 8, 9. 장비 관리 및 이력
 // -----------------------------------------------------------------
@@ -196,7 +214,7 @@ model Equipment {
   updatedAt         DateTime @updatedAt
   histories         CalibrationHistory[]
 }
-
+     
 model CalibrationHistory {
   id              String   @id @default(cuid())
   equipment_id    String
@@ -215,7 +233,7 @@ model CalibrationHistory {
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 }
-
+     
 // -----------------------------------------------------------------
 // 10~13. 마케팅 물품 관리
 // -----------------------------------------------------------------
@@ -229,17 +247,14 @@ model MarketingItem {
   alert_qty     Int      @default(0) 
   image_url     String?  @default("") 
   description   String?  @default("") 
-  
-  // 🚀 [추가해야 할 핵심 코드] 단위(unit)와 보관함(archive) 상태 저장용 필드
   unit          String?  @default("EA")   
   is_archived   Boolean? @default(false)  
-
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
   distributions MarketingDistribution[]
   purchases     MarketingPurchase[] 
 }
-
+     
 model MarketingDistribution {
   id              String   @id @default(cuid())
   item_id         String
@@ -255,7 +270,7 @@ model MarketingDistribution {
   dist_date       DateTime @default(now()) 
   createdAt       DateTime @default(now())
 }
-
+     
 model MarketingClient {
   id          String   @id @default(cuid())
   name        String   
@@ -267,24 +282,30 @@ model MarketingClient {
   updatedAt   DateTime @updatedAt
   distributions MarketingDistribution[]
 }
-
+     
 model MarketingPurchase {
   id              String   @id @default(cuid())
   item_id         String
-  item            MarketingItem @relation(fields: [item_id], references: [id], onDelete: Cascade)
   qty             Int      @default(0) 
   unit_price      Float    @default(0) 
   total_price     Float    @default(0) 
-  vendor          String?  
   note            String?  
   purchaser_name  String   
   purchaser_dept  String   
   purchase_date   DateTime @default(now()) 
   createdAt       DateTime @default(now())
-}
+  item            MarketingItem @relation(fields: [item_id], references: [id], onDelete: Cascade)
+       
+  // 🚀 기존 데이터를 살리기 위해 DB의 기존 'vendor' 컬럼을 매핑 보존합니다.
+  old_vendor      String?  @map("vendor")
 
+  // 🚀 외주 업체 테이블과 ID로 정식 연결 관계 구축
+  vendor_id       String?
+  vendor          Vendor?    @relation(fields: [vendor_id], references: [id], onDelete: SetNull)
+}
+     
 // -----------------------------------------------------------------
-// 📦 ASSET: 일반 소모품 관리 (수정됨 🚀)
+// 📦 ASSET: 일반 소모품 관리
 // -----------------------------------------------------------------
 model SupplyItem {
   id              String   @id @default(cuid())
@@ -303,22 +324,28 @@ model SupplyItem {
   requests        SupplyRequest[]
   purchases       SupplyPurchase[]
 }
-
+     
 model SupplyPurchase {
   id              String   @id @default(cuid())
   item_id         String
   qty             Int      
   unit_price      Int      
   total_price     Int      
-  vendor          String?  
   note            String?  
   purchase_date   DateTime @default(now()) 
   purchaser_name  String   
   purchaser_dept  String   
   createdAt       DateTime @default(now())
   item            SupplyItem @relation(fields: [item_id], references: [id], onDelete: Cascade)
-}
+       
+  // 🚀 기존 데이터를 살리기 위해 DB의 기존 'vendor' 컬럼을 매핑 보존합니다.
+  old_vendor      String?  @map("vendor")
 
+  // 🚀 외주 업체 테이블과 ID로 정식 연결 관계 구축
+  vendor_id       String?
+  vendor          Vendor?    @relation(fields: [vendor_id], references: [id], onDelete: SetNull)
+}
+     
 model SupplyRequest {
   id             String   @id @default(cuid())
   item_id        String
@@ -330,10 +357,359 @@ model SupplyRequest {
   status         String   @default("PENDING") 
   note           String?  @db.Text 
   createdAt      DateTime @default(now())
-  
-  // 🚀 관리자 처리 필드들 (오류 해결 핵심)
   admin_opinion  String?  
   admin_name     String?  
   admin_dept     String?  
   updatedAt      DateTime @updatedAt 
+}
+     
+// -----------------------------------------------------------------
+// 📦 ASSET: 외주 업무 서비스 마스터
+// -----------------------------------------------------------------
+model Vendor {
+  id                 String              @id @default(cuid())
+  name               String              // 업체명 (예: "한생미디어", "아트로릭")
+  services           String[]            // 취급 품목 리스트 (예: ["제본", "쇼핑백", "상장케이스"])
+  contact            String?             // 담당자 연락처
+  category           String?             // 인쇄, 물류, 비품 등 구분
+  is_active          Boolean             @default(true)
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  
+  // 역관계 설정: 이 외주업체가 납품한 모든 구매 내역들을 추적합니다.
+  supplyPurchases    SupplyPurchase[] 
+  marketingPurchases MarketingPurchase[]
+}
+
+// 📦 배달 복지 설문 모델 (localStorage 데이터를 DB로 이관)
+model DeliverySurvey {
+  id               String   @id @default(cuid())
+  code             String
+  postNumber       Int
+  title            String
+  description      String?  @db.Text
+  type             String
+  deliveryType     String
+  target           String
+  isAnonymous      Boolean  @default(false)
+  postDate         String
+  startDate        String
+  endDate          String
+  status           String   @default("게시전")
+  hasBeenPublished Boolean  @default(false)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  questions        Json?    @default("[]")
+  responses        DeliveryResponse[] 
+  nudgedUsers String[] @default([])
+  endTime   String?  @default("23:59") // 종료 시간 (기본값 밤 12시 1분 전)
+}
+
+// -----------------------------------------------------------------
+// 📝 배달 복지 신청 실제 응답 대장 (새로 추가하는 모델)
+// -----------------------------------------------------------------
+model DeliveryResponse {
+  id            String         @id @default(cuid())
+  
+  // 💡 위 DeliverySurvey 테이블과 연결되는 외래키(ForeignKey) 설정
+  surveyId      String   
+  survey        DeliverySurvey @relation(fields: [surveyId], references: [id], onDelete: Cascade)
+  
+  userEmail     String   
+  submittedAt   DateTime       @default(now()) 
+  answers       Json     
+  isApproved    Boolean        @default(false)  
+  approvedAt    DateTime?                 
+  feedbackMsg   String?        @db.Text         
+  feedbackAt    DateTime?                 
+  isRevoked     Boolean        @default(false)  
+  revisionCount Int            @default(0)      
+
+  @@unique([surveyId, userEmail]) 
+}
+
+// -----------------------------------------------------------------
+// 📝 일반 설문조사 모델 (General Survey)
+// -----------------------------------------------------------------
+model GeneralSurvey {
+  id               String   @id @default(cuid())
+  code             String
+  postNumber       Int
+  title            String
+  description      String?  @db.Text
+  type             String   // 선택형, 자유응답형 등
+  isAnonymous      Boolean  @default(false) // 익명 여부
+  target           String   // 전사, 특정부서 지정 등
+  postDate         String
+  startDate        String
+  endDate          String
+  status           String   @default("게시전")
+  hasBeenPublished Boolean  @default(false)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  questions        Json?    @default("[]")
+  nudgedUsers      String[]          @default([])
+  endTime   String?  @default("23:59") // 종료 시간 (기본값 밤 12시 1분 전)
+
+  // 🚀 [추가 필수]: GeneralResponse와의 1:N 양방향 관계 설정
+  responses        GeneralResponse[] 
+}
+
+// -----------------------------------------------------------------
+// 📝 일반 설문 응답 대장 (General Response) - 신규 추가
+// -----------------------------------------------------------------
+model GeneralResponse {
+  id          String   @id @default(cuid())
+  
+  // 외래키 설정
+  surveyId    String
+  survey      GeneralSurvey @relation(fields: [surveyId], references: [id], onDelete: Cascade)
+  
+  userEmail   String
+  submittedAt DateTime @default(now())
+  answers     Json     // 응답 데이터 저장 (배열/객체 혼합)
+  isApproved  Boolean  @default(false) // 프론트엔드의 마이페이지 렌더링에 사용됨
+
+  // 중복 제출 방지를 위한 복합 유니크 키
+  @@unique([surveyId, userEmail])
+}
+
+// 🚀 IT 자산 실사 마스터 테이블
+model ITAudit {
+  id          String   @id @default(uuid())
+  title       String
+  description String?
+  target      String   // 대상 부서 (예: "전사", "KPCQA")
+  startDate   String
+  endDate     String
+  status      String   @default("작성중") // 작성중, 진행중, 게시중단, 마감, 보관됨
+  postDate    String?
+  archivedAt  String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  responses   ITAuditResponse[]
+}
+
+// 🚀 IT 자산 실사 개별 응답 테이블
+model ITAuditResponse {
+  id        String   @id @default(uuid())
+  auditId   String
+  audit     ITAudit  @relation(fields: [auditId], references: [id], onDelete: Cascade)
+  userEmail String   // 참여자 이메일
+  isDone    Boolean  @default(false)
+  date      String?  // 인증 완료일
+  createdAt DateTime @default(now())
+
+  @@unique([auditId, userEmail])
+}
+
+// 🚀 IT 자산 관련 요구사항 및 의견 송수신 테이블
+model ITRequest {
+  id           String   @id @default(uuid())
+  requestDate  String   // 요청 일자 (YYYY-MM-DD)
+  requester    String   // 요청자 이름
+  dept         String   // 요청자 부서
+  assetInfo    String   // 대상 자산 요약 (자산코드 / 모델명)
+  assetCode    String   // 자산 식별 코드
+  assetType    String   // 자산 분류 (노트북, 모니터 등)
+  content      String   // 요구사항/의견 내용 (텍스트)
+  status       String   @default("의견전송") // 의견전송, 관리자 의견발송, 처리완료, 답변 대기중 등
+  adminOpinion String?  // 관리자 답변/검토 의견
+  completedAt  String?  // 처리 및 조치 완료 일자
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+// -----------------------------------------------------------------
+// 🚀 IT 종료 자산(아카이브) 관리 테이블 (추가)
+// -----------------------------------------------------------------
+model ITAssetArchive {
+  id              String   @id @default(cuid())
+  category        String   
+  it_type         String   
+  dept            String   
+  user            String?  
+  code            String   
+  model           String
+  sn              String?
+  brand           String?
+  spec            String?
+  is_rental       String   
+  purchase_price  Float    @default(0)
+  monthly_fee     Float    @default(0)
+  monthly_sub_fee Float    @default(0)
+  in_date         String?
+  end_date        String?
+  first_bill      String?
+  cycle           Int      @default(48)
+  memo            String?  
+  reg_date        String?
+  
+  // 아카이브 전용 필수 필드
+  status          String   // 반납, 폐기, 재판매 등
+  reason          String?  @db.Text
+  reseller        String?  // 매각처
+  resellPrice     Float?   @default(0)
+  terminated_at   String?  // 종료일자
+  
+  createdAt       DateTime @default(now())
+}
+
+// 📇 [교정 완료] 명함 신청 및 제작 상태 이력 관리 테이블 스키마
+model BusinessCardRequest {
+  id                String                  @id @default(cuid())
+  postNumber        String                  // 관리 번호 (예: BC-2026-0001)
+  userEmail         String                  // 신청자 계정
+  createdAt         DateTime                @default(now())
+  isArchived        Boolean                 @default(false) // 🚀 보관함 숨김 스위치 완벽 장착
+
+  // ── [1] 국문 명함 정보 ──
+  userName          String                  // 성명
+  applyDate         String                  // 신청일자 (YYYY-MM-DD)
+  processDate       String?                 // 관리자 처리일자 매핑용
+  addressId         String?                 // 주소지 마스터 ID 매핑용
+  deptHead          String                  // 본부 (드롭다운 선택 값)
+  deptName          String                  // 소속 (드롭다운 선택 값)
+  title             String                  // 직책/직급 (마스터 데이터 연동 값)
+  additionalKo      String?                 // 추가사항 (자격 등)
+  quantity          Int                     @default(1) // 명함 발주 신청 수량(통)
+
+  mobile            String                  // 휴대전화 (예: 010-XXXX-XXXX)
+  phone             String                  // 전화번호
+  email             String                  // 이메일
+  
+  // ── [2] 시스템 일괄 적용 고정값 ──
+  zipCode           String                  // 우편번호
+  addressKo         String                  // 주소
+  fax               String                  // 팩스번호
+
+  // ── [3] 영문 명함 정보 ──
+  userNameEn        String                  // 영문 이름
+  deptHeadEn        String                  // 영문 본부
+  deptNameEn        String                  // 영문 소속
+  titleEn           String                  // 영문 직책
+  additionalEn      String?                 // 영문 추가사항
+  addressEn         String                  // 영문 주소
+  mobileEn          String                  // 영문 휴대전화
+  phoneEn           String                  // 영문 전화
+  faxEn             String                  // 영문 팩스
+  emailEn           String                  // 영문 이메일
+
+  // ── [4] 프로세스 제어 상태 플래그 ──
+  userStatus        String                  @default("1차작성")
+  adminStatus       String                  @default("대기중")
+  adminFeedback     String?                 @db.Text
+  
+  // ── [5] 묶음 대장과의 부모-자식 정식 1:N 관계 설정 ──
+  orderGroupId      String?                 // 발주 묶음 아이디 외래키
+  orderBatch        BusinessCardOrderBatch? @relation(fields: [orderGroupId], references: [id])
+  
+  // ── [6] 히스토리 로그 ──
+  updatedAt         DateTime                @updatedAt
+  processedBy       String?
+  processedAt       DateTime?
+
+  // 관리자 수정 추적용
+  isModifiedByAdmin Boolean                 @default(false)
+  adminMemo         String?   
+  adminModifierName String?   
+  adminModifiedAt   DateTime? 
+
+  @@index([userEmail])
+  @@index([orderGroupId])
+  @@index([adminStatus])
+}
+
+// 📦 [교정 완료] 명함 외주 발주 묶음(Batch) 마스터 통제 테이블
+model BusinessCardOrderBatch {
+  id            String                @id // 묶음 관리번호 (예: BATCH-20260707-01)
+  orderDate     String                // 발주 확정 일자 (YYYY-MM-DD)
+  totalCount    Int                   // 묶음에 포함된 명함 총 건수
+  deptHeadGroup String                // 기준 소속 (필터링용 대표 조직명)
+  status        String                @default("발주완료") // 발주완료 / 지급완료 등
+  isArchived    Boolean               @default(false) // 🚀 보관함 숨김 스위치 완벽 장착
+  
+  createdAt     DateTime              @default(now())
+  updatedAt     DateTime              @updatedAt
+  
+  items         BusinessCardRequest[] // 자식 테이블과의 연동 관계
+}
+
+// -----------------------------------------------------------------
+// 🏢 시스템 공통 주소지 마스터 (명함, 배송 등 전사 공통 사용)
+// -----------------------------------------------------------------
+model CompanyAddress {
+  id          String   @id @default(cuid())
+  label       String   // 선택지명 (예: 본사, 센터)
+  zipCode     String
+  addressKo   String
+  addressEn   String
+  fax         String
+  faxEn       String
+  isActive    Boolean  @default(true) // 활성/비활성 토글
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+// -----------------------------------------------------------------
+// 🎓 명함 전용 자격사항/추가사항 표준단어 마스터
+// -----------------------------------------------------------------
+model BusinessCardQualification {
+  id        String   @id @default(cuid())
+  nameKo    String   // 국문 자격명 (예: 건축사)
+  nameEn    String   // 영문 자격명 (예: Professional Engineer)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+}
+
+model OutsourcingVendor {
+  id          String   @id @default(cuid())
+  companyName String
+  managerName String
+  email       String
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model ProductionRequest {
+  id              String   @id @default(cuid())
+  postNumber      String   @unique // 예: PROD-20260709-001 (정산을 위한 마스터 코드)
+  category        String   // 품목 분류: "JEBON"(제본), "SIGN"(현판), "BANNER"(현수막), "MEDAL"(상패)
+  
+  // 🏢 부서 족보 데이터 (부서별 대조 및 조회 성능 최적화를 위한 인덱스 필드)
+  userEmail       String   // 신청자 이메일
+  userName        String   // 신청자 성명
+  deptHead        String   // 소속 본부명
+  deptName        String   // 세부 부서/센터명
+  
+  // 📝 맞춤 제작 공통 핵심 명세 (거래명세서 엑셀 대조 시 키값으로 매핑될 데이터)
+  title           String   // 제작물 메인 타이틀 (예: "경영기획센터 현판", "인증기준 해설서 제본")
+  quantity        Int      @default(1) // 신청 수량
+  estimatedPrice  Int      @default(0) // 부서가 알고 있는 예상 단가 또는 규격 단가
+  finalPrice      Int      @default(0) // 엑셀 명세서 대조 후 확정된 업체 청구 최종 금액
+
+  // ⚙️ 품목별 동적 옵션 필드 (JSON 구조로 설계하여 컬럼 낭비 방지 및 무한 확장 보장)
+  // - 제본인 경우: { "pageCount": 120, "isColor": true, "bindingType": "스프링" }
+  // - 현판인 경우: { "material": "스테인레스", "size": "400x300", "installType": "다보" }
+  options         Json     @default("{}")
+  
+  // 🚚 공정 통제 및 정산 라이프사이클 상태 플래그
+  // - "PENDING" (부서원 신청완료 / 발주대기)
+  // - "ORDERED" (부서 담당자가 업체에 묶음 발주 완료 / 대조대기)
+  // - "VERIFIED" (월말 거래명세서 업로드 후 1:1 검증 및 승인 완료)
+  status          String   @default("PENDING") 
+  
+  // 🔗 묶음 정산 추적 벨트
+  batchId         String?  // 부서 관리자가 한번에 묶어서 발주할 때 생성될 묶음 고유 ID (예: BATCH-경영기획-202607)
+  isArchived      Boolean  @default(false) // 정산 마감 후 아카이브 보관함 이관 여부
+
+  // 시스템 스탬프
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([deptName])
+  @@index([status])
+  @@index([batchId])
 }

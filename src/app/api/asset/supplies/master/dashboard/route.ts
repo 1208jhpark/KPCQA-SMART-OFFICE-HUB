@@ -81,80 +81,72 @@ export async function PATCH(req: Request) {
   try {
     const body = await req.json();
     const { id } = body;
-  
-    // [A-1] 폐기 처리 (is_active: false)
+
+    // [A-1] 폐기 처리
     if (body.is_active === false) {
       const item = await prisma.supplyItem.findUnique({ where: { id } });
       let ext = JSON.parse(item?.description || '{}');
-      
-      ext = { 
-        ...ext, 
-        disposal_date: body.disposal_date || new Date().toISOString(), 
-        disposal_reason: body.disposal_reason, disposer_dept: body.disposer_dept, disposer_name: body.disposer_name 
-      };
-  
-      await prisma.supplyItem.update({
-        where: { id },
-        data: { is_active: false, is_published: false, description: JSON.stringify(ext) }
-      });
+      ext = { ...ext, disposal_date: body.disposal_date || new Date().toISOString(), disposal_reason: body.disposal_reason, disposer_dept: body.disposer_dept, disposer_name: body.disposer_name };
+      await prisma.supplyItem.update({ where: { id }, data: { is_active: false, is_published: false, description: JSON.stringify(ext) } });
       return NextResponse.json({ success: true, message: '폐기 완료' });
     }
 
-    // 🚀 [A-2] 신규 추가: 아카이브에서 대시보드로 복구 처리 (is_active: true)
+    // [A-2] 아카이브 복구
     if (body.is_active === true && Object.keys(body).length <= 2) {
-      const updated = await prisma.supplyItem.update({
-        where: { id },
-        data: { is_active: true }
-      });
+      const updated = await prisma.supplyItem.update({ where: { id }, data: { is_active: true } });
       return NextResponse.json({ success: true, message: '복구 완료', data: updated });
     }
-  
-    // [B] 게시 상태만 토글 (is_published)
-    if (body.is_published !== undefined && Object.keys(body).length <= 3) {
+
+    // 🚀 [B] 게시 상태만 토글 (재고 0으로 초기화되는 버그 원천 차단)
+    // body에 다른 정보(name 등)가 없고 is_published만 왔을 때 여기서 멈춤!
+    if (typeof body.is_published === 'boolean' && body.name === undefined) {
       await prisma.supplyItem.update({ where: { id }, data: { is_published: body.is_published } });
       return NextResponse.json({ success: true });
     }
-  
-    // [C] 전체 정보 수정
-    const p_qty = cleanNum(body.p_qty) || 1;
-    const sub_qty = cleanNum(body.sub_qty) || 1;
-    const batch_price = cleanNum(body.batch_price);
-    const unit_price = Math.floor(batch_price / ((p_qty * sub_qty) || 1));
-  
-    const description = JSON.stringify({ 
-      p_qty, p_unit: body.p_unit, s_unit: body.s_unit, sub_qty, batch_price, vendor: body.vendor 
-    });
-  
-    const updated = await prisma.supplyItem.update({
-      where: { id },
-      data: { 
-        name: body.name, unit_price, current_stock: cleanNum(body.current_stock), 
-        alert_qty: cleanNum(body.alert_qty), description, image_url: body.image_url 
-      }
-    });
+
+ // [C] 전체 정보 수정 (콤마가 들어와도 안전하게 숫자로 변환)
+ const description = JSON.stringify({ 
+  p_qty: cleanNum(body.p_qty) || 1, 
+  p_unit: body.p_unit, 
+  s_unit: body.s_unit, 
+  sub_qty: cleanNum(body.sub_qty) || 1, 
+  batch_price: cleanNum(body.batch_price) || 0, 
+  vendor: body.vendor, 
+  note: body.note 
+});
+ 
+const updated = await prisma.supplyItem.update({
+  where: { id },
+  data: { 
+    name: body.name, 
+    unit_price: cleanNum(body.unit_price) || 0, // 🚀 콤마 방어 적용
+    current_stock: cleanNum(body.current_stock) || 0, // 🚀 콤마 방어 적용
+    alert_qty: cleanNum(body.alert_qty) || 0, // 🚀 콤마 방어 적용
+    description, 
+    image_url: body.image_url 
+  }
+});
     return NextResponse.json(updated);
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
   
-// 🚀 4. 품목 삭제 (DELETE)
+// 🚀 4. 품목 삭제 (DELETE) - LV_1을 위한 강제 연쇄 삭제(Cascade)
 export async function DELETE(req: Request) {
   try {
     const id = new URL(req.url).searchParams.get('id');
     if (!id) return NextResponse.json({ error: 'ID 누락' }, { status: 400 });
   
-    const item = await prisma.supplyItem.findUnique({ 
-      where: { id }, include: { _count: { select: { requests: true, purchases: true } } } 
-    });
-  
-    if ((item?._count.requests || 0) > 0 || (item?._count.purchases || 0) > 0) {
-      return NextResponse.json({ error: '지급/입고 이력이 존재하여 삭제할 수 없습니다. 대신 폐기 처리를 이용하세요.' }, { status: 400 });
-    }
-  
-    await prisma.supplyItem.delete({ where: { id } });
-    return NextResponse.json({ message: '삭제 완료' });
+    // 트랜잭션으로 자식 데이터(이력)를 먼저 지운 후 부모(품목)를 지웁니다.
+    await prisma.$transaction([
+      prisma.supplyPurchase.deleteMany({ where: { item_id: id } }),
+      prisma.supplyRequest.deleteMany({ where: { item_id: id } }),
+      prisma.supplyItem.delete({ where: { id } })
+    ]);
+    
+    return NextResponse.json({ message: '완전히 삭제되었습니다.' });
   } catch (error) {
-    return NextResponse.json({ error: '삭제 실패' }, { status: 500 });
+    return NextResponse.json({ error: '삭제 실패. 권한을 확인하세요.' }, { status: 500 });
   }
 }

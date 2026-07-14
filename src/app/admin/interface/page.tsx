@@ -1,7 +1,8 @@
+// src/app/admin/interface/page.tsx
 'use client';
-  
+
 import { useEffect, useState } from 'react';
-  
+
 export default function AdminInterfacePage() {
   const [activeTab, setActiveTab] = useState(1);
   const [menus, setMenus] = useState<any[]>([]);
@@ -32,7 +33,7 @@ export default function AdminInterfacePage() {
     }
     return [];
   };
-
+   
   const fetchData = async () => {
     try {
       const [mRes, cRes, oRes] = await Promise.all([
@@ -82,15 +83,6 @@ export default function AdminInterfacePage() {
       if (!res.ok) throw new Error('서버 업데이트 실패');
       fetchData(); 
     } catch (error) { alert("데이터 저장 중 오류 발생"); }
-  };
-  
-  const handleMasterToggle = async (menu: any, isMaster: boolean) => {
-    if (isMaster) {
-      const siblings = menus.filter(m => m.parent_id === menu.parent_id && m.id !== menu.id && m.is_master);
-      await Promise.all(siblings.map(s => fetch('/api/admin/interface', { method: 'PATCH', body: JSON.stringify({ id: s.id, is_master: false }) })));
-    }
-    handleUpdate(menu.id, { is_master: isMaster });
-    if (selectedMenu?.id === menu.id) setSelectedMenu({ ...selectedMenu, is_master: isMaster });
   };
   
   const handleSyncChildPaths = async (parentMenu: any) => {
@@ -223,10 +215,10 @@ export default function AdminInterfacePage() {
   if (loading) return <div className="p-10 text-center font-black text-slate-300 uppercase tracking-widest animate-pulse">Syncing...</div>;
   
   const tabsInfo = [
-    { lv: 1, title: 'Sept1 Home View', desc: '전체 서비스 진입로 (기존 대분류)' },
-    { lv: 2, title: 'Sept2 Tab View', desc: '상단 대메뉴 (탭) 고정 상단바' },
-    { lv: 3, title: 'Sept3 Side View', desc: '좌측 서브메뉴 트리 (단일 vs 인덱스)' },
-    { lv: 4, title: 'Sept4 Panel View', desc: '콘텐츠 작업 영역' }
+    { lv: 1, title: 'Step 1 Home View', desc: '전체 서비스 진입로 (기존 대분류)' },
+    { lv: 2, title: 'Step 2 Tab View', desc: '상단 대메뉴 (탭) 고정 상단바' },
+    { lv: 3, title: 'Step 3 Side View', desc: '좌측 서브메뉴 트리 (단일 vs 인덱스)' },
+    { lv: 4, title: 'Step 4 Panel View', desc: '콘텐츠 작업 영역' }
   ];
   
   return (
@@ -263,7 +255,7 @@ export default function AdminInterfacePage() {
               })}
             </div>
           </div>
-          {activeTab === 1 && <button onClick={handleAddL1} className="px-8 py-3 bg-white text-slate-900 rounded-2xl font-black text-xs hover:bg-blue-50 shadow-xl transition-all">+ L1 신규 서비스 추가</button>}
+          {activeTab === 1 && <button onClick={handleAddL1} className="px-8 py-3 bg-white text-slate-900 rounded-2xl font-black text-xs hover:bg-blue-50 shadow-xl transition-all">+ Step 1 신규 서비스 추가</button>}
         </div>
       </div>
   
@@ -309,17 +301,25 @@ export default function AdminInterfacePage() {
                     ) : children.map((m) => {
                       
                       const masterName = users.find(u => u.id === m.master_editor_id)?.name || '-';
-                      const editRoles = m.edit_role_ids?.length ? m.edit_role_ids.join(', ') : 'MASTER ONLY';
-                      const globalCount = m.task_masters?.filter((t: any) => t.scope === 'GLOBAL').length || 0;
-                      const deptCount = m.task_masters?.filter((t:any)=>t.scope==='DEPT').length || 0;
                       
-                      const safeVScopes = Array.isArray(m.view_scopes) ? m.view_scopes : [];
-                      const validScopes = safeVScopes.filter((s:string) => ['OWN', 'DEPT', 'TOTAL'].includes(s));
-                      const viewScopesStr = validScopes.length > 0 ? validScopes.map((s:string) => s==='OWN'?'본인':s==='DEPT'?'부서':'전체').join(', ') : '제한';
+                      // 🚀 Access 데이터 처리
                       const taCount = m.task_accesses?.length || 0;
                       const selectedOrgNames = m.org_ids?.map((id: any) => orgs.find((o: any) => o.id === id)?.unit_name).filter(Boolean);
                       const orgDisplay = selectedOrgNames?.length > 0 ? selectedOrgNames.join(', ') : '-';
-                      const editScopeStr = m.edit_scopes?.includes('DEPT') ? '소속(부서/본부)' : '전체(Total)';
+                      const viewRolesStr = m.view_role_ids?.length ? m.view_role_ids.join(', ') : '제한';
+                      const safeVScopes = Array.isArray(m.view_scopes) ? m.view_scopes : [];
+                      const validScopes = safeVScopes.filter((s:string) => ['OWN', 'DEPT', 'TOTAL'].includes(s));
+                      const viewScopesStr = validScopes.length > 0 ? validScopes.map((s:string) => s==='OWN'?'본인':s==='DEPT'?'부서':'전체').join(', ') : '제한';
+                      
+                      // 🚀 Edit 데이터 처리 (Access와 형태 통일)
+                      const globalCount = m.task_masters?.filter((t: any) => t.scope === 'GLOBAL').length || 0;
+                      const deptCount = m.task_masters?.filter((t:any)=>t.scope==='DEPT').length || 0;
+                      const tmCount = globalCount + deptCount;
+                      const editRoles = m.edit_role_ids?.length ? m.edit_role_ids.join(', ') : '제한';
+                      
+                      const safeEScopes = Array.isArray(m.edit_scopes) ? m.edit_scopes : [];
+                      const validEScopes = safeEScopes.filter((s:string) => ['OWN', 'DEPT', 'TOTAL'].includes(s));
+                      const editScopeStr = validEScopes.length > 0 ? validEScopes.map((s:string) => s==='OWN'?'본인':s==='DEPT'?'부서':'전체').join(', ') : '전체';
   
                       return (
                         <tr key={m.id} className="hover:bg-blue-50/10 group transition-colors">
@@ -335,28 +335,32 @@ export default function AdminInterfacePage() {
                             
                             {m.level === 3 && (
                               <div className="flex items-center gap-1 mt-3 bg-slate-50 p-1.5 rounded-lg inline-flex border border-slate-100 shadow-inner">
-                                <span className="text-[9px] font-black text-slate-400 px-2 uppercase">Sept4 View Mode:</span>
+                                <span className="text-[9px] font-black text-slate-400 px-2 uppercase">Step 4 View Mode:</span>
                                 <button onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleUpdateMode(m.id, 'INDEX'); }} className={`px-2 py-1 rounded text-[9px] font-black transition-all ${m.entry_index_view ? 'bg-white text-blue-600 shadow-sm border border-blue-200' : 'text-slate-400 hover:bg-slate-200'}`}>🗂️ 인덱스</button>
                                 <button onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleUpdateMode(m.id, 'DIRECT'); }} className={`px-2 py-1 rounded text-[9px] font-black transition-all ${m.entry_l4_direct ? 'bg-white text-blue-600 shadow-sm border border-blue-200' : 'text-slate-400 hover:bg-slate-200'}`}>📄 단일화면</button>
                               </div>
                             )}
                             
                             <div className="flex flex-wrap items-center gap-2 mt-4 pt-4 border-t border-slate-100">
-                              {m.is_master && (
-                                <div className="flex items-center gap-1.5 px-2 py-1 rounded-md text-[10px] font-black border tracking-tight bg-slate-800 border-slate-700 text-white shadow-sm">
-                                  <span>📌 마스터 원본 카드</span>
-                                </div>
-                              )}
                               <div className="flex items-center gap-1.5 px-2 py-1 rounded-md text-[10px] font-black border tracking-tight bg-blue-50 border-blue-200 text-blue-700 shadow-sm">
                                 <span>👑 Master 책임자:</span><span>{masterName !== '-' ? masterName : '미지정'}</span>
                               </div>
-                              <div className="flex items-center gap-1.5 px-2 py-1 rounded-md text-[10px] font-black bg-emerald-50 border border-emerald-200 text-emerald-700 tracking-tight shadow-sm">
-                                <span>✍️ Edit:</span><span>{editRoles}</span><span className="text-emerald-300 opacity-60">|</span><span>범위: {editScopeStr}</span><span className="text-emerald-300 opacity-60">|</span><span>지정: {globalCount + deptCount}명</span>
-                              </div>
-                              <div className={`flex items-center gap-1.5 px-2 py-1 rounded-md text-[10px] font-black border tracking-tight max-w-[350px] shadow-sm ${validScopes.length > 0 || taCount > 0 || selectedOrgNames?.length > 0 ? 'bg-purple-50 border-purple-200 text-purple-700' : 'bg-slate-50 border-slate-200 text-slate-400'}`}>
+                              
+                              {/* 🚀 Access: 지정 | Org | Level | Scope */}
+                              <div className={`flex items-center gap-1.5 px-2 py-1 rounded-md text-[10px] font-black border tracking-tight shadow-sm ${validScopes.length > 0 || taCount > 0 || selectedOrgNames?.length > 0 ? 'bg-purple-50 border-purple-200 text-purple-700' : 'bg-slate-50 border-slate-200 text-slate-400'}`}>
                                 <span>👁️ Access:</span>
-                                <span className={validScopes.length === 0 ? 'text-red-500' : ''}>{viewScopesStr}</span>
-                                <span className="opacity-60">|</span><span>지정: {taCount}명</span><span className="opacity-60">|</span><span className="truncate">Org: {orgDisplay}</span>
+                                <span>지정: {taCount}명</span><span className="opacity-60">|</span>
+                                <span className="truncate max-w-[120px]">Org: {orgDisplay}</span><span className="opacity-60">|</span>
+                                <span>Level: {viewRolesStr}</span><span className="opacity-60">|</span>
+                                <span className={validScopes.length === 0 ? 'text-red-500' : ''}>Scope: {viewScopesStr}</span>
+                              </div>
+
+                              {/* 🚀 Edit: 지정 | Level | Scope (Access와 동일 순서) */}
+                              <div className="flex items-center gap-1.5 px-2 py-1 rounded-md text-[10px] font-black bg-emerald-50 border border-emerald-200 text-emerald-700 tracking-tight shadow-sm">
+                                <span>✍️ Edit:</span>
+                                <span>지정: {tmCount}명</span><span className="text-emerald-300 opacity-60">|</span>
+                                <span>Level: {editRoles}</span><span className="text-emerald-300 opacity-60">|</span>
+                                <span>Scope: {editScopeStr}</span>
                               </div>
                             </div>
                           </td>
@@ -381,8 +385,8 @@ export default function AdminInterfacePage() {
   
       {/* 상세설정 패널 (우측 슬라이드) */}
       {selectedMenu && (
-        <div className={`fixed inset-y-0 right-0 w-[420px] bg-white shadow-[-20px_0_60px_rgba(0,0,0,0.1)] z-[100] transform transition-transform duration-300 translate-x-0 flex flex-col`}>
-          <div className="p-5 bg-slate-900 text-white flex justify-between items-start shrink-0">
+        <div className={`fixed inset-y-0 right-0 w-[420px] bg-slate-50 shadow-[-20px_0_60px_rgba(0,0,0,0.15)] z-[100] transform transition-transform duration-300 translate-x-0 flex flex-col`}>
+          <div className="p-5 bg-slate-900 text-white flex justify-between items-start shrink-0 shadow-md">
             <div className="flex-1 mr-4">
               <h3 className="text-[12px] font-black tracking-widest uppercase">{selectedMenu.icon} {selectedMenu.name}</h3>
               <input type="text" defaultValue={selectedMenu.path} onBlur={(e) => handleUpdate(selectedMenu.id, { path: e.target.value })} className="mt-1 bg-slate-800 text-blue-400 text-[10px] font-mono px-2 py-1 rounded w-full outline-none border border-slate-700" />
@@ -390,9 +394,9 @@ export default function AdminInterfacePage() {
             <button onClick={() => setSelectedMenu(null)} className="text-xl font-light hover:rotate-90 transition-all text-slate-500">✕</button>
           </div>
           
-          <div className="flex-1 overflow-y-auto p-4 space-y-5 bg-white scrollbar-thin pb-24">
+          <div className="flex-1 overflow-y-auto p-5 space-y-6 bg-slate-50 scrollbar-thin pb-24">
             
-            <div className="flex gap-3 pb-2 border-b border-slate-100">
+            <div className="flex gap-3 bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
               <div className="space-y-1 w-16 shrink-0">
                 <label className="text-[9px] font-black text-slate-400 uppercase">Icon</label>
                 <input type="text" defaultValue={selectedMenu.icon} onBlur={(e) => handleUpdate(selectedMenu.id, { icon: e.target.value })} className="w-full p-2 bg-gray-50 rounded-lg text-lg text-center border focus:border-indigo-500 outline-none" />
@@ -403,8 +407,8 @@ export default function AdminInterfacePage() {
               </div>
             </div>
   
-            <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 shadow-sm space-y-4">
-              <div className="flex items-center justify-between border-b border-slate-200 pb-2">
+            <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm space-y-4">
+              <div className="flex items-center justify-between border-b border-slate-100 pb-2">
                 <div>
                   <h4 className="text-[11px] font-black text-slate-800 flex items-center gap-1">📄 화면 상단 헤더 설정</h4>
                   <p className="text-[9px] text-slate-500 mt-0.5">실제 진입한 화면 상단에 노출될 제목과 설명을 개별 관리합니다.</p>
@@ -413,174 +417,92 @@ export default function AdminInterfacePage() {
               <div className="flex items-start gap-3">
                 <div className="flex-1 space-y-1">
                   <label className="text-[9px] font-black text-slate-400 uppercase">Page Title (페이지 제목)</label>
-                  <input type="text" defaultValue={selectedMenu.page_title || selectedMenu.name} onBlur={(e) => { if(e.target.value) handleUpdate(selectedMenu.id, { page_title: e.target.value }); }} className="w-full p-2 bg-white rounded-lg text-[11px] border focus:border-blue-500 outline-none font-black text-slate-800 shadow-sm" placeholder="화면 상단에 보일 전용 제목..." />
+                  <input type="text" defaultValue={selectedMenu.page_title || selectedMenu.name} onBlur={(e) => { if(e.target.value) handleUpdate(selectedMenu.id, { page_title: e.target.value }); }} className="w-full p-2 bg-slate-50 rounded-lg text-[11px] border focus:border-blue-500 outline-none font-black text-slate-800" placeholder="화면 상단에 보일 전용 제목..." />
                 </div>
                 <div className="pt-5 shrink-0 flex flex-col items-center gap-1">
                    <span className="text-[8px] font-black text-slate-400 uppercase">노출</span>
                    <label className="relative inline-flex items-center cursor-pointer">
                       <input type="checkbox" checked={selectedMenu.show_page_title || false} onChange={(e) => { handleUpdate(selectedMenu.id, { show_page_title: e.target.checked }); setSelectedMenu({...selectedMenu, show_page_title: e.target.checked}); }} className="sr-only peer" />
-                      <div className="w-8 h-4 bg-slate-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:bg-blue-600 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-3 after:w-3 after:transition-all shadow-inner"></div>
+                      <div className="w-8 h-4 bg-slate-200 rounded-full peer peer-checked:after:translate-x-full peer-checked:bg-blue-600 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-3 after:w-3 after:transition-all shadow-inner"></div>
                     </label>
                 </div>
               </div>
               <div className="flex items-start gap-3">
                 <div className="flex-1 space-y-1">
                   <label className="text-[9px] font-black text-slate-400 uppercase">Page Description (페이지 설명)</label>
-                  <textarea defaultValue={selectedMenu.page_description || ''} onBlur={(e) => handleUpdate(selectedMenu.id, { page_description: e.target.value })} className="w-full p-2 bg-white rounded-lg text-[10px] min-h-[60px] border outline-none font-medium focus:border-blue-500 text-slate-600 shadow-sm leading-relaxed" placeholder="화면 상단에 보일 전용 설명을 입력하세요..." />
+                  <textarea defaultValue={selectedMenu.page_description || ''} onBlur={(e) => handleUpdate(selectedMenu.id, { page_description: e.target.value })} className="w-full p-2 bg-slate-50 rounded-lg text-[10px] min-h-[60px] border outline-none font-medium focus:border-blue-500 text-slate-600 leading-relaxed" placeholder="화면 상단에 보일 전용 설명을 입력하세요..." />
                 </div>
                 <div className="pt-5 shrink-0 flex flex-col items-center gap-1">
                    <span className="text-[8px] font-black text-slate-400 uppercase">노출</span>
                    <label className="relative inline-flex items-center cursor-pointer">
                       <input type="checkbox" checked={selectedMenu.show_page_desc || false} onChange={(e) => { handleUpdate(selectedMenu.id, { show_page_desc: e.target.checked }); setSelectedMenu({...selectedMenu, show_page_desc: e.target.checked}); }} className="sr-only peer" />
-                      <div className="w-8 h-4 bg-slate-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:bg-blue-600 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-3 after:w-3 after:transition-all shadow-inner"></div>
+                      <div className="w-8 h-4 bg-slate-200 rounded-full peer peer-checked:after:translate-x-full peer-checked:bg-blue-600 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-3 after:w-3 after:transition-all shadow-inner"></div>
                     </label>
                 </div>
               </div>
             </div>           
-            
-            <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 flex items-center justify-between shadow-sm">
-              <div>
-                <h4 className="text-[11px] font-black text-slate-800 flex items-center gap-1">📌 마스터 원본 카드로 지정</h4>
-                <p className="text-[9px] text-slate-500 mt-0.5">이 카드가 다른 카드들에 데이터를 뿌려주는 기준이 됩니다.</p>
-              </div>
-              <label className="relative inline-flex items-center cursor-pointer">
-                <input type="checkbox" checked={selectedMenu.is_master || false} onChange={(e) => handleMasterToggle(selectedMenu, e.target.checked)} className="sr-only peer" />
-                <div className="w-9 h-5 bg-slate-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:bg-slate-800 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all shadow-inner"></div>
-              </label>
-            </div>
   
             {(selectedMenu.level === 1 || selectedMenu.level === 2) && (
-              <div className="bg-blue-50/50 p-4 rounded-xl border border-blue-100 shadow-sm space-y-3 mt-4">
+              <div className="bg-blue-50/50 p-4 rounded-2xl border border-blue-100 shadow-sm space-y-3 mt-4">
                 <div>
-                  <h4 className="text-[11px] font-black text-blue-700 flex items-center gap-1">🚀 L{selectedMenu.level} 진입 동작 설정</h4>
-                  <p className="text-[9px] text-slate-500 mt-0.5">메뉴 클릭 시 어떤 화면을 먼저 보여줄지 결정합니다.</p>
+                  <h4 className="text-[11px] font-black text-blue-700 flex items-center gap-1">🚀 Step {selectedMenu.level} 진입로 라우팅 동작 설정</h4>
+                  <p className="text-[9px] text-slate-500 mt-0.5">사용자가 이 메뉴를 클릭했을 때 브라우저가 이동할 최초의 진입점 주소를 제어합니다.</p>
                 </div>
                 <div className="grid grid-cols-2 gap-2">
-                  <button onClick={() => handleUpdate(selectedMenu.id, { l2_entry_mode: 'CUSTOM_UI' })} className={`py-2 rounded-lg text-[10px] font-black border transition-all ${selectedMenu.l2_entry_mode === 'CUSTOM_UI' || !selectedMenu.l2_entry_mode ? 'bg-blue-600 border-blue-600 text-white shadow-md' : 'bg-white border-slate-200 text-slate-400 hover:bg-slate-50'}`}>기획화면</button>
-                  <button onClick={() => handleUpdate(selectedMenu.id, { l2_entry_mode: 'L3_DEFAULT' })} className={`py-2 rounded-lg text-[10px] font-black border transition-all ${selectedMenu.l2_entry_mode === 'L3_DEFAULT' ? 'bg-blue-600 border-blue-600 text-white shadow-md' : 'bg-white border-slate-200 text-slate-400 hover:bg-slate-50'}`}>L{selectedMenu.level + 1}의 1번카드 즉시실행</button>
+                  <button 
+                    onClick={() => { 
+                      handleUpdate(selectedMenu.id, { l2_entry_mode: 'CUSTOM_UI' }); 
+                      setSelectedMenu({...selectedMenu, l2_entry_mode: 'CUSTOM_UI'}); 
+                    }} 
+                    className={`py-2 px-1 rounded-lg text-[10px] font-black border transition-all leading-tight ${selectedMenu.l2_entry_mode === 'CUSTOM_UI' || !selectedMenu.l2_entry_mode ? 'bg-blue-600 border-blue-600 text-white shadow-md' : 'bg-white border-slate-200 text-slate-400 hover:bg-slate-50'}`}
+                  >
+                    <div>🖥️ 고유 기획화면 오픈</div>
+                    <div className="text-[8px] opacity-75 font-normal mt-0.5">({selectedMenu.path} 직접 로드)</div>
+                  </button>
+                  <button 
+                    onClick={() => { 
+                      handleUpdate(selectedMenu.id, { l2_entry_mode: 'L3_DEFAULT' }); 
+                      setSelectedMenu({...selectedMenu, l2_entry_mode: 'L3_DEFAULT'}); 
+                    }} 
+                    className={`py-2 px-1 rounded-lg text-[10px] font-black border transition-all leading-tight ${selectedMenu.l2_entry_mode === 'L3_DEFAULT' ? 'bg-blue-600 border-blue-600 text-white shadow-md' : 'bg-white border-slate-200 text-slate-400 hover:bg-slate-50'}`}
+                  >
+                    <div>➡️ Step {selectedMenu.level + 1} 1번카드 즉시실행</div>
+                    <div className="text-[8px] opacity-75 font-normal mt-0.5">(하위 첫번째 주소로 자동 점프)</div>
+                  </button>
                 </div>
               </div>
             )}
   
-            <div className="bg-indigo-50/50 p-4 rounded-xl border border-indigo-100 shadow-sm">
-              <h4 className="text-indigo-600 font-black text-[10px] mb-1 uppercase flex items-center gap-1">👑 편집/접근권한 MASTER 지정</h4>
+            <div className="bg-slate-800 p-5 rounded-2xl border border-slate-700 shadow-md">
+              <h4 className="text-white font-black text-[11px] mb-1 uppercase flex items-center gap-1">👑 편집/접근권한 MASTER 지정</h4>
               <p className="text-[9px] text-slate-400 mb-3 font-bold">이 카드의 생성, 수정, 삭제(CRUD) 및 접근 권한을 모두 갖는 총괄 책임자</p>
               <div className="space-y-2">
                 <div className="relative">
-                  <input type="text" value={masterSearch} onChange={(e) => setMasterSearch(e.target.value)} placeholder="이름으로 마스터 검색..." className="w-full p-2 bg-white border border-gray-200 rounded-lg text-[10px] font-bold focus:border-indigo-500 outline-none" />
+                  <input type="text" value={masterSearch} onChange={(e) => setMasterSearch(e.target.value)} placeholder="이름으로 마스터 검색..." className="w-full p-2 bg-slate-900 border border-slate-600 text-white rounded-lg text-[10px] font-bold focus:border-indigo-500 outline-none" />
                   {masterSearch && (
                     <div className="absolute top-full left-0 right-0 mt-1 bg-white border rounded-lg shadow-xl max-h-32 overflow-y-auto z-[120]">
                       {users.filter(u => u.name?.includes(masterSearch)).map(u => (
-                        <div key={u.id} onClick={() => { handleUpdate(selectedMenu.id, { master_editor_id: u.id }); setSelectedMenu({...selectedMenu, master_editor_id: u.id}); setMasterSearch(''); }} className="p-2 text-[10px] font-bold hover:bg-indigo-50 cursor-pointer border-b flex justify-between"><span>{u.name}</span><span className="text-slate-300">{u.email}</span></div>
+                        <div key={u.id} onClick={() => { handleUpdate(selectedMenu.id, { master_editor_id: u.id }); setSelectedMenu({...selectedMenu, master_editor_id: u.id}); setMasterSearch(''); }} className="p-2 text-[10px] font-bold hover:bg-indigo-50 cursor-pointer border-b flex justify-between text-slate-800"><span>{u.name}</span><span className="text-slate-400">{u.email}</span></div>
                       ))}
                     </div>
                   )}
                 </div>
                 {selectedMenu.master_editor_id && (
-                  <div className="flex items-center justify-between bg-indigo-600 text-white p-2 rounded-lg shadow-md">
+                  <div className="flex items-center justify-between bg-indigo-600 text-white p-2.5 rounded-lg shadow-md">
                     <span className="text-[10px] font-black">{users.find(u => u.id === selectedMenu.master_editor_id)?.name} (책임자 지정됨)</span>
-                    <button onClick={() => { handleUpdate(selectedMenu.id, { master_editor_id: null }); setSelectedMenu({...selectedMenu, master_editor_id: null}); }} className="text-[10px] px-1 hover:text-indigo-200 font-black">✕</button>
+                    <button onClick={() => { handleUpdate(selectedMenu.id, { master_editor_id: null }); setSelectedMenu({...selectedMenu, master_editor_id: null}); }} className="text-[12px] px-1 hover:text-indigo-200 font-black">✕</button>
                   </div>
                 )}
               </div>
             </div>
   
-            <div className="bg-white p-4 rounded-xl border border-emerald-100 shadow-sm mt-4">
-              <div className="flex justify-between items-center mb-3">
-                <h4 className="text-emerald-600 font-black text-[10px] uppercase flex items-center gap-1"><span>✍️</span> 편집 권한자 (Editor)</h4>
-                <label className="flex items-center gap-1 cursor-pointer bg-slate-100 hover:bg-slate-200 px-2 py-1 rounded text-[9px] font-black transition-colors">
-                  <input type="checkbox" checked={['LV_1', 'LV_2', 'LV_3'].every(lv => selectedMenu.edit_role_ids?.includes(lv))} onChange={(e) => {
-                    const next = e.target.checked ? ['LV_1', 'LV_2', 'LV_3'] : [];
-                    handleUpdate(selectedMenu.id, { edit_role_ids: next }); setSelectedMenu({...selectedMenu, edit_role_ids: next});
-                  }} className="w-3 h-3 accent-emerald-600 rounded" />
-                  <span className="text-slate-600">전체 허용</span>
-                </label>
-              </div>
-  
-              <div className="space-y-4">
-                <div className="flex items-center gap-2">
-                  <span className="text-[9px] font-bold text-slate-400 w-16">Editor 레벨</span>
-                  <div className="flex flex-1 gap-1">
-                    {[{id:'LV_1', label:'LV.1'}, {id:'LV_2', label:'LV.2'}, {id:'LV_3', label:'LV.3'}].map(role => (
-                      <label key={role.id} className={`flex-1 flex items-center justify-center py-1.5 rounded-lg border text-[9px] font-black cursor-pointer transition-all ${selectedMenu.edit_role_ids?.includes(role.id) ? 'bg-emerald-600 border-emerald-600 text-white shadow-sm' : 'border-gray-200 text-slate-400 hover:bg-gray-50'}`}>
-                        {role.label}
-                        <input type="checkbox" checked={selectedMenu.edit_role_ids?.includes(role.id) || false} onChange={(e) => {
-                          const cur = selectedMenu.edit_role_ids || [];
-                          const next = e.target.checked ? [...cur, role.id] : cur.filter((k:any) => k !== role.id);
-                          handleUpdate(selectedMenu.id, { edit_role_ids: next }); setSelectedMenu({...selectedMenu, edit_role_ids: next});
-                        }} className="hidden" />
-                      </label>
-                    ))}
-                  </div>
-                </div>
-  
-                <div>
-                  <label className="text-[9px] font-bold text-slate-400 mb-1 block">Task Editor (다수 지정)</label>
-                  <div className="relative">
-                    <input type="text" value={tmSearch} onChange={(e) => setTmSearch(e.target.value)} className="w-full p-2 bg-gray-50 border border-gray-200 rounded-lg text-[10px] outline-none focus:border-emerald-500" placeholder="Editor 검색..." />
-                    {tmSearch && (
-                      <div className="absolute top-full left-0 right-0 bg-white border rounded-lg shadow-xl max-h-32 overflow-y-auto z-[110]">
-                        {users.filter(u => u.name?.includes(tmSearch)).map(u => (
-                          <div key={u.id} onClick={() => {
-                            const cur = selectedMenu.task_masters || [];
-                            if(!cur.find((item:any) => item.email === u.email)) {
-                              const next = [...cur, { email: u.email, scope: 'DEPT' }];
-                              handleUpdate(selectedMenu.id, { task_masters: next }); setSelectedMenu({...selectedMenu, task_masters: next});
-                            }
-                            setTmSearch('');
-                          }} className="p-2 text-[10px] font-bold hover:bg-emerald-50 cursor-pointer border-b flex justify-between"><span>{u.name}</span><span className="text-slate-300">{u.email}</span></div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                  <div className="space-y-1 mt-2">
-                    {selectedMenu.task_masters?.map((tm: any) => (
-                      <div key={tm.email} className="bg-gray-50 border border-gray-100 p-1.5 rounded-lg flex items-center justify-between">
-                        <span className="text-[10px] font-bold text-slate-700 ml-1">{users.find(u => u.email === tm.email)?.name || tm.email}</span>
-                        <div className="flex gap-1">
-                          {['DEPT', 'GLOBAL'].map(sc => (
-                            <button key={sc} onClick={() => {
-                              const next = selectedMenu.task_masters.map((item:any) => item.email === tm.email ? { ...item, scope: sc } : item);
-                              handleUpdate(selectedMenu.id, { task_masters: next }); setSelectedMenu({...selectedMenu, task_masters: next});
-                            }} className={`px-1.5 py-0.5 rounded text-[8px] font-black transition-all ${tm.scope === sc ? 'bg-emerald-600 text-white' : 'bg-gray-200 text-slate-400'}`}>{sc === 'DEPT' ? '부서' : '전사'}</button>
-                          ))}
-                          <button onClick={() => {
-                            const next = selectedMenu.task_masters.filter((item:any) => item.email !== tm.email);
-                            handleUpdate(selectedMenu.id, { task_masters: next }); setSelectedMenu({...selectedMenu, task_masters: next});
-                          }} className="px-1.5 text-[10px] text-red-400 hover:text-red-600">✕</button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-  
-                <div className="space-y-2 mt-4 pt-4 border-t border-dashed border-emerald-200">
-                  <span className="text-[10px] font-black text-slate-800 tracking-tighter">🔘 편집 가능 범위 (Edit Scope) 설정</span>
-                  <div className="flex gap-2">
-                    {[
-                      { id: 'TOTAL', label: '전체 자료 편집 허용 (최고 관리자용)' },
-                      { id: 'DEPT', label: '본인 부서 및 상위 본부 자료만 허용 (실무자용)' }
-                    ].map(scope => {
-                      const isChecked = selectedMenu.edit_scopes?.includes(scope.id) || (!selectedMenu.edit_scopes?.length && scope.id === 'TOTAL');
-                      return (
-                        <label key={scope.id} className={`flex-1 flex items-center justify-center py-2 rounded-lg border text-[10px] font-black cursor-pointer transition-all ${isChecked ? 'bg-emerald-600 border-emerald-600 text-white shadow-md' : 'border-gray-200 text-slate-400 hover:bg-gray-50'}`}>
-                          {scope.label}
-                          <input type="radio" name={`edit_scope_${selectedMenu.id}`} checked={isChecked || false} onChange={() => { handleUpdate(selectedMenu.id, { edit_scopes: [scope.id] }); setSelectedMenu({...selectedMenu, edit_scopes: [scope.id]}); }} className="hidden" />
-                        </label>
-                      );
-                    })}
-                  </div>
-                </div>
-              </div>
-            </div>
-  
-            {/* 🚀 [MDC 원칙 수정된 UI 적용 영역] */}
-            <div className="bg-white p-4 rounded-xl border border-purple-100 shadow-sm mt-4 space-y-5">
-              <h4 className="text-purple-600 font-black text-[10px] uppercase flex items-center gap-1 border-b border-purple-50 pb-2">
-                <span>👁️</span> 접근 권한 및 화면 설정
+            {/* 🚀 ACCESS 영역 */}
+            <div className="bg-white p-5 rounded-2xl border-l-4 border-l-purple-500 border border-purple-100 shadow-md space-y-5 relative">
+              <h4 className="text-purple-700 font-black text-[12px] uppercase flex items-center gap-1 border-b border-purple-100 pb-2">
+                <span>👁️</span> 접근 권한 및 화면 설정 (Access)
               </h4>
               
-              <div className="bg-purple-50 p-3 rounded-lg text-[9px] font-bold text-purple-700 leading-relaxed shadow-inner">
+              <div className="bg-purple-50 p-3 rounded-lg text-[9px] font-bold text-purple-700 leading-relaxed shadow-inner border border-purple-100">
                 💡 <b>[예외]</b> 특정 지정인(Task Access)은 무조건 통과합니다.<br/>
                 📌 <b>[규칙]</b> 그 외에는 부서(AND) + 레벨(AND) 조건을 모두 충족해야 통과합니다.<br/>
                 🎯 <b>[결과]</b> 통과된 자에게만 데이터 범위(Data Scope) 권한이 부여됩니다.
@@ -608,7 +530,7 @@ export default function AdminInterfacePage() {
                 </div>
                 <div className="flex flex-wrap gap-1 mt-2">
                   {selectedMenu.task_accesses?.map((ta: any) => (
-                    <div key={ta.email} className="bg-purple-50 border border-purple-100 px-2 py-1 rounded-lg flex items-center gap-1 shadow-sm">
+                    <div key={ta.email} className="bg-purple-50 border border-purple-200 px-2 py-1 rounded-lg flex items-center gap-1 shadow-sm">
                       <span className="text-[9px] font-bold text-purple-800">{users.find(u => u.email === ta.email)?.name || ta.email}</span>
                       <button onClick={() => {
                         const next = selectedMenu.task_accesses.filter((item:any) => item.email !== ta.email);
@@ -620,16 +542,16 @@ export default function AdminInterfacePage() {
               </div>
   
               {/* 2️⃣ [규칙 1] Org Guard */}
-              <div className="space-y-2 pt-2 border-t border-dashed border-slate-200">
+              <div className="space-y-2 pt-3 border-t border-dashed border-purple-200">
                 <span className="text-[10px] font-black text-slate-800 tracking-tighter">2️⃣ [규칙 1] Org Guard (지정 부서만 접근허용)</span>
                 
                 {(() => {
                   const effectiveParentOrgs = getEffectiveAllowedOrgs(selectedMenu);
                   const isRestrictedByParent = effectiveParentOrgs.length > 0;
-     
+   
                   return (
                     <div className="relative">
-                      <div className="grid grid-cols-2 gap-1 max-h-32 overflow-y-auto border border-gray-100 rounded-lg p-2 bg-gray-50 scrollbar-thin shadow-inner">
+                      <div className="grid grid-cols-2 gap-1 max-h-40 overflow-y-auto border border-purple-100 rounded-lg p-2 bg-white scrollbar-thin shadow-inner">
                         {orgs.map(org => {
                           const isAllowedByParent = isOrgAllowedByParent(org.id, effectiveParentOrgs);
                           const isChecked = selectedMenu.org_ids?.includes(org.id) || false;
@@ -638,8 +560,8 @@ export default function AdminInterfacePage() {
                             <label 
                               key={org.id} 
                               className={`flex items-center gap-2 p-1.5 rounded-md transition-all 
-                                ${!isAllowedByParent ? 'opacity-40 grayscale cursor-not-allowed bg-slate-100' : 'cursor-pointer hover:bg-white'} 
-                                ${isChecked && isAllowedByParent ? 'bg-white text-purple-800 shadow-sm border border-purple-100' : 'text-slate-500'}
+                                ${!isAllowedByParent ? 'opacity-40 grayscale cursor-not-allowed bg-slate-50' : 'cursor-pointer hover:bg-purple-50'} 
+                                ${isChecked && isAllowedByParent ? 'bg-purple-50 text-purple-800 border border-purple-200' : 'text-slate-600'}
                               `}
                             >
                               <input 
@@ -653,13 +575,13 @@ export default function AdminInterfacePage() {
                                 }} 
                                 className="w-3 h-3 accent-purple-600 rounded disabled:opacity-50" 
                               />
-                              <span className={`text-[9px] font-bold ${!isAllowedByParent ? 'line-through' : ''}`}>{org.unit_name}</span>
+                              <span className={`text-[10px] font-bold ${!isAllowedByParent ? 'line-through' : ''}`}>{org.unit_name}</span>
                             </label>
                           );
                         })}
                       </div>
                       {isRestrictedByParent && (
-                        <div className="text-[9px] font-bold text-red-500 mt-1">
+                        <div className="text-[9px] font-bold text-red-500 mt-1.5 px-1">
                           ※ 상위 모듈에서 접근을 제한한 부서는 비활성화됩니다.
                         </div>
                       )}
@@ -669,20 +591,20 @@ export default function AdminInterfacePage() {
               </div>
   
               {/* 3️⃣ [규칙 2] Access Level */}
-              <div className="space-y-2 pt-2 border-t border-dashed border-slate-200">
+              <div className="space-y-2 pt-3 border-t border-dashed border-purple-200">
                 <div className="flex justify-between items-center mb-1">
                   <span className="text-[10px] font-black text-slate-800 tracking-tighter">3️⃣ [규칙 2] 접근 권한 레벨 (Access Level)</span>
-                  <label className="flex items-center gap-1 cursor-pointer bg-slate-100 hover:bg-slate-200 px-2 py-1 rounded text-[8px] font-black">
+                  <label className="flex items-center gap-1 cursor-pointer bg-slate-100 hover:bg-purple-100 px-2 py-1 rounded text-[8px] font-black transition-colors">
                     <input type="checkbox" checked={['LV_1', 'LV_2', 'LV_3'].every(lv => selectedMenu.view_role_ids?.includes(lv))} onChange={(e) => {
                       const next = e.target.checked ? ['LV_1', 'LV_2', 'LV_3'] : [];
                       handleUpdate(selectedMenu.id, { view_role_ids: next }); setSelectedMenu({...selectedMenu, view_role_ids: next});
                     }} className="w-2.5 h-2.5 accent-purple-600 rounded" />
-                    <span className="text-slate-600">전체 허용</span>
+                    <span className="text-purple-700">전체 허용</span>
                   </label>
                 </div>
-                <div className="flex gap-1">
+                <div className="flex gap-1.5">
                   {[{id:'LV_1', label:'LV.1'}, {id:'LV_2', label:'LV.2'}, {id:'LV_3', label:'LV.3'}].map(role => (
-                    <label key={role.id} className={`flex-1 flex items-center justify-center py-1.5 rounded-lg border text-[9px] font-black cursor-pointer transition-all ${selectedMenu.view_role_ids?.includes(role.id) ? 'bg-purple-600 border-purple-600 text-white shadow-sm' : 'border-gray-200 text-slate-400 hover:bg-gray-50'}`}>
+                    <label key={role.id} className={`flex-1 flex items-center justify-center py-2 rounded-lg border text-[10px] font-black cursor-pointer transition-all ${selectedMenu.view_role_ids?.includes(role.id) ? 'bg-purple-600 border-purple-600 text-white shadow-md' : 'border-gray-200 bg-white text-slate-500 hover:bg-purple-50'}`}>
                       {role.label}
                       <input type="checkbox" checked={selectedMenu.view_role_ids?.includes(role.id) || false} onChange={(e) => {
                         const cur = selectedMenu.view_role_ids || [];
@@ -695,13 +617,13 @@ export default function AdminInterfacePage() {
               </div>
   
               {/* 4️⃣ [결과] Data Scope */}
-              <div className="space-y-2 pt-2 border-t border-dashed border-slate-200">
+              <div className="space-y-2 pt-3 border-t border-dashed border-purple-200">
                 <span className="text-[10px] font-black text-slate-800 tracking-tighter">4️⃣ [결과] 보이는 화면 (Data Scope)</span>
-                <div className="flex gap-1">
+                <div className="flex gap-1.5">
                   {['OWN', 'DEPT', 'TOTAL'].map(s => {
                     const isChecked = selectedMenu.view_scopes?.includes(s);
                     return (
-                      <label key={s} className={`flex-1 flex items-center justify-center py-2 rounded-lg border text-[10px] font-black cursor-pointer transition-all ${isChecked ? 'bg-indigo-600 border-indigo-600 text-white shadow-md' : 'border-gray-200 text-slate-400 hover:bg-gray-50'}`}>
+                      <label key={s} className={`flex-1 flex items-center justify-center py-2 rounded-lg border text-[10px] font-black cursor-pointer transition-all ${isChecked ? 'bg-indigo-600 border-indigo-600 text-white shadow-md' : 'border-gray-200 bg-white text-slate-500 hover:bg-indigo-50'}`}>
                         {s === 'OWN' ? '본인 자료' : s === 'DEPT' ? '부서 자료' : '전사 자료'}
                         <input type="checkbox" checked={isChecked || false} onChange={(e) => {
                           const cur = Array.isArray(selectedMenu.view_scopes) ? selectedMenu.view_scopes : [];
@@ -714,17 +636,114 @@ export default function AdminInterfacePage() {
                 </div>
               </div>
             </div>
+
+            {/* 🚀 EDIT 영역 (순서 및 형태 Access와 동일하게 개편) */}
+            <div className="bg-white p-5 rounded-2xl border-l-4 border-l-emerald-500 border border-emerald-100 shadow-md space-y-5">
+              <div className="flex justify-between items-center border-b border-emerald-100 pb-2">
+                <h4 className="text-emerald-700 font-black text-[12px] uppercase flex items-center gap-1"><span>✍️</span> 편집 권한자 및 설정 (Edit)</h4>
+              </div>
+  
+              <div className="space-y-4">
+                
+                {/* 1️⃣ [예외] Task Editor */}
+                <div className="flex flex-col gap-2">
+                  <label className="text-[10px] font-black text-slate-800 block">1️⃣ [예외] Task Editor (개별 편집자 다수 지정)</label>
+                  <div className="relative">
+                    <input type="text" value={tmSearch} onChange={(e) => setTmSearch(e.target.value)} className="w-full p-2 bg-gray-50 border border-gray-200 rounded-lg text-[10px] outline-none focus:border-emerald-500 font-bold" placeholder="이름으로 Editor 검색..." />
+                    {tmSearch && (
+                      <div className="absolute top-full left-0 right-0 bg-white border rounded-lg shadow-xl max-h-32 overflow-y-auto z-[110]">
+                        {users.filter(u => u.name?.includes(tmSearch)).map(u => (
+                          <div key={u.id} onClick={() => {
+                            const cur = selectedMenu.task_masters || [];
+                            if(!cur.find((item:any) => item.email === u.email)) {
+                              const next = [...cur, { email: u.email, scope: 'DEPT' }];
+                              handleUpdate(selectedMenu.id, { task_masters: next }); setSelectedMenu({...selectedMenu, task_masters: next});
+                            }
+                            setTmSearch('');
+                          }} className="p-2 text-[10px] font-bold hover:bg-emerald-50 cursor-pointer border-b flex justify-between"><span>{u.name}</span><span className="text-slate-300">{u.email}</span></div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  <div className="space-y-1.5 mt-2">
+                    {selectedMenu.task_masters?.map((tm: any) => (
+                      <div key={tm.email} className="bg-emerald-50/50 border border-emerald-100 p-2 rounded-lg flex items-center justify-between shadow-sm">
+                        <span className="text-[10px] font-black text-slate-700 ml-1">{users.find(u => u.email === tm.email)?.name || tm.email}</span>
+                        <div className="flex gap-1.5">
+                          {['DEPT', 'GLOBAL'].map(sc => (
+                            <button key={sc} onClick={() => {
+                              const next = selectedMenu.task_masters.map((item:any) => item.email === tm.email ? { ...item, scope: sc } : item);
+                              handleUpdate(selectedMenu.id, { task_masters: next }); setSelectedMenu({...selectedMenu, task_masters: next});
+                            }} className={`px-2 py-1 rounded text-[9px] font-black transition-all ${tm.scope === sc ? 'bg-emerald-600 text-white shadow-sm' : 'bg-white border border-gray-200 text-slate-500 hover:bg-gray-100'}`}>{sc === 'DEPT' ? '부서자료' : '전사자료'}</button>
+                          ))}
+                          <button onClick={() => {
+                            const next = selectedMenu.task_masters.filter((item:any) => item.email !== tm.email);
+                            handleUpdate(selectedMenu.id, { task_masters: next }); setSelectedMenu({...selectedMenu, task_masters: next});
+                          }} className="px-1.5 text-[12px] text-red-400 hover:text-red-600 font-black">✕</button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* 2️⃣ [규칙] Editor 레벨 */}
+                <div className="pt-3 border-t border-dashed border-emerald-200">
+                  <div className="flex justify-between items-center mb-2">
+                    <span className="text-[10px] font-black text-slate-800">2️⃣ [규칙] 편집 권한 레벨 (Editor Level)</span>
+                    <label className="flex items-center gap-1 cursor-pointer bg-slate-100 hover:bg-emerald-100 px-2 py-1 rounded text-[8px] font-black transition-colors">
+                      <input type="checkbox" checked={['LV_1', 'LV_2', 'LV_3'].every(lv => selectedMenu.edit_role_ids?.includes(lv))} onChange={(e) => {
+                        const next = e.target.checked ? ['LV_1', 'LV_2', 'LV_3'] : [];
+                        handleUpdate(selectedMenu.id, { edit_role_ids: next }); setSelectedMenu({...selectedMenu, edit_role_ids: next});
+                      }} className="w-2.5 h-2.5 accent-emerald-600 rounded" />
+                      <span className="text-emerald-700">전체 허용</span>
+                    </label>
+                  </div>
+                  <div className="flex gap-1.5">
+                    {[{id:'LV_1', label:'LV.1'}, {id:'LV_2', label:'LV.2'}, {id:'LV_3', label:'LV.3'}].map(role => (
+                      <label key={role.id} className={`flex-1 flex items-center justify-center py-2 rounded-lg border text-[10px] font-black cursor-pointer transition-all ${selectedMenu.edit_role_ids?.includes(role.id) ? 'bg-emerald-600 border-emerald-600 text-white shadow-md' : 'border-gray-200 bg-white text-slate-500 hover:bg-emerald-50'}`}>
+                        {role.label}
+                        <input type="checkbox" checked={selectedMenu.edit_role_ids?.includes(role.id) || false} onChange={(e) => {
+                          const cur = selectedMenu.edit_role_ids || [];
+                          const next = e.target.checked ? [...cur, role.id] : cur.filter((k:any) => k !== role.id);
+                          handleUpdate(selectedMenu.id, { edit_role_ids: next }); setSelectedMenu({...selectedMenu, edit_role_ids: next});
+                        }} className="hidden" />
+                      </label>
+                    ))}
+                  </div>
+                </div>
+  
+                {/* 3️⃣ [결과] Edit Scope (Access와 동일하게 본인,부서,전사 체크박스 형태 적용) */}
+                <div className="space-y-2 mt-4 pt-4 border-t border-dashed border-emerald-200">
+                  <span className="text-[10px] font-black text-slate-800 tracking-tighter">3️⃣ [결과] 편집 가능 범위 (Edit Scope) 설정</span>
+                  <div className="flex gap-1.5">
+                    {['OWN', 'DEPT', 'TOTAL'].map(s => {
+                      const isChecked = selectedMenu.edit_scopes?.includes(s);
+                      return (
+                        <label key={s} className={`flex-1 flex items-center justify-center py-2 rounded-lg border text-[10px] font-black cursor-pointer transition-all ${isChecked ? 'bg-emerald-600 border-emerald-600 text-white shadow-md' : 'border-gray-200 bg-white text-slate-500 hover:bg-emerald-50'}`}>
+                          {s === 'OWN' ? '본인 자료' : s === 'DEPT' ? '부서 자료' : '전사 자료'}
+                          <input type="checkbox" checked={isChecked || false} onChange={(e) => {
+                            const cur = Array.isArray(selectedMenu.edit_scopes) ? selectedMenu.edit_scopes : [];
+                            const next = e.target.checked ? [...cur, s] : cur.filter((k:any) => k !== s);
+                            handleUpdate(selectedMenu.id, { edit_scopes: next }); setSelectedMenu({...selectedMenu, edit_scopes: next});
+                          }} className="hidden" />
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            </div>
   
           </div>
           
-          <div className="p-4 bg-gray-50 border-t mt-auto shrink-0 z-10 relative">
-            <button onClick={() => setSelectedMenu(null)} className="w-full py-3 bg-slate-900 text-white rounded-xl font-black text-[11px] shadow-lg active:scale-[0.98] transition-all tracking-widest">SAVE & CLOSE</button>
+          <div className="p-5 bg-white border-t border-slate-200 mt-auto shrink-0 z-10 relative">
+            <button onClick={() => setSelectedMenu(null)} className="w-full py-3.5 bg-blue-600 text-white rounded-xl font-black text-[12px] shadow-lg hover:bg-blue-700 active:scale-[0.98] transition-all tracking-widest">SAVE & CLOSE</button>
           </div>
         </div>
       )}
       {selectedMenu && <div className="fixed inset-0 bg-slate-900/30 backdrop-blur-[2px] z-[90]" onClick={() => setSelectedMenu(null)} />}
-
-      {/* 🚀 사이트 편집 모달 (Linked Sites Manager - 타이포그래피 전용 개편) */}
+  
+      {/* 사이트 편집 모달 */}
       {isSiteModalOpen && (
         <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-[200] flex items-center justify-center p-4">
           <div className="bg-white rounded-[2rem] shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[85vh]">
@@ -738,7 +757,6 @@ export default function AdminInterfacePage() {
               </button>
             </div>
             
-            {/* 💡 [UI 정리 완료] 복잡했던 아이콘/배너 입력 필드를 완전히 제거하고 글자 입력만 남김 */}
             <div className="p-6 overflow-y-auto flex-1 space-y-4 bg-slate-50">
               {localSites.map((site: any, index: number) => (
                 <div key={index} className="flex gap-4 bg-white p-5 rounded-2xl border border-slate-200 shadow-sm relative group items-end">
@@ -751,7 +769,7 @@ export default function AdminInterfacePage() {
                       setLocalSites(newSites);
                     }} className="w-full p-2.5 bg-gray-50 border border-gray-200 rounded-xl text-[11px] font-black outline-none focus:border-blue-500 text-slate-800 focus:bg-white transition-all" placeholder="ex) NAVER" />
                   </div>
-
+   
                   <div className="flex-1 space-y-1">
                     <label className="text-[9px] font-black text-slate-400 uppercase tracking-wider">URL (연결 주소)</label>
                     <input type="text" value={site.url || ''} onChange={(e) => {
@@ -760,7 +778,7 @@ export default function AdminInterfacePage() {
                       setLocalSites(newSites);
                     }} className="w-full p-2.5 bg-gray-50 border border-gray-200 rounded-xl text-[11px] font-medium outline-none focus:border-blue-500 text-slate-600 focus:bg-white transition-all" placeholder="https://..." />
                   </div>
-
+   
                   <button onClick={() => {
                     const newSites = localSites.filter((_, i) => i !== index);
                     setLocalSites(newSites);
@@ -785,7 +803,7 @@ export default function AdminInterfacePage() {
           </div>
         </div>
       )}
-
+   
     </div>
   );
 }

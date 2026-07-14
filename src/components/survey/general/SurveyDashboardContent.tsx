@@ -16,17 +16,18 @@ export default function SurveyDashboardContent() {
      
   const [filterPending, setFilterPending] = useState<boolean>(false);
   const [filterNudged, setFilterNudged] = useState<boolean>(false);
+  const [filterClosingToday, setFilterClosingToday] = useState<boolean>(false); // 💡 요 부분 한 줄 추가!
+  // 🚀 [DB 연동 완료]: 관리자가 독촉한 설문 ID 배열 (로컬스토리지 대신 서버에서 수신)
   const [nudgedSurveys, setNudgedSurveys] = useState<string[]>([]);
      
   const [introModalSurvey, setIntroModalSurvey] = useState<any | null>(null); 
   const [activeFullScreenSurvey, setActiveFullScreenSurvey] = useState<any | null>(null);
   const [formData, setFormData] = useState<Record<string, any>>({});
   
-  // 🚀 [신규] 섹션 제어용 상태
   const [currentSectionId, setCurrentSectionId] = useState<string | null>(null);
+  const [zoomedImage, setZoomedImage] = useState<string | null>(null);
   
   useEffect(() => {
-    // 카카오 주소 API 동적 인젝션
     if (typeof window !== 'undefined') {
       const scriptId = 'kakao-postcode-script';
       if (!document.getElementById(scriptId)) {
@@ -37,14 +38,16 @@ export default function SurveyDashboardContent() {
         document.head.appendChild(script);
       }
     }
-
+     
+    // 🚀 [DB 정합성 코어]: 모든 데이터를 캐시 없이 서버(PostgreSQL)에서 직접 가져옴
     const fetchData = async () => {
       try {
         const ts = Date.now();
-        const [uRes, unitsRes, usersRes] = await Promise.all([
-          fetch('/api/auth/me?t=' + ts, { cache: 'no-store' }),
-          fetch('/api/admin/units?active=true&t=' + ts, { cache: 'no-store' }),
-          fetch('/api/admin/users?t=' + ts, { cache: 'no-store' }).catch(()=>null)
+        const [uRes, unitsRes, usersRes, surveyRes] = await Promise.all([
+          fetch(`/api/auth/me?t=${ts}`, { cache: 'no-store' }),
+          fetch(`/api/admin/units?active=true&t=${ts}`, { cache: 'no-store' }),
+          fetch(`/api/admin/users?t=${ts}`, { cache: 'no-store' }).catch(()=>null),
+          fetch(`/api/survey/general?t=${ts}`, { cache: 'no-store' })
         ]);
         
         const userData = uRes.ok ? await uRes.json() : null;
@@ -56,9 +59,6 @@ export default function SurveyDashboardContent() {
           userData.unit = myUnit || { unit_name: '소속없음' };
           setCurrentUser(userData);
           setCurrentUserEmail(userData.email || 'user@kpcqa.or.kr');
-  
-          const storedResponses = JSON.parse(localStorage.getItem(`db_my_responses_${userData.email}`) || '{}');
-          setMyResponses(storedResponses);
         }
      
         if (usersRes && usersRes.ok) {
@@ -68,26 +68,54 @@ export default function SurveyDashboardContent() {
             dept: unitsData.find((un:any) => un.id === u.unit_id)?.unit_name || '소속없음'
           }));
           setAllUsers(mappedUsers);
+        }
      
-          const realRes: Record<string, any> = {};
-          mappedUsers.forEach((u:any) => {
-            if (!u.email) return;
-            const stored = localStorage.getItem(`db_my_responses_${u.email}`);
-            if (stored) {
-              const parsed = JSON.parse(stored);
-              Object.keys(parsed).forEach(surveyId => {
-                realRes[`${surveyId}_${u.email}`] = true;
-              });
+        // 🚀 [DB 정합성 코어 1]: 모든 응답을 중앙 DB에서 직접 수거하여 개인 제출/전체 통계 완벽 분리
+        const respRes = await fetch('/api/survey/general', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'GET_RESPONSES' }),
+          cache: 'no-store'
+        });
+        
+        if (respRes.ok) {
+          const dbResponses = await respRes.json();
+          const nextMyRes: Record<string, any> = {};
+          const nextAllRes: Record<string, any> = {};
+          
+          dbResponses.forEach((r: any) => {
+            if (r.surveyId && r.userEmail) {
+              nextAllRes[`${r.surveyId}_${r.userEmail}`] = true; // 전사 참여율 계산용 플래그
+              
+              if (userData && r.userEmail === userData.email) {
+                const formattedDate = r.submittedAt 
+                  ? r.submittedAt.split('T')[0] + ' ' + new Date(r.submittedAt).toLocaleTimeString('ko-KR', { hour12: false }) 
+                  : '-';
+                nextMyRes[r.surveyId] = {
+                  submittedAt: formattedDate,
+                  answers: r.answers || {},
+                  isApproved: r.isApproved || false
+                };
+              }
             }
           });
-          setAllResponses(realRes);
+          setAllResponses(nextAllRes);
+          if (userData) setMyResponses(nextMyRes);
         }
   
-        const storedSurveys = localStorage.getItem('admin_surveys_db');
-        if (storedSurveys) setSurveys(JSON.parse(storedSurveys));
+        if (surveyRes.ok) {
+          const loadedSurveys = await surveyRes.json();
+          setSurveys(loadedSurveys);
+          
+          // 🚀 [로컬스토리지 파기]: 서버 데이터 기반 독촉 대상 맵핑 처리
+          const serverNudged = loadedSurveys
+            .filter((s: any) => s.nudgedUsers && s.nudgedUsers.includes(userData?.email))
+            .map((s: any) => s.id);
+          setNudgedSurveys(serverNudged);
+        } else {
+          setSurveys([]);
+        }
      
-        const storedNudges = JSON.parse(localStorage.getItem('nudged_surveys') || '[]');
-        setNudgedSurveys(storedNudges);
       } catch (error) {
         console.error("Dashboard Sync Error:", error);
       } finally {
@@ -96,8 +124,7 @@ export default function SurveyDashboardContent() {
     };
     fetchData();
   }, []);
-
-  // 🚀 [신규] 입력 제어 헬퍼 함수들
+     
   const handleInputChange = (qId: string, value: any) => setFormData(prev => ({ ...prev, [qId]: value }));
   const handleCheckboxChange = (qId: string, optionLabel: string, checked: boolean) => {
     const currentAns = formData[qId] || [];
@@ -141,14 +168,36 @@ export default function SurveyDashboardContent() {
     return false;
   };
      
-  const todayStr = new Date().toISOString().split('T')[0];
-  const visibleSurveys = useMemo(() => surveys.filter(s => s.status === '진행중' || s.status === '완료'), [surveys]);
-     
-  const filteredSurveys = useMemo(() => {
-    if (filterNudged) return visibleSurveys.filter(s => { const isTargeted = currentUser?.roles?.includes('LV_1') || checkHierarchyTarget(s.target, currentUser?.unit?.unit_name); return s.status === '진행중' && isTargeted && !myResponses[s.id] && nudgedSurveys.includes(s.id); });
-    if (filterPending) return visibleSurveys.filter(s => { const isTargeted = currentUser?.roles?.includes('LV_1') || checkHierarchyTarget(s.target, currentUser?.unit?.unit_name); return s.status === '진행중' && isTargeted && !myResponses[s.id]; });
-    return visibleSurveys;
-  }, [visibleSurveys, filterPending, filterNudged, myResponses, currentUser, unitsList, nudgedSurveys]);
+// 💡 [원인 해결] UTC 시차 문제 제거! 한국 로컬 시간 기준으로 완벽한 '오늘 날짜' 생성
+const todayStr = useMemo(() => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}, []);
+
+const visibleSurveys = useMemo(() => surveys.filter(s => s.status === '진행중' || s.status === '완료'), [surveys]);
+   
+// 💡 필터링 로직 (오늘 마감 우선순위 적용)
+const filteredSurveys = useMemo(() => {
+  // 🔥 1순위: 오늘 마감 배너 클릭 시 가장 먼저 필터링!
+  if (filterClosingToday) {
+    return visibleSurveys.filter(s => s.status === '진행중' && s.endDate === todayStr);
+  }
+  
+  if (filterNudged) {
+    return visibleSurveys.filter(s => { 
+      const isTargeted = currentUser?.roles?.includes('LV_1') || checkHierarchyTarget(s.target, currentUser?.unit?.unit_name); 
+      return s.status === '진행중' && isTargeted && !myResponses[s.id] && nudgedSurveys.includes(s.id); 
+    });
+  }
+  if (filterPending) {
+    return visibleSurveys.filter(s => { 
+      const isTargeted = currentUser?.roles?.includes('LV_1') || checkHierarchyTarget(s.target, currentUser?.unit?.unit_name); 
+      return s.status === '진행중' && isTargeted && !myResponses[s.id]; 
+    });
+  }
+  
+  return visibleSurveys;
+}, [visibleSurveys, filterPending, filterNudged, filterClosingToday, myResponses, currentUser, unitsList, nudgedSurveys, todayStr]);
      
   const stats = useMemo(() => {
     if (!currentUser) return { ongoingCount: 0, closingTodayCount: 0, myPendingCount: 0, nudgeCount: 0 };
@@ -163,49 +212,104 @@ export default function SurveyDashboardContent() {
   };
      
   const handleStartSurvey = () => {
-    const surveyId = introModalSurvey.id;
-    const draftData = localStorage.getItem(`survey_draft_${surveyId}_${currentUserEmail}`);
-    if (draftData) {
-      if (confirm('💾 이전에 작성 중이던 임시 저장 내역이 있습니다.\n이어서 작성하시겠습니까?')) setFormData(JSON.parse(draftData)); else setFormData({});
-    } else setFormData({});
-     
-    const builderData = localStorage.getItem(`survey_builder_${surveyId}`);
-    const questions = builderData ? JSON.parse(builderData) : [];
+    const survey = introModalSurvey;
     
-    // 🚀 [신규] 섹션 초기화 로직
+    // 🚀 [핵심 안정화]: 버전 대조형 안전 임시 저장 로드 엔진 적용
+    const draftRaw = localStorage.getItem(`survey_draft_${survey.id}_${currentUserEmail}`);
+    if (draftRaw) {
+      try {
+        const draft = JSON.parse(draftRaw);
+        // 서버 측 공고의 최종 수정일(updatedAt)과 임시저장 시점의 수정일 비교
+        if (draft.updatedAt === survey.updatedAt) {
+          if (confirm('💾 이전에 작성 중이던 임시 저장 내역이 있습니다.\n이어서 작성하시겠습니까?')) {
+            setFormData(draft.answers || {});
+          } else {
+            setFormData({});
+          }
+        } else {
+          console.warn("설문 내용이 변경되어 기존 임시 저장 데이터를 초기화합니다.");
+          setFormData({});
+          localStorage.removeItem(`survey_draft_${survey.id}_${currentUserEmail}`);
+        }
+      } catch (e) {
+        setFormData({});
+      }
+    } else {
+      setFormData({});
+    }
+     
+    let questions = [];
+    try {
+      questions = typeof survey.questions === 'string' 
+        ? JSON.parse(survey.questions) 
+        : (survey.questions || []);
+    } catch (e) {
+      console.error("문항 파싱 오류:", e);
+    }
+    
     if (questions.length > 0 && questions[0].type !== 'SECTION') setCurrentSectionId(null);
     else {
       const firstSection = questions.find((q: any) => q.type === 'SECTION');
       if (firstSection) setCurrentSectionId(firstSection.id);
     }
-
-    setActiveFullScreenSurvey({ ...introModalSurvey, questions });
+     
+    setActiveFullScreenSurvey({ ...survey, questions });
     setIntroModalSurvey(null);
   };
      
   const handleSaveDraft = () => {
     if (!activeFullScreenSurvey) return;
-    localStorage.setItem(`survey_draft_${activeFullScreenSurvey.id}_${currentUserEmail}`, JSON.stringify(formData));
-    alert('💾 현재까지 작성한 설문 내용이 임시 저장되었습니다.');
-  };
-     
-  const handleSubmitForm = () => {
-    for (const q of activeFullScreenSurvey.questions) {
-      if (q.type !== 'SECTION' && q.isRequired && !formData[q.id]) return alert(`✏️ [${q.title}] 문항은 필수 응답 사항입니다. 답변을 채워주세요.`);
+    try {
+      // 🚀 [핵심 안정화]: 임시 저장 시 현재 설문의 버전을 함께 패키징
+      const payload = {
+        updatedAt: activeFullScreenSurvey.updatedAt,
+        answers: formData
+      };
+      localStorage.setItem(`survey_draft_${activeFullScreenSurvey.id}_${currentUserEmail}`, JSON.stringify(payload));
+      alert('💾 현재까지 작성한 설문 내용이 안전하게 임시 저장되었습니다.');
+    } catch (e) {
+      alert('⚠️ 파일 용량 초과로 임시 저장이 실패했습니다.');
     }
-    if (!confirm('설문 응답을 최종 제출하시겠습니까?\n제출 후에는 수정할 수 없습니다.')) return;
-     
-    const submittedDate = `${todayStr} ${new Date().toLocaleTimeString('ko-KR', {hour12: false})}`;
-    const nextResponses = { ...myResponses, [activeFullScreenSurvey.id]: { submittedAt: submittedDate, answers: formData } };
-    
-    setMyResponses(nextResponses);
-    localStorage.setItem(`db_my_responses_${currentUserEmail}`, JSON.stringify(nextResponses));
-    localStorage.removeItem(`survey_draft_${activeFullScreenSurvey.id}_${currentUserEmail}`); 
-    alert(`✅ ${submittedDate}에 정상적으로 제출되었습니다.\n설문 참여에 감사드립니다.`);
-    setActiveFullScreenSurvey(null); 
   };
-
-  // 🚀 [신규] 섹션 분기 필터링 시스템
+     
+  // 🚀 [DB 정합성 코어 2]: 응답 데이터를 브라우저에 가두지 않고 서버 DB로 즉시 밀어넣어 동기화 완료
+  const handleSubmitForm = async () => {
+    for (const q of activeFullScreenSurvey.questions) {
+      if (q.type !== 'SECTION' && q.isRequired && (!formData[q.id] || formData[q.id].length === 0)) {
+        return alert(`✏️ [${q.title}] 문항은 필수 응답 사항입니다. 답변을 채워주세요.`);
+      }
+    }
+    if (!confirm('설문 응답을 최종 제출하시겠습니까?\n제출 후에는 게시 마감전까지 나의 참여 이력에서 수정할 수 있습니다.')) return;
+     
+    try {
+      const res = await fetch('/api/survey/general', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'SUBMIT_RESPONSE',
+          surveyId: activeFullScreenSurvey.id,
+          userEmail: currentUserEmail,
+          answers: formData
+        })
+      });
+     
+      if (res.ok) {
+        const submittedDate = `${todayStr} ${new Date().toLocaleTimeString('ko-KR', {hour12: false})}`;
+        const nextResponses = { ...myResponses, [activeFullScreenSurvey.id]: { submittedAt: submittedDate, answers: formData } };
+        
+        setMyResponses(nextResponses);
+        localStorage.removeItem(`survey_draft_${activeFullScreenSurvey.id}_${currentUserEmail}`); 
+        alert(`✅ ${submittedDate}에 정상적으로 제출되었습니다.\n설문 참여에 감사드립니다.`);
+        setActiveFullScreenSurvey(null); 
+      } else {
+        alert('❌ 서버 데이터 제출 처리에 실패했습니다.');
+      }
+    } catch (error) {
+      console.error(error);
+      alert('❌ 네트워크 통신 오류가 발생했습니다.');
+    }
+  };
+     
   const activeQuestions = activeFullScreenSurvey?.questions || [];
   const hasSections = activeQuestions.some((q: any) => q.type === 'SECTION');
   const sectionsOrder: (string | null)[] = [];
@@ -213,7 +317,7 @@ export default function SurveyDashboardContent() {
   activeQuestions.filter((q: any) => q.type === 'SECTION').forEach((s: any) => sectionsOrder.push(s.id));
   const currentSectionIndex = sectionsOrder.indexOf(currentSectionId);
   const isLastSection = !hasSections || currentSectionIndex === sectionsOrder.length - 1;
-
+     
   const renderedQuestions = activeQuestions.filter((q: any, idx: number) => {
     if (!hasSections) return true;
     if (q.type === 'SECTION') return q.id === currentSectionId;
@@ -225,7 +329,7 @@ export default function SurveyDashboardContent() {
      
   return (
     <div className="w-full max-w-[1600px] mx-auto space-y-6 p-8 font-sans text-slate-900 pb-24 animate-fade-in">
-      <div className="flex flex-col xl:flex-row gap-4 w-full">
+     <div className="flex flex-col xl:flex-row gap-4 w-full">
         <div className="xl:w-2/5 bg-gradient-to-r from-blue-700 to-indigo-800 p-6 rounded-[2.5rem] min-h-[120px] flex flex-col justify-center text-white shadow-xl relative overflow-hidden group">
           <div className="absolute right-[-10px] top-[-10px] w-24 h-24 bg-white/10 rounded-full blur-2xl group-hover:scale-150 transition-transform duration-700"></div>
           <div>
@@ -233,17 +337,20 @@ export default function SurveyDashboardContent() {
             <div className="flex items-end gap-2 mt-1"><h3 className="text-4xl font-black">{stats.myPendingCount}</h3><p className="text-xs font-bold mb-1 opacity-90">건의 참여할 설문이 있습니다.</p></div>
           </div>
           <div className="absolute right-6 top-1/2 -translate-y-1/2">
-            <button onClick={() => { if (stats.myPendingCount === 0) return alert('미참여 대기 설문이 없습니다.'); setFilterPending(!filterPending); setFilterNudged(false); }} className={`shrink-0 text-[10px] font-black px-4 py-2 rounded-xl transition-all border shadow-sm ${filterPending ? 'bg-white text-indigo-700 border-white' : 'bg-white/20 hover:bg-white/30 text-white border-white/20'}`}>{filterPending ? '전체 목록 ↺' : '대상만 보기 →'}</button>
+            <button onClick={() => { if (stats.myPendingCount === 0) return alert('미참여 대기 설문이 없습니다.'); setFilterPending(!filterPending); setFilterNudged(false); setFilterClosingToday(false); }} className={`shrink-0 text-[10px] font-black px-4 py-2 rounded-xl transition-all border shadow-sm ${filterPending ? 'bg-white text-indigo-700 border-white' : 'bg-white/20 hover:bg-white/30 text-white border-white/20'}`}>{filterPending ? '전체 목록 ↺' : '대상만 보기 →'}</button>
           </div>
         </div>
         <div className="xl:w-3/5 flex flex-col md:flex-row gap-4">
           <div className="flex-1 bg-white border border-slate-200 p-5 rounded-[2.5rem] shadow-sm flex items-center justify-between min-h-[120px]">
             <div><p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">진행 중 조사</p><h3 className="text-3xl font-black text-slate-800 mt-1">{stats.ongoingCount} <span className="text-sm font-bold text-slate-400">건</span></h3></div><div className="w-12 h-12 bg-blue-50 text-blue-600 rounded-2xl flex items-center justify-center text-2xl">📝</div>
           </div>
-          <div className="flex-1 bg-white border border-slate-200 p-5 rounded-[2.5rem] shadow-sm flex items-center justify-between min-h-[120px]">
-            <div><p className="text-[10px] font-black text-red-400 uppercase tracking-widest mb-1">오늘 마감</p><h3 className="text-3xl font-black text-red-600 mt-1">{stats.closingTodayCount} <span className="text-sm font-bold text-red-300">건</span></h3></div><div className="w-12 h-12 bg-red-50 rounded-2xl flex items-center justify-center text-2xl">⏰</div>
+          
+          {/* 💡 [수정] 오늘 마감 배너를 클릭 가능하도록 버튼화! */}
+          <div onClick={() => { if (stats.closingTodayCount === 0) return alert('오늘 마감이 임박한 조사가 없습니다.'); setFilterClosingToday(!filterClosingToday); setFilterPending(false); setFilterNudged(false); }} className={`flex-1 p-5 rounded-[2.5rem] shadow-sm flex items-center justify-between min-h-[120px] cursor-pointer transition-all border-2 ${filterClosingToday ? 'bg-red-50 border-red-400 scale-[1.02] shadow-lg' : 'bg-white border-slate-200 hover:border-red-200 hover:bg-red-50/30'}`}>
+            <div><p className="text-[10px] font-black text-red-400 uppercase tracking-widest mb-1">오늘 마감</p><h3 className="text-3xl font-black text-red-600 mt-1">{stats.closingTodayCount} <span className="text-sm font-bold text-red-300">건</span></h3></div><div className={`w-12 h-12 rounded-2xl flex items-center justify-center text-2xl transition-all ${filterClosingToday ? 'bg-red-500 text-white animate-pulse' : 'bg-red-50'}`}>⏰</div>
           </div>
-          <div onClick={() => { if (stats.nudgeCount === 0) return alert('접수된 참여 요청 건이 없습니다.'); setFilterNudged(!filterNudged); setFilterPending(false); }} className={`flex-1 p-5 rounded-[2.5rem] shadow-sm flex items-center justify-between min-h-[120px] cursor-pointer transition-all border-2 ${filterNudged ? 'bg-red-500 border-red-600 scale-[1.02] shadow-lg' : 'bg-white border-red-100 hover:border-red-300 hover:bg-red-50/30'}`}>
+          
+          <div onClick={() => { if (stats.nudgeCount === 0) return alert('접수된 참여 요청 건이 없습니다.'); setFilterNudged(!filterNudged); setFilterPending(false); setFilterClosingToday(false); }} className={`flex-1 p-5 rounded-[2.5rem] shadow-sm flex items-center justify-between min-h-[120px] cursor-pointer transition-all border-2 ${filterNudged ? 'bg-red-500 border-red-600 scale-[1.02] shadow-lg' : 'bg-white border-red-100 hover:border-red-300 hover:bg-red-50/30'}`}>
             <div><p className={`text-[10px] font-black uppercase tracking-widest mb-1 ${filterNudged ? 'text-red-100' : 'text-red-400'}`}>참여 요청</p><h3 className={`text-3xl font-black mt-1 ${filterNudged ? 'text-white' : 'text-red-600'}`}>{stats.nudgeCount} <span className={`text-sm font-bold ${filterNudged ? 'text-red-200' : 'text-red-300'}`}>건</span></h3></div>
             <div className={`w-12 h-12 rounded-2xl flex items-center justify-center text-2xl transition-all ${filterNudged ? 'bg-red-600 text-white' : stats.nudgeCount > 0 ? 'bg-red-50 animate-bounce shadow-md' : 'bg-slate-50 text-slate-300 grayscale opacity-50'}`}>🚨</div>
           </div>
@@ -251,11 +358,14 @@ export default function SurveyDashboardContent() {
       </div>
   
       <div className="bg-white border border-slate-200 rounded-[2.5rem] shadow-sm overflow-hidden mt-6">
-        <div className="p-6 bg-slate-800 border-b border-slate-700 flex items-center justify-between">
-          <h3 className="text-sm font-black text-white flex items-center gap-2"><span className="text-blue-500">●</span> {filterNudged ? '🚨 참여 요청 내역' : '진행 중인 전사 설문 리스트'}</h3>
+      <div className="p-6 bg-slate-800 border-b border-slate-700 flex items-center justify-between">
+          <h3 className="text-sm font-black text-white flex items-center gap-2"><span className="text-blue-500">●</span> {filterNudged ? '🚨 참여 요청 내역' : filterClosingToday ? '⏰ 오늘 마감 설문' : '진행 중인 전사 설문 리스트'}</h3>
           <div className="flex items-center gap-2">
             {filterPending && <span className="text-[10px] font-black bg-indigo-500 text-white px-2 py-0.5 rounded-full border border-indigo-600 animate-pulse">대상 내역 표시 중</span>}
             {filterNudged && <span className="text-[10px] font-black bg-red-500 text-white px-2 py-0.5 rounded-full border border-red-600 animate-pulse">독촉 건만 표시 중</span>}
+            {/* 💡 요기 뱃지 추가! */}
+            {filterClosingToday && <span className="text-[10px] font-black bg-red-50 text-red-600 px-2 py-0.5 rounded-full border border-red-200 animate-pulse">오늘 마감 건 표시 중</span>}
+            
             <span className="text-xs font-black bg-slate-700 text-indigo-300 px-2.5 py-0.5 rounded-full border border-slate-600">조회 {filteredSurveys.length}건</span>
           </div>
         </div>
@@ -277,20 +387,107 @@ export default function SurveyDashboardContent() {
                   done = targetUsers.filter(u => allResponses[`${s.id}_${u.email}`]).length;
                 }
                 const rate = total > 0 ? Math.round((done/total)*100) : 0;
-                const isClosingToday = s.endDate === todayStr;
+                
                 const isSubmitted = Boolean(myResponses[s.id]);
                 const isTargeted = currentUser?.roles?.includes('LV_1') || checkHierarchyTarget(s.target, currentUser?.unit?.unit_name);
-                const isNudged = isTargeted && !isSubmitted && nudgedSurveys.includes(s.id);
+                const nudgedSurveysList = nudgedSurveys || [];
+                const isNudged = isTargeted && !isSubmitted && nudgedSurveysList.includes(s.id);
   
+                // 💡 [시간 마감 정밀 계산 및 D-Day 적용]
+                const now = new Date();
+                const deadline = new Date(`${s.endDate}T${s.endTime || '23:59'}:00`);
+                const isTimeOver = s.status === '진행중' && now > deadline;
+                
+                const todayDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+                const endDateDate = new Date(deadline.getFullYear(), deadline.getMonth(), deadline.getDate());
+                const pureDaysDiff = Math.round((endDateDate.getTime() - todayDate.getTime()) / (1000 * 60 * 60 * 24));
+                
+                // 💡 D-Day 텍스트 설정 (D-3 ~ D-Day)
+                let dDayText = null;
+                if (!isTimeOver) {
+                  if (pureDaysDiff === 0) dDayText = "D-Day";
+                  else if (pureDaysDiff > 0 && pureDaysDiff <= 3) dDayText = `D-${pureDaysDiff}`;
+                }
+                const isUrgent = dDayText !== null;
+
                 return (
-                  <tr key={s.id} className={`transition-all ${isTargeted ? (isNudged ? 'bg-red-50/40 hover:bg-red-50' : 'hover:bg-slate-50/50') : 'bg-slate-50 opacity-40 cursor-not-allowed grayscale'}`}>
-                    <td className="text-center text-slate-400 font-black pl-8 py-4">{idx + 1}</td><td className="text-center font-black text-slate-600 px-2 py-4">{s.postNumber}</td><td className="text-center font-mono text-slate-500 px-3 py-4 whitespace-nowrap">{s.postDate || '-'}</td>
-                    <td className="px-4 py-4"><div className="flex flex-col gap-1 items-start"><div className="flex items-center gap-2"><button onClick={() => isTargeted && !isSubmitted && handleOpenIntro(s)} className={`font-black text-[12px] text-left line-clamp-1 ${!isTargeted ? 'text-slate-500 cursor-not-allowed' : isSubmitted ? 'text-slate-400 cursor-not-allowed' : 'text-slate-800 hover:text-blue-600 hover:underline'}`}>{s.title}</button>{isClosingToday && <span className="shrink-0 bg-red-600 text-white text-[8px] px-1.5 py-0.5 rounded font-black animate-pulse">마감임박</span>}</div>{isNudged && (<span className="inline-block bg-red-100 text-red-600 border border-red-200 text-[8px] px-2 py-0.5 rounded shadow-sm font-black animate-pulse">🚨 관리자 참여 요청</span>)}</div></td>
-                    <td className="text-center py-4 px-3"><span className={`px-2 py-0.5 border text-[10px] rounded ${s.isAnonymous ? 'bg-slate-700 text-white font-black border-slate-900' : 'text-slate-400 border-slate-200'}`}>{s.isAnonymous ? '익명' : '기명'}</span></td>
+                  <tr 
+                    key={s.id} 
+                    className={`transition-all ${
+                      !isTargeted 
+                        ? 'bg-slate-50 opacity-40 cursor-not-allowed grayscale' 
+                        : isTimeOver 
+                          ? 'bg-slate-100/70 opacity-50 grayscale text-slate-400 line-through-none' 
+                          : isNudged 
+                            ? 'bg-red-50/40 hover:bg-red-50' 
+                            : 'hover:bg-slate-50/50'
+                    }`}
+                  >
+                    <td className="text-center text-slate-400 font-black pl-8 py-4">{idx + 1}</td>
+                    <td className="text-center font-black text-slate-600 px-2 py-4">{s.postNumber}</td>
+                    <td className="text-center font-mono text-slate-500 px-3 py-4 whitespace-nowrap">{s.postDate || '-'}</td>
+                    
+                    <td className="px-4 py-4">
+                      <div className="flex flex-col gap-1 items-start">
+                        <div className="flex items-center gap-2">
+                          <button 
+                            onClick={() => isTargeted && !isSubmitted && !isTimeOver && handleOpenIntro(s)} 
+                            className={`font-black text-[12px] text-left line-clamp-1 ${!isTargeted || isTimeOver || isSubmitted ? 'text-slate-400 cursor-not-allowed' : 'text-slate-800 hover:text-blue-600 hover:underline'}`}
+                            disabled={!isTargeted || isSubmitted || isTimeOver}
+                          >
+                            {s.title}
+                          </button>
+                          
+                          {/* 💡 기존 '마감임박' 대신 동적 D-Day 표시 */}
+                          {dDayText && (
+                            <span className="shrink-0 bg-red-600 text-white text-[8px] px-1.5 py-0.5 rounded font-black animate-pulse">
+                              {dDayText}
+                            </span>
+                          )}
+                          
+                          {isTimeOver && <span className="shrink-0 bg-slate-500 text-white text-[8px] px-1.5 py-0.5 rounded font-black">종료됨</span>}
+                        </div>
+                        {isNudged && !isTimeOver && (
+                          <span className="inline-block bg-red-100 text-red-600 border border-red-200 text-[8px] px-2 py-0.5 rounded shadow-sm font-black animate-pulse">🚨 관리자 참여 요청</span>
+                        )}
+                      </div>
+                    </td>
+                    
+                    <td className="text-center py-4 px-3">
+                      <span className={`px-2 py-0.5 border text-[10px] rounded ${s.isAnonymous ? 'bg-slate-700 text-white font-black border-slate-900' : 'text-slate-400 border-slate-200'}`}>{s.isAnonymous ? '익명' : '기명'}</span>
+                    </td>
+                    
                     <td className="px-3 py-4 text-center text-slate-600 font-medium whitespace-normal break-keep leading-relaxed">{s.target}</td>
-                    <td className="text-center text-slate-500 text-[10px] px-3 py-4"><div>{s.startDate} ~</div><div className={isClosingToday ? 'text-red-500 font-black' : ''}>{s.endDate}</div></td>
-                    <td className="text-center font-black text-slate-700 px-2 py-4">{rate}%</td><td className="text-center font-black text-blue-600 px-2 py-4">{done}명</td><td className="text-center font-black text-red-500 px-2 py-4">{total - done}명</td>
-                    <td className="text-center pr-8 py-4">{!isTargeted ? (<button disabled className="px-4 py-1.5 rounded-lg font-black text-[10px] bg-slate-200 text-slate-500 cursor-not-allowed">🚫 대상아님</button>) : isSubmitted ? (<button onClick={() => alert(`✅ 제출 내역 정보: ${myResponses[s.id].submittedAt}`)} className="px-3 py-1.5 rounded-lg font-black text-[10px] bg-emerald-50 border border-emerald-100 text-emerald-700 hover:bg-emerald-100/50">📬 제출완료</button>) : (<button onClick={() => handleOpenIntro(s)} className={`px-4 py-1.5 rounded-lg font-black text-[10px] shadow-sm transition-all ${isNudged ? 'bg-red-600 text-white hover:bg-red-700 animate-bounce' : 'bg-blue-600 text-white hover:bg-blue-700'}`}>{isNudged ? '🔥참여요청' : '📥 미참여'}</button>)}</td>
+                    
+                    <td className="text-center text-slate-500 text-[10px] px-3 py-4">
+                      <div>{s.startDate} ~</div>
+                      <div className={isTimeOver ? 'text-red-400 font-bold' : isUrgent ? 'text-red-500 font-black' : ''}>
+                        {s.endDate} <span className="text-[8px]">({s.endTime || '23:59'})</span>
+                      </div>
+                    </td>
+                    
+                    <td className="text-center font-black text-slate-700 px-2 py-4">{rate}%</td>
+                    <td className="text-center font-black text-blue-600 px-2 py-4">{done}명</td>
+                    <td className="text-center font-black text-red-500 px-2 py-4">{total - done}명</td>
+                    
+                    <td className="text-center pr-8 py-4">
+                      {!isTargeted ? (
+                        <button disabled className="px-4 py-1.5 rounded-lg font-black text-[10px] bg-slate-200 text-slate-500 cursor-not-allowed">🚫 대상아님</button>
+                      ) : isSubmitted ? (
+                        <button onClick={() => alert(`✅ 제출 내역 정보: ${myResponses[s.id].submittedAt}`)} className="px-3 py-1.5 rounded-lg font-black text-[10px] bg-emerald-50 border border-emerald-100 text-emerald-700 hover:bg-emerald-100/50">📬 제출완료</button>
+                      ) : isTimeOver ? (
+                        <button disabled className="px-4 py-1.5 rounded-lg font-black text-[10px] bg-red-50 text-red-500 border border-red-200 cursor-not-allowed">
+                          ⏰ 기간종료
+                        </button>
+                      ) : (
+                        <button 
+                          onClick={() => handleOpenIntro(s)} 
+                          className={`px-4 py-1.5 rounded-lg font-black text-[10px] shadow-sm transition-all ${isNudged ? 'bg-red-600 text-white hover:bg-red-700 animate-bounce' : 'bg-blue-600 text-white hover:bg-blue-700'}`}
+                        >
+                          {isNudged ? '🔥참여요청' : '📥 미참여'}
+                        </button>
+                      )}
+                    </td>
                   </tr>
                 );
               })}
@@ -304,7 +501,7 @@ export default function SurveyDashboardContent() {
           <div className="bg-white w-[500px] rounded-[2rem] overflow-hidden shadow-2xl flex flex-col p-8 items-center text-center animate-in zoom-in duration-300">
             <div className="w-16 h-16 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center text-3xl mb-6">📋</div>
             <h3 className="text-xl font-black text-slate-800 mb-4">{introModalSurvey.title}</h3>
-            <p className="text-sm font-bold text-slate-500 bg-slate-50 p-4 rounded-xl w-full leading-relaxed mb-8 border border-slate-100">
+            <p className="text-sm font-bold text-slate-500 bg-slate-50 p-4 rounded-xl w-full leading-relaxed mb-8 border border-slate-100 whitespace-pre-wrap text-left">
               {introModalSurvey.description || '본 설문조사에 참여하여 의견을 남겨주세요.'}
             </p>
             <div className="flex gap-3 w-full">
@@ -315,7 +512,6 @@ export default function SurveyDashboardContent() {
         </div>
       )}
      
-      {/* 🚀 [신규 엔진 탑재] 설문 작성 풀스크린 에디터 */}
       {activeFullScreenSurvey && (
         <div className="fixed inset-0 bg-slate-50 z-[500] overflow-y-auto flex flex-col text-[11px]">
           <div className="sticky top-0 bg-white border-b border-slate-200 px-6 py-4 flex justify-between items-center shadow-sm z-10">
@@ -328,13 +524,22 @@ export default function SurveyDashboardContent() {
               <button onClick={handleSaveDraft} className="px-5 py-2.5 bg-slate-800 text-white rounded-xl text-xs font-black shadow-sm">💾 중간 저장</button>
             </div>
           </div>
-
-          <div className="flex-1 w-full max-w-[800px] mx-auto py-10 px-4 pb-32 space-y-6">
+     
+          <div className="flex-1 w-full max-w-[800px] mx-auto py-10 px-4 pb-32 space-y-6 relative">
+            {zoomedImage && (
+              <div className="fixed inset-0 z-[600] flex items-center justify-center bg-slate-900/90 backdrop-blur-sm p-4 cursor-zoom-out animate-in fade-in duration-200" onClick={() => setZoomedImage(null)}>
+                <div className="relative max-w-5xl max-h-[90vh] flex items-center justify-center">
+                  <img src={zoomedImage} alt="Zoomed Area" className="max-w-full max-h-[85vh] object-contain rounded-2xl shadow-2xl cursor-default" onClick={(e) => e.stopPropagation()} />
+                  <button className="absolute -top-12 right-0 text-white font-black text-lg bg-black/40 hover:bg-black/80 w-9 h-9 rounded-full flex items-center justify-center transition-colors" onClick={() => setZoomedImage(null)}>✕</button>
+                </div>
+              </div>
+            )}
+            
             {renderedQuestions.map((q: any) => {
               if (q.type === 'SECTION') return (
-                <div key={q.id} className="bg-indigo-900 text-white p-5 rounded-2xl shadow-sm border border-indigo-950 mb-2">
+                <div key={q.id} className="bg-blue-900 text-white p-5 rounded-2xl shadow-sm border border-blue-950 mb-2">
                   <h3 className="text-sm font-black flex items-center gap-1.5">🔖 {q.title}</h3>
-                  {q.description && <p className="text-[10px] text-indigo-200 mt-2 font-medium whitespace-pre-wrap">{q.description}</p>}
+                  {q.description && <p className="text-[10px] text-blue-200 mt-2 font-medium whitespace-pre-wrap">{q.description}</p>}
                 </div>
               );
               return (
@@ -343,9 +548,17 @@ export default function SurveyDashboardContent() {
                     <h4 className="font-black text-slate-800 text-xs flex items-center gap-1">{q.title} {q.isRequired && <span className="text-red-500 font-extrabold">*</span>}</h4>
                     {q.description && <p className="text-[10px] text-slate-400 mt-1 font-bold whitespace-pre-wrap">💡 {q.description}</p>}
                     {q.referenceLink && <a href={q.referenceLink} target="_blank" rel="noopener noreferrer" className="mt-2 inline-block px-2.5 py-1 bg-blue-50 text-blue-600 rounded text-[9px] font-black border border-blue-100 hover:bg-blue-100">🔗 관련 참고 링크 열기</a>}
-                    {q.questionImageUrl && <img src={q.questionImageUrl} alt="guide" className="mt-3 max-h-40 rounded-xl object-contain border" />}
+                    {q.questionImageUrl && (
+                      <img 
+                        src={q.questionImageUrl} 
+                        alt="guide" 
+                        onClick={() => setZoomedImage(q.questionImageUrl)} 
+                        className="mt-3 max-h-40 rounded-xl object-contain border cursor-pointer hover:ring-2 hover:ring-blue-500 transition-all hover:scale-[1.01]" 
+                        title="클릭하면 크게 보실 수 있습니다."
+                      />
+                    )}
                   </div>
-
+     
                   {q.type === 'CHOICE_SINGLE' && (
                     <div className="space-y-2 pt-1">
                       {q.options?.map((opt: any, oIdx: number) => (
@@ -354,25 +567,47 @@ export default function SurveyDashboardContent() {
                             handleInputChange(q.id, opt.label);
                             if (opt.goToSectionId && opt.goToSectionId !== 'SUBMIT') setCurrentSectionId(opt.goToSectionId);
                           }} className="w-3.5 h-3.5 accent-blue-600" />
-                          <div className="flex flex-col flex-1"><span className="font-bold text-slate-700">{opt.label}</span>{opt.referenceLink && <a href={opt.referenceLink} target="_blank" rel="noopener noreferrer" className="text-[9px] text-blue-500 hover:underline mt-0.5" onClick={e => e.stopPropagation()}>🔗 상세 명세 링크</a>}{opt.imageUrl && <img src={opt.imageUrl} className="mt-2 max-h-24 object-contain rounded border bg-white w-fit" />}</div>
+                          <div className="flex flex-col flex-1">
+                            <span className="font-bold text-slate-700">{opt.label}</span>
+                            {opt.referenceLink && <a href={opt.referenceLink} target="_blank" rel="noopener noreferrer" className="text-[9px] text-blue-500 hover:underline mt-0.5" onClick={e => e.stopPropagation()}>🔗 상세 명세 링크</a>}
+                            {opt.imageUrl && (
+                              <img 
+                                src={opt.imageUrl} 
+                                onClick={(e) => { e.preventDefault(); e.stopPropagation(); setZoomedImage(opt.imageUrl); }} 
+                                className="mt-2 max-h-24 object-contain rounded border bg-white w-fit cursor-pointer hover:ring-2 hover:ring-blue-500 transition-all hover:scale-[1.02]" 
+                                title="클릭하면 크게 보실 수 있습니다."
+                              />
+                            )}
+                          </div>
                         </label>
                       ))}
                     </div>
                   )}
-
+     
                   {q.type === 'CHOICE_MULTI' && (
                     <div className="space-y-2 pt-1">
                       {q.options?.map((opt: any, oIdx: number) => (
                         <label key={oIdx} className="flex items-center gap-3 p-3 bg-slate-50 border border-slate-200 rounded-xl cursor-pointer hover:bg-blue-50/40 transition-colors">
                           <input type="checkbox" checked={(formData[q.id] || []).includes(opt.label)} onChange={(e) => handleCheckboxChange(q.id, opt.label, e.target.checked)} className="w-3.5 h-3.5 accent-blue-600 rounded" />
-                          <div className="flex flex-col flex-1"><span className="font-bold text-slate-700">{opt.label}</span>{opt.referenceLink && <a href={opt.referenceLink} target="_blank" rel="noopener noreferrer" className="text-[9px] text-blue-500 hover:underline mt-0.5" onClick={e => e.stopPropagation()}>🔗 관련 링크</a>}{opt.imageUrl && <img src={opt.imageUrl} className="mt-2 max-h-24 object-contain rounded border bg-white w-fit" />}</div>
+                          <div className="flex flex-col flex-1">
+                            <span className="font-bold text-slate-700">{opt.label}</span>
+                            {opt.referenceLink && <a href={opt.referenceLink} target="_blank" rel="noopener noreferrer" className="text-[9px] text-blue-500 hover:underline mt-0.5" onClick={e => e.stopPropagation()}>🔗 관련 링크</a>}
+                            {opt.imageUrl && (
+                              <img 
+                                src={opt.imageUrl} 
+                                onClick={(e) => { e.preventDefault(); e.stopPropagation(); setZoomedImage(opt.imageUrl); }} 
+                                className="mt-2 max-h-24 object-contain rounded border bg-white w-fit cursor-pointer hover:ring-2 hover:ring-blue-500 transition-all hover:scale-[1.02]" 
+                                title="클릭하면 크게 보실 수 있습니다."
+                              />
+                            )}
+                          </div>
                         </label>
                       ))}
                     </div>
                   )}
-
+     
                   {q.type === 'TEXT_SHORT' && <input type="text" value={formData[q.id] || ''} onChange={(e) => handleInputChange(q.id, e.target.value)} className="w-full p-3 border border-slate-200 rounded-xl outline-none focus:border-blue-500 font-bold bg-slate-50 focus:bg-white text-xs" placeholder="답변 내용을 작성해 주세요." />}
-                  {q.type === 'TEXT_LONG' && <textarea value={formData[q.id] || ''} onChange={(e) => handleInputChange(q.id, e.target.value)} className="w-full p-3 border border-slate-200 rounded-xl outline-none focus:border-blue-500 font-bold bg-slate-50 focus:bg-white text-xs min-h-[100px]" placeholder="세부적인 의견을 여러 줄로 입력하실 수 있습니다." />}
+                  {q.type === 'TEXT_LONG' && <textarea value={formData[q.id] || ''} onChange={(e) => handleInputChange(q.id, e.target.value)} className="w-full p-3 border border-slate-200 rounded-xl outline-none focus:border-blue-500 font-bold bg-slate-50 focus:bg-white text-xs min-h-[100px] whitespace-pre-wrap" placeholder="세부적인 의견을 여러 줄로 입력하실 수 있습니다." />}
                   
                   {q.type === 'SCALE' && (
                     <div className="flex items-center justify-between bg-slate-50 p-4 border border-slate-200 rounded-xl">
@@ -385,22 +620,19 @@ export default function SurveyDashboardContent() {
                       <span className="font-black text-slate-600">매우 우수</span>
                     </div>
                   )}
-
+     
                   {q.type === 'SEARCH_ADDRESS' && (
                     <div className="space-y-2 bg-slate-50 p-4 rounded-xl border">
                       <button type="button" onClick={() => openPostcodeEngine(q.id)} className="px-4 py-2 bg-slate-900 text-white font-black rounded-lg hover:bg-slate-800 transition-colors">🔍 주소지 검색 찾기</button>
                       {formData[q.id]?.roadAddress && (
-                        <div className="p-3 bg-white rounded border space-y-1 text-[10px] font-bold text-slate-700">
-                          <p>우편번호: <span className="text-blue-600">{formData[q.id]?.zipCode}</span></p>
-                          <p>기본주소: {formData[q.id]?.roadAddress}</p>
-                        </div>
+                        <div className="p-3 bg-white rounded border space-y-1 text-[10px] font-bold text-slate-700"><p>우편번호: <span className="text-blue-600">{formData[q.id]?.zipCode}</span></p><p>기본주소: {formData[q.id]?.roadAddress}</p></div>
                       )}
                       <input type="text" placeholder="상세 건물명 및 동/호수" value={formData[q.id]?.detailAddress || ''} onChange={(e) => setFormData(prev => ({...prev, [q.id]: { ...(prev[q.id] || {}), detailAddress: e.target.value }}))} className="w-full p-2.5 border rounded-lg bg-white outline-none focus:border-blue-500 font-bold" />
                     </div>
                   )}
-
+     
                   {q.type === 'CALENDAR' && <input type="date" value={formData[q.id] || ''} onChange={(e) => handleInputChange(q.id, e.target.value)} className="p-3 border rounded-xl bg-slate-50 font-black text-slate-700 outline-none focus:border-blue-500" />}
-
+     
                   {q.type === 'FILE' && (
                     <div className="space-y-3 p-4 bg-slate-50 border border-slate-200 rounded-xl">
                       {q.templateFileName && (
@@ -418,7 +650,7 @@ export default function SurveyDashboardContent() {
                 </div>
               );
             })}
-
+     
             <div className="pt-4 flex justify-between gap-4">
               {hasSections && currentSectionIndex > 0 && <button type="button" onClick={() => setCurrentSectionId(sectionsOrder[currentSectionIndex - 1])} className="px-5 py-3.5 bg-white border border-slate-300 rounded-xl font-black text-slate-600 shadow-sm hover:bg-slate-50">◀ 이전 단계</button>}
               {!isLastSection ? (

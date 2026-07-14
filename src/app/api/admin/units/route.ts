@@ -1,31 +1,31 @@
 import { NextResponse } from 'next/server';
-import prisma from '@/lib/prisma'; //
+import prisma from '@/lib/prisma';
 
 // [GET] 조직 목록 및 소속 Lv.2 관리자 호출
 export async function GET(req: Request) {
-    try {
-      const { searchParams } = new URL(req.url);
-      const activeOnly = searchParams.get('active') === 'true';
-  
-      const units = await prisma.orgUnit.findMany({
-        where: { 
-          is_deleted: false,
-          ...(activeOnly ? { is_active: true } : {}) // [핵심] active=true 일 때만 필터링
-        },
-        include: {
-          parent: true,
-          users: {
-            where: { roles: { array_contains: 'LV_2' } },
-            select: { name: true }
-          }
-        },
-        orderBy: { sort_order: 'asc' }
-      });
-      return NextResponse.json(units);
-    } catch (error) {
-      return NextResponse.json({ message: '조직 데이터 로드 실패' }, { status: 500 });
-    }
+  try {
+    const { searchParams } = new URL(req.url);
+    const activeOnly = searchParams.get('active') === 'true';
+
+    const units = await prisma.orgUnit.findMany({
+      where: { 
+        is_deleted: false,
+        ...(activeOnly ? { is_active: true } : {}) // [핵심] active=true 일 때만 필터링
+      },
+      include: {
+        parent: true,
+        users: {
+          where: { roles: { array_contains: 'LV_2' } },
+          select: { name: true }
+        }
+      },
+      orderBy: { sort_order: 'asc' }
+    });
+    return NextResponse.json(units);
+  } catch (error) {
+    return NextResponse.json({ message: '조직 데이터 로드 실패' }, { status: 500 });
   }
+}
   
 // [POST] 신규 조직 추가
 export async function POST(req: Request) {
@@ -34,6 +34,7 @@ export async function POST(req: Request) {
     const newUnit = await prisma.orgUnit.create({
       data: {
         unit_name: body.unit_name,
+        unit_name_en: body.unit_name_en || "", // 💡 [신설] 신규 부서 등록 시 영문명 강제 매핑 안전장치
         unit_type: body.unit_type, 
         parent_id: body.parent_id || null,
         sort_order: Number(body.sort_order) || 0,
@@ -46,7 +47,7 @@ export async function POST(req: Request) {
   }
 }
 
-// [PATCH] 조직 정보 수정
+// [PATCH] 조직 정보 수정 (updateData 객체 자동 인입으로 별도 필드 분리 불요)
 export async function PATCH(req: Request) {
   try {
     const { id, ...updateData } = await req.json();

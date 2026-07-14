@@ -29,13 +29,26 @@ export async function GET() {
   
     if (!user) return NextResponse.json({ message: 'User Not Found' }, { status: 404 });
   
+    // 💡 안전한 JSON 파싱 헬퍼 함수
+    const safeParseRoles = (roles: any) => {
+      if (Array.isArray(roles)) return roles;
+      if (typeof roles === 'string' && roles.trim() !== '') {
+        try {
+          return JSON.parse(roles);
+        } catch (e) {
+          return []; // 파싱 에러가 나면 빈 배열 반환
+        }
+      }
+      return []; // null 이거나 빈 문자열이면 빈 배열 반환
+    };
+
     return NextResponse.json({
       id: user.id,
       name: user.name,
       email: user.email,
-      roles: Array.isArray(user.roles) ? user.roles : JSON.parse(user.roles as string),
+      roles: safeParseRoles(user.roles), // 🚀 에러가 나던 부분을 안전한 함수로 교체 완료
       dept_id: user.unit_id,
-      unit: user.unit // Join된 조직 전체 정보를 프론트로 넘김
+      unit: user.unit 
     });
   } catch (error) {
     console.error("Auth Me Error:", error);

@@ -34,18 +34,18 @@ export default function PublicSurveyResponsePage() {
   const [questions, setQuestions] = useState<Question[]>([]);
   const [loading, setLoading] = useState(true);
   
-  // 이메일 입력 인증 스텝 상태
   const [email, setEmail] = useState('');
   const [isEmailVerified, setIsEmailVerified] = useState(false);
+  const [isIntroConfirmed, setIsIntroConfirmed] = useState(false);
+  const [isSubmitCompleted, setIsSubmitCompleted] = useState(false); 
+  const [allUsers, setAllUsers] = useState<any[]>([]);
   
-  // 사용자 답변 저장 상태
   const [answers, setAnswers] = useState<Record<string, any>>({});
   const [currentSectionId, setCurrentSectionId] = useState<string | null>(null);
      
   useEffect(() => {
     if (!id) return;
      
-    // 카카오 주소 API 동적 인젝션
     if (typeof window !== 'undefined') {
       const scriptId = 'kakao-postcode-script';
       if (!document.getElementById(scriptId)) {
@@ -57,56 +57,72 @@ export default function PublicSurveyResponsePage() {
       }
     }
      
-    // 🚀 1. 통합 메타데이터 로드 (일반 설문 & 배달 공고 동시 스캔)
-    const storedGeneral = JSON.parse(localStorage.getItem('admin_surveys_db') || '[]');
-    const storedDelivery = JSON.parse(localStorage.getItem('admin_delivery_surveys') || '[]');
+    const init = async () => {
+      try {
+        const ts = Date.now();
+        // 🚀 DB 정합성 파이프라인 수신
+        const [uRes, generalRes, deliveryRes] = await Promise.all([
+          fetch(`/api/admin/users?t=${ts}`, { cache: 'no-store' }).catch(() => null),
+          fetch(`/api/survey/general?t=${ts}`, { cache: 'no-store' }).then(r => r.ok ? r.json() : []).catch(() => []),
+          fetch(`/api/survey/delivery?t=${ts}`, { cache: 'no-store' }).then(r => r.ok ? r.json() : []).catch(() => [])
+        ]);
+        
+        if (uRes && uRes.ok) {
+          const uData = await uRes.json();
+          setAllUsers(uData.users || []);
+        }
     
-    const generalMatch = storedGeneral.find((s: any) => s.id === id);
-    const deliveryMatch = storedDelivery.find((s: any) => s.id === id);
-
-    let activeDomain = 'GENERAL';
-    if (generalMatch) {
-      setSurveyMeta({ ...generalMatch, _domain: 'GENERAL' });
-      activeDomain = 'GENERAL';
-    } else if (deliveryMatch) {
-      setSurveyMeta({ ...deliveryMatch, _domain: 'DELIVERY' });
-      activeDomain = 'DELIVERY';
-    }
-     
-    // 🚀 2. 도메인에 맞는 빌더 데이터 로드
-    const builderKey = activeDomain === 'DELIVERY' ? `delivery_builder_${id}` : `survey_builder_${id}`;
-    const storedBuilder = localStorage.getItem(builderKey);
-    
-    if (storedBuilder) {
-      const parsedQuestions = JSON.parse(storedBuilder);
-      setQuestions(parsedQuestions);
-     
-      if (parsedQuestions.length > 0 && parsedQuestions[0].type !== 'SECTION') {
-        setCurrentSectionId(null);
-      } else {
-        const firstSection = parsedQuestions.find((q: any) => q.type === 'SECTION');
-        if (firstSection) setCurrentSectionId(firstSection.id);
+        const generalMatch = generalRes.find((s: any) => s.id === id);
+        const deliveryMatch = deliveryRes.find((s: any) => s.id === id);
+        
+        let activeMeta = null;
+        if (generalMatch) activeMeta = { ...generalMatch, _domain: 'GENERAL' };
+        else if (deliveryMatch) activeMeta = { ...deliveryMatch, _domain: 'DELIVERY' };
+        
+        if (activeMeta) {
+          setSurveyMeta(activeMeta);
+          
+          if (activeMeta.questions) {
+            const parsed = typeof activeMeta.questions === 'string' 
+              ? JSON.parse(activeMeta.questions) 
+              : activeMeta.questions;
+              
+            const safeQuestions = Array.isArray(parsed) ? parsed : [];
+            setQuestions(safeQuestions);
+            
+            // 🚀 [무한루프 엔진 차단 가드]: 처음 바인딩할 때 딱 1회만 타겟팅 추출하도록 안전 격리
+            if (safeQuestions.length > 0) {
+              if (safeQuestions[0].type !== 'SECTION') {
+                setCurrentSectionId(null);
+              } else {
+                const firstSection = safeQuestions.find((q: any) => q.type === 'SECTION');
+                if (firstSection) setCurrentSectionId(firstSection.id);
+              }
+            }
+          }
+        }
+      } catch (e) { 
+        console.error("인프라 동기화 무한루프 레이스 차단 에러:", e); 
+      } finally { 
+        setLoading(false); 
       }
-    }
-    setLoading(false);
+    };
+    init();
   }, [id]);
      
-  // 🚀 카카오 주소 검색 엔진 (도메인별 데이터 규격 분기)
   const isDelivery = surveyMeta?._domain === 'DELIVERY';
-
+  
   const openPostcodeEngine = (qId: string) => {
     if (typeof window !== 'undefined' && (window as any).daum?.Postcode) {
       new (window as any).daum.Postcode({
         oncomplete: (data: any) => {
           if (isDelivery) {
-            // 배달 도메인은 flat key 방식 사용 (_zip, _road)
             setAnswers(prev => ({
               ...prev,
               [`${qId}_zip`]: data.zonecode,
               [`${qId}_road`]: data.roadAddress || data.address
             }));
           } else {
-            // 일반 설문 도메인은 nested object 방식 사용
             setAnswers(prev => ({
               ...prev,
               [qId]: {
@@ -127,6 +143,12 @@ export default function PublicSurveyResponsePage() {
     e.preventDefault();
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(email)) return alert('올바른 이메일 형식을 입력해 주세요.');
+    
+    const foundUser = allUsers.find(u => u.email === email);
+    if (!foundUser) {
+      return alert('가입된 정보가 없습니다.\n사내 이메일 주소를 다시 확인해 주세요.');
+    }
+    
     setIsEmailVerified(true);
   };
      
@@ -151,8 +173,7 @@ export default function PublicSurveyResponsePage() {
     }
   };
      
-  const handleSubmitSurvey = () => {
-    // 필수 검증
+  const handleSubmitSurvey = async () => {
     for (const q of questions) {
       if (q.type !== 'SECTION' && q.isRequired) {
         if (q.type === 'SEARCH_ADDRESS' && isDelivery) {
@@ -167,55 +188,115 @@ export default function PublicSurveyResponsePage() {
      
     if (!confirm(isDelivery ? '배송 명세를 최종 접수하시겠습니까?' : '답변서 제출을 완료하시겠습니까?')) return;
      
-    // 🚀 도메인별 저장 스토리지 분기 라우팅
-    const submissionKey = isDelivery ? `db_my_delivery_responses_${email}` : `db_my_responses_${email}`;
-    const existingResponses = JSON.parse(localStorage.getItem(submissionKey) || '{}');
-     
-    const today = new Date();
-    const formattedDate = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')} ${String(today.getHours()).padStart(2, '0')}:${String(today.getMinutes()).padStart(2, '0')}`;
-     
-    existingResponses[id] = {
-      surveyId: id,
-      submittedAt: formattedDate,
-      answers: answers
-    };
-     
-    localStorage.setItem(submissionKey, JSON.stringify(existingResponses));
-    
-    alert(isDelivery ? '🚚 배송 신청이 완료되었습니다.\n마이페이지에서 확인 가능합니다.' : '✅ 제출이 완료되었습니다.\n참여해 주셔서 감사합니다.');
-    
-    setIsEmailVerified(false);
-    setAnswers({});
-    
-    // 완료 후 해당 도메인의 사용자 대시보드로 자동 리다이렉트
-    window.location.href = isDelivery ? '/survey/delivery/dashboard' : '/survey/general/dashboard'; 
+    try {
+      const endpoint = isDelivery ? '/api/survey/delivery' : '/api/survey/general';
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'SUBMIT_RESPONSE',
+          surveyId: id,
+          userEmail: email,
+          answers: answers
+        })
+      });
+      
+      if (res.ok) {
+        alert(isDelivery ? '🚚 배송 신청이 정상적으로 완료되었습니다.' : '✅ 답변서 제출이 완료되었습니다.');
+        setIsSubmitCompleted(true); 
+      } else {
+        alert('❌ 서버 제출 처리에 실패했습니다. 관리자에게 문의하세요.');
+      }
+    } catch (err) {
+      alert('❌ 네트워크 오류가 발생했습니다.');
+    }
   };
      
   if (loading) return <div className="p-20 text-center font-black text-slate-400 animate-pulse">인프라 로드 중...</div>;
   if (!surveyMeta) return <div className="p-20 text-center font-black text-red-500 text-lg mt-20">존재하지 않거나 이미 마감된 배포 링크입니다.</div>;
      
+  if (isSubmitCompleted) {
+    return (
+      <div className="min-h-screen bg-slate-100 flex items-center justify-center p-4 font-sans w-full max-w-md mx-auto shadow-2xl border-x text-center">
+        <div className="bg-white p-8 rounded-[2.5rem] border border-slate-200 shadow-xl w-full">
+          <div className="text-5xl mb-4">🎉</div>
+          <h1 className="text-base font-black text-slate-800 tracking-tight">
+            {isDelivery ? '배송 명세 접수 완료' : '설문 응답 제출 완료'}
+          </h1>
+          <p className="text-[11px] text-slate-400 font-bold mt-3 mb-6 leading-relaxed">
+            임직원 계정(<span className="text-indigo-600 font-black">{email}</span>)으로 <br />
+            정상적인 원장 등록 처리가 완료되었습니다. <br />
+            보안을 위해 본 브라우저 창을 닫아주셔도 좋습니다.
+          </p>
+          <button onClick={() => { if(typeof window !== 'undefined') window.close(); }} className="w-full py-3.5 bg-slate-900 text-white rounded-xl font-black text-xs transition-all active:scale-95">
+            확인 (창 닫기)
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   if (!isEmailVerified) {
     return (
       <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4 font-sans text-xs">
         <div className="bg-white p-8 rounded-[2.5rem] border border-slate-200 shadow-xl max-w-md w-full text-center space-y-6">
           <div className="text-4xl">{isDelivery ? '📦' : '🔒'}</div>
           <div>
-            <h2 className="text-base font-black text-slate-800">{surveyMeta.title}</h2>
-            <p className="text-[10px] text-slate-400 font-bold mt-1">임직원 계정 인증 후 {isDelivery ? '배송 정보 입력을 시작합니다.' : '설문에 참여하실 수 있습니다.'}</p>
+            <h2 className="text-base font-black text-slate-800 tracking-tight">{surveyMeta.title}</h2>
+            <p className="text-[10px] text-slate-400 font-bold mt-1.5 leading-relaxed">임직원 계정 인증 후 <br/> {isDelivery ? '배송 정보 입력을 시작합니다.' : '설문에 참여하실 수 있습니다.'}</p>
           </div>
           <form onSubmit={handleEmailSubmit} className="space-y-3 text-left">
             <div>
               <label className="text-[10px] font-black text-slate-500 mb-1 block">회사 공식 이메일 주소</label>
               <input 
-                type="email" required placeholder="username@company.com" 
+                type="email" required placeholder="username@kpcqa.or.kr" 
                 value={email} onChange={e => setEmail(e.target.value)}
-                className="w-full p-3.5 border border-slate-200 rounded-xl font-bold text-xs outline-none focus:border-indigo-500 bg-slate-50 focus:bg-white transition-all shadow-inner"
+                className="w-full p-3.5 border border-slate-200 rounded-xl font-bold text-xs outline-none focus:border-indigo-500 bg-slate-50 focus:bg-white transition-all shadow-inner text-center"
               />
             </div>
             <button type="submit" className={`w-full py-3.5 text-white font-black rounded-xl text-xs transition-all shadow-md ${isDelivery ? 'bg-teal-600 hover:bg-teal-700' : 'bg-indigo-600 hover:bg-indigo-700'}`}>
               인증하고 시작하기 ➔
             </button>
           </form>
+        </div>
+      </div>
+    );
+  }
+  
+  if (!isIntroConfirmed) {
+    return (
+      <div className="min-h-screen bg-slate-100 flex items-center justify-center p-4 font-sans text-xs max-w-md mx-auto">
+        <div className="bg-white p-8 rounded-[2.5rem] shadow-xl w-full border border-slate-200">
+          <h2 className={`font-black text-[11px] uppercase tracking-widest mb-2 ${isDelivery ? 'text-teal-600' : 'text-indigo-600'}`}>
+            {isDelivery ? '배송 신청 안내문' : '설문 참여 안내문'}
+          </h2>
+          <h1 className="text-xl font-black text-slate-900 tracking-tight mb-6 leading-snug">{surveyMeta.title}</h1>
+          
+          <div className="space-y-4 mb-8">
+            <div className="bg-slate-50 p-4 rounded-xl border border-slate-100">
+              <span className="text-[9px] font-black text-slate-400 uppercase">상세 설명</span>
+              <p className="text-xs font-bold text-slate-700 mt-1.5 leading-relaxed whitespace-pre-wrap">
+                {surveyMeta.description || '등록된 상세 설명이 없습니다.'}
+              </p>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="bg-slate-50 p-3 rounded-xl border border-slate-100">
+                <span className="text-[9px] font-black text-slate-400 uppercase">대상 범위</span>
+                <p className="text-xs font-black text-slate-800 mt-1 truncate">{surveyMeta.target || '전사'}</p>
+              </div>
+              <div className="bg-slate-50 p-3 rounded-xl border border-slate-100">
+                <span className="text-[9px] font-black text-slate-400 uppercase">운영 기간</span>
+                <p className="text-[10px] font-black text-slate-800 mt-1 leading-tight">{surveyMeta.startDate}<br/>~ {surveyMeta.endDate}</p>
+              </div>
+            </div>
+          </div>
+          
+          <button 
+            onClick={() => setIsIntroConfirmed(true)} 
+            className={`w-full py-4 text-white rounded-xl font-black text-xs shadow-lg transition-colors ${isDelivery ? 'bg-teal-600 hover:bg-teal-700 shadow-teal-200' : 'bg-indigo-600 hover:bg-indigo-700 shadow-indigo-200'}`}
+          >
+            응답 시작하기 →
+          </button>
         </div>
       </div>
     );
@@ -241,7 +322,7 @@ export default function PublicSurveyResponsePage() {
       <div className="max-w-[640px] mx-auto pt-12 space-y-4 px-4">
         
         <div className={`text-white p-6 rounded-3xl shadow-lg border ${isDelivery ? 'bg-slate-900 border-teal-900' : 'bg-slate-900 border-slate-800'}`}>
-          <span className={`px-2 py-0.5 text-white rounded text-[9px] font-black uppercase tracking-wider ${isDelivery ? 'bg-teal-600' : 'bg-indigo-500'}`}>
+          <span className={`px-2 py-0.5 text-white rounded text-[9px] font-black uppercase tracking-wider ${isDelivery ? 'bg-teal-600' : 'bg-indigo-50'}`}>
             Public {isDelivery ? 'Delivery' : 'Form'}
           </span>
           <h1 className="text-base font-black mt-2">{surveyMeta.title}</h1>
@@ -343,7 +424,6 @@ export default function PublicSurveyResponsePage() {
                     🔍 주소지 검색 찾기
                   </button>
                   
-                  {/* 도메인에 따른 주소 데이터 바인딩 분기 렌더링 */}
                   {isDelivery ? (
                     <>
                       {answers[`${q.id}_road`] && (

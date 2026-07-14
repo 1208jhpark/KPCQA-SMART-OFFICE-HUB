@@ -1,30 +1,15 @@
 'use client';
      
 import React, { useState, useMemo, useEffect, Fragment } from 'react';
+import { usePathname, useRouter } from 'next/navigation'; // 🚀 중복 없이 이 라인으로 완벽 통합
 import Link from 'next/link';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
 import * as XLSX from 'xlsx'; 
      
-const MOCK_SURVEYS = [
-  { 
-    id: 'S001', 
-    code: 'SRV-001', 
-    postNumber: 101, 
-    title: '2026년 상반기 조직문화 진단', 
-    type: '선택형+자유응답', 
-    isAnonymous: true,
-    target: '전사', 
-    postDate: '2026-04-20', 
-    startDate: '2026-04-20', 
-    endDate: '2026-04-28', 
-    status: '진행중', 
-    description: '2026년 상반기 전사 조직문화 진단을 위한 설문입니다.',
-    hasBeenPublished: true
-  }
-];
-     
 export default function ActiveSurveysAdminPage() {
+  const pathname = usePathname(); // 🚀 현재 경로 감지용 선언
+  const router = useRouter();     // 🚀 페이지 이동용 선언
   const [surveys, setSurveys] = useState<any[]>([]);
   const [users, setUsers] = useState<any[]>([]);
   const [deptList, setDeptList] = useState<string[]>([]);
@@ -39,17 +24,17 @@ export default function ActiveSurveysAdminPage() {
   
   const [editModal, setEditModal] = useState<any | null>(null);
   const [previewModal, setPreviewModal] = useState<any | null>(null);
-  const [nudgeModal, setNudgeModal] = useState<{surveyId: string, title: string, count: number} | null>(null);
+  const [nudgeModal, setNudgeModal] = useState<{surveyId: string, title: string, count: number, targetEmails: string[]} | null>(null);
      
   useEffect(() => {
-    // 🚀 L4PanelRenderer가 이미 권한 검증을 마쳤으므로, 순수하게 관리자 관제에 필요한 데이터만 동기화합니다.
     const fetchOrgData = async () => {
       try {
-        const storedSurveys = localStorage.getItem('admin_surveys_db');
-        if (storedSurveys) setSurveys(JSON.parse(storedSurveys));
-        else {
-          setSurveys(MOCK_SURVEYS);
-          localStorage.setItem('admin_surveys_db', JSON.stringify(MOCK_SURVEYS));
+        const surveyRes = await fetch('/api/survey/general');
+        if (surveyRes.ok) {
+          const dbSurveys = await surveyRes.json();
+          setSurveys(dbSurveys);
+        } else {
+          setSurveys([]);
         }
      
         const ts = Date.now();
@@ -58,6 +43,7 @@ export default function ActiveSurveysAdminPage() {
             fetch(`/api/admin/units?active=true&t=${ts}`, { cache: 'no-store' }) 
         ]);
         
+        let mappedUsers: any[] = [];
         if (uRes.ok && unitRes.ok) {
           const uData = await uRes.json();
           const unitData = await unitRes.json();
@@ -66,26 +52,31 @@ export default function ActiveSurveysAdminPage() {
           const activeDepts = unitData.map((u:any) => u.unit_name);
           setDeptList(activeDepts);
      
-          const mappedUsers = (uData.users || []).map((u:any) => ({ 
+          mappedUsers = (uData.users || []).map((u:any) => ({ 
             ...u, 
             dept: unitData.find((un:any) => un.id === u.unit_id)?.unit_name || '소속없음' 
           }));
           setUsers(mappedUsers);
+        }
      
+        const responseRes = await fetch('/api/survey/general', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'GET_RESPONSES' })
+        });
+     
+        if (responseRes.ok) {
+          const dbResponses = await responseRes.json();
           const realRes: Record<string, any> = {};
-          mappedUsers.forEach((u:any) => {
-            if (!u.email) return;
-            const stored = localStorage.getItem(`db_my_responses_${u.email}`);
-            if (stored) {
-              const parsed = JSON.parse(stored);
-              Object.keys(parsed).forEach(surveyId => {
-                realRes[`${surveyId}_${u.email}`] = {
-                  isDone: true,
-                  date: parsed[surveyId].submittedAt.split(' ')[0],
-                  result: '제출완료',
-                  answers: parsed[surveyId].answers
-                };
-              });
+          
+          dbResponses.forEach((r: any) => {
+            if (r.surveyId && r.userEmail) {
+              realRes[`${r.surveyId}_${r.userEmail}`] = {
+                isDone: true,
+                date: r.submittedAt ? r.submittedAt.split('T')[0] : '-',
+                result: '제출완료',
+                answers: r.answers || {}
+              };
             }
           });
           setResponses(realRes);
@@ -98,10 +89,6 @@ export default function ActiveSurveysAdminPage() {
     };
     fetchOrgData();
   }, []);
-     
-  useEffect(() => {
-    if (surveys.length > 0) localStorage.setItem('admin_surveys_db', JSON.stringify(surveys));
-  }, [surveys]);
      
   const todayStr = new Date().toISOString().split('T')[0];
   const stats = useMemo(() => ({
@@ -152,6 +139,21 @@ export default function ActiveSurveysAdminPage() {
     }
     return false;
   };
+  
+  const handleCopyUnsubmittedEmails = (survey: any) => {
+    if (survey.isAnonymous) {
+      return alert("❌ 익명 게시의 경우 메일 추출이 불가하며, 독촉 알림만 발송 가능합니다.");
+    }
+    
+    const targetDepts = survey.target.split(',').map((t: string) => t.trim());
+    const targetUsers = users.filter(u => isOrgAllowed(targetDepts, u.dept));
+    const unsubmitted = targetUsers.filter(u => !responses[`${survey.id}_${u.email}`]?.isDone);
+    
+    if (unsubmitted.length === 0) return alert('현재 미참여자가 없습니다.');
+    const emails = unsubmitted.map(u => u.email).join(', ');
+    navigator.clipboard.writeText(emails);
+    alert(`미참여자 ${unsubmitted.length}명의 이메일이 클립보드에 복사되었습니다.\n(메일 클라이언트의 '받는 사람' 란에 바로 붙여넣기 하세요.)`);
+  };
      
   const toggleTarget = (dept: string) => {
     const currentTargets = editModal.target.split(',').map((s:string) => s.trim()).filter(Boolean);
@@ -184,23 +186,50 @@ export default function ActiveSurveysAdminPage() {
     });
   };
      
-  const handleDeleteSurvey = (id: string) => {
+  const handleDeleteSurvey = async (id: string) => {
     if (!confirm('이 설문을 삭제하시겠습니까?')) return;
-    setSurveys(prev => prev.filter(s => s.id !== id));
+    
+    try {
+      const res = await fetch(`/api/survey/general?id=${id}`, { method: 'DELETE' });
+      if (res.ok) {
+        setSurveys(prev => prev.filter(s => s.id !== id));
+      } else {
+        alert('서버 인프라 삭제 반영에 실패했습니다.');
+      }
+    } catch (e) {
+      console.error(e);
+      alert('네트워크 지연 오류가 발생했습니다.');
+    }
   };
      
-  const handleStatusChange = (id: string, action: 'UP' | 'DOWN' | 'ARCHIVE' | 'FORCE_COMPLETE') => {
-    setSurveys(prev => prev.map(s => {
-      if (s.id !== id) return s;
-      if (action === 'UP') return { ...s, status: '진행중', postDate: todayStr, hasBeenPublished: true };
-      if (action === 'DOWN') return { ...s, status: '게시중단' };
-      if (action === 'FORCE_COMPLETE') {
-        if(!confirm("이 설문을 즉시 강제 종료(완료) 처리하시겠습니까?")) return s;
-        return { ...s, status: '완료' };
+  const handleStatusChange = async (id: string, action: 'UP' | 'DOWN' | 'ARCHIVE' | 'FORCE_COMPLETE') => {
+    const currentSurvey = surveys.find(s => s.id === id);
+    if (!currentSurvey) return;
+     
+    let finalPayload = { ...currentSurvey };
+    if (action === 'UP') finalPayload = { ...finalPayload, status: '진행중', postDate: todayStr, hasBeenPublished: true };
+    if (action === 'DOWN') finalPayload = { ...finalPayload, status: '게시중단' };
+    if (action === 'FORCE_COMPLETE') {
+      if(!confirm("이 설문을 즉시 강제 종료(완료) 처리하시겠습니까?")) return;
+      finalPayload = { ...finalPayload, status: '완료' };
+    }
+    if (action === 'ARCHIVE') { alert('보관함으로 이동되었습니다.'); finalPayload = { ...finalPayload, status: '보관됨' }; }
+     
+    try {
+      const res = await fetch('/api/survey/general', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(finalPayload)
+      });
+      if (res.ok) {
+        const savedNode = await res.json();
+        setSurveys(prev => prev.map(s => s.id === id ? savedNode : s));
+      } else {
+        alert('상태 변경 동기화에 실패했습니다.');
       }
-      if (action === 'ARCHIVE') { alert('보관함으로 이동되었습니다.'); return { ...s, status: '보관됨' }; }
-      return s;
-    }));
+    } catch (e) {
+      console.error(e);
+    }
   };
      
   const handleNudge = (surveyId: string) => {
@@ -208,17 +237,38 @@ export default function ActiveSurveysAdminPage() {
     const targetDepts = survey.target.split(',').map((t:string) => t.trim());
     const targetUsers = users.filter(u => isOrgAllowed(targetDepts, u.dept));
     const notDoneUsers = targetUsers.filter(u => !responses[`${surveyId}_${u.email}`]?.isDone);
+    
     if (notDoneUsers.length === 0) return alert('모든 인원이 참여를 완료했습니다!');
-    setNudgeModal({ surveyId, title: survey.title, count: notDoneUsers.length });
+    
+    setNudgeModal({ 
+      surveyId, 
+      title: survey.title, 
+      count: notDoneUsers.length,
+      targetEmails: notDoneUsers.map(u => u.email) 
+    });
   };
      
-  const handleSavePreview = () => {
-    setSurveys(prev => prev.map(s => s.id === previewModal.id ? previewModal : s));
-    alert('✅ 기본 정보가 수정되었습니다.');
-    setPreviewModal(null);
+  const handleSavePreview = async () => {
+    try {
+      const res = await fetch('/api/survey/general', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(previewModal)
+      });
+      if (res.ok) {
+        const savedData = await res.json();
+        setSurveys(prev => prev.map(s => s.id === previewModal.id ? savedData : s));
+        alert('✅ 기본 정보가 수정되었습니다.');
+        setPreviewModal(null);
+      } else {
+        alert('마스터 정보 갱신에 실패했습니다.');
+      }
+    } catch (e) {
+      console.error(e);
+    }
   };
      
-  const handleSaveEdit = (e: React.FormEvent) => {
+  const handleSaveEdit = async (e: React.FormEvent) => {
     e.preventDefault();
     const targetNames = editModal.target.split(',').map((s:string) => s.trim()).filter(Boolean);
     let expandedDepts = ['전사'];
@@ -241,14 +291,33 @@ export default function ActiveSurveysAdminPage() {
     }
     
     const finalEditData = { ...editModal, allowedDepts: expandedDepts };
-    if (surveys.find(s => s.id === finalEditData.id)) {
-      setSurveys(prev => prev.map(s => s.id === finalEditData.id ? finalEditData : s));
-      alert('✅ 게시 정보가 수정되었습니다.');
-    } else {
-      setSurveys(prev => [...prev, finalEditData]); 
-      alert('✅ 새로운 설문이 추가되었습니다.');
+     
+    try {
+      const res = await fetch('/api/survey/general', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(finalEditData)
+      });
+     
+      if (res.ok) {
+        const savedRecord = await res.json();
+        setSurveys(prev => {
+          const exists = prev.find(s => s.id === savedRecord.id || s.id === editModal.id);
+          if (exists) {
+            return prev.map(s => (s.id === savedRecord.id || s.id === editModal.id) ? savedRecord : s);
+          } else {
+            return [...prev, savedRecord];
+          }
+        });
+        alert('✅ 설문 메타 서식이 성공적으로 저장되었습니다.');
+        setEditModal(null);
+      } else {
+        alert('원장 서버 가드 시스템 저장이 실패했습니다.');
+      }
+    } catch (err) {
+      console.error(err);
+      alert('네트워크 인터페이스 에러가 검출되었습니다.');
     }
-    setEditModal(null);
   };
      
   const handleMatrixFilter = (surveyId: string, type: 'DONE' | 'NOT_DONE') => {
@@ -256,60 +325,58 @@ export default function ActiveSurveysAdminPage() {
     setCollapsedDepts(new Set()); 
   };
      
-// AdminActiveSurveysModule.tsx 내부의 handleExportAnalysisAll 함수 교체
-const handleExportAnalysisAll = () => {
-  if (selectedSurveyIds.size === 0) return alert('분석할 설문을 하나 이상 선택해주세요.');
-  const selectedSurveys = surveys.filter(s => selectedSurveyIds.has(s.id));
-  const wb = XLSX.utils.book_new();
-  let hasData = false;
-    
-  selectedSurveys.forEach(survey => {
-    // 🚀 빌더의 고도화된 객체 정보(설명, 외부링크, 파일양식) 온전하게 로드
-    const storedQuestions = JSON.parse(localStorage.getItem(`survey_builder_${survey.id}`) || '[]');
-    const questions = storedQuestions.length > 0 ? storedQuestions : [{ id: 'q1', title: '1. 의견 및 건의사항' }];
-    
-    const targetDepts = survey.target.split(',').map((t:string) => t.trim());
-    const targetUsers = users.filter(u => isOrgAllowed(targetDepts, u.dept));
-    const submittedUsers = targetUsers.filter(u => responses[`${survey.id}_${u.email}`]?.isDone);
-    
-    if (submittedUsers.length > 0) {
-      hasData = true;
+  const handleExportAnalysisAll = () => {
+    if (selectedSurveyIds.size === 0) return alert('분석할 설문을 하나 이상 선택해주세요.');
+    const selectedSurveys = surveys.filter(s => selectedSurveyIds.has(s.id));
+    const wb = XLSX.utils.book_new();
+    let hasData = false;
       
-      const deptRow = ['제출조직(부서)', ...submittedUsers.map((u, i) => survey.isAnonymous ? '익명조직' : u.dept)];
-      const nameRow = ['제출자이름', ...submittedUsers.map((u, i) => survey.isAnonymous ? `익명응답자 ${i + 1}` : u.name)];
-      const dateRow = ['제출일자', ...submittedUsers.map(u => responses[`${survey.id}_${u.email}`]?.date || '-')];
+    selectedSurveys.forEach(survey => {
+      let parsedQuestions = [];
+      try { 
+        parsedQuestions = typeof survey.questions === 'string' ? JSON.parse(survey.questions) : (survey.questions || []); 
+      } catch(e) {}
+      const questions = parsedQuestions.length > 0 ? parsedQuestions : [{ id: 'q1', title: '1. 의견 및 건의사항' }];
       
-      // 🚀 객체 파싱 버그 수정 존: 데이터가 단순 문자열이든 객체이든 안전하게 파싱하도록 인터셉터 장착
-      const contentRows = questions.map((q: any) => {
-        // 섹션 타입은 엑셀 셀 행에서 가독성을 위해 명시 처리
-        if (q.type === 'SECTION') return [`[🔖 섹션 단락]: ${q.title}`];
-
-        const rowData = [q.title];
-        submittedUsers.forEach(u => {
-          const ans = responses[`${survey.id}_${u.email}`]?.answers;
-          if (!ans || !ans[q.id]) rowData.push('(미응답)');
-          else {
-            const a = ans[q.id];
-            // 파일형 패키지 오브젝트인지, 단순 선택지 텍스트 어레이인지 정밀 분류
-            if (a && typeof a === 'object' && a.fileName) {
-              rowData.push(`[첨부파일] ${a.fileName}`);
-            } else {
-              rowData.push(Array.isArray(a) ? a.join(', ') : String(a));
+      const targetDepts = survey.target.split(',').map((t:string) => t.trim());
+      const targetUsers = users.filter(u => isOrgAllowed(targetDepts, u.dept));
+      const submittedUsers = targetUsers.filter(u => responses[`${survey.id}_${u.email}`]?.isDone);
+      
+      if (submittedUsers.length > 0) {
+        hasData = true;
+        
+        const deptRow = ['제출조직(부서)', ...submittedUsers.map((u, i) => survey.isAnonymous ? '익명조직' : u.dept)];
+        const nameRow = ['제출자이름', ...submittedUsers.map((u, i) => survey.isAnonymous ? `익명응답자 ${i + 1}` : u.name)];
+        const dateRow = ['제출일자', ...submittedUsers.map(u => responses[`${survey.id}_${u.email}`]?.date || '-')];
+        
+        const contentRows = questions.map((q: any) => {
+          if (q.type === 'SECTION') return [`[🔖 섹션 단락]: ${q.title}`];
+       
+          const rowData = [q.title];
+          submittedUsers.forEach(u => {
+            const ans = responses[`${survey.id}_${u.email}`]?.answers;
+            if (!ans || !ans[q.id]) rowData.push('(미응답)');
+            else {
+              const a = ans[q.id];
+              if (a && typeof a === 'object' && a.fileName) {
+                rowData.push(`[첨부파일] ${a.fileName}`);
+              } else {
+                rowData.push(Array.isArray(a) ? a.join(', ') : String(a));
+              }
             }
-          }
+          });
+          return rowData;
         });
-        return rowData;
-      });
-    
-      const ws = XLSX.utils.aoa_to_sheet([deptRow, nameRow, dateRow, ...contentRows]);
-      const safeTitle = survey.title.replace(/[/\\?%*:|"<>]/g, '-').substring(0, 30);
-      XLSX.utils.book_append_sheet(wb, ws, safeTitle);
-    }
-  });
-    
-  if (!hasData) return alert('선택한 설문에 제출된 응답이 없습니다.');
-  XLSX.writeFile(wb, `[조직별_상세분석엑셀]_${new Date().toISOString().split('T')[0]}.xlsx`);
-};
+      
+        const ws = XLSX.utils.aoa_to_sheet([deptRow, nameRow, dateRow, ...contentRows]);
+        const safeTitle = survey.title.replace(/[/\\?%*:|"<>]/g, '-').substring(0, 30);
+        XLSX.utils.book_append_sheet(wb, ws, safeTitle);
+      }
+    });
+      
+    if (!hasData) return alert('선택한 설문에 제출된 응답이 없습니다.');
+    XLSX.writeFile(wb, `[조직별_상세분석엑셀]_${new Date().toISOString().split('T')[0]}.xlsx`);
+  };
      
   const handleDownloadZipAll = async () => {
     if (selectedSurveyIds.size === 0) return alert('다운로드할 설문을 하나 이상 선택해주세요.');
@@ -321,7 +388,10 @@ const handleExportAnalysisAll = () => {
       const safeFolderTitle = survey.title.replace(/[/\\?%*:|"<>]/g, '-');
       const folder = zip.folder(safeFolderTitle); 
       
-      const storedQuestions = JSON.parse(localStorage.getItem(`survey_builder_${survey.id}`) || '[]');
+      let storedQuestions = [];
+      try { 
+        storedQuestions = typeof survey.questions === 'string' ? JSON.parse(survey.questions) : (survey.questions || []); 
+      } catch(e) {}
       const targetDepts = survey.target.split(',').map((t:string) => t.trim());
       const targetUsers = users.filter(u => isOrgAllowed(targetDepts, u.dept));
       
@@ -369,11 +439,55 @@ const handleExportAnalysisAll = () => {
   };
      
   if (loading) return <div className="p-20 text-center font-black text-blue-600 animate-pulse text-xl uppercase tracking-widest">설문 관제 모듈 동기화 중...</div>;
-
+     
+  
   return (
-    <div className="space-y-6 font-sans text-slate-900 text-[11px] animate-fade-in pb-20 pt-8 px-2">
+    <div className="w-full max-w-[1750px] mx-auto space-y-6 p-8 font-sans text-slate-900 pb-24 animate-fade-in">
       
-      {/* 요약 대시 배너 */}
+      {/* 🚀 1. 설문 관리자 통제실 배너 (Emerald 테마) */}
+      <div className="w-full bg-gradient-to-r from-emerald-900 to-teal-900 p-6 rounded-[2.5rem] text-white shadow-xl relative overflow-hidden flex flex-col justify-center min-h-[140px]">
+        <div className="relative z-10 flex justify-between items-end w-full">
+          <div>
+            <h3 className="text-[10px] font-black uppercase tracking-widest text-emerald-400 mb-3">
+              GENERAL SURVEY MANAGEMENT HUB
+            </h3>
+            <h1 className="text-2xl font-black tracking-tight text-white leading-none">
+              일반조사/익명조사 관리 센터
+            </h1>
+            <p className="text-emerald-100/90 text-xs font-semibold mt-4 opacity-90">
+              일반조사/익명조사 신청 공고 및 부서별 접수 현황을 통합 모니터링합니다.
+            </p>
+          </div>
+        </div>
+        <div className="absolute right-10 top-1/2 -translate-y-1/2 text-8xl opacity-10 select-none pointer-events-none">
+          📋
+        </div>
+      </div>
+
+      {/* 🚀 2. 관리자 전용 동적 탭 네비게이션 (배너 바로 밑에 안착) */}
+      <div className="flex gap-1.5 bg-slate-200/60 p-1.5 rounded-2xl border border-slate-200 shadow-inner w-full max-w-2xl mt-4">
+        {[
+          { name: '📋 현재 진행중인 조사', path: '/survey/general/admin/active-surveys' },
+          { name: '🗂️ 전체 조사 이력 관리', path: '/survey/general/admin/survey-history' },
+        ].map((tab) => {
+          const isActive = pathname.startsWith(tab.path);
+          return (
+            <Link 
+              key={tab.path} 
+              href={tab.path} 
+              className={`flex-1 py-3 text-center text-[11px] font-black rounded-xl transition-all uppercase tracking-tight ${
+                isActive 
+                  ? 'bg-white text-emerald-700 shadow-sm border border-emerald-200/50 scale-[1.01]' 
+                  : 'text-slate-500 hover:text-slate-800 hover:bg-white/40'
+              }`}
+            >
+              {tab.name}
+            </Link>
+          );
+        })}
+      </div>
+
+
       <div className="flex gap-6 w-full">
         <button onClick={() => setSurveyListFilter(surveyListFilter === 'ONGOING' ? 'ALL' : 'ONGOING')} className={`flex-1 p-5 rounded-3xl border transition-all flex items-center justify-between ${surveyListFilter === 'ONGOING' ? 'border-blue-400 bg-blue-50 shadow-inner' : 'border-slate-200 bg-white shadow-sm hover:border-blue-300'}`}>
           <div className="flex items-center gap-5">
@@ -395,7 +509,6 @@ const handleExportAnalysisAll = () => {
         </button>
       </div>
       
-      {/* 설문 관리 데이터 테이블 대장 */}
       <div className="bg-white border border-slate-200 shadow-sm rounded-2xl overflow-hidden mt-8">
         <div className="p-4 px-6 bg-slate-900 flex justify-between items-center text-white">
           <h3 className="text-[12px] font-black flex items-center gap-2"><span>📢</span> 설문 배포 및 관리 리스트</h3>
@@ -429,17 +542,27 @@ const handleExportAnalysisAll = () => {
                 const total = targetUsers.length;
                 const notDone = total - done;
                 const rate = total > 0 ? Math.round((done/total)*100) : 0;
+                
+                // 💡 [핵심] 여기서 현재 시간과 마감 시간을 계산해 줍니다!
+                const now = new Date();
+                const deadlineStr = `${s.endDate}T${s.endTime || '23:59'}:00`;
+                const deadline = new Date(deadlineStr);
+                
+                const isTimeOver = s.status === '진행중' && now > deadline;
+                const displayStatus = isTimeOver ? '기간종료' : s.status;
       
                 return (
-                  <tr key={s.id} className="hover:bg-blue-50/20 transition-all h-14">
+                  <tr key={s.id} className={`transition-all h-14 ${isTimeOver ? 'bg-red-50/20 hover:bg-red-50/40' : 'hover:bg-blue-50/20'}`}>
                     <td className="py-2 pl-4 text-center text-slate-400 font-bold align-middle">{idx + 1}</td>
                     <td className="py-2 px-2 font-mono font-black text-slate-600 tracking-tighter align-middle">{s.code}</td>
                     <td className="py-2 px-2 font-black text-center text-indigo-600 text-[12px] align-middle">{s.postNumber}</td>
                     <td className="py-2 px-2 font-mono text-center text-slate-500 whitespace-nowrap align-middle">{s.postDate === '-' ? '' : s.postDate}</td>
+                    
+                    {/* 👇 게시명 (유형 텍스트 삭제 완료) */}
                     <td className="py-2 px-2 align-middle">
                       <button onClick={() => setPreviewModal(s)} className="font-black text-slate-800 text-[11px] hover:text-blue-600 hover:underline text-left line-clamp-1">{s.title}</button>
-                      <div className="text-[9px] text-slate-400 font-bold mt-0.5">{s.type}</div>
                     </td>
+                    
                     <td className="py-2 px-2 text-center align-middle">
                       {s.isAnonymous ? (
                         <span className="px-1.5 py-0.5 bg-slate-700 text-white text-[9px] font-black rounded">익명</span>
@@ -447,94 +570,72 @@ const handleExportAnalysisAll = () => {
                         <span className="px-1.5 py-0.5 border border-slate-300 text-slate-500 text-[9px] font-bold rounded">기명</span>
                       )}
                     </td>
+                    
                     <td className="py-2 px-2 font-bold text-slate-600 text-center align-middle">
                       <div className="text-[10px] leading-tight cursor-help truncate w-20 mx-auto" title={s.target}>
                         {s.target === '전사' ? '전사' : <span className="underline decoration-dashed decoration-slate-300">{s.target.split(',').length}개 부서 지정</span>}
                       </div>
                     </td>
+                    
+                    {/* 👇 기간 (시간 표출 및 만료 시 빨간색 강조) */}
                     <td className="py-2 px-2 text-slate-500 tracking-tighter text-center text-[9px] whitespace-nowrap align-middle">
                       <div>{s.startDate} ~</div>
-                      <div>{s.endDate}</div>
-                    </td>
-                    <td className="py-2 px-2 text-center font-black text-slate-700 border-l bg-slate-50/30 align-middle">{rate}%</td>
-                    <td className="py-2 px-2 text-center bg-blue-50/30 align-middle">
-                      <button onClick={() => handleMatrixFilter(s.id, 'DONE')} className="text-blue-600 font-black hover:underline relative z-10">{done}명</button>
+                      <div className={isTimeOver ? 'text-red-500 font-black' : ''}>
+                        {s.endDate} <span className="text-[8px]">({s.endTime || '23:59'})</span>
+                      </div>
                     </td>
                     
+                    <td className="py-2 px-2 text-center font-black text-slate-700 border-l bg-slate-50/30 align-middle">{rate}%</td>
+                    
+                    {/* 참여인원 */}
+                    <td className="py-2 px-2 text-center bg-blue-50/30 align-middle">
+                      {s.isAnonymous ? (
+                        <span className="text-slate-400 font-black cursor-not-allowed">{done}명 <span className="text-[8px]">🔒</span></span>
+                      ) : (
+                        <button onClick={() => handleMatrixFilter(s.id, 'DONE')} className="text-blue-600 font-black hover:underline relative z-10">{done}명</button>
+                      )}
+                    </td>
+                    
+                    {/* 미참여인원 */}
                     <td className="py-2 px-2 text-center bg-red-50/30 border-r align-middle">
-                      <div className="flex items-center justify-center gap-2 w-full">
-                        <button onClick={() => handleMatrixFilter(s.id, 'NOT_DONE')} className="text-red-500 font-black hover:underline">{notDone}명</button>
+                      <div className="flex items-center justify-center gap-1 w-full">
+                        {s.isAnonymous ? (
+                          <span className="text-slate-400 font-black cursor-not-allowed">{notDone}명 <span className="text-[8px]">🔒</span></span>
+                        ) : (
+                          <button onClick={() => handleMatrixFilter(s.id, 'NOT_DONE')} className="text-red-500 font-black hover:underline">{notDone}명</button>
+                        )}
+                        
                         {s.status === '진행중' && notDone > 0 && (
-                          <button onClick={() => handleNudge(s.id)} className="px-1.5 py-0.5 bg-white border border-red-200 text-red-600 rounded text-[9px] font-black hover:bg-red-50 transition-colors shadow-sm whitespace-nowrap">🔔독촉</button>
+                          <div className="flex gap-0.5 ml-1">
+                            <button onClick={() => handleNudge(s.id)} className="px-1.5 py-0.5 bg-white border border-red-200 text-red-600 rounded text-[9px] font-black hover:bg-red-50 transition-colors shadow-sm whitespace-nowrap">🔔독촉</button>
+                            <button onClick={() => handleCopyUnsubmittedEmails(s)} className={`px-1.5 py-0.5 border rounded text-[9px] font-black transition-colors shadow-sm whitespace-nowrap ${s.isAnonymous ? 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}>📧메일추출</button>
+                          </div>
                         )}
                       </div>
                     </td>
      
+                    {/* 👇 상태 뱃지 (기간 종료 시 빨간색 '기간종료'로 변환) */}
                     <td className="py-2 px-2 text-center align-middle">
-                      <span className={`px-2 py-1 rounded font-black text-[9px] whitespace-nowrap ${getStatusBadge(s.status)}`}>{s.status}</span>
+                      <span className={`px-2 py-1 rounded font-black text-[9px] whitespace-nowrap ${isTimeOver ? 'bg-red-100 text-red-700 animate-pulse' : getStatusBadge(displayStatus)}`}>
+                        {displayStatus}
+                      </span>
                     </td>
                     
+                    {/* 게시 제어 */}
                     <td className="py-2 px-2 align-middle border-l border-slate-200 bg-slate-50/50">
                       <div className="flex items-center justify-center gap-1 w-full">
-                        <button 
-                          onClick={() => handleStatusChange(s.id, 'UP')} 
-                          disabled={s.status === '진행중' || s.status === '완료'}
-                          className={`flex-1 py-1.5 rounded text-[9px] font-black whitespace-nowrap transition-all shadow-sm border ${
-                            s.status === '게시전' || s.status === '게시중단' 
-                              ? 'bg-indigo-600 text-white border-indigo-600 hover:bg-indigo-700' 
-                              : 'bg-slate-50 border-slate-200 text-slate-300 cursor-not-allowed'
-                          }`}
-                        >
-                          게시
-                        </button>
-                        <button 
-                          onClick={() => handleStatusChange(s.id, 'DOWN')} 
-                          disabled={s.status !== '진행중'}
-                          className={`flex-1 py-1.5 rounded text-[9px] font-black whitespace-nowrap transition-all shadow-sm border ${
-                            s.status === '진행중' 
-                              ? 'bg-white border-slate-300 text-slate-700 hover:bg-slate-100' 
-                              : 'bg-slate-50 border-slate-200 text-slate-300 cursor-not-allowed'
-                          }`}
-                        >
-                          중단
-                        </button>
-                        <button 
-                          onClick={() => handleStatusChange(s.id, 'FORCE_COMPLETE')} 
-                          disabled={s.status !== '진행중'}
-                          className={`flex-1 py-1.5 rounded text-[9px] font-black whitespace-nowrap transition-all shadow-sm border ${
-                            s.status === '진행중' 
-                              ? 'bg-emerald-600 text-white border-emerald-600 hover:bg-emerald-700' 
-                              : 'bg-slate-50 border-slate-200 text-slate-300 cursor-not-allowed'
-                          }`}
-                        >
-                          마감
-                        </button>
+                        <button onClick={() => handleStatusChange(s.id, 'UP')} disabled={s.status === '진행중' || s.status === '완료'} className={`flex-1 py-1.5 rounded text-[9px] font-black whitespace-nowrap transition-all shadow-sm border ${s.status === '게시전' || s.status === '게시중단' ? 'bg-indigo-600 text-white border-indigo-600 hover:bg-indigo-700' : 'bg-slate-50 border-slate-200 text-slate-300 cursor-not-allowed'}`}>게시</button>
+                        <button onClick={() => handleStatusChange(s.id, 'DOWN')} disabled={s.status !== '진행중'} className={`flex-1 py-1.5 rounded text-[9px] font-black whitespace-nowrap transition-all shadow-sm border ${s.status === '진행중' ? 'bg-white border-slate-300 text-slate-700 hover:bg-slate-100' : 'bg-slate-50 border-slate-200 text-slate-300 cursor-not-allowed'}`}>중단</button>
+                        <button onClick={() => handleStatusChange(s.id, 'FORCE_COMPLETE')} disabled={s.status !== '진행중'} className={`flex-1 py-1.5 rounded text-[9px] font-black whitespace-nowrap transition-all shadow-sm border ${s.status === '진행중' ? (isTimeOver ? 'bg-red-600 text-white border-red-600 hover:bg-red-700 animate-bounce' : 'bg-emerald-600 text-white border-emerald-600 hover:bg-emerald-700') : 'bg-slate-50 border-slate-200 text-slate-300 cursor-not-allowed'}`}>마감</button>
                       </div>
                     </td>
      
+                    {/* 명세 관리 */}
                     <td className="py-2 pr-4 align-middle bg-slate-50/50">
                       <div className="flex items-center justify-center gap-1 w-full">
-                        <button 
-                          onClick={() => setEditModal(s)} 
-                          disabled={s.status === '진행중' || s.status === '완료'} 
-                          className={`flex-1 py-1.5 rounded text-[9px] font-black whitespace-nowrap transition-all ${s.status === '게시전' || s.status === '게시중단' ? 'bg-white border border-slate-300 text-slate-700 shadow-sm hover:bg-slate-100' : 'bg-slate-200 text-slate-400 cursor-not-allowed border border-transparent'}`}
-                        >
-                          수정
-                        </button>
-                        <button 
-                          onClick={() => handleDeleteSurvey(s.id)} 
-                          disabled={s.hasBeenPublished} 
-                          className={`flex-1 py-1.5 rounded text-[9px] font-black whitespace-nowrap transition-all ${!s.hasBeenPublished ? 'bg-white border border-red-200 text-red-500 shadow-sm hover:bg-red-50' : 'bg-slate-200 text-slate-400 cursor-not-allowed border border-transparent'}`}
-                        >
-                          삭제
-                        </button>
-                        <button 
-                          onClick={() => handleStatusChange(s.id, 'ARCHIVE')} 
-                          disabled={s.status !== '완료'}
-                          className={`flex-1 py-1.5 rounded text-[9px] font-black whitespace-nowrap transition-all ${s.status === '완료' ? 'bg-slate-800 text-white shadow-sm hover:bg-slate-900' : 'bg-slate-200 text-slate-400 cursor-not-allowed border border-transparent'}`}
-                        >
-                          보관함이동
-                        </button>
+                        <button onClick={() => setEditModal(s)} disabled={s.status === '진행중' || s.status === '완료'} className={`flex-1 py-1.5 rounded text-[9px] font-black whitespace-nowrap transition-all ${s.status === '게시전' || s.status === '게시중단' ? 'bg-white border border-slate-300 text-slate-700 shadow-sm hover:bg-slate-100' : 'bg-slate-200 text-slate-400 cursor-not-allowed border border-transparent'}`}>수정</button>
+                        <button onClick={() => handleDeleteSurvey(s.id)} disabled={s.hasBeenPublished} className={`flex-1 py-1.5 rounded text-[9px] font-black whitespace-nowrap transition-all ${!s.hasBeenPublished ? 'bg-white border border-red-200 text-red-500 shadow-sm hover:bg-red-50' : 'bg-slate-200 text-slate-400 cursor-not-allowed border border-transparent'}`}>삭제</button>
+                        <button onClick={() => handleStatusChange(s.id, 'ARCHIVE')} disabled={s.status !== '완료'} className={`flex-1 py-1.5 rounded text-[9px] font-black whitespace-nowrap transition-all ${s.status === '완료' ? 'bg-slate-800 text-white shadow-sm hover:bg-slate-900' : 'bg-slate-200 text-slate-400 cursor-not-allowed border border-transparent'}`}>보관함이동</button>
                       </div>
                     </td>
                   </tr>
@@ -545,7 +646,6 @@ const handleExportAnalysisAll = () => {
         </div>
       </div>
       
-      {/* 사용자별 응답 데이터 매트릭스 */}
       <div className="bg-white border border-slate-200 shadow-sm rounded-2xl overflow-hidden mt-6">
         <div className="p-4 px-6 bg-slate-900 flex justify-between items-center text-white">
           <h3 className="text-[12px] font-black flex items-center gap-2"><span>🗂️</span> 부서 및 직원별 설문 제출 결과 현황 보드</h3>
@@ -645,8 +745,7 @@ const handleExportAnalysisAll = () => {
         </div>
       </div>
       
-{/* 모달창 영역 */}
-{previewModal && (
+      {previewModal && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[200] flex items-center justify-center p-4" onClick={() => setPreviewModal(null)}>
           <div className="bg-white w-[600px] rounded-[2rem] overflow-hidden shadow-2xl flex flex-col" onClick={e=>e.stopPropagation()}>
             <div className="p-5 bg-slate-800 text-white flex justify-between"><h3 className="font-black text-sm">설문 상세 편집 및 배포</h3><button onClick={() => setPreviewModal(null)} className="text-xl">✕</button></div>
@@ -654,12 +753,13 @@ const handleExportAnalysisAll = () => {
               <div><label className="text-[10px] font-black text-slate-500">설문 제목</label><input type="text" value={previewModal.title} onChange={e => setPreviewModal({...previewModal, title: e.target.value})} className="w-full p-2 border rounded text-xs font-black outline-none focus:border-indigo-500" /></div>
               <div><label className="text-[10px] font-black text-slate-500">인사말 및 설명</label><textarea value={previewModal.description} onChange={e => setPreviewModal({...previewModal, description: e.target.value})} className="w-full p-2 border rounded text-xs outline-none focus:border-indigo-500 min-h-[80px]" /></div>
               
+              <button onClick={handleSavePreview} className="w-full py-3 bg-slate-900 text-white rounded-xl text-xs font-black shadow-md hover:bg-black transition-all">💾 기본 정보 저장하기</button>
+     
               <div className="text-center p-5 border-2 border-dashed border-indigo-200 bg-indigo-50 rounded-xl">
                 <Link href={`/survey/general/admin/survey-builder?id=${previewModal.id}`} className="px-5 py-3 bg-indigo-600 text-white rounded-xl text-[11px] font-black shadow-md hover:bg-indigo-700 block w-fit mx-auto">🛠️ 설문지 생성기(Builder) 열기</Link>
                 <p className="text-[10px] text-indigo-500 font-bold mt-3">Builder에서 구체적인 질문 문항을 구성할 수 있습니다.</p>
               </div>
-
-              {/* 🚀 배포 링크 복사 섹션 추가 */}
+     
               <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
                 <label className="text-[10px] font-black text-slate-500 block mb-2">🔗 모바일/웹 외부 응답 배포 링크</label>
                 <div className="flex items-center gap-2">
@@ -681,9 +781,9 @@ const handleExportAnalysisAll = () => {
                   </button>
                 </div>
               </div>
-
+     
             </div>
-            <div className="p-4 bg-white flex gap-2"><button onClick={() => setPreviewModal(null)} className="flex-1 py-2.5 border rounded-xl text-xs font-black text-slate-500">취소</button><button onClick={handleSavePreview} className="flex-[2] py-2.5 bg-slate-900 text-white rounded-xl text-xs font-black shadow-md hover:bg-black">저장</button></div>
+            <div className="p-4 bg-white flex gap-2"><button onClick={() => setPreviewModal(null)} className="w-full py-2.5 border rounded-xl text-xs font-black text-slate-500">닫기</button></div>
           </div>
         </div>
       )}
@@ -692,37 +792,66 @@ const handleExportAnalysisAll = () => {
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[200] flex items-center justify-center p-4">
           <div className="bg-white w-[500px] rounded-[2rem] overflow-hidden shadow-2xl">
             <div className="p-5 bg-slate-900 text-white flex justify-between items-center"><h3 className="font-black text-sm">설문 기본 정보 {editModal.id.startsWith('S_') ? '추가' : '수정'}</h3><button onClick={() => setEditModal(null)} className="text-lg">✕</button></div>
-            <form onSubmit={handleSaveEdit} className="p-6 space-y-4 bg-slate-50">
+            <form onSubmit={handleSaveEdit} className="p-6 space-y-4 bg-slate-50 max-h-[85vh] overflow-y-auto">
+              
+              {/* 1. 상단: 식별코드, 게시번호, 게시일 */}
               <div className="grid grid-cols-3 gap-3">
-                <div><label className="text-[9px] font-black text-slate-500">식별코드</label><input type="text" value={editModal.code} onChange={e => setEditModal({...editModal, code: e.target.value})} className="w-full p-2 rounded-lg border text-[11px] font-bold outline-none focus:border-indigo-500" /></div>
-                <div><label className="text-[9px] font-black text-indigo-500">게시번호 (순서)</label><input type="number" value={editModal.postNumber} onChange={e => setEditModal({...editModal, postNumber: Number(e.target.value)})} className="w-full p-2 rounded-lg border text-[11px] font-black outline-none focus:border-indigo-500" /></div>
-                <div><label className="text-[9px] font-black text-slate-500">게시일</label><input type="date" value={editModal.postDate === '-' ? todayStr : editModal.postDate} onChange={e => setEditModal({...editModal, postDate: e.target.value})} className="w-full p-2 rounded-lg border text-[11px] font-bold outline-none focus:border-indigo-500" /></div>
-              </div>
-              
-              <div className="flex gap-3">
-                <div className="flex-1">
-                  <label className="text-[9px] font-black text-slate-500">게시명 (설문 제목)</label>
-                  <input type="text" value={editModal.title} onChange={e => setEditModal({...editModal, title: e.target.value})} className="w-full p-2.5 rounded-lg border text-[12px] font-black outline-none focus:border-indigo-500" />
-                </div>
-                <div className="w-24">
-                  <label className="text-[9px] font-black text-slate-500 mb-1 block">익명 여부</label>
-                  <label className="flex items-center gap-2 bg-white p-2 border rounded-lg cursor-pointer hover:bg-slate-100">
-                    <input type="checkbox" checked={editModal.isAnonymous || false} onChange={e => setEditModal({...editModal, isAnonymous: e.target.checked})} className="accent-indigo-600" />
-                    <span className="text-[11px] font-black text-slate-700">익명</span>
-                  </label>
-                </div>
-              </div>
-              
-              <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="text-[9px] font-black text-slate-500 mb-1 block">대상 부서</label>
-                  <select value={editModal.target === '전사' ? '전사' : '특정'} onChange={(e) => { if(e.target.value === '전사') setEditModal({...editModal, target: '전사'}); else setEditModal({...editModal, target: deptList[0] || ''}); }} className="w-full p-2 rounded-lg border text-[11px] font-bold outline-none focus:border-indigo-500 mb-2">
-                    <option value="전사">전사</option>
-                    <option value="특정">특정 부서 지정</option>
+                  <label className="text-[9px] font-black text-slate-500 mb-1 block">식별코드</label>
+                  <input type="text" value={editModal.code} onChange={e => setEditModal({...editModal, code: e.target.value})} className="w-full p-2 rounded-lg border text-[11px] font-bold outline-none focus:border-indigo-500" />
+                </div>
+                <div>
+                  <label className="text-[9px] font-black text-indigo-500 mb-1 block">게시번호 (순서)</label>
+                  <input type="number" value={editModal.postNumber} onChange={e => setEditModal({...editModal, postNumber: Number(e.target.value)})} className="w-full p-2 rounded-lg border text-[11px] font-black outline-none focus:border-indigo-500" />
+                </div>
+                <div>
+                  <label className="text-[9px] font-black text-slate-500 mb-1 block">게시일</label>
+                  <input type="date" value={editModal.postDate === '-' ? todayStr : editModal.postDate} onChange={e => setEditModal({...editModal, postDate: e.target.value})} className="w-full p-2 rounded-lg border text-[11px] font-bold outline-none focus:border-indigo-500" />
+                </div>
+              </div>
+              
+              {/* 2. 게시명 (설문 제목) */}
+              <div>
+                <label className="text-[9px] font-black text-slate-500 mb-1 block">게시명 (설문 제목)</label>
+                <input type="text" required value={editModal.title} onChange={e => setEditModal({...editModal, title: e.target.value})} className="w-full p-2.5 rounded-lg border text-xs font-black outline-none focus:border-indigo-500" />
+              </div>
+  
+              {/* 3. 상세 설명 (배달 모달과 동일하게 추가) */}
+              <div>
+                <label className="text-[9px] font-black text-slate-500 mb-1 block">상세 설명 (Description)</label>
+                <textarea required value={editModal.description || ''} onChange={e => setEditModal({...editModal, description: e.target.value})} className="w-full p-2 rounded-lg border text-xs font-medium outline-none focus:border-indigo-500 min-h-[60px]" placeholder="설문 목적, 주의사항 등을 기재해주세요." />
+              </div>
+              
+              {/* 4. 중간: 익명여부 / 대상 부서 (설문 유형은 삭제) */}
+              <div className="grid grid-cols-2 gap-4 border-t border-slate-200 pt-3 mt-1">
+                <div>
+                  <label className="text-[9px] font-black text-indigo-500 mb-1 block">설문 익명 여부</label>
+                  <select 
+                    value={editModal.isAnonymous ? 'true' : 'false'} 
+                    onChange={e => setEditModal({...editModal, isAnonymous: e.target.value === 'true'})} 
+                    className="w-full p-2 rounded-lg border text-[11px] font-bold outline-none bg-white focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+                  >
+                    <option value="false">기명 설문 (참여자 식별)</option>
+                    <option value="true">익명 설문 (참여자 블라인드)</option>
                   </select>
+                </div>
+                <div>
+                  <label className="text-[9px] font-black text-slate-500 mb-1 block">대상 범위 부서 지정</label>
+                  <select 
+                    value={editModal.target === '전사' ? '전사' : '특정'} 
+                    onChange={(e) => { 
+                      if(e.target.value === '전사') setEditModal({...editModal, target: '전사'}); 
+                      else setEditModal({...editModal, target: deptList.filter(d => d !== 'kpcqa')[0] || deptList[0] || ''}); 
+                    }} 
+                    className="w-full p-2 rounded-lg border text-[11px] font-bold outline-none focus:border-indigo-500 bg-white"
+                  >
+                    <option value="전사">전사 임직원</option>
+                    <option value="특정">특정 부서 한정</option>
+                  </select>
+                  
                   {editModal.target !== '전사' && (
-                    <div className="border bg-white rounded-lg p-2 max-h-24 overflow-y-auto">
-                      {deptList.map(d => (
+                    <div className="border bg-white rounded-lg p-2 max-h-24 overflow-y-auto mt-2">
+                      {deptList.filter(d => d !== 'kpcqa').map(d => (
                         <label key={d} className="flex items-center gap-2 cursor-pointer p-1 hover:bg-slate-50">
                           <input type="checkbox" checked={editModal.target.includes(d)} onChange={() => toggleTarget(d)} className="accent-indigo-600"/>
                           <span className="text-[10px] font-bold">{d}</span>
@@ -731,28 +860,35 @@ const handleExportAnalysisAll = () => {
                     </div>
                   )}
                 </div>
-                <div>
-                  <label className="text-[9px] font-black text-slate-500 mb-1 block">설문 유형</label>
-                  <select value={editModal.type} onChange={e => setEditModal({...editModal, type: e.target.value})} className="w-full p-2 rounded-lg border text-[11px] font-bold outline-none focus:border-indigo-500">
-                    <option>선택형</option>
-                    <option>자유응답형</option>
-                    <option>선택형+자유응답</option>
-                    <option>파일형(HWP)</option>
-                    <option>파일형(PDF)</option>
-                  </select>
-                </div>
               </div>
       
-              <div className="grid grid-cols-2 gap-4">
-                <div><label className="text-[9px] font-black text-slate-500">시작일</label><input type="date" value={editModal.startDate} onChange={e => setEditModal({...editModal, startDate: e.target.value})} className="w-full p-2 rounded-lg border text-[11px] font-bold outline-none focus:border-indigo-500" /></div>
-                <div><label className="text-[9px] font-black text-slate-500">종료일</label><input type="date" value={editModal.endDate} onChange={e => setEditModal({...editModal, endDate: e.target.value})} className="w-full p-2 rounded-lg border text-[11px] font-bold outline-none focus:border-indigo-500" /></div>
+              {/* 5. 하단: 날짜 및 시간 (1줄 3칸 정렬) */}
+              <div className="grid grid-cols-3 gap-3 pt-2">
+                <div>
+                  <label className="text-[9px] font-black text-slate-500 mb-1 block">운영 시작일</label>
+                  <input type="date" required value={editModal.startDate} onChange={e => setEditModal({...editModal, startDate: e.target.value})} className="w-full p-2 rounded-lg border text-[11px] font-bold outline-none focus:border-indigo-500" />
+                </div>
+                <div>
+                  <label className="text-[9px] font-black text-red-500 mb-1 block">운영 종료일</label>
+                  <input type="date" required value={editModal.endDate} onChange={e => setEditModal({...editModal, endDate: e.target.value})} className="w-full p-2 rounded-lg border text-[11px] font-bold outline-none focus:border-red-500" />
+                </div>
+                <div>
+                  <label className="text-[9px] font-black text-red-500 mb-1 block">마감 시간</label>
+                  <input type="time" required value={editModal.endTime || '23:59'} onChange={e => setEditModal({...editModal, endTime: e.target.value})} className="w-full p-2 rounded-lg border text-[11px] font-bold outline-none focus:border-red-500" />
+                </div>
               </div>
-              <div className="pt-4 flex gap-2 mt-2 border-t border-slate-200"><button type="button" onClick={() => setEditModal(null)} className="flex-1 py-2.5 bg-white border rounded-xl font-black text-slate-600">취소</button><button type="submit" className="flex-1 py-2.5 bg-indigo-600 text-white rounded-xl font-black shadow-md hover:bg-indigo-700">저장하기</button></div>
+              
+              {/* 6. 저장 및 취소 버튼 */}
+              <div className="pt-4 flex gap-2 mt-2 border-t border-slate-200">
+                <button type="button" onClick={() => setEditModal(null)} className="flex-1 py-2.5 bg-white border rounded-xl font-black text-slate-600 hover:bg-slate-50">취소</button>
+                <button type="submit" className="flex-1 py-2.5 bg-indigo-600 text-white rounded-xl font-black shadow-md hover:bg-indigo-700">정보 저장하기</button>
+              </div>
             </form>
           </div>
         </div>
       )}
       
+      {/* 🚀 [DB 연동 완료]: Nudge(독촉) 팝업 발송 API 호출 (localStorage 완전 파기) */}
       {nudgeModal && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[300] flex items-center justify-center p-4">
           <div className="bg-white w-[400px] rounded-[2rem] overflow-hidden shadow-2xl p-8 border text-center">
@@ -765,14 +901,33 @@ const handleExportAnalysisAll = () => {
             </p>
             <div className="flex gap-2">
               <button onClick={() => setNudgeModal(null)} className="flex-1 py-3 bg-slate-100 text-slate-600 rounded-xl font-black text-xs hover:bg-slate-200 transition-colors">취소</button>
-              <button onClick={() => {
-                  const nudged = JSON.parse(localStorage.getItem('nudged_surveys') || '[]');
-                  if (!nudged.includes(nudgeModal.surveyId)) {
-                    localStorage.setItem('nudged_surveys', JSON.stringify([...nudged, nudgeModal.surveyId]));
+              <button 
+                onClick={async () => {
+                  try {
+                    const res = await fetch('/api/survey/general', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ 
+                        action: 'NUDGE', 
+                        surveyId: nudgeModal.surveyId,
+                        targetEmails: nudgeModal.targetEmails 
+                      })
+                    });
+                    if (res.ok) {
+                      alert(`✅ ${nudgeModal.count}명의 미참여자 화면에 독촉 알람이 성공적으로 발송(서버 기록)되었습니다.`);
+                      setNudgeModal(null);
+                    } else {
+                      alert('❌ 독촉 알림 발송 처리에 실패했습니다. (API 라우터를 점검해주세요)');
+                    }
+                  } catch (e) {
+                    console.error(e);
+                    alert('❌ 네트워크 오류가 발생했습니다.');
                   }
-                  alert(`✅ ${nudgeModal.count}명의 미참여자 화면에 독촉 알람이 성공적으로 발송되었습니다.`);
-                  setNudgeModal(null);
-              }} className="flex-[2] py-3 bg-indigo-600 text-white rounded-xl font-black text-xs shadow-md hover:bg-indigo-700 transition-colors">🚀 독촉 팝업 발송하기</button>
+                }} 
+                className="flex-[2] py-3 bg-indigo-600 text-white rounded-xl font-black text-xs shadow-md hover:bg-indigo-700 transition-colors"
+              >
+                🚀 독촉 팝업 발송하기
+              </button>
             </div>
           </div>
         </div>

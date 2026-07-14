@@ -300,17 +300,37 @@ function DeptDistributionContent() {
   return (
     <div className="w-full max-w-[1600px] mx-auto space-y-6 p-8 font-sans text-slate-900 pb-24 animate-fade-in">
       
-      {/* 메인 배너 */}
-      <div className="w-full bg-gradient-to-r from-blue-700 to-indigo-800 p-6 rounded-[2.5rem] min-h-[120px] flex flex-col justify-center text-white shadow-xl relative overflow-hidden">
-        <div className="absolute top-[-50px] right-[-50px] w-64 h-64 bg-blue-500 rounded-full blur-3xl opacity-20"></div>
-        <div className="relative z-10">
-          <p className="text-[10px] text-blue-200 font-black uppercase tracking-widest mb-1">Department Distribution Status</p>
-          <h1 className="text-2xl font-black tracking-tight">
-            <span>🏢</span> <span className="text-blue-300">{currentUser?.unit?.unit_name || '소속 부서'}</span> 지급 현황 대장
-          </h1>
-          <p className="text-blue-100 text-xs font-semibold mt-2 opacity-90">우리 부서원들이 고객사를 대상으로 등록하고 지급한 기념품 전체 이력을 모니터링합니다.</p>
-        </div>
-      </div>
+{/* 🌑 [디자인 1원칙: 부서/전사 대장 = 먹색 테마 배너] 부서 기념품 지급 현황 대장 (min-h-[140px] 표준 규격) */}
+<div className="w-full bg-slate-800 p-6 rounded-[2.5rem] min-h-[140px] flex flex-col justify-center text-white shadow-xl relative overflow-hidden group">
+  
+  {/* ✨ 슬레이트 테마 전용 은은한 우측 상단 빛 번짐 효과 매칭 */}
+  <div className="absolute right-[-10px] top-[-10px] w-24 h-24 bg-white/10 rounded-full blur-2xl group-hover:scale-150 transition-transform duration-700"></div>
+
+  <div className="relative z-10 flex justify-between items-end w-full">
+    <div>
+      {/* 1. 상단 라벨 (소모품 대장 가이드인 mb-3 여백 & text-slate-400 톤) */}
+      <h3 className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-3">
+        DEPARTMENT DISTRIBUTION STATUS
+      </h3>
+      
+      {/* 2. 메인 타이틀 (소모품 규격과 1:1 대칭: 부서 박스 뱃지 단독 노출) */}
+      <h1 className="text-2xl font-black tracking-tight text-white leading-none flex items-center flex-wrap gap-2.5">
+        {/* 🏢 소속 부서 뱃지 (이름 없이 부서명만 독립형 박스로 깔끔하게 표출, 대괄호 완전 제거) */}
+        <span className="bg-slate-700/60 border border-slate-600 text-indigo-300 px-4 py-2 rounded-2xl text-lg font-black tracking-tight shrink-0 shadow-inner">
+          {currentUser?.unit?.unit_name || '소속 부서'}
+        </span>
+        
+        {/* 🎯 메인 타이틀 텍스트 */}
+        <span className="text-white">지급 현황 대장</span>
+      </h1>
+      
+      {/* 3. 하단 설명 (소모품과 완벽 대칭 mt-4 가독성 주입) */}
+      <p className="text-slate-300 text-xs font-semibold mt-4 opacity-90">
+        우리 부서원들이 고객사를 대상으로 등록하고 지급한 기념품 전체 이력을 실시간 모니터링합니다.
+      </p>
+    </div>
+  </div>
+</div>
 
       {/* 실시간 요약 그래프 */}
       <div className="bg-white border border-slate-200 rounded-[2.5rem] shadow-sm p-6">

@@ -1,5 +1,5 @@
-import AdminDeliveryBuilderModule from "@/components/survey/delivery/AdminDeliveryBuilderModule";
-
-export default function AdminDeliveryBuilderPage() { 
-  return <AdminDeliveryBuilderModule />; 
+import L4PanelRenderer from '@/components/admin/L4PanelRenderer';
+     
+export default function Page() {
+  return <L4PanelRenderer />;
 }

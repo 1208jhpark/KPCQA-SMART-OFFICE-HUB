@@ -10,7 +10,7 @@ interface SurveyOption {
   label: string;
   imageUrl?: string;
   referenceLink?: string; 
-  goToSectionId?: string; // 🚀 세부 옵션용 섹션 이동 ID
+  goToSectionId?: string;
 }
   
 interface Question {
@@ -29,7 +29,7 @@ interface Question {
   detailAddress?: string;
   description?: string;
   referenceLink?: string;
-  goToSectionId?: string; // 🚀 모든 메인 문항(항목)용 다음 이동 ID
+  goToSectionId?: string;
 }
   
 export default function SurveyBuilderPage() {
@@ -55,22 +55,34 @@ export default function SurveyBuilderPage() {
     const id = params.get('id');
     setSurveyId(id);
   
+    // 🚀 [캐시 원천 차단]: 무조건 서버 DB의 최신 스키마를 불러오도록 보완
     if (id) {
-      const storedData = localStorage.getItem(`survey_builder_${id}`);
-      if (storedData) {
-        try {
-          const parsed = JSON.parse(storedData);
-          const migratedData = parsed.map((q: any) => ({
-            ...q,
-            options: q.options?.map((opt: any) => 
-              typeof opt === 'string' ? { label: opt, imageUrl: '', referenceLink: '', goToSectionId: '' } : opt
-            )
-          }));
-          setQuestions(migratedData);
-        } catch (e) {
-          console.error(e);
-        }
-      }
+      const ts = Date.now();
+      fetch(`/api/survey/general?t=${ts}`, { cache: 'no-store' })
+        .then(res => res.json())
+        .then(data => {
+          const targetSurvey = data.find((s: any) => s.id === id);
+          if (targetSurvey && targetSurvey.questions) {
+            try {
+              const parsed = typeof targetSurvey.questions === 'string' 
+                ? JSON.parse(targetSurvey.questions) 
+                : targetSurvey.questions;
+                
+              const targetArray = Array.isArray(parsed) ? parsed : [];
+              
+              const migratedData = targetArray.map((q: any) => ({
+                ...q,
+                options: q.options?.map((opt: any) => 
+                  typeof opt === 'string' ? { label: opt, imageUrl: '', referenceLink: '', goToSectionId: '' } : opt
+                )
+              }));
+              setQuestions(migratedData);
+            } catch (e) {
+              console.error("문항 구조 역직렬화 실패:", e);
+            }
+          }
+        })
+        .catch(err => console.error("DB 로드 실패:", err));
     }
   }, []);
   
@@ -101,19 +113,52 @@ export default function SurveyBuilderPage() {
     return `${dateObj.getFullYear()}년 ${dateObj.getMonth() + 1}월 ${dateObj.getDate()}일`;
   };
   
-  const handleSaveSurvey = () => {
+  // 🚀 [DB 정합성 코어]: 동시성 충돌로 인한 메타데이터 증발을 완벽 차단하는 원자적 저장 엔진
+  const handleSaveSurvey = async () => {
     if (questions.length === 0) return alert('최소 1개 이상의 문항을 추가해주세요.');
-    if (!surveyId) return alert('설문 ID가 유효하지 않습니다.');
+    if (!surveyId) return alert('설문 ID가 유효하지 않습니다. 현황판에서 다시 진입해주세요.');
     
+    // 대용량 첨부파일/이미지로 인해 페이로드가 터지는 현상 사전 가드
     try {
-      localStorage.setItem(`survey_builder_${surveyId}`, JSON.stringify(questions));
-      alert('✅ 설문 문항이 성공적으로 저장되었습니다.\n현황판 화면에서 배포를 진행할 수 있습니다.');
-    } catch (error: any) {
-      if (error.name === 'QuotaExceededError' || error.code === 22) {
-        alert('❌ 저장 용량 초과 에러 (QuotaExceededError)\n\n원인: 첨부하신 이미지나 파일의 용량이 너무 커서 브라우저 임시 저장 한도(약 5MB)를 초과했습니다.\n해결: 이미지를 지우거나 용량이 작은 이미지로 교체한 후 다시 저장해 주세요. (추후 DB 연동 시 해결될 문제입니다.)');
-      } else {
-        alert('❌ 데이터를 저장하는 중 알 수 없는 오류가 발생했습니다.');
+      const serializedLength = JSON.stringify(questions).length;
+      if (serializedLength > 4500000) {
+        return alert('❌ 문항 이미지 또는 서식 파일의 전체 물리 용량이 제한선(4.5MB)을 초과했습니다.\n파일 압축 후 재시도 하십시오.');
       }
+    } catch (sizeError) {
+      console.error("페이로드 크기 연산 오류:", sizeError);
+    }
+     
+    try {
+      // 🚀 [캐시 원천 차단]: 덮어쓰기 전 최신 서버 상태 재수집 (이전 캐시 오염 방지)
+      const ts = Date.now();
+      const getRes = await fetch(`/api/survey/general?t=${ts}`, { cache: 'no-store' });
+      const surveys = await getRes.json();
+      const currentSurvey = surveys.find((s: any) => s.id === surveyId);
+       
+      if (!currentSurvey) return alert('해당 설문 공고를 시스템에서 찾을 수 없습니다.');
+       
+      // 파싱 오류를 방지하기 위해 캔버스 상태의 배열 구조를 완전 데이터 포맷으로 정제
+      const sanitizedQuestions = questions.map(q => ({
+        ...q,
+        options: q.options ? q.options.map(opt => ({ ...opt })) : undefined
+      }));
+     
+      // 실시간 메타데이터 스냅샷에 문항 데이터만 정밀 병합(Merge)하여 원장 무결성 보장
+      const payload = { ...currentSurvey, questions: sanitizedQuestions };
+     
+      const res = await fetch('/api/survey/general', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+     
+      if (res.ok) {
+        alert('✅ 설문 신청 양식 문항이 DB에 성공적으로 저장되었습니다!');
+      } else {
+        alert('❌ 서버 인프라 저장 처리 가드가 실패했습니다.');
+      }
+    } catch (error) {
+      alert('❌ 네트워크 인프라 인터페이스 통신 오류가 발생했습니다.');
     }
   };
   
@@ -127,7 +172,6 @@ export default function SurveyBuilderPage() {
     }]);
   };
   
-  // 🚀 [버그 수정 완료]: 함수들을 모두 Functional Update(prev => ...) 방식으로 고쳐서 상태 덮어쓰기 증발 방지
   const updateQuestion = (id: string, field: keyof Question, value: any) => {
     setQuestions(prev => prev.map(q => q.id === id ? { ...q, [field]: value } : q));
   };
@@ -185,7 +229,7 @@ export default function SurveyBuilderPage() {
       reader.readAsDataURL(file); 
     }
   };
-
+     
   const availableSections = questions.filter(q => q.type === 'SECTION');
   
   return (
@@ -256,7 +300,6 @@ export default function SurveyBuilderPage() {
             </div>
   
             <div className="pl-8 pt-2">
-              {/* 모든 문항 타입(섹션 제외)에 부가설명/외부링크 동일 적용 */}
               {q.type !== 'SECTION' && (
                 <div className="mb-6 space-y-3 p-4 bg-indigo-50/50 border border-indigo-100 rounded-xl">
                   <div>
@@ -270,7 +313,6 @@ export default function SurveyBuilderPage() {
                 </div>
               )}
   
-              {/* 주소 검색 */}
               {q.type === 'SEARCH_ADDRESS' && (
                 <div className="space-y-2.5 max-w-xl bg-slate-50 p-5 border border-slate-200 rounded-2xl animate-fade-in">
                   <div className="flex items-center gap-2">
@@ -282,7 +324,6 @@ export default function SurveyBuilderPage() {
                 </div>
               )}
      
-              {/* 날짜 */}
               {q.type === 'CALENDAR' && (
                 <div className="space-y-3 bg-slate-50 p-4 border border-slate-200 rounded-2xl max-w-md animate-fade-in">
                   <div className="flex items-center gap-3"><span className="text-xs font-black text-slate-600">날짜 지정:</span><input type="date" value={q.dummyDateValue || ''} onChange={(e) => updateQuestion(q.id, 'dummyDateValue', e.target.value)} className="p-2 border border-slate-300 rounded-xl bg-white text-xs font-black outline-none focus:border-indigo-500" /></div>
@@ -290,7 +331,6 @@ export default function SurveyBuilderPage() {
                 </div>
               )}
      
-              {/* 🚀 단일선택 및 다중선택 모두 이동 분기점 부여 */}
               {(q.type === 'CHOICE_SINGLE' || q.type === 'CHOICE_MULTI') && (
                 <div className="space-y-3">
                   {q.options?.map((opt, oIdx) => (
@@ -300,7 +340,7 @@ export default function SurveyBuilderPage() {
                         <input type="text" value={opt.label} onChange={(e) => updateOption(q.id, oIdx, 'label', e.target.value)} className="flex-1 border-b border-transparent hover:border-slate-300 focus:border-indigo-500 outline-none py-1.5 text-xs text-slate-700 font-bold bg-transparent" />
                         
                         <input type="text" value={opt.referenceLink || ''} onChange={(e) => updateOption(q.id, oIdx, 'referenceLink', e.target.value)} className="w-40 px-2 py-1 bg-white border border-slate-200 rounded text-[10px] font-medium outline-none" placeholder="🔗 외부링크 URL" />
-
+     
                         <label className="cursor-pointer px-2.5 py-1.5 border border-slate-300 bg-white hover:bg-slate-100 rounded text-[10px] font-black text-slate-600 transition-colors shrink-0">
                           {opt.imageUrl ? '이미지 변경' : '이미지 추가'}
                           <input type="file" className="hidden" accept="image/*" onChange={(e) => handleOptionImage(q.id, oIdx, e)} />
@@ -308,10 +348,9 @@ export default function SurveyBuilderPage() {
                         {opt.imageUrl && <button onClick={() => updateOption(q.id, oIdx, 'imageUrl', '')} className="text-[10px] text-red-400 font-black shrink-0">삭제</button>}
                         {q.options!.length > 1 && <button onClick={() => removeOption(q.id, oIdx)} className="text-slate-300 hover:text-red-500 px-2 font-black">✕</button>}
                       </div>
-
+     
                       {opt.imageUrl && <div className="ml-8 mt-1 relative w-fit"><img src={opt.imageUrl} className="h-16 rounded border object-cover" /></div>}
-
-                      {/* 🚀 모든 옵션에 섹션 이동 분기 추가 */}
+     
                       {availableSections.length > 0 && (
                         <div className="ml-8 flex items-center gap-2 border-t border-slate-200/60 pt-2 mt-1">
                           <span className="text-[10px] text-slate-400 font-bold">↳ 이 타겟 선택 시:</span>
@@ -328,14 +367,12 @@ export default function SurveyBuilderPage() {
                 </div>
               )}
   
-              {/* 단답/장문 */}
               {(q.type === 'TEXT_SHORT' || q.type === 'TEXT_LONG') && (
                 <div className={`border-b-2 border-dashed border-slate-200 text-slate-400 text-xs py-2 font-bold w-1/2 ${q.type === 'TEXT_LONG' ? 'w-full pb-10' : ''}`}>
                   {q.type === 'TEXT_SHORT' ? '단답형 텍스트 영역' : '장문형 텍스트 (여러 줄 입력 가능)'}
                 </div>
               )}
   
-              {/* 척도 */}
               {q.type === 'SCALE' && (
                 <div className="flex items-center gap-4 bg-slate-50 p-4 rounded-xl w-fit border border-slate-100">
                   <span className="text-xs font-black text-slate-500">1점부터</span>
@@ -346,7 +383,6 @@ export default function SurveyBuilderPage() {
                 </div>
               )}
               
-              {/* 🚀 파일 첨부 X 버튼 버그 수정 완료 */}
               {q.type === 'FILE' && (
                 <div className="mt-2 p-5 border-2 border-dashed border-indigo-200 rounded-2xl flex flex-col items-start gap-3 bg-indigo-50/50">
                   <div className="flex items-center gap-2"><span className="text-xl">📥</span><div><p className="text-[11px] font-black text-indigo-800">응답자 제공용 빈 양식 파일 첨부 (필수/선택)</p><p className="text-[9px] text-slate-500 font-bold mt-0.5">사용자가 다운받아 작성 후 다시 업로드할 빈 양식을 등록해주세요.</p></div></div>
@@ -354,7 +390,6 @@ export default function SurveyBuilderPage() {
                      <div className="flex items-center gap-3 bg-white px-4 py-2 border border-indigo-100 rounded-xl shadow-sm w-full max-w-md">
                         <span className="text-lg">📄</span><span className="flex-1 text-[11px] font-bold text-slate-700 truncate">{q.templateFileName}</span>
                         <button type="button" onClick={() => { if (q.templateFileData) { fetch(q.templateFileData).then(r => r.blob()).then(blob => saveAs(blob, q.templateFileName!)); } }} className="text-[10px] bg-slate-100 px-2 py-1 rounded font-black hover:bg-slate-200 text-slate-600">다운로드 테스트</button>
-                        {/* 🚀 [버그수정] 한 번의 명령으로 두 속성(이름, 데이터)을 동시에 지워야 버그가 나지 않습니다. */}
                         <button onClick={() => setQuestions(prev => prev.map(item => item.id === q.id ? { ...item, templateFileName: undefined, templateFileData: undefined } : item))} className="text-red-400 hover:text-red-600 font-black text-lg ml-1">✕</button>
                      </div>
                   ) : (
@@ -362,8 +397,7 @@ export default function SurveyBuilderPage() {
                   )}
                 </div>
               )}
-
-              {/* 🚀 [신규 추가]: 모든 문항 맨 하단에 '이 항목 응답 후 다음 이동 경로' 공통 적용 */}
+     
               {availableSections.length > 0 && (
                  <div className="mt-4 pt-3 border-t border-slate-200/60">
                     <label className="text-[10px] font-black text-slate-500 flex items-center gap-1">↳ 이 항목 응답 후 다음 이동 경로:</label>

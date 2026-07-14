@@ -1,9 +1,12 @@
 import { NextResponse } from 'next/server';
-import prisma from '@/lib/prisma'; //
+import prisma from '@/lib/prisma';
 
-// [GET] 전체 사용자 목록 호출 (부서 활성 상태 포함)
+// ==========================================
+// [GET] 전체 사용자 목록 및 지정 마스터 그룹 데이터 연동 호출
+// ==========================================
 export async function GET() {
   try {
+    // 1. 활성 사용자 및 소속 부서 정보 호출
     const users = await prisma.user.findMany({
       include: {
         unit: {
@@ -13,12 +16,34 @@ export async function GET() {
       orderBy: { createdAt: 'desc' }
     });
     
+    // 2. 시스템 환경 설정 정보 단일 행 조회
+    const config = await prisma.systemConfig.findFirst();
+    
+    let duties: any[] = [];
+    let grades: any[] = [];
+    
+    // 3. 설정에 직책/직급 마스터 그룹이 맵핑되어 있다면 하위 활성 코드를 가져옴
+    if (config) {
+      if (config.job_duty_group) {
+        duties = await prisma.masterCode.findMany({
+          where: { group_id: config.job_duty_group, is_active: true, is_archived: false },
+          orderBy: { sort_order: 'asc' }
+        });
+      }
+      if (config.job_grade_group) {
+        grades = await prisma.masterCode.findMany({
+          where: { group_id: config.job_grade_group, is_active: true, is_archived: false },
+          orderBy: { sort_order: 'asc' }
+        });
+      }
+    }
+
     // 통계 데이터 (추후 사용자 관리 대시보드용)
     const stats = { totalUsers: await prisma.user.count() };
     
-    // 객체 형태로 포장하여 반환 { users: [...], stats: {...} }
+    // 💡 프론트엔드가 한 번에 파싱해서 그릴 수 있도록 포장하여 반환
     return NextResponse.json(
-      { users, stats }, 
+      { users, stats, duties, grades }, 
       { headers: { 'Cache-Control': 'no-store, max-age=0' } }
     );
   } catch (error) {
@@ -27,11 +52,16 @@ export async function GET() {
   }
 }
 
-// [PATCH] 사용자 정보 수정 (상태, 부서, 권한 등)
+// [PATCH] 사용자 정보 수정 (상태, 부서, 권한, 인사 데이터 일괄 대응)
 export async function PATCH(req: Request) {
   try {
     const { userId, ...updateData } = await req.json();
     if (!userId) return NextResponse.json({ message: '사용자 ID 누락' }, { status: 400 });
+
+    // 💡 [필수 안전장치] roles 배열이 인입될 경우, Prisma Json 타입에 맞게 문자열 변환 처리
+    if (updateData.roles !== undefined) {
+      updateData.roles = JSON.stringify(updateData.roles);
+    }
 
     const updated = await prisma.user.update({
       where: { id: userId },

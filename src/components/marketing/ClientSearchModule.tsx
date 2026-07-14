@@ -324,13 +324,37 @@ export default function ClientSearchModule() {
   return (
     <div className="w-full max-w-[1600px] mx-auto space-y-6 p-8 font-sans text-slate-900 pb-24 animate-fade-in">
       
-      <div className="w-full bg-gradient-to-r from-blue-700 to-indigo-800 p-6 rounded-[2.5rem] min-h-[120px] flex flex-col justify-center text-white shadow-xl relative overflow-hidden">
-        <div className="relative z-10">
-          <p className="text-[10px] font-black uppercase tracking-widest text-blue-200 mb-1">Client Distribution Status</p>
-          <h1 className="text-2xl font-black tracking-tight">고객사별 수령 현황</h1>
-          <p className="text-blue-100 text-xs font-semibold mt-2 opacity-90">등록된 고객사의 물품 지급 내역과 마스터 정보를 통합 관리합니다.</p>
-        </div>
-      </div>
+{/* 🌑 [디자인 1원칙: 현황/관리 대장 = 먹색 테마 배너] 고객사별 수령 현황 보드 (박스 제거 및 서체 강조형 리파인) */}
+<div className="w-full bg-slate-800 p-6 rounded-[2.5rem] min-h-[140px] flex flex-col justify-center text-white shadow-xl relative overflow-hidden group">
+  
+  {/* ✨ 슬레이트 테마 전용 은은한 우측 상단 빛 번짐 효과 매칭 */}
+  <div className="absolute right-[-10px] top-[-10px] w-24 h-24 bg-white/10 rounded-full blur-2xl group-hover:scale-150 transition-transform duration-700"></div>
+
+  <div className="relative z-10 flex justify-between items-end w-full">
+    <div>
+      {/* 1. 상단 라벨 (mb-3 표준 여백 & text-slate-400 톤 세팅) */}
+      <h3 className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-3">
+        CLIENT DISTRIBUTION STATUS
+      </h3>
+      
+      {/* 2. 메인 타이틀 (어색한 박스 뱃지 완전 탈탈 털어내고 텍스트 강조 구조로 피팅) */}
+      <h1 className="text-2xl font-black tracking-tight text-white leading-none flex items-center flex-wrap gap-2">
+        {/* 🏢 고객사 고정 속성명 (박스 없이 글씨만 인디고/블루 톤으로 선명하게 강조) */}
+        <span className="text-indigo-300 shrink-0 select-none">
+          고객사별
+        </span>
+        
+        {/* 🎯 메인 타이틀 텍스트 */}
+        <span className="text-white">수령 현황 대장</span>
+      </h1>
+      
+      {/* 3. 하단 설명 (mt-4 표준 가독성 마감) */}
+      <p className="text-slate-300 text-xs font-semibold mt-4 opacity-90">
+        등록된 고객사들의 물품 지급 내역과 마스터 정보를 통합 모니터링하고 철저하게 관리합니다.
+      </p>
+    </div>
+  </div>
+</div>
      
       <div className="mt-6 bg-white border border-slate-200 rounded-[2.5rem] shadow-sm overflow-hidden">
         <HeaderLight title="고객사 데이터 대장" count={filteredClients.length}>

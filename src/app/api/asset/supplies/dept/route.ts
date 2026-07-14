@@ -6,18 +6,13 @@ import jwt from 'jsonwebtoken';
 export const dynamic = 'force-dynamic';
 const JWT_SECRET = process.env.JWT_SECRET || 'kpcqa_secret_key';
 
-// 🚀 우리 부서 신청 내역 조회 (GET)
 export async function GET() {
   try {
-    // [1] 쿠키에서 토큰 추출 및 인증 확인
     const cookieStore = await cookies();
     const token = cookieStore.get('token')?.value;
     
-    if (!token) {
-      return NextResponse.json({ error: '인증이 필요합니다.' }, { status: 401 });
-    }
+    if (!token) return NextResponse.json({ error: '인증이 필요합니다.' }, { status: 401 });
 
-    // [2] JWT 검증 및 유저/부서 정보 로드
     let decoded: any;
     try {
       decoded = jwt.verify(token, JWT_SECRET);
@@ -27,31 +22,57 @@ export async function GET() {
 
     const user = await prisma.user.findUnique({
       where: { email: decoded.email },
-      include: { unit: true }
+      include: { unit: true } // User 모델과의 관계 필드명은 그대로 유지
     });
 
     if (!user || !user.unit) {
-      return NextResponse.json({ 
-        error: '부서 정보가 등록되지 않은 사용자입니다. 관리자에게 문의하세요.' 
-      }, { status: 403 });
+      return NextResponse.json({ error: '부서 정보가 등록되지 않은 사용자입니다.' }, { status: 403 });
     }
 
-    // [3] 해당 부서(unit_name) 명의로 신청된 내역만 필터링 조회
-    // 💡 팁: 부서명이 정확히 일치하는 신청 건만 가져오며, 품목 정보(item)를 포함합니다.
+    // 🚀 방어 코드: 최소한 자기 자신의 부서 이름은 무조건 깔고 갑니다.
+    let deptNamesArray = [user.unit.unit_name];
+
+    try {
+      // 🎯 [정답 적중] prisma.orgUnit 으로 정확히 호출!
+      // 스키마에 있는 is_active, is_deleted 까지 활용해 삭제된 부서는 제외
+      const allUnits = await prisma.orgUnit.findMany({
+        where: { 
+          is_active: true,
+          is_deleted: false
+        }
+      });
+      
+      const allowedDeptNames = new Set<string>();
+      allowedDeptNames.add(user.unit.unit_name);
+
+      // TypeScript 에러 없이 깔끔하게 떨어지는 재귀 로직
+      const findChildren = (parentId: string) => {
+        allUnits.filter(u => u.parent_id === parentId).forEach(child => {
+          allowedDeptNames.add(child.unit_name);
+          findChildren(child.id);
+        });
+      };
+      
+      findChildren(user.unit.id);
+      deptNamesArray = Array.from(allowedDeptNames);
+      
+    } catch (e) {
+      console.error("⚠️ 하위 조직도 로드 실패:", e);
+    }
+
+    // [3] 완성된 deptNamesArray 로 데이터베이스에서 싹쓸이
     const myDeptRequests = await prisma.supplyRequest.findMany({
       where: { 
-        dept_name: user.unit.unit_name 
+        dept_name: {
+          in: deptNamesArray
+        }
       },
       include: { 
         item: {
-          select: {
-            name: true,
-            image_url: true,
-            description: true
-          }
+          select: { name: true, image_url: true, description: true }
         } 
       },
-      orderBy: { createdAt: 'desc' } // 최신 신청 순서대로 정렬
+      orderBy: { createdAt: 'desc' }
     });
     
     return NextResponse.json(myDeptRequests);

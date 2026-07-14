@@ -15,10 +15,11 @@ function MasterArchiveContent() {
   
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedYear, setSelectedYear] = useState('ALL');
+  const [selectedMonth, setSelectedMonth] = useState('ALL');
+  
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 20;
-
-  // 🚀 공통 마스터 탭 바 명세
+  
   const tabItems = [
     { id: 'dashboard', name: '🗂️ 소모품 마스터 대시보드', path: '/asset/supplies/master/dashboard' },
     { id: 'requests', name: '📋 사용자 신청현황 관리', path: '/asset/supplies/master/requests' },
@@ -27,43 +28,80 @@ function MasterArchiveContent() {
   ];
      
   useEffect(() => { 
-    fetchArchivedItems(); 
-    fetchCurrentUser();
+    fetchData(); 
   }, []);
-     
-  const fetchCurrentUser = async () => {
-    try {
-      const res = await fetch('/api/auth/me');
-      if (res.ok) setCurrentUser(await res.json());
-    } catch (e) {}
-  };
-     
-  const fetchArchivedItems = async () => {
+  
+  const fetchData = async () => {
     setLoading(true);
     try {
-      const res = await fetch(`/api/asset/supplies/master/archive?t=${Date.now()}`, { cache: 'no-store' });
-      if (res.ok) setItems(await res.json() || []);
-    } catch(e) {}
-    setLoading(false);
+      const ts = Date.now();
+      const [userRes, archiveRes] = await Promise.all([
+        fetch(`/api/auth/me?t=${ts}`, { cache: 'no-store' }),
+        fetch(`/api/asset/supplies/master/archive?t=${ts}`, { cache: 'no-store' })
+      ]);
+      
+      if (userRes.ok) setCurrentUser(await userRes.json());
+      if (archiveRes.ok) setItems(await archiveRes.json() || []);
+    } catch (e) {
+      console.error("Archive Sync Error", e);
+    } finally {
+      setLoading(false);
+    }
   };
+  
+  // 🚀 권한 체크 (LV_1)
+  const isLV1 = currentUser?.roles?.includes('LV_1') || currentUser?.role === 'LV_1';
      
-  const availableYears = useMemo(() => {
-    const years = items.map(i => (i.disposal_date || '').substring(0, 4)).filter(Boolean);
-    const unique = Array.from(new Set(years)).sort((a, b) => b.localeCompare(a));
-    const curr = new Date().getFullYear().toString();
-    if (!unique.includes(curr)) unique.push(curr);
-    return unique;
+  // 🚀 아이템 리스트에 파싱된 데이터를 미리 매핑해두기 (필터링 및 엑셀 다운로드를 위해)
+  const parsedItems = useMemo(() => {
+    return items.map(item => {
+      let ext = {};
+      try { ext = item.description ? JSON.parse(item.description) : {}; } catch(e) {}
+      return { ...item, ext };
+    });
   }, [items]);
      
+  const availableYears = useMemo(() => {
+    const years = parsedItems.map(i => {
+      const raw = i.ext.disposal_date || i.updatedAt || i.createdAt;
+      if (!raw) return '';
+      const d = new Date(raw);
+      return isNaN(d.getTime()) ? '' : d.getFullYear().toString();
+    }).filter(Boolean);
+    return Array.from(new Set(years)).sort((a, b) => b.localeCompare(a));
+  }, [parsedItems]);
+     
+  const availableMonths = ['01','02','03','04','05','06','07','08','09','10','11','12'];
+     
   const filteredItems = useMemo(() => {
-    return items.filter(i => {
-      const yearMatch = selectedYear === 'ALL' || (i.disposal_date || '').startsWith(selectedYear);
+    return parsedItems.filter(i => {
+      const raw = i.ext.disposal_date || i.updatedAt || i.createdAt;
+      let itemYear = '';
+      let itemMonth = '';
+      
+      if (raw) {
+        const d = new Date(raw);
+        if (!isNaN(d.getTime())) {
+          itemYear = d.getFullYear().toString();
+          itemMonth = String(d.getMonth() + 1).padStart(2, '0');
+        }
+      }
+      
+      const yearMatch = selectedYear === 'ALL' || itemYear === selectedYear;
+      const monthMatch = selectedMonth === 'ALL' || itemMonth === selectedMonth;
+      
       const searchMatch = !searchQuery || 
         i.name?.toLowerCase().includes(searchQuery.toLowerCase()) || 
-        i.disposal_reason?.toLowerCase().includes(searchQuery.toLowerCase());
-      return yearMatch && searchMatch;
-    }).sort((a, b) => new Date(b.disposal_date || 0).getTime() - new Date(a.disposal_date || 0).getTime());
-  }, [items, selectedYear, searchQuery]);
+        i.ext.disposal_reason?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        i.ext.disposer_name?.toLowerCase().includes(searchQuery.toLowerCase());
+        
+      return yearMatch && monthMatch && searchMatch;
+    }).sort((a, b) => {
+      const dateA = new Date(a.ext.disposal_date || a.updatedAt || a.createdAt || 0).getTime();
+      const dateB = new Date(b.ext.disposal_date || b.updatedAt || b.createdAt || 0).getTime();
+      return dateB - dateA;
+    });
+  }, [parsedItems, selectedYear, selectedMonth, searchQuery]);
      
   const totalPages = Math.max(1, Math.ceil(filteredItems.length / itemsPerPage));
   const paginatedItems = filteredItems.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
@@ -77,32 +115,59 @@ function MasterArchiveContent() {
     setSelectedIds(next);
   };
      
-  let myRole = 'LV_3';
-  if (currentUser) {
-    let rolesArr = Array.isArray(currentUser.roles) ? currentUser.roles : [];
-    myRole = String(rolesArr[0] || 'LV_3').toUpperCase();
-  }
-  const isLV1 = myRole === 'LV_1';
-     
+  // 🚀 복구 로직
   const handleRestore = async (id: string) => {
-    if (!confirm('해당 품목을 다시 대시보드 운영 리스트로 복구하시겠습니까?')) return;
+    if (!confirm('해당 품목을 대시보드 운영 리스트로 복구하시겠습니까?')) return;
     try {
       const res = await fetch('/api/asset/supplies/master/dashboard', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id, is_active: true })
       });
-      if (res.ok) { alert('✅ 복구되었습니다.'); fetchArchivedItems(); }
-    } catch (e) {}
+      if (res.ok) { alert('✅ 대시보드로 복구되었습니다.'); fetchData(); } 
+      else { alert('🚨 복구 실패'); }
+    } catch (e) { alert("서버 통신 오류"); }
   };
      
+  // 🚀 LV_1 영구 삭제 로직
   const handleDeleteArchived = async (ids: string[]) => {
-    if (!isLV1) return alert("삭제 권한이 없습니다.");
-    if (!confirm(`선택한 ${ids.length}개의 아카이브 내역을 영구 삭제하시겠습니까?`)) return;
+    if (!isLV1) return alert("영구 삭제 권한이 없습니다. (LV_1 전용)");
+    if (!confirm(`선택한 ${ids.length}개의 아카이브 내역을 영구 삭제하시겠습니까?\n이 작업은 데이터베이스에서 완전히 파기되며 되돌릴 수 없습니다.`)) return;
+    
     try {
-      await Promise.all(ids.map(id => fetch(`/api/asset/supplies/master/archive?id=${id}`, { method: 'DELETE' })));
-      alert('✅ 영구 삭제되었습니다.'); setSelectedIds(new Set()); fetchArchivedItems();
-    } catch (e) {}
+      const deletePromises = ids.map(id => fetch(`/api/asset/supplies/master/archive?id=${id}`, { method: 'DELETE' }));
+      const results = await Promise.all(deletePromises);
+      const allSuccess = results.every(res => res.ok);
+     
+      if (allSuccess) alert('✅ 영구 삭제되었습니다.');
+      else alert('⚠️ 일부 항목의 삭제를 실패했습니다.');
+      
+      setSelectedIds(new Set()); 
+      fetchData();
+    } catch (e) { alert("삭제 중 통신 오류 발생"); }
+  };
+
+  // 🚀 엑셀 다운로드 추가
+  const handleDownloadExcel = () => {
+    const targetList = selectedIds.size > 0 ? filteredItems.filter(i => selectedIds.has(i.id)) : filteredItems;
+    if (targetList.length === 0) return alert("다운로드할 데이터가 없습니다.");
+    
+    const exportData = targetList.map((item, idx) => {
+      return {
+        'NO': targetList.length - idx,
+        '폐기 처리일': item.ext.disposal_date ? item.ext.disposal_date.substring(0, 10) : '-',
+        '물품명': item.name || '-',
+        '최종 재고': item.current_stock || 0,
+        '폐기 사유 (비고)': item.ext.disposal_reason || '-',
+        '처리자 이름': item.ext.disposer_name || '관리자',
+        '처리자 부서': item.ext.disposer_dept || '-'
+      };
+    });
+    
+    const ws = XLSX.utils.json_to_sheet(exportData);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "폐기자산_목록");
+    XLSX.writeFile(wb, `소모품_폐기자산_아카이브_${new Date().toISOString().split('T')[0]}.xlsx`);
   };
      
   if (loading) return <div className="p-20 text-center font-black animate-pulse text-slate-400 uppercase tracking-widest">Loading Archive...</div>;
@@ -110,16 +175,34 @@ function MasterArchiveContent() {
   return (
     <div className="w-full max-w-[1600px] mx-auto space-y-6 p-8 font-sans text-slate-900 pb-24 animate-fade-in">
       
-      {/* 마스터 배너 */}
-      <div className="w-full bg-slate-900 p-6 rounded-[2.5rem] text-white shadow-xl relative overflow-hidden flex flex-col justify-center min-h-[120px]">
-        <div className="relative z-10">
-          <p className="text-[10px] font-black uppercase tracking-widest text-blue-400 mb-1">Central Supplies Control Tower</p>
-          <h1 className="text-2xl font-black tracking-tight text-white">소모품 마스터 관리 통제실</h1>
-          <p className="text-slate-400 text-xs font-semibold mt-2 opacity-90">전사 소모품의 실시간 재고 현황을 모니터링하고 발주 및 사용자 신청을 총괄 관리합니다.</p>
-        </div>
-      </div>
+{/* 🚀 소모품 마스터 관리 통제실 (명함 배너와 100% 스타일 싱크로율 매칭) */}
+<div className="w-full bg-gradient-to-r from-emerald-900 to-teal-900 p-6 rounded-[2.5rem] text-white shadow-xl relative overflow-hidden flex flex-col justify-center min-h-[140px]">
+  
+  <div className="relative z-10 flex justify-between items-end w-full">
+    <div>
+      {/* 1. 상단 라벨 (mb-3 여백 및 명함과 동일한 텍스트 톤) */}
+      <h3 className="text-[10px] font-black uppercase tracking-widest text-emerald-400 mb-3">
+        CENTRAL SUPPLIES CONTROL TOWER
+      </h3>
+      
+      {/* 2. 메인 타이틀 (leading-none으로 라인 꼬임 방지) */}
+      <h1 className="text-2xl font-black tracking-tight text-white leading-none">
+        소모품 마스터 관리 통제실
+      </h1>
+      
+      {/* 3. 하단 설명 (mt-4 표준 간격 적용) */}
+      <p className="text-emerald-100/90 text-xs font-semibold mt-4 opacity-90">
+        더이상 지급하지 않는 소모품의 폐기 이력을 관리합니다.
+      </p>
+    </div>
+  </div>
 
-      {/* 🚀 공통 탭 바 */}
+  {/* 우측 관제실 느낌의 은은한 엠블럼 배치 (공백 완벽 메꿈) */}
+  <div className="absolute right-10 top-1/2 -translate-y-1/2 text-8xl opacity-10 select-none pointer-events-none">
+    📊
+  </div>
+</div>
+
       <div className="flex gap-1.5 bg-slate-200/60 p-1.5 rounded-2xl border border-slate-200 shadow-inner w-full max-w-4xl">
         {tabItems.map((tab) => {
           const isActive = pathname.startsWith(tab.path);
@@ -130,36 +213,40 @@ function MasterArchiveContent() {
           );
         })}
       </div>
-
-      <div className="bg-slate-900 h-20 rounded-[2rem] shadow-lg relative flex items-center px-8 mt-6">
-        <div className="flex items-center justify-between w-full">
-          <div className="flex items-center gap-4">
-            <span className="text-2xl text-white">📦</span>
-            <div className="flex flex-col justify-center">
-              <h2 className="font-black tracking-tight uppercase text-white text-lg">종료 자산 아카이브</h2>
-            </div>
-          </div>
-          <button onClick={() => setIsTableOpen(!isTableOpen)} className="bg-white/10 hover:bg-white/20 px-4 py-1.5 rounded-xl text-[10px] font-black text-white transition-colors uppercase whitespace-nowrap">
-            {isTableOpen ? '리스트 닫기 ▲' : '리스트 열기 ▼'}
-          </button>
-        </div>
-      </div>
      
       {isTableOpen && (
-        <section className="bg-white rounded-[2.5rem] border border-slate-200 shadow-sm overflow-hidden animate-in fade-in duration-300 slide-in-from-top-4">
+        <section className="bg-white rounded-[2.5rem] border border-slate-200 shadow-sm overflow-hidden animate-in fade-in duration-300 slide-in-from-top-4 mt-6">
           <div className="p-5 bg-slate-50 border-b flex justify-between items-center flex-wrap gap-4">
             <div className="flex items-center gap-4">
               <span className="text-[11px] font-black text-slate-400 uppercase tracking-widest">Total Archived: <span className="text-indigo-600">{filteredItems.length}</span></span>
-              <button onClick={() => handleDeleteArchived(Array.from(selectedIds))} disabled={!isLV1 || selectedIds.size === 0} className={`px-4 py-1.5 rounded-lg text-[10px] font-black transition-all ${isLV1 && selectedIds.size > 0 ? 'bg-red-50 text-red-600 border border-red-200 shadow-sm hover:bg-red-600 hover:text-white' : 'bg-slate-100 text-slate-300 border border-slate-200 cursor-not-allowed'}`}>
-                🗑️ 선택 삭제 ({selectedIds.size})
+              {/* 🚀 LV_1 전용 선택 삭제 버튼 */}
+              <button 
+                onClick={() => handleDeleteArchived(Array.from(selectedIds))} 
+                disabled={!isLV1 || selectedIds.size === 0} 
+                className={`px-4 py-1.5 rounded-lg text-[10px] font-black transition-all ${isLV1 && selectedIds.size > 0 ? 'bg-red-50 text-red-600 border border-red-200 shadow-sm hover:bg-red-600 hover:text-white' : 'bg-slate-100 text-slate-300 border border-slate-200 cursor-not-allowed'}`}
+                title={!isLV1 ? "LV_1 등급 관리자만 영구 삭제가 가능합니다." : ""}
+              >
+                🗑️ 선택 영구삭제 ({selectedIds.size})
               </button>
             </div>
+            
             <div className="flex items-center gap-2">
               <select value={selectedYear} onChange={(e) => { setSelectedYear(e.target.value); setCurrentPage(1); }} className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-white px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm">
-                <option value="ALL">TOTAL 모두보기</option>
+                <option value="ALL">전체 연도</option>
                 {availableYears.map(year => <option key={year} value={year}>{year}년</option>)}
               </select>
-              <input type="text" placeholder="물품명 검색..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} className="w-56 px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-[11px] font-bold outline-none focus:border-indigo-500 shadow-sm" />
+              
+              <select value={selectedMonth} onChange={(e) => { setSelectedMonth(e.target.value); setCurrentPage(1); }} className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-white px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm">
+                <option value="ALL">전체 월</option>
+                {availableMonths.map(month => <option key={month} value={month}>{month}월</option>)}
+              </select>
+              
+              {/* 🚀 엑셀 다운로드 버튼 */}
+              <button onClick={handleDownloadExcel} className="text-[10px] font-black bg-emerald-50 border border-emerald-200 text-emerald-700 rounded-lg px-4 py-1.5 hover:bg-emerald-100 transition-colors shadow-sm">
+                {selectedIds.size > 0 ? `선택 항목 엑셀 다운로드 (${selectedIds.size})` : '화면 목록 엑셀 다운로드 ⬇️'}
+              </button>
+
+              <input type="text" placeholder="물품, 사유, 처리자 검색..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} className="w-48 px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-[11px] font-bold outline-none focus:border-indigo-500 shadow-sm" />
             </div>
           </div>
      
@@ -173,26 +260,74 @@ function MasterArchiveContent() {
                   <th className="p-3 w-28 text-center">최종 재고</th>
                   <th className="p-3 min-w-[300px]">폐기 사유 (비고)</th>
                   <th className="p-3 w-40 text-center">처리자 정보</th>
-                  <th className="p-3 w-32 text-center">액션</th>
+                  <th className="p-3 w-40 text-center">액션 제어</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 font-medium bg-white">
-                {paginatedItems.map((item, i) => (
-                  <tr key={item.id} className={`hover:bg-slate-50 h-12 ${selectedIds.has(item.id) ? 'bg-indigo-50/20' : ''}`}>
-                    <td className="p-3 text-center"><input type="checkbox" checked={selectedIds.has(item.id)} onChange={() => { const next = new Set(selectedIds); selectedIds.has(item.id) ? next.delete(item.id) : next.add(item.id); setSelectedIds(next); }} className="accent-indigo-600 cursor-pointer" /></td>
-                    <td className="p-3 text-center font-mono text-slate-600 text-[10px]">{item.disposal_date || '-'}</td>
-                    <td className="p-3 font-black text-slate-800 text-[12px] truncate">{item.name}</td>
-                    <td className="p-3 text-center font-mono font-bold text-red-500">{item.current_stock?.toLocaleString()} EA</td>
-                    <td className="p-3 text-slate-500 font-medium italic truncate max-w-[400px]">"{item.disposal_reason || '사유 미기재'}"</td>
-                    <td className="p-3 text-center"><span className="text-slate-800 font-bold block leading-tight">{item.disposer_name || '-'}</span></td>
-                    <td className="p-3 text-center">
-                      <button onClick={() => handleRestore(item.id)} className="px-3 py-1.5 border border-slate-200 rounded-md text-[9px] font-black text-slate-400 hover:bg-slate-800 hover:text-white transition-all shadow-sm">복구</button>
-                    </td>
-                  </tr>
-                ))}
+                {paginatedItems.length === 0 ? (
+                  <tr><td colSpan={7} className="h-32 text-center text-slate-400 italic font-bold">조건에 맞는 아카이브 내역이 없습니다.</td></tr>
+                ) : paginatedItems.map((item) => {
+                  
+                  let displayDate = '-';
+                  if (item.ext.disposal_date) {
+                    displayDate = item.ext.disposal_date.substring(0, 10);
+                  }
+     
+                  let sUnit = item.ext.r_unit || item.ext.s_unit || '';
+     
+                  return (
+                    <tr key={item.id} className={`hover:bg-slate-50 h-12 ${selectedIds.has(item.id) ? 'bg-indigo-50/20' : ''}`}>
+                      <td className="p-3 text-center">
+                        <input type="checkbox" checked={selectedIds.has(item.id)} onChange={() => { const next = new Set(selectedIds); selectedIds.has(item.id) ? next.delete(item.id) : next.add(item.id); setSelectedIds(next); }} className="accent-indigo-600 cursor-pointer" />
+                      </td>
+                      <td className="p-3 text-center font-mono text-slate-600 text-[10px]">{displayDate}</td>
+                      <td className="p-3 font-black text-slate-800 text-[12px] truncate">{item.name}</td>
+                      <td className="p-3 text-center font-mono font-bold text-red-500">
+                        {item.current_stock?.toLocaleString()} {sUnit}
+                      </td>
+                      
+                      {/* 🚀 파싱된 사유와 처리자 정보 바인딩 */}
+                      <td className="p-3 text-slate-500 font-medium italic truncate max-w-[400px]">
+                        {item.ext.disposal_reason || '-'}
+                      </td>
+                      <td className="p-3 text-center flex flex-col justify-center items-center">
+                        <span className="text-slate-800 font-bold leading-tight">{item.ext.disposer_name || '관리자'}</span>
+                        <span className="text-[9px] text-slate-400">{item.ext.disposer_dept || '-'}</span>
+                      </td>
+                      
+                      <td className="p-3 border-l border-slate-100 bg-slate-50/30">
+                        <div className="flex items-center justify-center gap-1.5 whitespace-nowrap">
+                          <button onClick={() => handleRestore(item.id)} className="px-3 py-1.5 border border-indigo-200 bg-indigo-50 rounded-md text-[10px] font-black text-indigo-600 hover:bg-indigo-600 hover:text-white transition-all shadow-sm">
+                            대시보드 복구
+                          </button>
+                          {/* 🚀 개별 영구 삭제 버튼 (LV1 전용) */}
+                          <button 
+                            onClick={() => handleDeleteArchived([item.id])} 
+                            disabled={!isLV1}
+                            title={!isLV1 ? "LV_1 관리자만 영구삭제가 가능합니다." : "데이터베이스에서 완전히 파기합니다."}
+                            className={`px-3 py-1.5 border rounded-md text-[10px] font-black transition-all shadow-sm ${isLV1 ? 'border-red-200 bg-white text-red-500 hover:bg-red-50' : 'border-slate-200 bg-slate-100 text-slate-300 cursor-not-allowed'}`}
+                          >
+                            영구삭제
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
+          
+          {/* 페이지네이션 */}
+          {totalPages > 1 && (
+            <div className="flex justify-center items-center gap-1.5 pt-4 pb-4 border-t border-slate-100 bg-white">
+              <button disabled={currentPage === 1} onClick={() => setCurrentPage(p => p - 1)} className="px-3 py-1 text-xs bg-white border border-slate-200 rounded-lg font-bold text-slate-500 disabled:opacity-30 hover:bg-slate-50">이전</button>
+              {Array.from({ length: totalPages }).map((_, i) => (
+                <button key={i} onClick={() => setCurrentPage(i + 1)} className={`w-7 h-7 rounded-lg font-black text-xs transition-all ${currentPage === i + 1 ? 'bg-indigo-600 text-white shadow-sm scale-105' : 'bg-white border border-slate-200 text-slate-500 hover:bg-slate-50'}`}>{i + 1}</button>
+              ))}
+              <button disabled={currentPage === totalPages} onClick={() => setCurrentPage(p => p + 1)} className="px-3 py-1 text-xs bg-white border border-slate-200 rounded-lg font-bold text-slate-500 disabled:opacity-30 hover:bg-slate-50">다음</button>
+            </div>
+          )}
         </section>
       )}
     </div>
