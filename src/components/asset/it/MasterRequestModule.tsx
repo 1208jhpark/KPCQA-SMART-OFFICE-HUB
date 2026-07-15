@@ -5,6 +5,7 @@ import * as XLSX from 'xlsx';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
 import { useRouter } from 'next/navigation'; // 🚀 Next.js App Router 필수 임포트
+import { getKSTDateString } from '@/utils/dateUtils';
   
 const HeaderLight = ({ title, count, children }: { title: string, count: number, children?: React.ReactNode }) => (
   <div className="p-4 px-6 bg-slate-200/70 border-b border-slate-300 flex items-center justify-between">
@@ -244,7 +245,7 @@ function ITMasterRequestContent() {
     });
   
     const contentBlob = await zip.generateAsync({ type: "blob" });
-    saveAs(contentBlob, `IT_요구사항_증빙자료_${new Date().toISOString().split('T')[0]}.zip`);
+    saveAs(contentBlob, `IT_요구사항_증빙자료_${getKSTDateString()}.zip`);
   };
   
   if (loading) return <div className="p-20 text-center font-black animate-pulse text-indigo-400 uppercase tracking-widest">Loading IT Requests Archive...</div>;

@@ -1,5 +1,7 @@
 import { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcryptjs';
+// 🚀 1분 컷으로 빼둔 메뉴 백업 데이터를 불러옵니다. (같은 prisma 폴더 안에 있어야 합니다)
+import menuData from './menu-backup.json';
   
 const prisma = new PrismaClient();
   
@@ -10,8 +12,8 @@ async function main() {
   await prisma.masterCode.deleteMany({});
   await prisma.masterGroup.deleteMany({});
   
-  // 🚨 [안전장치 1] 기존 메뉴 데이터가 날아가지 않도록 삭제 명령 봉인!
-  // await prisma.interfaceConfig.deleteMany({}); 
+  // 🚨 [변경됨] 이제 JSON으로 완벽하게 복구하므로 메뉴 테이블도 시원하게 초기화합니다!
+  await prisma.interfaceConfig.deleteMany({}); 
   
   await prisma.user.deleteMany({});
   await prisma.orgUnit.deleteMany({});
@@ -19,42 +21,48 @@ async function main() {
   
   const hashedPassword = await bcrypt.hash('password123', 10);
   
-  // 2. 시스템 글로벌 설정
+  // 2. 시스템 글로벌 설정 (💡 링크 세팅 포함)
   await prisma.systemConfig.create({
     data: { 
       id: 'global', 
       main_headline: "SMART OFFICE HUB", 
       sub_headline: "KPCQA 통합 자산 및 업무 관리 시스템", 
-      home_grid_cols: 4 
+      home_grid_cols: 4,
+      linked_sites: [
+        { name: "KPCQA 공식 홈페이지", url: "https://www.kpcqa.or.kr", icon: "🏠" },
+        { name: "사내 그룹웨어 (메일/결재)", url: "https://gw.kpcqa.or.kr", icon: "🏢" },
+        { name: "인사/근태 관리 시스템", url: "https://hr.kpcqa.or.kr", icon: "👥" },
+        { name: "법인카드 정산 (비즈플레이)", url: "https://www.bizplay.co.kr", icon: "💳" }
+      ]
     }
   });
   
-  // 3. 조직 체계 생성 함수
-  const createOrg = async (name: string, type: string, parentId: string | null, order: number) => {
+  // 3. 조직 체계 생성 (💡 영문명 포함)
+  const createOrg = async (name: string, name_en: string, type: string, parentId: string | null, order: number) => {
     return await prisma.orgUnit.create({
-      data: { unit_name: name, unit_type: type, parent_id: parentId, sort_order: order, is_active: true }
+      data: { unit_name: name, unit_name_en: name_en, unit_type: type, parent_id: parentId, sort_order: order, is_active: true }
     });
   };
   
-  const rootOrg = await createOrg('KPCQA', 'ORGANIZATION', null, 1);
-  const hqPlanning = await createOrg('경영기획본부', 'HQ', rootOrg.id, 10);
-  const centerPlanning = await createOrg('경영기획센터', 'CENTER', hqPlanning.id, 11);
-  const hqGreen = await createOrg('녹색건축본부', 'HQ', rootOrg.id, 20);
-  await createOrg('녹색건축인증센터', 'CENTER', hqGreen.id, 21);
-  await createOrg('건축안전인증센터', 'CENTER', hqGreen.id, 22);
-  const hqEnergy = await createOrg('건물에너지본부', 'HQ', rootOrg.id, 30);
-  await createOrg('제로에너지인증센터', 'CENTER', hqEnergy.id, 31);
-  await createOrg('에너지효율검토센터', 'CENTER', hqEnergy.id, 32);
-  const hqStandard = await createOrg('표준인증본부', 'HQ', rootOrg.id, 40);
-  await createOrg('적합성인증센터', 'CENTER', hqStandard.id, 41);
-  await createOrg('지속가능검증센터', 'CENTER', hqStandard.id, 42);
-  await createOrg('ESG인증센터', 'CENTER', hqStandard.id, 43);
-  const hqFuture = await createOrg('미래성장전략본부', 'HQ', rootOrg.id, 50);
-  await createOrg('ISMS인증센터', 'CENTER', hqFuture.id, 51);
-  await createOrg('AX혁신센터', 'CENTER', hqFuture.id, 52);
+  const rootOrg = await createOrg('KPCQA', 'KPCQA', 'ORGANIZATION', null, 1);
+  const hqPlanning = await createOrg('경영기획본부', 'Planning and Management Division', 'HQ', rootOrg.id, 10);
+  const centerPlanning = await createOrg('경영기획센터', 'Planning and Management Center', 'CENTER', hqPlanning.id, 11);
+  const hqGreen = await createOrg('녹색건축본부', 'Green Building Division', 'HQ', rootOrg.id, 20);
+  await createOrg('녹색건축인증센터', 'Green Building Certification Center', 'CENTER', hqGreen.id, 21);
+  await createOrg('건축안전인증센터', 'Building Safety Certification Center', 'CENTER', hqGreen.id, 22);
+  const hqEnergy = await createOrg('건물에너지본부', 'Building Energy Division', 'HQ', rootOrg.id, 30);
+  await createOrg('제로에너지인증센터', 'Zero Energy Certification Center', 'CENTER', hqEnergy.id, 31);
+  await createOrg('에너지효율검토센터', 'Energy Efficiency Review Center', 'CENTER', hqEnergy.id, 32);
+  const hqStandard = await createOrg('표준인증본부', 'Standard Certification Division', 'HQ', rootOrg.id, 40);
+  await createOrg('적합성인증센터', 'Conformity Certification Center', 'CENTER', hqStandard.id, 41);
+  await createOrg('지속가능검증센터', 'Sustainability Verification Center', 'CENTER', hqStandard.id, 42);
+  await createOrg('ESG인증센터', 'ESG Certification Center', 'CENTER', hqStandard.id, 43);
+  const hqFuture = await createOrg('미래성장전략본부', 'Future Growth Strategy Division', 'HQ', rootOrg.id, 50);
+  await createOrg('ISMS인증센터', 'ISMS Certification Center', 'CENTER', hqFuture.id, 51);
+  await createOrg('AX혁신센터', 'AX Innovation Center', 'CENTER', hqFuture.id, 52);
   
   // 4. 사용자 생성
-  const adminUser = await prisma.user.create({
+  await prisma.user.create({
     data: { email: 'admin@kpcqa.or.kr', name: '관리자', password: hashedPassword, roles: ['LV_1'], unit_id: centerPlanning.id, status: 'Active' },
   });
   await prisma.user.create({
@@ -64,134 +72,165 @@ async function main() {
     data: { email: 'user@kpcqa.or.kr', name: '사용자', password: hashedPassword, roles: ['LV_3'], unit_id: centerPlanning.id, status: 'Active' },
   });
   
-  // 🚀 5. 마스터 데이터 (Select Group) 전량 시딩 - UI 노출 필드 강제 적용
-  console.log('📦 마스터 데이터 엔진 가동 중...');
+  // 5. 공통 마스터 데이터 시딩
+  console.log('📦 공통 마스터 데이터 엔진 가동 중...');
   const masterGroups = [
-    { id: 'GRP_SUPPLY', name: '소모품(경영)', codes: ['컬러대봉투(양면테잎)(330*245)', 'A4', 'A3', '경조사봉투', '쇼핑백(중)(230*70*320)', '쇼핑백(대)(300*100*450)', '상장케이스', '명함(90*55)'] },
-    { id: 'GRP_MARKETING', name: '마케팅물품(경영)', codes: ['선풍기', '커피'] },
-    { id: 'GRP_UNIT', name: '단위', codes: ['개(EA)', '박스(BOX)', '번들(BDL)', '세트(SET)', '팩(PACK)', '부(Copy)', '권(Vol)', '장(Sheet)', '면(Page)', '롤(Roll)', '조(Pair)'] },
-    { id: 'GRP_CERT_STEP', name: '인증단계', codes: ['예비', '본'] },
-    { id: 'GRP_VENDOR', name: '외주업체', codes: ['한생미디어', '아트로릭', '드림디포', '로젠택배', '좋은퀵'] },
-    { id: 'GRP_OUT_ITEM', name: '외주품목', codes: ['제본', '현판', '인증서용지(제로)', '인증서용지(녹색)', '현수막', '메탈상패', '목판상패', '은쟁반패', '문구', '택배배송', '퀵배송', '컬러대봉투', '쇼핑백(중)(230*70*320)', '쇼핑백(대)(300*100*450)', '상장케이스'] },
-    { id: 'GRP_DETAIL_1', name: '품목상세1', codes: ['현판-스테인레스', '현판-텅스텐', '현판-신주', '현판주물', '무선제본/표지', '스트링제본/표지'] },
-    { id: 'GRP_DETAIL_2', name: '품목상세2', codes: ['A4컬러인쇄(내지)', 'A4흑백인쇄(내지)'] },
-    { id: 'GRP_IT_TYPE', name: 'IT 자산 분류', codes: ['노트북', '데스크탑', '모니터', '태블릿', '프린터', '소프트웨어', '기타기기'] }
+    { 
+      id: 'GRP_SUPPLY', name: '소모품(경영)', 
+      codes: [
+        { label: 'A4 용지', value: 'VAL_1' }, { label: 'A3 용지', value: 'VAL_2' }, { label: '상장케이스', value: 'VAL_3' }, 
+        { label: '컬러대봉투(양면테잎)(330*245)', value: 'VAL_4' }, { label: '쇼핑백(중)(230*70*320)', value: 'VAL_5' }, 
+        { label: '쇼핑백(대)(300*100*450)', value: 'VAL_6' }, { label: '경조사봉투(축의)', value: 'VAL_7' }, { label: '경조사봉투(조의)', value: 'VAL_8' }
+      ] 
+    },
+    { 
+      id: 'GRP_IT_TYPE', name: 'IT 자산 분류', 
+      codes: [
+        { label: '노트북', value: 'VAL_1' }, { label: '데스크탑', value: 'VAL_2' }, { label: '모니터', value: 'VAL_3' }, 
+        { label: 'Cursor', value: 'VAL_4' }, { label: 'ZW CAD', value: 'VAL_5' }, { label: 'PDF PRO', value: 'VAL_6' },
+        { label: '베리데스크(대형)', value: 'VAL_7' }, { label: '베리데스크(중형)', value: 'VAL_8' }
+      ] 
+    },
+    { 
+      id: 'GRP_CLIENT_CATEGORY', name: '고객사 업무범주', 
+      codes: [
+        { label: '건물 인증 관련', value: 'VAL_1' }, { label: 'ISO 인증 관련', value: 'VAL_2' }, { label: '지속가능 인증 관련', value: 'VAL_3' }, 
+        { label: 'ESG 인증 관련', value: 'VAL_4' }, { label: '용역', value: 'VAL_5' }, { label: '행사', value: 'VAL_6' }, { label: '기타', value: 'VAL_7' }
+      ] 
+    },
+    { 
+      id: 'GRP_UNIT', name: '단위', 
+      codes: [
+        { label: '개(EA)', value: 'VAL_1' }, { label: '박스(BOX)', value: 'VAL_2' }, { label: '번들(BDL)', value: 'VAL_3' }, 
+        { label: '세트(SET)', value: 'VAL_4' }, { label: '팩(PACK)', value: 'VAL_5' }, { label: '부(Copy)', value: 'VAL_6' },
+        { label: '권(Vol)', value: 'VAL_7' }, { label: '장(Sheet)', value: 'VAL_8' }, { label: '면(Page)', value: 'VAL_9' }, 
+        { label: '롤(Roll)', value: 'VAL_10' }, { label: '조(Pair)', value: 'VAL_11' }
+      ] 
+    },
+    { 
+      id: 'GRP_PROCUREMENT', name: '조달유형', 
+      codes: [{ label: '구매', value: 'VAL_1' }, { label: '렌탈', value: 'VAL_2' }, { label: '구독', value: 'VAL_3' }] 
+    },
+    { 
+      id: 'GRP_IT_CATEGORY', name: 'IT·업무자산 범주', 
+      codes: [{ label: 'HW', value: 'VAL_1' }, { label: 'SW', value: 'VAL_2' }, { label: '비품', value: 'VAL_3' }, { label: '기타', value: 'VAL_4' }] 
+    },
+    { 
+      id: 'GRP_DUTY', name: '직책', 
+      codes: [
+        { label: '원장', value: 'CEO' }, { label: '부원장', value: 'Vice President' }, { label: '상무', value: 'Executive Director' },
+        { label: '본부장', value: 'Director' }, { label: '센터장', value: 'Manager' }
+      ] 
+    },
+    { 
+      id: 'GRP_GRADE', name: '직급', 
+      codes: [
+        { label: '수석전문위원', value: 'Chief Expert Advisor' }, { label: '책임전문위원', value: 'Chief Technical Expert' },
+        { label: '선임전문위원', value: 'Senior Technical Expert' }, { label: '전문위원', value: 'Technical Expert' },
+        { label: '연구원', value: 'Researcher' }, { label: '사무원', value: 'Specialist' }, { label: '인턴', value: 'Intern' }
+      ] 
+    }
   ];
   
   for (const group of masterGroups) {
     const createdGroup = await prisma.masterGroup.create({
       data: { id: group.id, name: group.name, is_active: true }
     });
-    for (const [idx, label] of group.codes.entries()) {
+    for (const [idx, code] of group.codes.entries()) {
       await prisma.masterCode.create({
         data: { 
-          group_id: createdGroup.id, 
-          label, 
-          value: `VAL_${idx + 1}`, 
-          sort_order: idx + 1,
-          is_active: true,    
-          is_visible: true,   
-          is_archived: false, 
-          orgs: []            
+          group_id: createdGroup.id, label: code.label, value: code.value, 
+          sort_order: idx + 1, is_active: true, is_visible: true, is_archived: false, orgs: []            
         }
       });
     }
   }
-  
-  // =========================================================================
-  // 🚨 [안전장치 2] 아래 6번 '인터페이스 메뉴' 시딩 부분은 전체 주석 처리합니다!
-  // 어드민 화면에서 직접 설정한 (ON/OFF, 페이지 문구 등) 데이터가 날아가는 것을 방지합니다.
-  // 향후 모든 메뉴 추가/수정은 어드민 UI(/admin/interface)에서 진행해야 합니다.
-  // =========================================================================
-  /*
-  // 6. 인터페이스 메뉴 거버넌스 (L1 ~ L4)
-  console.log('🖥️ 인터페이스 풀버전 구성 중...');
-  const alpha = 'abcdefghijklmnopqrstuvw'.split('');
-  const assetL1 = await prisma.interfaceConfig.create({ data: { level: 1, name: '경영자산관리', path: '/asset', icon: '🏢', sort_order: 1 } });
-  const assetL2s = [
-    { n: '대쉬보드', p: '/asset/dashboard', i: '📊' },
-    { n: '일반소모품', p: '/asset/supplies', i: '📦' },
-    { n: '마케팅물품', p: '/asset/marketing', i: '🎁' },
-    { n: '외주업무서비스', p: '/asset/outsourcing', i: '🤝' },
-    { n: 'IT·업무자산', p: '/asset/it', i: '💻' },
+
+  // 6. 제작물(Production) 전용 마스터 데이터 시딩
+  console.log('🏭 제작물(Production) 전용 마스터 데이터 및 외주업체 연동 중...');
+  const vendors = [
+    { name: '아트로릭', services: ['인증서용지', '컬러대봉투', '현판'], category: '인쇄' },
+    { name: '한생미디어', services: ['제본', '쇼핑백', '상장케이스'], category: '인쇄' },
+    { name: '드림디포', services: ['경조사봉투', '사무문구'], category: '문구' },
   ];
+  for (const vendor of vendors) {
+    const exist = await prisma.vendor.findFirst({ where: { name: vendor.name } });
+    if (!exist) await prisma.vendor.create({ data: vendor });
+  }
+
+  const plates = [
+    { code: 'CAST_IRON_300', label: '주물현판', price: 230000, size: '300*400' },
+    { code: 'TUNGSTEN_300', label: '텅스텐현판', price: 135000, size: '300*400' },
+    { code: 'BRASS_300', label: '신주현판', price: 160000, size: '300*400' },
+    { code: 'STAINLESS_300', label: '스텐현판', price: 120000, size: '300*400' },
+    { code: 'STAINLESS_90', label: '스텐현판', price: 120000, size: '90*55' },
+    { code: 'STAINLESS_450_A', label: 'ISO 실외 스텐현판_기업명표기', price: 120000, size: '450*300' },
+    { code: 'STAINLESS_450_B', label: 'ISO 실외 스텐현판_기업명 미표기', price: 120000, size: '450*300' },
+    { code: 'WOOD_240', label: 'ISO 실내 메탈목재상패(세로형)', price: 160000, size: '240*300' },
+    { code: 'WOOD_300', label: 'ISO 실내 메탈목재상패(가로형)', price: 160000, size: '300*240' },
+    { code: 'SILVER_220', label: 'ISO 실내 원형 은쟁반패', price: 160000, size: '220*220' },
+    { code: 'SILVER_260', label: 'ISO 실내 팔각형 은쟁반패', price: 160000, size: '260*260' },
+  ];
+  for (const plate of plates) {
+    await prisma.productionPlateMaster.upsert({ where: { code: plate.code }, update: {}, create: plate });
+  }
+
+  const certs = [
+    { certId: 'GSEED', type: 'SIGN', label: '녹색건축인증', format: '(0000. 00. 00. ~ 0000. 00. 00.)', jebonFormat: '', grades: ['최우수 (그린1등급)', '우수 (그린2등급)', '우량 (그린3등급)', '일반 (그린4등급)'] },
+    { certId: 'BF', type: 'SIGN', label: 'BF 인증', format: '(0000. 00. 00 ~ 0000. 00. 00)', jebonFormat: '', grades: ['최우수', '우수', '일반'] },
+    { certId: 'EDUCATIONAL', type: 'SIGN', label: '교육시설안전인증', format: '0000.00.00.~0000.00.00.', jebonFormat: '', grades: ['최우수', '우수'] },
+    { certId: 'ENERGY', type: 'SIGN', label: '건축물에너지효율등급인증', format: '유효기간: 0000. 00. 00 ~ 0000. 00. 00', jebonFormat: '', grades: ['1+++', '1++', '1+', '1등급', '2등급', '3등급', '4등급', '5등급', '6등급', '7등급'] },
+    { certId: 'OLD_ZEB', type: 'SIGN', label: '(구) 제로에너지건축물인증', format: '유효기간: 0000. 00. 00 ~ 0000. 00. 00', jebonFormat: '', grades: ['ZEB 5', 'ZEB 4', 'ZEB 3', 'ZEB 2', 'ZEB 1'] },
+    { certId: 'INTEGRATED_ZEB', type: 'SIGN', label: '(통합) 제로에너지건축물인증', format: '유효기간: 0000. 00. 00 ~ 0000. 00. 00', jebonFormat: '', grades: ['ZEB 5', 'ZEB 4', 'ZEB 3', 'ZEB 2', 'ZEB 1', 'ZEB +'] },
+    { certId: 'ISO', type: 'SIGN', label: 'ISO 인증', format: '', jebonFormat: '', grades: ['ISO 9001', 'ISO 14001', 'ISO 45001', 'IATF16949', 'ISO 22000', 'TL 9000', 'ISO 50001', 'ISO 22301', 'ISO 37001', 'ISO 37301', 'ISO/IEC 27001', 'ISO 21001', 'ISO 10002', 'ISO/IEC 42001'] },
+    { certId: 'GSEED_JEBON', type: 'JEBON', label: '녹색건축인증', format: '', jebonFormat: '0000. 0. 0.', grades: ['기본 등급'] },
+    { certId: 'CONDENDSATION', type: 'JEBON', label: '결로방지 성능평가', format: '', jebonFormat: '0000. 0. 0.', grades: [] },
+    { certId: 'ENERGY_JEBON', type: 'JEBON', label: '건축물에너지효율등급인증', format: '', jebonFormat: '0000. 0. 0', grades: ['기본 등급'] },
+    { certId: 'OLD_ZEB_JEBON', type: 'JEBON', label: '(구) 제로에너지건축물인증', format: '', jebonFormat: '0000. 0. 0.', grades: ['기본 등급'] },
+    { certId: 'INTEGRATED_ZEB_JEBON', type: 'JEBON', label: '(통합) 제로에너지건축물인증', format: '', jebonFormat: '0000. 0. 0.', grades: ['기본 등급'] },
+    { certId: 'NORMAL', type: 'JEBON', label: '일반제본', format: '', jebonFormat: '', grades: [] },
+  ];
+  for (const cert of certs) {
+    await prisma.productionCertMaster.upsert({ where: { certId: cert.certId }, update: {}, create: cert });
+  }
+
+// 🚀 7. 인터페이스 메뉴 거버넌스 완벽 복구
+console.log('🖥️ 인터페이스 메뉴 풀버전 복구 중...');
   
-  for (const [idx, l2] of assetL2s.entries()) {
-    const parent = await prisma.interfaceConfig.create({ data: { level: 2, name: l2.n, path: l2.p, icon: l2.i, parent_id: assetL1.id, sort_order: idx + 1, entry_sidebar: true } });
-    if (l2.n === '일반소모품') {
-      for (const [i, s] of ['재고현황', '신청현황', '구매현황'].entries()) {
-        await prisma.interfaceConfig.create({ data: { level: 3, name: `일반소모품 ${s}`, path: `${l2.p}/${['inventory', 'request', 'purchase'][i]}`, parent_id: parent.id, sort_order: i + 1, entry_sidebar: true } });
+// 부모 메뉴가 먼저 생겨야 자식 메뉴가 들어갈 수 있으므로 레벨(1->4) 순으로 정렬
+const sortedMenus = [...menuData].sort((a: any, b: any) => a.level - b.level);
+
+for (const m of sortedMenus) {
+  // DB 충돌을 막기 위해 날짜 데이터는 제외
+  const { createdAt, updatedAt, id, ...rawSafeData } = m; 
+
+  // 💡 [에러 원인 해결] null 값 필터링 및 JSON 안전 변환
+  const safeData: any = {};
+  for (const [key, value] of Object.entries(rawSafeData)) {
+    if (value === null) {
+      // Prisma에서 에러를 뱉는 JSON 배열 필드들은 null 대신 빈 배열로 처리
+      const jsonFields = ['view_scopes', 'org_ids', 'edit_role_ids', 'edit_scopes', 'task_masters', 'view_role_ids', 'task_accesses'];
+      if (jsonFields.includes(key)) {
+        safeData[key] = []; 
       }
-    }
-    if (l2.n === '마케팅물품') {
-      for (const [i, s] of ['재고현황', '지급현황', '구매현황'].entries()) {
-        await prisma.interfaceConfig.create({ data: { level: 3, name: `마케팅물품 ${s}`, path: `${l2.p}/${['inventory', 'distribution', 'purchase'][i]}`, parent_id: parent.id, sort_order: i + 1, entry_sidebar: true } });
-      }
-    }
-    if (l2.n === '외주업무서비스') {
-      const subs = [{n:'제본(한생미디어)', p:'a'}, {n:'현판(아트로릭)', p:'b'}, {n:'문구(드림디포)', p:'c'}, {n:'택배(로젠택배)', p:'d'}, {n:'퀵(좋은퀵)', p:'e'}];
-      for (const [i, s] of subs.entries()) {
-        await prisma.interfaceConfig.create({ data: { level: 3, name: s.n, path: `${l2.p}/${s.p}`, parent_id: parent.id, sort_order: i + 1, entry_sidebar: true } });
-      }
-    }
-    if (l2.n === 'IT·업무자산') { 
-      const itSubs = [{n:'나의 IT·업무자산', p:'personal', i:'📱'}, {n:'부서 IT·업무자산', p:'dept', i:'👥'}, {n:'관리자페이지', p:'master', i:'🛠️', m:true}];
-      for (const [i, s] of itSubs.entries()) {
-        const l3 = await prisma.interfaceConfig.create({ 
-          data: { 
-            level: 3, name: s.n, path: `${l2.p}/${s.p}`, icon: s.i, parent_id: parent.id, 
-            sort_order: i + 1, entry_sidebar: true, is_master: s.m || false, entry_index_view: s.m || false, master_editor_id: s.m ? adminUser.id : null 
-          } 
-        });
-        if (s.m) {
-          const l4Cards = [{ n: '전사 IT·업무자산 운영 현황 및 리스트', p: '/asset/it/master/dashboard', i: '📊' }, { n: '사용자 요구사항 처리이력', p: '/asset/it/master/requests', i: '📩' }, { n: '반납/폐기자산 아카이브', p: '/asset/it/master/archive', i: '📦' }];
-          for (const [j, card] of l4Cards.entries()) {
-            await prisma.interfaceConfig.create({ data: { level: 4, name: card.n, path: card.p, icon: card.i, parent_id: l3.id, sort_order: j + 1, description: `${card.n} 모듈` } });
-          }
-        }
-      }
+    } else {
+      safeData[key] = value;
     }
   }
-  
-  // --- [L1-2] 센터자산관리 ---
-  const centerL1 = await prisma.interfaceConfig.create({ data: { level: 1, name: '센터자산관리', path: '/center', icon: '⚙️', sort_order: 2 } });
-  await prisma.interfaceConfig.create({ data: { level: 2, name: '대쉬보드', path: '/center/dashboard', icon: '📊', parent_id: centerL1.id, sort_order: 1, entry_sidebar: true } });
-  const centerMkt = await prisma.interfaceConfig.create({ data: { level: 2, name: '마케팅물품', path: '/center/marketing', icon: '🎁', parent_id: centerL1.id, sort_order: 2, entry_sidebar: true } });
-  for (const [i, s] of ['재고현황', '지급현황', '구매현황'].entries()) {
-    await prisma.interfaceConfig.create({ data: { level: 3, name: `마케팅물품 ${s}`, path: `${centerMkt.path}/${['inventory', 'distribution', 'purchase'][i]}`, parent_id: centerMkt.id, sort_order: i + 1, entry_sidebar: true } });
-  }
-  
-  // --- [L1-3] 장비관리 (21종) ---
-  const equipL1 = await prisma.interfaceConfig.create({ data: { level: 1, name: '장비관리', path: '/equipment', icon: '🛠️', sort_order: 3 } });
-  const eqA = await prisma.interfaceConfig.create({ data: { level: 2, name: '안전장비', path: '/equipment/a', parent_id: equipL1.id, sort_order: 1, entry_sidebar: true } });
-  for (const [i, n] of ['전체식 안전벨트', '안전화', '절단방지 편직 장갑', '안전모'].entries()) {
-    await prisma.interfaceConfig.create({ data: { level: 3, name: n, path: `/equipment/a/${alpha[i]}`, parent_id: eqA.id, sort_order: i + 1, entry_sidebar: true } });
-  }
-  const eqB = await prisma.interfaceConfig.create({ data: { level: 2, name: '기계설비성능점검장비', path: '/equipment/b', parent_id: equipL1.id, sort_order: 2, entry_sidebar: true } });
-  const eqBSubs = ['적외선 열화상 카메라', '초음파 유량계', '디지털 압력계', '데이터 기록계', '연소가스분석기', '건습구온도계', '표준 온도계', '적외선온도계', '디지털 풍속계', '디지털 풍압계', '교류전력측정계', '조도계', '회전계', '초음파 두께 측정기', '버어니어 캘리퍼스', 'CO2 측정기', 'CO 측정기', '미세먼지 측정기', '누수 탐지기', '배관 내시경 카메라', '수질 분석기'];
-  for (const [i, n] of eqBSubs.entries()) {
-    await prisma.interfaceConfig.create({ data: { level: 3, name: n, path: `/equipment/b/${alpha[i]}`, parent_id: eqB.id, sort_order: i + 1, entry_sidebar: true } });
-  }
-  const eqC = await prisma.interfaceConfig.create({ data: { level: 2, name: '기밀성능측정장비', path: '/equipment/c', parent_id: equipL1.id, sort_order: 3, entry_sidebar: true } });
-  for (const [i, n] of ['디지털 차압계(DG-700)', '소형팬', '대형팬', '디지털 온ㆍ습도계(TESTO 625)', '열선형 유속계(TESTO 425)'].entries()) {
-    await prisma.interfaceConfig.create({ data: { level: 3, name: n, path: `/equipment/c/${alpha[i]}`, parent_id: eqC.id, sort_order: i + 1, entry_sidebar: true } });
-  }
-  const eqD = await prisma.interfaceConfig.create({ data: { level: 2, name: '창호성능측정장비', path: '/equipment/d', parent_id: equipL1.id, sort_order: 4, entry_sidebar: true } });
-  await prisma.interfaceConfig.create({ data: { level: 3, name: '글라스체크기(GC3000)', path: '/equipment/d/a', parent_id: eqD.id, sort_order: 1, entry_sidebar: true } });
-  
-  // --- [L1-4] 설문 및 조사 ---
-  const surveyL1 = await prisma.interfaceConfig.create({ data: { level: 1, name: '설문 및 조사', path: '/survey', icon: '📝', sort_order: 4 } });
-  const surveyL2s = [{n:'설문조사', p:'/survey/general'}, {n:'수요조사', p:'/survey/demand'}, {n:'배송조사', p:'/survey/delivery'}];
-  for (const [idx, l2] of surveyL2s.entries()) {
-    const parent = await prisma.interfaceConfig.create({ data: { level: 2, name: l2.n, path: l2.p, parent_id: surveyL1.id, sort_order: idx + 1, entry_sidebar: true } });
-    for (const i of [0, 1, 2]) {
-      await prisma.interfaceConfig.create({ data: { level: 3, name: `${l2.n}${i + 1}`, path: `${l2.p}/${alpha[i]}`, parent_id: parent.id, sort_order: i + 1, entry_sidebar: true } });
+
+  await prisma.interfaceConfig.upsert({
+    where: { path: m.path }, 
+    update: safeData,
+    create: {
+      id: m.id, // 기존 아이디 유지
+      ...safeData
     }
-  }
-  */
-  
-  console.log('✅ 마스터 데이터 및 기초 설정이 시딩되었습니다.');
-  console.log('⚠️ [참고] 메뉴 데이터(InterfaceConfig)는 기존 데이터 보존을 위해 시딩에서 제외되었습니다.');
+  });
 }
-  
-main().catch((e) => { console.error(e); process.exit(1); }).finally(async () => { await prisma.$disconnect(); });
+
+console.log('✅ 마스터 데이터 및 메뉴 세팅까지 완벽하게 박제되었습니다!');
+}
+
+main()
+.catch((e) => { console.error(e); process.exit(1); })
+.finally(async () => { await prisma.$disconnect(); });

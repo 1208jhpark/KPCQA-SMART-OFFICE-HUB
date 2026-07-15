@@ -6,6 +6,7 @@ import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
 import * as XLSX from 'xlsx';
 import { usePathname, useRouter } from 'next/navigation'; // 🚀 내비게이션 도구 통합
+import { getKSTDateString } from '@/utils/dateUtils';
      
 const getStatusBadge = (status: string) => {
   switch (status) {
@@ -39,7 +40,7 @@ export default function AdminDeliveryActiveModule() {
   const [nudgeModal, setNudgeModal] = useState<{ surveyId: string, title: string, count: number, targetEmails: string[] } | null>(null);
   const [pendingModalType, setPendingModalType] = useState<'ALWAYS' | 'PERIOD' | null>(null);
      
-  const todayStr = new Date().toISOString().split('T')[0];
+  const todayStr = getKSTDateString();
      
   useEffect(() => {
     const fetchOrgData = async () => {
@@ -365,7 +366,7 @@ const toggleApprove = async (surveyId: string, userEmail: string) => {
   const resp = responses[cellKey];
   if (!resp) return;
      
-  const today = new Date().toISOString().split('T')[0];
+  const today = getKSTDateString();
   const isCurrentlyApproved = resp.isApproved || false;
    
   if (isCurrentlyApproved) {
@@ -427,7 +428,7 @@ const handleSendFeedback = async (surveyId: string, userEmail: string) => {
   const msg = prompt('신청자에게 보낼 보완 요청 사유를 입력해주세요.\n(예: 상세 주소지 동/호수 누락, 연락처 오기재 등)');
   if (!msg) return;
    
-  const today = new Date().toISOString().split('T')[0];
+  const today = getKSTDateString();
    
   try {
     const res = await fetch('/api/survey/delivery', {

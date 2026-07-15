@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import prisma from '@/lib/prisma';
+import { getKSTDateString } from '@/utils/dateUtils';
 
 // 🚀 1. 발주 완료된 묶음(Batch) 대장 목록 불러오기 (GET) - [원본 유지]
 export async function GET(req: Request) {
@@ -53,7 +54,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ message: '이미 존재하는 발주 번호입니다. 잠시 후 다시 시도하세요.' }, { status: 400 });
     }
 
-    const todayStr = new Date().toISOString().slice(0, 10);
+    const todayStr = getKSTDateString();
 
     const result = await prisma.$transaction(async (tx) => {
       // 부모(묶음) 대장 선행 생성

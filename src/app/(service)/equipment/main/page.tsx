@@ -3,6 +3,7 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
+import { getKSTDateString } from '@/utils/dateUtils';
 
 const HeaderLight = ({ title, count, children }: { title: string, count: number, children?: React.ReactNode }) => (
   <div className="p-4 px-6 bg-slate-200/70 border-b border-slate-300 flex items-center justify-between">
@@ -28,7 +29,7 @@ const getLatestCalibDate = (histories: any[]) => {
 const addMonthsToDateStr = (dateStr: string | null | undefined, months: number | null | undefined) => {
   if (!dateStr || !months) return null;
   const d = new Date(dateStr); d.setMonth(d.getMonth() + Number(months));
-  return d.toISOString().split('T')[0];
+  return getKSTDateString(d);
 };
 
 const renderDDay = (targetDate: string | null) => {

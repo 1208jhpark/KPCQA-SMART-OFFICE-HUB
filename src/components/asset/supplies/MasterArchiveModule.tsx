@@ -3,6 +3,7 @@ import React, { useState, useEffect, useMemo, Suspense } from 'react';
 import * as XLSX from 'xlsx';
 import { usePathname } from 'next/navigation';
 import Link from 'next/link';
+import { getKSTDateString } from '@/utils/dateUtils';
      
 function MasterArchiveContent() {
   const pathname = usePathname();
@@ -167,7 +168,7 @@ function MasterArchiveContent() {
     const ws = XLSX.utils.json_to_sheet(exportData);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "폐기자산_목록");
-    XLSX.writeFile(wb, `소모품_폐기자산_아카이브_${new Date().toISOString().split('T')[0]}.xlsx`);
+    XLSX.writeFile(wb, `소모품_폐기자산_아카이브_${getKSTDateString()}.xlsx`);
   };
      
   if (loading) return <div className="p-20 text-center font-black animate-pulse text-slate-400 uppercase tracking-widest">Loading Archive...</div>;

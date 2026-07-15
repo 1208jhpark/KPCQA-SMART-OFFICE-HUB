@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import * as XLSX from 'xlsx';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link'; // 🚀 이 줄을 추가합니다!
+import { getKSTDateString } from '@/utils/dateUtils';
 
 interface RequestHistory {
   id: string;
@@ -195,12 +196,12 @@ export default function BusinessCardRequestPanel() {
     const ws = XLSX.utils.json_to_sheet(excelData);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "명함신청데이터");
-    XLSX.writeFile(wb, `명함발주데이터_${new Date().toISOString().slice(0,10)}.xlsx`);
+    XLSX.writeFile(wb, `명함발주데이터_${getKSTDateString()}.xlsx`);
   };
 
   const handleApprove = async (id: string, postNumber: string) => {
     if (!confirm(`[${postNumber}] 접수 완료 처리하시겠습니까?`)) return;
-    const todayStr = new Date().toISOString().slice(0, 10);
+    const todayStr = getKSTDateString();
     try {
       const res = await fetch(`/api/asset/businesscard/master/requests`, {
         method: 'PUT',

@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import prisma from '@/lib/prisma';
 import { cookies } from 'next/headers';
 import jwt from 'jsonwebtoken';
+import { getKSTDateString } from '@/utils/dateUtils'
 
 const JWT_SECRET = process.env.JWT_SECRET || 'kpcqa_secret_key';
 
@@ -32,7 +33,7 @@ export async function POST(req: Request) {
 
     // 3. 고유 관리 번호(PostNumber) 생성 로직 (예: PROD-20260713-001)
     const today = new Date();
-    const dateStr = today.toISOString().slice(0, 10).replace(/-/g, ''); // YYYYMMDD
+    const dateStr = getKSTDateString().replace(/-/g, '');
     
     // 오늘 생성된 신청서 개수 카운트하여 순번 매기기
     const todayCount = await prisma.productionRequest.count({

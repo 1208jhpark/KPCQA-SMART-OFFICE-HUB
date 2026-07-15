@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useParams } from 'next/navigation';
 import { Html5QrcodeScanner } from 'html5-qrcode';
+import { getKSTDateString } from '@/utils/dateUtils';
      
 export default function MobilePublicAuditPage() {
   const params = useParams();
@@ -22,7 +23,7 @@ export default function MobilePublicAuditPage() {
   const [isScanning, setIsScanning] = useState(false);
   const [isActivePeriod, setIsActivePeriod] = useState(true);
      
-  const todayStr = new Date().toISOString().split('T')[0];
+  const todayStr = getKSTDateString();
      
   const fetchInitialData = async () => {
     try {

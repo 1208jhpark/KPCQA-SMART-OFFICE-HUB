@@ -2,6 +2,7 @@
   
 import React, { useState, useEffect, useMemo } from 'react';
 import * as XLSX from 'xlsx';
+import { getKSTDateString } from '@/utils/dateUtils';
 
 // 🚀 [UI 표준] 공통 HeaderLight 컴포넌트
 const HeaderLight = ({ title, count, children }: { title: string, count: number, children?: React.ReactNode }) => (
@@ -206,14 +207,14 @@ export default function ClientSearchModule() {
           '이번달 지급 총액(원)': monthTotal,
           '올해 누적 지급 총액(원)': yearTotal,
           '올해 지급 횟수': thisYearDists.length,
-          '최근 지급일': lastDist ? new Date(lastDist.createdAt).toISOString().split('T')[0] : '지급 이력 없음'
+          '최근 지급일': lastDist ? getKSTDateString(lastDist.createdAt) : '지급 이력 없음'
         };
       });
 
     const ws = XLSX.utils.json_to_sheet(dataToExport);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "고객사_수령현황");
-    XLSX.writeFile(wb, `고객사_수령현황_${new Date().toISOString().split('T')[0]}.xlsx`);
+    XLSX.writeFile(wb, `고객사_수령현황_${getKSTDateString()}.xlsx`);
   };
 
   const handleSaveDept = async () => {
@@ -426,7 +427,7 @@ export default function ClientSearchModule() {
                 const thisMonthDists = thisYearDists.filter((d:any) => new Date(d.createdAt).getMonth() === currentMonth);
                 
                 const lastDist = [...(client.distributions||[])].sort((a,b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
-                const lastDistDate = lastDist ? new Date(lastDist.createdAt).toISOString().split('T')[0] : '-';
+                const lastDistDate = lastDist ? getKSTDateString(lastDist.createdAt) : '-';
      
                 return (
                   <React.Fragment key={client.id}>
@@ -575,7 +576,7 @@ export default function ClientSearchModule() {
             <div className="space-y-4 text-[13px]">
               <div className="flex justify-between items-center bg-slate-50 p-3 rounded-xl border border-slate-100">
                 <span className="font-bold text-slate-500">최근 지급일</span>
-                <span className="font-black text-slate-800">{new Date(lastDistModal.distData.createdAt).toISOString().split('T')[0]}</span>
+                <span className="font-black text-slate-800">{getKSTDateString(lastDistModal.distData.createdAt)}</span>
               </div>
               <div className="flex justify-between items-center bg-indigo-50/50 p-3 rounded-xl border border-indigo-100">
                 <span className="font-bold text-slate-500">지급 물품</span>
@@ -632,7 +633,7 @@ export default function ClientSearchModule() {
                   <tbody className="divide-y divide-slate-100 text-[11px] font-bold text-slate-700">
                     {historyModal.list.map((d, idx) => (
                       <tr key={idx} className="hover:bg-indigo-50/30 transition-colors h-12">
-                        <td className="py-3 pl-5 font-mono text-slate-400">{new Date(d.createdAt).toISOString().split('T')[0]}</td>
+                        <td className="py-3 pl-5 font-mono text-slate-400">{getKSTDateString(d.createdAt)}</td>
                         <td className="py-3 text-indigo-700">{d.item?.name || '(삭제됨)'}</td>
                         <td className="py-3 text-center bg-slate-50/50">{d.qty} EA</td>
                         <td className="py-3 text-slate-500 truncate max-w-[200px]" title={d.purpose}>{d.purpose}</td>

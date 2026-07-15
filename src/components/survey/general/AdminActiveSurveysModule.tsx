@@ -1,15 +1,15 @@
 'use client';
      
 import React, { useState, useMemo, useEffect, Fragment } from 'react';
-import { usePathname, useRouter } from 'next/navigation'; // 🚀 중복 없이 이 라인으로 완벽 통합
+import { usePathname } from 'next/navigation'; // 🚀 안 쓰는 useRouter 제거
 import Link from 'next/link';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
 import * as XLSX from 'xlsx'; 
+import { getKSTDateString } from '@/utils/dateUtils';
      
 export default function ActiveSurveysAdminPage() {
-  const pathname = usePathname(); // 🚀 현재 경로 감지용 선언
-  const router = useRouter();     // 🚀 페이지 이동용 선언
+  const pathname = usePathname();
   const [surveys, setSurveys] = useState<any[]>([]);
   const [users, setUsers] = useState<any[]>([]);
   const [deptList, setDeptList] = useState<string[]>([]);
@@ -26,63 +26,87 @@ export default function ActiveSurveysAdminPage() {
   const [previewModal, setPreviewModal] = useState<any | null>(null);
   const [nudgeModal, setNudgeModal] = useState<{surveyId: string, title: string, count: number, targetEmails: string[]} | null>(null);
      
+  // 🚀 [신규 추가]: 엑셀/ZIP 내보내기 시 객체(주소, 파일 등) 깨짐 방지 헬퍼
+// 🚀 [보완]: 우편번호가 없더라도 주소 필드가 있다면 깨짐 없이 문자열로 파싱하도록 예외 처리 강화
+const formatAnswerForExport = (ans: any) => {
+  if (ans === null || ans === undefined) return '(미응답)';
+  if (typeof ans === 'object') {
+    if (ans.fileName) return `[첨부파일] ${ans.fileName}`;
+    if (ans.zipCode || ans.roadAddress || ans.detailAddress) {
+      const zip = ans.zipCode ? `[우편번호: ${ans.zipCode}] ` : '';
+      const road = ans.roadAddress || '';
+      const detail = ans.detailAddress ? ` ${ans.detailAddress}` : '';
+      return `${zip}${road}${detail}`.trim() || '(미응답)';
+    }
+  }
+  if (Array.isArray(ans)) return ans.join(', ');
+  return String(ans);
+};
+
   useEffect(() => {
     const fetchOrgData = async () => {
       try {
-        const surveyRes = await fetch('/api/survey/general');
-        if (surveyRes.ok) {
-          const dbSurveys = await surveyRes.json();
-          setSurveys(dbSurveys);
-        } else {
-          setSurveys([]);
-        }
-     
         const ts = Date.now();
+        // 🚀 1. 설문 공고 로드 (캐시 우회)
+        const surveyRes = await fetch(`/api/survey/general?t=${ts}`, { cache: 'no-store' });
+        if (!surveyRes.ok) throw new Error('설문 공고 데이터를 불러오지 못했습니다.');
+        const dbSurveys = await surveyRes.json();
+        setSurveys(dbSurveys);
+     
+        // 🚀 2. 부서 및 사용자 로드 (실패 시 차단)
         const [uRes, unitRes] = await Promise.all([ 
             fetch(`/api/admin/users?t=${ts}`, { cache: 'no-store' }), 
             fetch(`/api/admin/units?active=true&t=${ts}`, { cache: 'no-store' }) 
         ]);
         
-        let mappedUsers: any[] = [];
-        if (uRes.ok && unitRes.ok) {
-          const uData = await uRes.json();
-          const unitData = await unitRes.json();
-          setUnitsList(unitData);
-          
-          const activeDepts = unitData.map((u:any) => u.unit_name);
-          setDeptList(activeDepts);
+        if (!uRes.ok || !unitRes.ok) throw new Error('사용자 및 조직도 데이터를 불러오지 못했습니다.');
+        
+        const uData = await uRes.json();
+        const unitData = await unitRes.json();
+        setUnitsList(unitData);
+        
+        const activeDepts = unitData.map((u:any) => u.unit_name);
+        setDeptList(activeDepts);
+    
+        const mappedUsers = (uData.users || []).map((u:any) => ({ 
+          ...u, 
+          dept: unitData.find((un:any) => un.id === u.unit_id)?.unit_name || '소속없음' 
+        }));
+        setUsers(mappedUsers);
      
-          mappedUsers = (uData.users || []).map((u:any) => ({ 
-            ...u, 
-            dept: unitData.find((un:any) => un.id === u.unit_id)?.unit_name || '소속없음' 
-          }));
-          setUsers(mappedUsers);
-        }
-     
-        const responseRes = await fetch('/api/survey/general', {
+        // 🚀 3. 응답 원장 수거 (권한 403 무음 실패 방어)
+        const responseRes = await fetch(`/api/survey/general?t=${ts}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ action: 'GET_RESPONSES' })
         });
      
-        if (responseRes.ok) {
-          const dbResponses = await responseRes.json();
-          const realRes: Record<string, any> = {};
-          
-          dbResponses.forEach((r: any) => {
-            if (r.surveyId && r.userEmail) {
-              realRes[`${r.surveyId}_${r.userEmail}`] = {
-                isDone: true,
-                date: r.submittedAt ? r.submittedAt.split('T')[0] : '-',
-                result: '제출완료',
-                answers: r.answers || {}
-              };
-            }
-          });
-          setResponses(realRes);
+        if (!responseRes.ok) {
+          if (responseRes.status === 401 || responseRes.status === 403) {
+             throw new Error('전체 응답을 조회할 관리자 권한이 없습니다.');
+          }
+          throw new Error('설문 응답 데이터를 가져오는데 실패했습니다.');
         }
-      } catch (error) { 
+
+        const dbResponses = await responseRes.json();
+        const realRes: Record<string, any> = {};
+        
+        dbResponses.forEach((r: any) => {
+          if (r.surveyId && r.userEmail) {
+            realRes[`${r.surveyId}_${r.userEmail}`] = {
+              isDone: true,
+              date: r.submittedAt ? r.submittedAt.split('T')[0] : '-',
+              result: '제출완료',
+              answers: r.answers || {}
+            };
+          }
+        });
+        setResponses(realRes);
+        
+      } catch (error: any) { 
         console.error("Admin Survey 관제 데이터 로드 실패:", error); 
+        alert(`인프라 초기화 실패: ${error.message}`);
+        setSurveys([]); // 🚀 [추가]: 부분 로드 실패 시 잘못된 0% 통계를 막기 위해 화면 목록 초기화
       } finally { 
         setLoading(false); 
       }
@@ -90,7 +114,7 @@ export default function ActiveSurveysAdminPage() {
     fetchOrgData();
   }, []);
      
-  const todayStr = new Date().toISOString().split('T')[0];
+  const todayStr = getKSTDateString();
   const stats = useMemo(() => ({
     activeCount: surveys.filter(s => s.status === '진행중').length,
     closingTodayCount: surveys.filter(s => s.status === '진행중' && s.endDate === todayStr).length,
@@ -188,16 +212,15 @@ export default function ActiveSurveysAdminPage() {
      
   const handleDeleteSurvey = async (id: string) => {
     if (!confirm('이 설문을 삭제하시겠습니까?')) return;
-    
     try {
       const res = await fetch(`/api/survey/general?id=${id}`, { method: 'DELETE' });
       if (res.ok) {
         setSurveys(prev => prev.filter(s => s.id !== id));
       } else {
-        alert('서버 인프라 삭제 반영에 실패했습니다.');
+        const errData = await res.json();
+        alert(`❌ 삭제 실패: ${errData.error || '알 수 없는 오류'}`);
       }
     } catch (e) {
-      console.error(e);
       alert('네트워크 지연 오류가 발생했습니다.');
     }
   };
@@ -213,7 +236,10 @@ export default function ActiveSurveysAdminPage() {
       if(!confirm("이 설문을 즉시 강제 종료(완료) 처리하시겠습니까?")) return;
       finalPayload = { ...finalPayload, status: '완료' };
     }
-    if (action === 'ARCHIVE') { alert('보관함으로 이동되었습니다.'); finalPayload = { ...finalPayload, status: '보관됨' }; }
+    if (action === 'ARCHIVE') { 
+      if(!confirm("이 설문을 보관함으로 영구 이동하시겠습니까?")) return;
+      finalPayload = { ...finalPayload, status: '보관됨' }; 
+    }
      
     try {
       const res = await fetch('/api/survey/general', {
@@ -224,11 +250,14 @@ export default function ActiveSurveysAdminPage() {
       if (res.ok) {
         const savedNode = await res.json();
         setSurveys(prev => prev.map(s => s.id === id ? savedNode : s));
+        // 🚀 [위치 교정]: 통신 성공 후에만 알림 표시
+        if (action === 'ARCHIVE') alert('✅ 보관함으로 성공적으로 이동되었습니다.');
       } else {
-        alert('상태 변경 동기화에 실패했습니다.');
+        const errData = await res.json();
+        alert(`❌ 상태 변경 실패: ${errData.error || '알 수 없는 오류'}`);
       }
     } catch (e) {
-      console.error(e);
+      alert('상태 변경 동기화에 실패했습니다 (네트워크 오류).');
     }
   };
      
@@ -261,36 +290,18 @@ export default function ActiveSurveysAdminPage() {
         alert('✅ 기본 정보가 수정되었습니다.');
         setPreviewModal(null);
       } else {
-        alert('마스터 정보 갱신에 실패했습니다.');
+        const errData = await res.json();
+        alert(`❌ 갱신 실패: ${errData.error || '알 수 없는 오류'}`);
       }
     } catch (e) {
-      console.error(e);
+      alert('네트워크 인터페이스 오류입니다.');
     }
   };
      
   const handleSaveEdit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const targetNames = editModal.target.split(',').map((s:string) => s.trim()).filter(Boolean);
-    let expandedDepts = ['전사'];
-    
-    if (!targetNames.includes('전사')) {
-      const result = new Set<string>();
-      const addSubDepts = (parentId: string) => {
-        unitsList.filter(u => u.parent_id === parentId).forEach(u => {
-          result.add(u.unit_name);
-          addSubDepts(u.id);
-        });
-      };
-      unitsList.forEach(u => {
-        if (targetNames.includes(u.unit_name)) {
-          result.add(u.unit_name);
-          addSubDepts(u.id);
-        }
-      });
-      expandedDepts = Array.from(result);
-    }
-    
-    const finalEditData = { ...editModal, allowedDepts: expandedDepts };
+    // 🚀 [찌꺼기 제거]: DB에 없는 allowedDepts 파생 로직 삭제. target 필드만 사용.
+    const finalEditData = { ...editModal };
      
     try {
       const res = await fetch('/api/survey/general', {
@@ -312,10 +323,10 @@ export default function ActiveSurveysAdminPage() {
         alert('✅ 설문 메타 서식이 성공적으로 저장되었습니다.');
         setEditModal(null);
       } else {
-        alert('원장 서버 가드 시스템 저장이 실패했습니다.');
+        const errData = await res.json();
+        alert(`❌ 저장 실패: ${errData.error || '알 수 없는 오류'}`);
       }
     } catch (err) {
-      console.error(err);
       alert('네트워크 인터페이스 에러가 검출되었습니다.');
     }
   };
@@ -355,15 +366,8 @@ export default function ActiveSurveysAdminPage() {
           const rowData = [q.title];
           submittedUsers.forEach(u => {
             const ans = responses[`${survey.id}_${u.email}`]?.answers;
-            if (!ans || !ans[q.id]) rowData.push('(미응답)');
-            else {
-              const a = ans[q.id];
-              if (a && typeof a === 'object' && a.fileName) {
-                rowData.push(`[첨부파일] ${a.fileName}`);
-              } else {
-                rowData.push(Array.isArray(a) ? a.join(', ') : String(a));
-              }
-            }
+            // 🚀 [엑셀 해결]: formatAnswerForExport 헬퍼 적용
+            rowData.push(ans ? formatAnswerForExport(ans[q.id]) : '(미응답)');
           });
           return rowData;
         });
@@ -375,7 +379,7 @@ export default function ActiveSurveysAdminPage() {
     });
       
     if (!hasData) return alert('선택한 설문에 제출된 응답이 없습니다.');
-    XLSX.writeFile(wb, `[조직별_상세분석엑셀]_${new Date().toISOString().split('T')[0]}.xlsx`);
+    XLSX.writeFile(wb, `[조직별_상세분석엑셀]_${getKSTDateString()}.xlsx`);
   };
      
   const handleDownloadZipAll = async () => {
@@ -404,17 +408,24 @@ export default function ActiveSurveysAdminPage() {
       
           let content = `■ 설문명: ${survey.title}\n■ 제출자: ${survey.isAnonymous ? '익명' : user.dept + ' ' + user.name}\n■ 제출일: ${resp.date}\n------------------------------------------\n\n`;
           
-          storedQuestions.forEach((q: any, i: number) => {
-             content += `Q${i+1}. ${q.title}\n`;
-             const ans = resp.answers ? resp.answers[q.id] : null;
-             if (ans && ans.fileName) {
-                 content += `A. [첨부파일] ${ans.fileName}\n\n`;
-                 if (ans.fileData) {
-                     const base64Data = ans.fileData.split(',')[1];
-                     folder?.file(`${identifier}_${ans.fileName}`, base64Data, {base64: true});
-                 }
+          let qNum = 1; // 🚀 [ZIP 해결]: 섹션을 제외한 순수 문항 번호 카운터
+          storedQuestions.forEach((q: any) => {
+             if (q.type === 'SECTION') {
+               content += `\n[🔖 섹션 단락]: ${q.title}\n------------------------------------------\n`;
              } else {
-                 content += `A. ${Array.isArray(ans) ? ans.join(', ') : (ans || '미답변')}\n\n`;
+               content += `Q${qNum++}. ${q.title}\n`;
+               const rawAns = resp.answers ? resp.answers[q.id] : null;
+               
+               // 🚀 [ZIP 해결]: formatAnswerForExport 헬퍼 적용
+               content += `A. ${formatAnswerForExport(rawAns)}\n\n`;
+               
+               // 파일 물리 추출 로직
+               if (rawAns && typeof rawAns === 'object' && rawAns.fileName && rawAns.fileData) {
+                 const base64Data = rawAns.fileData.split(',')[1];
+                 if (base64Data) {
+                    folder?.file(`${identifier}_${rawAns.fileName}`, base64Data, {base64: true});
+                 }
+               }
              }
           });
           folder?.file(`${fileNameBase}_응답요약.txt`, "\ufeff" + content); 
@@ -425,7 +436,7 @@ export default function ActiveSurveysAdminPage() {
     if (!hasData) return alert('선택한 설문에 제출된 응답이 없습니다.');
     alert('데이터를 추출하고 압축 중입니다. 잠시만 기다려주세요...');
     const content = await zip.generateAsync({ type: "blob" });
-    saveAs(content, `[통합응답결과]_${new Date().toISOString().split('T')[0]}.zip`);
+    saveAs(content, `[통합응답결과]_${getKSTDateString()}.zip`);
   };
      
   const getStatusBadge = (status: string) => {
@@ -444,7 +455,7 @@ export default function ActiveSurveysAdminPage() {
   return (
     <div className="w-full max-w-[1750px] mx-auto space-y-6 p-8 font-sans text-slate-900 pb-24 animate-fade-in">
       
-      {/* 🚀 1. 설문 관리자 통제실 배너 (Emerald 테마) */}
+      {/* 🚀 1. 설문 관리자 통제실 배너 */}
       <div className="w-full bg-gradient-to-r from-emerald-900 to-teal-900 p-6 rounded-[2.5rem] text-white shadow-xl relative overflow-hidden flex flex-col justify-center min-h-[140px]">
         <div className="relative z-10 flex justify-between items-end w-full">
           <div>
@@ -463,8 +474,8 @@ export default function ActiveSurveysAdminPage() {
           📋
         </div>
       </div>
-
-      {/* 🚀 2. 관리자 전용 동적 탭 네비게이션 (배너 바로 밑에 안착) */}
+     
+      {/* 🚀 2. 동적 탭 네비게이션 */}
       <div className="flex gap-1.5 bg-slate-200/60 p-1.5 rounded-2xl border border-slate-200 shadow-inner w-full max-w-2xl mt-4">
         {[
           { name: '📋 현재 진행중인 조사', path: '/survey/general/admin/active-surveys' },
@@ -486,8 +497,7 @@ export default function ActiveSurveysAdminPage() {
           );
         })}
       </div>
-
-
+     
       <div className="flex gap-6 w-full">
         <button onClick={() => setSurveyListFilter(surveyListFilter === 'ONGOING' ? 'ALL' : 'ONGOING')} className={`flex-1 p-5 rounded-3xl border transition-all flex items-center justify-between ${surveyListFilter === 'ONGOING' ? 'border-blue-400 bg-blue-50 shadow-inner' : 'border-slate-200 bg-white shadow-sm hover:border-blue-300'}`}>
           <div className="flex items-center gap-5">
@@ -543,7 +553,6 @@ export default function ActiveSurveysAdminPage() {
                 const notDone = total - done;
                 const rate = total > 0 ? Math.round((done/total)*100) : 0;
                 
-                // 💡 [핵심] 여기서 현재 시간과 마감 시간을 계산해 줍니다!
                 const now = new Date();
                 const deadlineStr = `${s.endDate}T${s.endTime || '23:59'}:00`;
                 const deadline = new Date(deadlineStr);
@@ -558,7 +567,6 @@ export default function ActiveSurveysAdminPage() {
                     <td className="py-2 px-2 font-black text-center text-indigo-600 text-[12px] align-middle">{s.postNumber}</td>
                     <td className="py-2 px-2 font-mono text-center text-slate-500 whitespace-nowrap align-middle">{s.postDate === '-' ? '' : s.postDate}</td>
                     
-                    {/* 👇 게시명 (유형 텍스트 삭제 완료) */}
                     <td className="py-2 px-2 align-middle">
                       <button onClick={() => setPreviewModal(s)} className="font-black text-slate-800 text-[11px] hover:text-blue-600 hover:underline text-left line-clamp-1">{s.title}</button>
                     </td>
@@ -577,7 +585,6 @@ export default function ActiveSurveysAdminPage() {
                       </div>
                     </td>
                     
-                    {/* 👇 기간 (시간 표출 및 만료 시 빨간색 강조) */}
                     <td className="py-2 px-2 text-slate-500 tracking-tighter text-center text-[9px] whitespace-nowrap align-middle">
                       <div>{s.startDate} ~</div>
                       <div className={isTimeOver ? 'text-red-500 font-black' : ''}>
@@ -587,7 +594,6 @@ export default function ActiveSurveysAdminPage() {
                     
                     <td className="py-2 px-2 text-center font-black text-slate-700 border-l bg-slate-50/30 align-middle">{rate}%</td>
                     
-                    {/* 참여인원 */}
                     <td className="py-2 px-2 text-center bg-blue-50/30 align-middle">
                       {s.isAnonymous ? (
                         <span className="text-slate-400 font-black cursor-not-allowed">{done}명 <span className="text-[8px]">🔒</span></span>
@@ -596,7 +602,6 @@ export default function ActiveSurveysAdminPage() {
                       )}
                     </td>
                     
-                    {/* 미참여인원 */}
                     <td className="py-2 px-2 text-center bg-red-50/30 border-r align-middle">
                       <div className="flex items-center justify-center gap-1 w-full">
                         {s.isAnonymous ? (
@@ -614,14 +619,12 @@ export default function ActiveSurveysAdminPage() {
                       </div>
                     </td>
      
-                    {/* 👇 상태 뱃지 (기간 종료 시 빨간색 '기간종료'로 변환) */}
                     <td className="py-2 px-2 text-center align-middle">
                       <span className={`px-2 py-1 rounded font-black text-[9px] whitespace-nowrap ${isTimeOver ? 'bg-red-100 text-red-700 animate-pulse' : getStatusBadge(displayStatus)}`}>
                         {displayStatus}
                       </span>
                     </td>
                     
-                    {/* 게시 제어 */}
                     <td className="py-2 px-2 align-middle border-l border-slate-200 bg-slate-50/50">
                       <div className="flex items-center justify-center gap-1 w-full">
                         <button onClick={() => handleStatusChange(s.id, 'UP')} disabled={s.status === '진행중' || s.status === '완료'} className={`flex-1 py-1.5 rounded text-[9px] font-black whitespace-nowrap transition-all shadow-sm border ${s.status === '게시전' || s.status === '게시중단' ? 'bg-indigo-600 text-white border-indigo-600 hover:bg-indigo-700' : 'bg-slate-50 border-slate-200 text-slate-300 cursor-not-allowed'}`}>게시</button>
@@ -630,7 +633,6 @@ export default function ActiveSurveysAdminPage() {
                       </div>
                     </td>
      
-                    {/* 명세 관리 */}
                     <td className="py-2 pr-4 align-middle bg-slate-50/50">
                       <div className="flex items-center justify-center gap-1 w-full">
                         <button onClick={() => setEditModal(s)} disabled={s.status === '진행중' || s.status === '완료'} className={`flex-1 py-1.5 rounded text-[9px] font-black whitespace-nowrap transition-all ${s.status === '게시전' || s.status === '게시중단' ? 'bg-white border border-slate-300 text-slate-700 shadow-sm hover:bg-slate-100' : 'bg-slate-200 text-slate-400 cursor-not-allowed border border-transparent'}`}>수정</button>
@@ -794,7 +796,6 @@ export default function ActiveSurveysAdminPage() {
             <div className="p-5 bg-slate-900 text-white flex justify-between items-center"><h3 className="font-black text-sm">설문 기본 정보 {editModal.id.startsWith('S_') ? '추가' : '수정'}</h3><button onClick={() => setEditModal(null)} className="text-lg">✕</button></div>
             <form onSubmit={handleSaveEdit} className="p-6 space-y-4 bg-slate-50 max-h-[85vh] overflow-y-auto">
               
-              {/* 1. 상단: 식별코드, 게시번호, 게시일 */}
               <div className="grid grid-cols-3 gap-3">
                 <div>
                   <label className="text-[9px] font-black text-slate-500 mb-1 block">식별코드</label>
@@ -810,19 +811,16 @@ export default function ActiveSurveysAdminPage() {
                 </div>
               </div>
               
-              {/* 2. 게시명 (설문 제목) */}
               <div>
                 <label className="text-[9px] font-black text-slate-500 mb-1 block">게시명 (설문 제목)</label>
                 <input type="text" required value={editModal.title} onChange={e => setEditModal({...editModal, title: e.target.value})} className="w-full p-2.5 rounded-lg border text-xs font-black outline-none focus:border-indigo-500" />
               </div>
   
-              {/* 3. 상세 설명 (배달 모달과 동일하게 추가) */}
               <div>
                 <label className="text-[9px] font-black text-slate-500 mb-1 block">상세 설명 (Description)</label>
                 <textarea required value={editModal.description || ''} onChange={e => setEditModal({...editModal, description: e.target.value})} className="w-full p-2 rounded-lg border text-xs font-medium outline-none focus:border-indigo-500 min-h-[60px]" placeholder="설문 목적, 주의사항 등을 기재해주세요." />
               </div>
               
-              {/* 4. 중간: 익명여부 / 대상 부서 (설문 유형은 삭제) */}
               <div className="grid grid-cols-2 gap-4 border-t border-slate-200 pt-3 mt-1">
                 <div>
                   <label className="text-[9px] font-black text-indigo-500 mb-1 block">설문 익명 여부</label>
@@ -862,7 +860,6 @@ export default function ActiveSurveysAdminPage() {
                 </div>
               </div>
       
-              {/* 5. 하단: 날짜 및 시간 (1줄 3칸 정렬) */}
               <div className="grid grid-cols-3 gap-3 pt-2">
                 <div>
                   <label className="text-[9px] font-black text-slate-500 mb-1 block">운영 시작일</label>
@@ -878,7 +875,6 @@ export default function ActiveSurveysAdminPage() {
                 </div>
               </div>
               
-              {/* 6. 저장 및 취소 버튼 */}
               <div className="pt-4 flex gap-2 mt-2 border-t border-slate-200">
                 <button type="button" onClick={() => setEditModal(null)} className="flex-1 py-2.5 bg-white border rounded-xl font-black text-slate-600 hover:bg-slate-50">취소</button>
                 <button type="submit" className="flex-1 py-2.5 bg-indigo-600 text-white rounded-xl font-black shadow-md hover:bg-indigo-700">정보 저장하기</button>
@@ -888,7 +884,6 @@ export default function ActiveSurveysAdminPage() {
         </div>
       )}
       
-      {/* 🚀 [DB 연동 완료]: Nudge(독촉) 팝업 발송 API 호출 (localStorage 완전 파기) */}
       {nudgeModal && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[300] flex items-center justify-center p-4">
           <div className="bg-white w-[400px] rounded-[2rem] overflow-hidden shadow-2xl p-8 border text-center">
@@ -915,13 +910,20 @@ export default function ActiveSurveysAdminPage() {
                     });
                     if (res.ok) {
                       alert(`✅ ${nudgeModal.count}명의 미참여자 화면에 독촉 알람이 성공적으로 발송(서버 기록)되었습니다.`);
+                      
+                      // 🚀 [수정]: 독촉 발송 내역 로컬 상태 즉시 갱신 (Set을 이용해 이메일 중복 완벽 방지)
+                      setSurveys(prev => prev.map(s => s.id === nudgeModal.surveyId ? { 
+                        ...s, 
+                        nudgedUsers: Array.from(new Set([...(s.nudgedUsers || []), ...nudgeModal.targetEmails]))
+                      } : s));
+                      
                       setNudgeModal(null);
                     } else {
-                      alert('❌ 독촉 알림 발송 처리에 실패했습니다. (API 라우터를 점검해주세요)');
+                      const errData = await res.json();
+                      alert(`❌ 독촉 실패: ${errData.error || '알 수 없는 오류'}`);
                     }
                   } catch (e) {
-                    console.error(e);
-                    alert('❌ 네트워크 오류가 발생했습니다.');
+                    alert('네트워크 오류가 발생했습니다.');
                   }
                 }} 
                 className="flex-[2] py-3 bg-indigo-600 text-white rounded-xl font-black text-xs shadow-md hover:bg-indigo-700 transition-colors"

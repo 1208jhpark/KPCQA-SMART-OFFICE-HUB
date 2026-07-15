@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import prisma from '@/lib/prisma';
+import { getKSTDateString } from '@/utils/dateUtils'
      
 export const dynamic = 'force-dynamic';
      
@@ -45,7 +46,7 @@ export async function POST(request: Request) {
         requester,
         dept,
         status: status || '의견전송',
-        requestDate: requestDate || new Date().toISOString().split('T')[0],
+        requestDate: requestDate || getKSTDateString(),
         assetInfo: assetInfo || `${assetCode} / 정보 미상`,
       },
     });
@@ -92,7 +93,7 @@ if (action === 'NUDGE' || id === 'NUDGE_ACTION') {
     },
     data: {
       // 오늘 날짜로 독촉/확인요청일 기록
-      audit_request_date: date || new Date().toISOString().split('T')[0], 
+      audit_request_date: date || getKSTDateString(), 
       // 독촉 상태 진입을 위해 최근 실사일 데이터를 초기화하여 배지 트리거 활성화
       last_audit_date: null 
     }
@@ -118,7 +119,7 @@ if (action === 'NUDGE' || id === 'NUDGE_ACTION') {
         data: {
           adminOpinion: finalOpinion,
           status: status || '관리자 확인완료',
-          completedAt: status === '관리자 확인완료' ? new Date().toISOString().split('T')[0] : null,
+          completedAt: status === '관리자 확인완료' ? getKSTDateString() : null,
         },
       });
   

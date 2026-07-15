@@ -3,6 +3,7 @@ import React, { useState, useEffect, useMemo, Suspense } from 'react';
 import * as XLSX from 'xlsx';
 import { usePathname } from 'next/navigation';
 import Link from 'next/link';
+import { getKSTDateString } from '@/utils/dateUtils';
      
 function MasterPurchaseContent() {
   const pathname = usePathname();
@@ -147,7 +148,7 @@ function MasterPurchaseContent() {
      
       return {
         'NO': targetList.length - idx,
-        '최근 입고일': p.purchase_date ? new Date(p.purchase_date).toISOString().split('T')[0] : '-',
+        '최근 입고일': p.purchase_date ? getKSTDateString(p.purchase_date) : '-',
         '물품명': p.item?.name || '(삭제된 품목)',
         '구매처(벤더)': p.old_vendor || '-',
         '구매단위': pUnit,
@@ -344,7 +345,7 @@ function MasterPurchaseContent() {
                     </td>
                     
                     <td className="px-4 text-center font-mono text-slate-500 bg-emerald-50/10 border-l-4 border-slate-50">
-                      {p.purchase_date ? new Date(p.purchase_date).toISOString().split('T')[0] : '-'}
+                      {p.purchase_date ? getKSTDateString(p.purchase_date) : '-'}
                     </td>
                     <td className="px-4 text-indigo-700 text-[12px] bg-emerald-50/10 truncate max-w-[200px]">{itemName}</td>
                     

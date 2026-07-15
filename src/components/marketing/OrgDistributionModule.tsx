@@ -2,6 +2,8 @@
   
 import React, { useState, useEffect, useMemo, Suspense } from 'react';
 import * as XLSX from 'xlsx';
+import { getKSTDateString } from '@/utils/dateUtils';
+
   
 // 🚀 공통 HeaderLight 컴포넌트
 const HeaderLight = ({ title, count, children }: { title: string, count: number, children?: React.ReactNode }) => (
@@ -249,7 +251,7 @@ function OrgDistributionContent() {
     const targetList = selectedIds.size > 0 ? distributions.filter(d => selectedIds.has(d.id)) : finalFilteredList;
     if (targetList.length === 0) return alert("다운로드할 데이터가 없습니다.");
     const exportData = targetList.map((d) => ({
-      '지급신청일': new Date(d.createdAt).toISOString().split('T')[0],
+      '지급신청일': getKSTDateString(d.createdAt),
       '고객사(회사명)': d.client_name,
       '고객사 부서': d.client_dept,
       '물품명': d.item?.name || '(삭제됨)',
@@ -270,7 +272,7 @@ function OrgDistributionContent() {
     const targetList = selectedPurchaseIds.size > 0 ? purchases.filter(p => selectedPurchaseIds.has(p.id)) : finalFilteredPurchases;
     if (targetList.length === 0) return alert("다운로드할 입고 데이터가 없습니다.");
     const exportData = targetList.map((p) => ({
-      '입고일자': new Date(p.purchase_date).toISOString().split('T')[0],
+      '입고일자': getKSTDateString(p.purchase_date),
       '물품명': p.item?.name || '(삭제됨)',
       '단가(원)': p.unit_price,
       '수량': p.qty,
@@ -439,7 +441,7 @@ function OrgDistributionContent() {
                     <td className="pl-4 text-center" onClick={(e)=>e.stopPropagation()}>
                       <input type="checkbox" checked={isSelected} onChange={() => { const next = new Set(selectedIds); next.has(d.id) ? next.delete(d.id) : next.add(d.id); setSelectedIds(next); }} className="w-3 h-3 accent-emerald-600 cursor-pointer" />
                     </td>
-                    <td className="px-2 font-mono text-slate-500">{new Date(d.createdAt).toISOString().split('T')[0]}</td>
+                    <td className="px-2 font-mono text-slate-500">{getKSTDateString(d.createdAt)}</td>
                     <td className="px-2 font-black text-emerald-700 text-[12px] truncate max-w-[130px]">{d.client_name}</td>
                     <td className="px-2 text-slate-500 truncate max-w-[100px]">{d.client_dept || '-'}</td>
                     <td className="px-2 text-slate-700 text-[12px] truncate max-w-[140px]">{d.item?.name || '(삭제됨)'}</td>
@@ -552,7 +554,7 @@ function OrgDistributionContent() {
                       <td className="pl-4 text-center" onClick={(e)=>e.stopPropagation()}>
                         <input type="checkbox" checked={isSelected} onChange={() => { const next = new Set(selectedPurchaseIds); next.has(p.id) ? next.delete(p.id) : next.add(p.id); setSelectedPurchaseIds(next); }} className="w-3 h-3 accent-emerald-600 cursor-pointer" />
                       </td>
-                      <td className="px-2 font-mono text-slate-500">{new Date(p.purchase_date).toISOString().split('T')[0]}</td>
+                      <td className="px-2 font-mono text-slate-500">{getKSTDateString(p.purchase_date)}</td>
                       <td className="px-2 text-slate-700 text-[12px] truncate max-w-[140px]">{p.item?.name || '(삭제됨)'}</td>
                       <td className="px-2 text-right font-mono text-slate-500">{p.unit_price?.toLocaleString()}</td>
                       <td className="px-2 text-center bg-slate-50/50 font-mono">{p.qty} <span className="text-[9px] text-slate-400 font-sans">{p.item?.unit || 'EA'}</span></td>

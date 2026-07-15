@@ -3,6 +3,7 @@
 import React, { useState, useMemo, useEffect, useRef, Suspense } from 'react';
 import * as XLSX from 'xlsx';
 import { useRouter } from 'next/navigation'; // 🚀 Next.js App Router 필수 임포트
+import { getKSTDateString } from '@/utils/dateUtils';
      
 interface DashboardProps {
   moduleTitle?: string;
@@ -74,7 +75,6 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
       if (assetRes && assetRes.ok) {
         const loadedAssets = await assetRes.json();
         setAssets(loadedAssets);
-        // 🚀 localStorage.setItem 완전 제거됨
       }
   
       if (orgRes && orgRes.ok) setOrgs(await orgRes.json());
@@ -136,7 +136,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
         if (months > 0 && startDate) {
           const d = new Date(startDate);
           d.setMonth(d.getMonth() + months);
-          updated.end_date = d.toISOString().split('T')[0];
+          updated.end_date = getKSTDateString(d);
         }
       }
       return updated;
@@ -144,7 +144,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
   };
      
   const handleAdd = async () => {
-    const today = new Date().toISOString().split('T')[0];
+    const today = getKSTDateString();
     const newId = `AST_TEMP_${Date.now()}`; 
     const newObj = { 
       id: newId, category: masterFilters.categories[0] || 'HW', it_type: masterFilters.types[0] || '기기', dept: 'KPCQA', user: '공용', code: `AST-${Date.now()}`, 
@@ -220,7 +220,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
       reason: terminateModal?.reason,
       reseller: terminateModal?.reseller || '-',
       resellPrice: terminateModal?.resellPrice || 0,
-      terminated_at: new Date().toISOString().split('T')[0]
+      terminated_at: getKSTDateString()
     };
     
     try {
@@ -253,7 +253,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
     if (!val) return '';
     if (typeof val === 'number') {
       const date = new Date(Math.round((val - 25569) * 86400 * 1000));
-      return date.toISOString().split('T')[0];
+      return getKSTDateString(date);
     }
     let strVal = String(val).trim().replace(/[\.\/]/g, '-');
     if (/^\d{8}$/.test(strVal)) return `${strVal.substring(0,4)}-${strVal.substring(4,6)}-${strVal.substring(6,8)}`;
@@ -270,7 +270,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
         const wb = XLSX.read(arrayBuffer, { type: 'array', cellDates: true });
         const ws = wb.Sheets[wb.SheetNames[0]];
         const data = XLSX.utils.sheet_to_json<any>(ws);
-        const today = new Date().toISOString().split('T')[0];
+        const today = getKSTDateString();
         
         const existingCodes = new Set(assets.map(a => a.code).filter(Boolean));
         const existingModels = new Set(assets.map(a => String(a.model || '').trim()).filter(Boolean));
@@ -406,7 +406,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
     if (cycleNum > 0 && a.in_date) {
       const d = new Date(a.in_date);
       d.setMonth(d.getMonth() + cycleNum);
-      repDate = d.toISOString().split('T')[0];
+      repDate = getKSTDateString(d);
   
       const today = new Date();
       today.setHours(0, 0, 0, 0);
@@ -608,7 +608,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
     if (selectedIds.size === 0) return alert('독촉 알림을 보낼 자산을 체크박스로 먼저 선택해주세요.');
     if (!confirm(`선택한 ${selectedIds.size}개의 장비 사용자에게 실사 확인 독촉 알림을 띄우시겠습니까?\n(기존 인증 내역이 있다면 초기화됩니다)`)) return;
        
-    const today = new Date().toISOString().split('T')[0];
+    const today = getKSTDateString();
        
     try {
       const promises = Array.from(selectedIds).map(async (id) => {

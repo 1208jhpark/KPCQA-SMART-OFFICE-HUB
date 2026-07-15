@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import prisma from '@/lib/prisma';
+import { getKSTDateString } from '@/utils/dateUtils';
 
 // 1. 본인 명함 신청 이력 데이터 조회
 export async function GET(req: Request) {
@@ -68,7 +69,7 @@ export async function POST(req: Request) {
 
     // 최종 번호 조합 (예: BC-2026-0005)
     const postNumberStr = `BC-${currentYear}-${String(nextNumber).padStart(4, '0')}`;
-    const todayStr = new Date().toISOString().slice(0, 10);
+    const todayStr = getKSTDateString();
 
     const newRequest = await prisma.businessCardRequest.create({
       data: {

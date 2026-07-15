@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import Link from 'next/link'; 
 import { saveAs } from 'file-saver';
+import { getKSTDateString } from '@/utils/dateUtils';
   
 type QuestionType = 'CHOICE_SINGLE' | 'CHOICE_MULTI' | 'TEXT_SHORT' | 'TEXT_LONG' | 'SCALE' | 'FILE' | 'SEARCH_ADDRESS' | 'CALENDAR' | 'SECTION';
   
@@ -171,7 +172,7 @@ export default function AdminDeliveryBuilderModule() {
       options: type.includes('CHOICE') ? [{ label: '옵션 1', imageUrl: '', referenceLink: '', goToSectionId: '', stockLimit: null }] : undefined, 
       scaleMax: type === 'SCALE' ? 5 : undefined,
       questionImageUrl: '',
-      dummyDateValue: type === 'CALENDAR' ? new Date().toISOString().split('T')[0] : undefined,
+      dummyDateValue: type === 'CALENDAR' ? getKSTDateString() : undefined,
       zipCode: type === 'SEARCH_ADDRESS' ? '' : undefined,
       roadAddress: type === 'SEARCH_ADDRESS' ? '' : undefined,
       detailAddress: type === 'SEARCH_ADDRESS' ? '' : undefined,

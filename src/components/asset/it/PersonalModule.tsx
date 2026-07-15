@@ -2,6 +2,7 @@
      
 import React, { useState, useMemo, useEffect } from 'react';
 import * as XLSX from 'xlsx'; 
+import { getKSTDateString } from '@/utils/dateUtils';
      
 export default function PersonalModule() {
   const [currentUser, setCurrentUser] = useState<{name: string, dept: string, email: string} | null>(null);
@@ -33,7 +34,7 @@ export default function PersonalModule() {
   const [historyDateFilter, setHistoryDateFilter] = useState('ALL');
   const [expandedHistoryAssets, setExpandedHistoryAssets] = useState<Set<string>>(new Set());
   
-  const todayStr = new Date().toISOString().split('T')[0];
+  const todayStr = getKSTDateString();
 
   useEffect(() => { setCurrentPage(1); }, [searchQuery, colFilters, showReplaceableOnly, showUnverifiedOnly, showAuditRequestOnly, showFeedbackOnly]);
   
@@ -87,7 +88,7 @@ export default function PersonalModule() {
     if (baseDateString) {
       const d = new Date(baseDateString);
       d.setMonth(d.getMonth() + (parseInt(a.cycle) || 0));
-      repDate = d.toISOString().split('T')[0];
+      repDate = getKSTDateString(d);
       dday = Math.ceil((new Date(repDate).getTime() - new Date().getTime()) / (1000 * 60 * 60 * 24));
       isTargetCount = dday <= 90;
     }

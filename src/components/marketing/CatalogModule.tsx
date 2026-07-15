@@ -2,6 +2,7 @@
      
 import React, { useState, useEffect, useMemo, useRef, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation'; 
+import { getKSTDateString } from '@/utils/dateUtils';
 
 // 🚀 [UI 표준] 전사 공통 헤더
 const HeaderLight = ({ title, count, children }: { title: string, count: number, children?: React.ReactNode }) => (
@@ -40,7 +41,7 @@ function CatalogContent() {
   
   const [purchaseModal, setPurchaseModal] = useState<any>(null);
   const [purchaseForm, setPurchaseForm] = useState({
-    qty: 0, unit_price: 0, vendor: '', note: '', purchase_date: new Date().toISOString().split('T')[0]
+    qty: 0, unit_price: 0, vendor: '', note: '', purchase_date: getKSTDateString()
   });
   
   // 하단 배너 (종료된 물품) 필터 및 페이지네이션 상태
@@ -501,7 +502,7 @@ function CatalogContent() {
                     canEditThisItem && (
                       <>
                         <button 
-                          onClick={() => { setPurchaseModal(item); setPurchaseForm({ qty: 0, unit_price: item.unit_price, vendor: '', note: '', purchase_date: new Date().toISOString().split('T')[0] }); }} 
+                          onClick={() => { setPurchaseModal(item); setPurchaseForm({ qty: 0, unit_price: item.unit_price, vendor: '', note: '', purchase_date: getKSTDateString() }); }} 
                           className="px-3 py-1.5 bg-emerald-50 text-emerald-600 rounded-md text-[10px] font-black hover:bg-emerald-600 hover:text-white transition-colors"
                         >📦 입고</button>
                         <button onClick={() => handleOpenEdit(item)} className="px-3 py-1.5 bg-white border border-slate-200 text-slate-600 rounded-md text-[10px] font-black hover:bg-slate-100 transition-colors">✏️ 수정</button>

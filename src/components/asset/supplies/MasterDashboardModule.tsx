@@ -4,6 +4,7 @@
 import React, { useState, useEffect, useMemo, Suspense, useRef } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import Link from 'next/link';
+import { getKSTDateString } from '@/utils/dateUtils';
      
 function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser?: any }) {
   const pathname = usePathname();
@@ -461,7 +462,7 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
                       <td className="px-4 text-center font-mono text-slate-500">{item.id}</td>
                       
                       <td className="px-4 text-center border-l-4 border-slate-50 bg-emerald-50/10 font-mono text-slate-500">
-                        {lastPurchase.purchase_date ? new Date(lastPurchase.purchase_date).toISOString().split('T')[0] : '-'}
+                        {lastPurchase.purchase_date ? getKSTDateString(lastPurchase.purchase_date) : '-'}
                       </td>
                       
                       {/* 🚀 [해결] vendor 가 아닌 DB 실제 컬럼 매핑 규격인 old_vendor 를 추적하도록 바인딩 패치 */}
@@ -499,8 +500,8 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
                           {/* 🚀 [해결] 입고 클릭 시 전달 인자도 vendor 가 아닌 old_vendor 백그라운드 매핑 연동 */}
                           <button onClick={() => setStockInModal({ 
                             id: item.id, name: item.name, vendor: lastPurchase.old_vendor || '', base_price: item.unit_price || 0, extra_cost: 0, qty: '', p_unit: pUnit,
-                            purchase_date: new Date().toISOString().split('T')[0],
-                            stock_in_date: new Date().toISOString().split('T')[0]
+                            purchase_date: getKSTDateString(),
+                            stock_in_date: getKSTDateString()
                           })} className="px-2 py-1.5 rounded text-[10px] font-black bg-emerald-600 text-white shadow-sm hover:bg-emerald-700 transition-colors">
                             📦입고
                           </button>

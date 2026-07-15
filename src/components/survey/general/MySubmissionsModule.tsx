@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { saveAs } from 'file-saver';
+import { getKSTDateString } from '@/utils/dateUtils';
      
 // 🚀 [UI 표준 지침] 전사 공통 Header 컴포넌트 분리 선언
 const HeaderLight = ({ title, count, children }: { title: string, count: number, children?: React.ReactNode }) => (
@@ -16,6 +17,28 @@ const HeaderLight = ({ title, count, children }: { title: string, count: number,
   </div>
 );
   
+// 🚀 [리팩토링] 전사 재고 집계 헬퍼 함수 (중복 로직 제거)
+const calculateStockUsage = (dbResponses: any[]) => {
+  const usageMap: Record<string, Record<string, number>> = {};
+  dbResponses.forEach((r: any) => {
+    if (r.answers) {
+      if (!usageMap[r.surveyId]) usageMap[r.surveyId] = {};
+      Object.entries(r.answers).forEach(([qId, val]) => {
+        if (typeof val === 'string') {
+          const key = `${qId}_${val}`;
+          usageMap[r.surveyId][key] = (usageMap[r.surveyId][key] || 0) + 1;
+        } else if (Array.isArray(val)) {
+          val.forEach((item: string) => {
+            const key = `${qId}_${item}`;
+            usageMap[r.surveyId][key] = (usageMap[r.surveyId][key] || 0) + 1;
+          });
+        }
+      });
+    }
+  });
+  return usageMap;
+};
+
 export default function MySubmissionsModule() {
   const router = useRouter();
   
@@ -41,6 +64,8 @@ export default function MySubmissionsModule() {
   const [zoomedImage, setZoomedImage] = useState<string | null>(null);
      
   const [stockUsage, setStockUsage] = useState<Record<string, Record<string, number>>>({});
+
+
      
   useEffect(() => {
     if (typeof window !== 'undefined' && !document.getElementById('kakao-postcode-script')) {
@@ -86,24 +111,12 @@ export default function MySubmissionsModule() {
           if (respRes.ok) {
             const dbResponses = await respRes.json();
             const nextMyRes: Record<string, any> = {};
-            const usageMap: Record<string, Record<string, number>> = {};
+            
+            // 🚀 헬퍼 함수 적용! (단 한 줄로 압축)
+            const usageMap = calculateStockUsage(dbResponses);
             
             dbResponses.forEach((r: any) => {
-              if (r.answers) {
-                if (!usageMap[r.surveyId]) usageMap[r.surveyId] = {};
-                Object.entries(r.answers).forEach(([qId, val]) => {
-                  if (typeof val === 'string') {
-                    const key = `${qId}_${val}`;
-                    usageMap[r.surveyId][key] = (usageMap[r.surveyId][key] || 0) + 1;
-                  } else if (Array.isArray(val)) {
-                    val.forEach((item: string) => {
-                      const key = `${qId}_${item}`;
-                      usageMap[r.surveyId][key] = (usageMap[r.surveyId][key] || 0) + 1;
-                    });
-                  }
-                });
-              }
-     
+              // (재고 집계 로직은 헬퍼로 빠졌으므로 내 응답 필터링만 남깁니다)
               if (r.userEmail === userData.email) {
                 nextMyRes[r.surveyId] = {
                   submittedAt: r.submittedAt ? r.submittedAt.split('T')[0] + ' ' + new Date(r.submittedAt).toLocaleTimeString('ko-KR', { hour12: false }) : '-',
@@ -205,6 +218,11 @@ export default function MySubmissionsModule() {
     })).sort((a: any, b: any) => b.submittedAt.localeCompare(a.submittedAt));
   }, [surveys, myResponses]);
      
+  const availableYears = useMemo(() => {
+    const years = historyList.map(s => s.submittedAt?.split('-')[0]).filter(Boolean);
+    return Array.from(new Set(years)).sort((a, b) => Number(b) - Number(a));
+  }, [historyList]);
+
   const filteredHistory = useMemo(() => historyList.filter(survey => historyYear === 'ALL' || survey.submittedAt.split('-')[0] === historyYear), [historyList, historyYear]);
   const paginatedEligible = useMemo(() => eligibleSurveys.slice((eligiblePage - 1) * itemsPerPage, eligiblePage * itemsPerPage), [eligibleSurveys, eligiblePage]);
   const paginatedHistory = useMemo(() => filteredHistory.slice((historyPage - 1) * itemsPerPage, historyPage * itemsPerPage), [filteredHistory, historyPage]);
@@ -218,19 +236,32 @@ export default function MySubmissionsModule() {
     if (isEditMode) {
       setFormData(myResponses[survey.id]?.answers || {});
     } else {
-      const draftRaw = localStorage.getItem(`survey_draft_${survey.id}_${currentUser?.email}`);
+      // 🚀 이메일 로딩 지연 방어 및 안전한 키 생성
+      const safeEmail = currentUser?.email || 'unknown_user';
+      const draftKey = `survey_draft_${survey.id}_${safeEmail}`;
+      const draftRaw = localStorage.getItem(draftKey);
+      
       if (draftRaw) {
         try {
           const draft = JSON.parse(draftRaw);
           if (draft.updatedAt === survey.updatedAt) {
-            setFormData(draft.answers || {});
+            // 💡 폼 진입 시점에 사용자에게 이어서 작성할지 명시적으로 확인
+            if (confirm('💾 이전에 작성 중이던 임시 저장 내역이 있습니다.\n이어서 작성하시겠습니까?')) {
+              setFormData(draft.answers || {});
+            } else {
+              // 🧹 클린업: 사용자가 취소하면 찌꺼기 즉시 영구 삭제!
+              localStorage.removeItem(draftKey);
+              setFormData({});
+            }
           } else {
             console.warn("설문 내용이 변경되어 기존 임시 저장 데이터를 초기화합니다.");
             setFormData({});
-            localStorage.removeItem(`survey_draft_${survey.id}_${currentUser?.email}`);
+            localStorage.removeItem(draftKey);
           }
         } catch (e) {
+          console.error("로컬 스토리지 데이터 오염 감지, 초기화 진행", e);
           setFormData({});
+          localStorage.removeItem(draftKey); // 🛡️ 파싱 에러 시 확실히 제거
         }
       } else {
         setFormData({});
@@ -260,17 +291,29 @@ export default function MySubmissionsModule() {
         updatedAt: activeFullScreenSurvey.updatedAt,
         answers: formData
       };
-      localStorage.setItem(`survey_draft_${activeFullScreenSurvey.id}_${currentUser?.email}`, JSON.stringify(payload));
+      const safeEmail = currentUser?.email || 'unknown_user';
+      localStorage.setItem(`survey_draft_${activeFullScreenSurvey.id}_${safeEmail}`, JSON.stringify(payload));
       alert('💾 작성 중인 내용이 안전하게 임시 저장되었습니다.');
     } catch (e) {
-      alert('⚠️ 파일 용량 초과로 임시 저장이 실패했습니다.');
+      alert('⚠️ 파일 첨부 용량 초과로 임시 저장이 실패했습니다. (파일을 제외한 기입 내용만 임시 저장됩니다)');
     }
   };
   
   const handleSubmitForm = async () => {
     for (const q of activeFullScreenSurvey.questions) {
-      if (q.type !== 'SECTION' && q.isRequired && (!formData[q.id] || formData[q.id].length === 0)) {
-        return alert(`✏️ [${q.title}] 문항은 필수 응답 항목입니다.`);
+      if (q.type !== 'SECTION' && q.isRequired) {
+        // 🚀 주소 및 파일 타입 정밀 검증 추가
+        if (q.type === 'SEARCH_ADDRESS') {
+          if (!formData[q.id]?.zipCode || !formData[q.id]?.roadAddress || !formData[q.id]?.detailAddress) {
+            return alert(`📍 [${q.title}]의 우편번호 및 상세주소를 완벽히 기입해 주세요.`);
+          }
+        } else if (q.type === 'FILE') {
+          if (!formData[q.id]?.fileName) {
+            return alert(`📎 [${q.title}]에 필수 파일을 첨부해 주세요.`);
+          }
+        } else if (!formData[q.id] || formData[q.id].length === 0) {
+          return alert(`✏️ [${q.title}] 문항은 필수 응답 항목입니다.`);
+        }
       }
     }
     if (!confirm(activeFullScreenSurvey.isEditMode ? '답변 수정을 완료하시겠습니까?' : '설문을 최종 제출하시겠습니까?')) return;
@@ -288,18 +331,31 @@ export default function MySubmissionsModule() {
       });
      
       if (res.ok) {
-        const submittedDate = `${new Date().toISOString().split('T')[0]} ${new Date().toLocaleTimeString('ko-KR', { hour12: false })}`;
+        const submittedDate = `${getKSTDateString()} ${new Date().toLocaleTimeString('ko-KR', { hour12: false })}`;
         const nextResponses = { 
           ...myResponses, 
           [activeFullScreenSurvey.id]: { submittedAt: submittedDate, answers: formData } 
         };
         
         setMyResponses(nextResponses);
-        localStorage.removeItem(`survey_draft_${activeFullScreenSurvey.id}_${currentUser?.email}`);
+        const safeEmail = currentUser?.email || 'unknown_user';
+        localStorage.removeItem(`survey_draft_${activeFullScreenSurvey.id}_${safeEmail}`);
         
         alert('✅ 설문 응답 및 수정 사항이 시스템에 성공적으로 제출되었습니다.');
         setActiveFullScreenSurvey(null);
-        window.location.reload(); 
+        
+        fetch('/api/survey/general', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'GET_RESPONSES' }),
+          cache: 'no-store'
+        }).then(r => r.ok ? r.json() : null).then(dbResponses => {
+          if (dbResponses) {
+            // 🚀 헬퍼 함수 적용!
+            setStockUsage(calculateStockUsage(dbResponses));
+          }
+        }).catch(e => console.error("재고 동기화 실패", e));
+
       } else {
         alert('❌ 서버 제출 처리에 실패했습니다.');
       }
@@ -416,7 +472,7 @@ export default function MySubmissionsModule() {
                 return (
                   <tr key={survey.id} className={`transition-colors h-16 ${isTimeOver ? 'bg-slate-50/70 opacity-60 grayscale' : 'hover:bg-slate-50/50'}`}>
                     <td className="text-center text-slate-400 font-black pl-8">{eligibleSurveys.length - ((eligiblePage - 1) * itemsPerPage + index)}</td>
-                    <td className="text-center font-mono text-slate-500">{100 + (Number(survey.id) || 0)}</td>
+                    <td className="text-center font-mono text-slate-500">{survey.postNumber || '-'}</td>
                     <td className="text-center font-mono text-slate-500">{survey.postDate}</td>
                     <td className="px-4">
                       <div className="flex items-center gap-3 h-16">
@@ -515,8 +571,10 @@ export default function MySubmissionsModule() {
               <span className="text-slate-500">연도 필터 :</span>
               <select value={historyYear} onChange={(e) => { setHistoryYear(e.target.value); setHistoryPage(1); }} className="bg-white border border-slate-300 text-slate-700 rounded-xl px-3 py-1.5 font-black focus:outline-none focus:border-indigo-500 text-[11px] cursor-pointer shadow-sm transition-colors">
                 <option value="ALL">전체 내역 보기</option>
-                <option value="2026">2026년도</option>
-                <option value="2025">2025년도</option>
+                {/* 💡 하드코딩 제거: 데이터 기반 동적 연도 렌더링 */}
+                {availableYears.map(year => (
+                  <option key={year} value={year}>{year}년도</option>
+                ))}
               </select>
             </div>
           </HeaderLight>
@@ -535,7 +593,7 @@ export default function MySubmissionsModule() {
                       <td className="text-center text-slate-400 font-black pl-8">
                         {filteredHistory.length - ((historyPage - 1) * itemsPerPage + index)}
                       </td>
-                      <td className="text-center font-mono text-slate-500">{100 + (Number(survey.id) || 0)}</td>
+                      <td className="text-center font-mono text-slate-500">{survey.postNumber || '-'}</td>
                       <td className="text-center font-mono text-slate-500">{survey.postDate}</td>
                       <td className="px-4">
                         <div className="font-black text-slate-800 text-[12px] whitespace-pre-wrap line-clamp-1">

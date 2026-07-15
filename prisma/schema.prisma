@@ -713,3 +713,30 @@ model ProductionRequest {
   @@index([status])
   @@index([batchId])
 }
+
+// -----------------------------------------------------------------
+// 📦 ASSET: 제작물(Production) 전용 마스터 데이터 테이블 추가
+// -----------------------------------------------------------------
+model ProductionPlateMaster {
+  id         String   @id @default(cuid())
+  code       String   @unique // 예: CAST_IRON_300, TUNGSTEN_300
+  label      String   // 예: 주물현판, 텅스텐현판
+  price      Int      @default(0)
+  size       String   // 예: 300*400, 90*55
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}
+
+model ProductionCertMaster {
+  id          String   @id @default(cuid())
+  certId      String   @unique // 예: GSEED, BF, CONDENDSATION, ISO, NORMAL
+  type        String   // 소속 분류: "SIGN"(명판 전용) 또는 "JEBON"(제본 전용)
+  label       String   // 예: 녹색건축인증, 결로방지 성능평가
+  format      String   @default("") // 명판용 유효기간 출력 서식
+  jebonFormat String   @default("") // 제본용 완료일자 출력 서식
+  grades      Json     @default("[]") // 등급 구조화 데이터 (예: ["최우수", "우수", "일반"])
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}

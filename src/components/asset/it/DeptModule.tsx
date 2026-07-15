@@ -2,6 +2,7 @@
   
 import { useState, useMemo, useEffect, useCallback } from 'react';
 import * as XLSX from 'xlsx'; 
+import { getKSTDateString } from '@/utils/dateUtils';
   
 export default function DeptModule() {
   // 🚀 클릭 상태 관리 (어떤 카드를 클릭했는지 저장)
@@ -155,11 +156,11 @@ export default function DeptModule() {
     let repDate = '-';
     let dday = null;
     let isTargetCount = false;
-    const baseDateString = (a.is_rental === '렌탈' && a.start_date) ? a.start_date : (a.in_date || new Date().toISOString().split('T')[0]);
+    const baseDateString = (a.is_rental === '렌탈' && a.start_date) ? a.start_date : (a.in_date || getKSTDateString());
     if (baseDateString) {
       const d = new Date(baseDateString);
       d.setMonth(d.getMonth() + (parseInt(a.cycle) || 0));
-      repDate = d.toISOString().split('T')[0];
+      repDate = getKSTDateString(d);
       dday = Math.ceil((new Date(repDate).getTime() - new Date().getTime()) / (1000 * 60 * 60 * 24));
       isTargetCount = dday <= 90;
     }
@@ -221,7 +222,7 @@ export default function DeptModule() {
     const assetId = confirmAuditModal.id;
     
     const isCancel = confirmAuditModal.action === 'CANCEL';
-    const todayStr = new Date().toISOString().split('T')[0];
+    const todayStr = getKSTDateString();
     const dateToSave = isCancel ? null : todayStr;
     const isDoneValue = !isCancel;
   
@@ -330,7 +331,7 @@ export default function DeptModule() {
     if (!requestContent.trim()) return alert("요청하실 내용을 입력해 주세요.");
     
     const newReq = {
-      requestDate: new Date().toISOString().split('T')[0],
+      requestDate: getKSTDateString(),
       requester: currentUser?.name, 
       dept: currentUser?.dept,
       assetInfo: `${unifiedCommModal.code} / ${unifiedCommModal.model}`,

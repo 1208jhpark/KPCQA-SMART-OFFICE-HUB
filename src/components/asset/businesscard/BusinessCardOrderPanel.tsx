@@ -4,6 +4,7 @@ import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import * as XLSX from 'xlsx';
 import Link from 'next/link'; // 🚀 이 줄을 추가합니다!
+import { getKSTDateString } from '@/utils/dateUtils';
 
 interface RequestHistory {
   id: string;
@@ -314,13 +315,13 @@ const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
 const handleCreateBatch = async () => {
   if (selectedIds.size === 0) return alert('⚠️ 발주 처리할 명함을 선택해 주세요.');
   const targets = requests.filter(r => selectedIds.has(r.id));
-  const batchId = `BATCH-${new Date().toISOString().slice(0,10).replace(/-/g,'')}-${String(batches.length + 1).padStart(2, '0')}`;
+  const batchId = `BATCH-${getKSTDateString().replace(/-/g,'')}-${String(batches.length + 1).padStart(2, '0')}`;
   const distinctDepts = Array.from(new Set(targets.map(t => t.deptHead))).join(', ');
   
   try {
     const payload = {
       id: batchId,
-      orderDate: new Date().toISOString().slice(0, 10),
+      orderDate: getKSTDateString(),
       totalCount: targets.length,
       deptHeadGroup: distinctDepts || '전사종합',
       status: '발주완료',

@@ -1,10 +1,34 @@
 'use client';
-  
+
 import React, { useState, useEffect, useMemo } from 'react';
 import Link from 'next/link';
 import { saveAs } from 'file-saver';
-  
+import { getKSTDateString } from '@/utils/dateUtils'; // 🚀 날짜 유틸 추가
+
+// 🚀 전사 재고 집계 헬퍼 함수
+const calculateStockUsage = (dbResponses: any[]) => {
+  const usageMap: Record<string, Record<string, number>> = {};
+  dbResponses.forEach((r: any) => {
+    if (r.answers) {
+      if (!usageMap[r.surveyId]) usageMap[r.surveyId] = {};
+      Object.entries(r.answers).forEach(([qId, val]) => {
+        if (typeof val === 'string') {
+          const key = `${qId}_${val}`;
+          usageMap[r.surveyId][key] = (usageMap[r.surveyId][key] || 0) + 1;
+        } else if (Array.isArray(val)) {
+          val.forEach((item: string) => {
+            const key = `${qId}_${item}`;
+            usageMap[r.surveyId][key] = (usageMap[r.surveyId][key] || 0) + 1;
+          });
+        }
+      });
+    }
+  });
+  return usageMap;
+};
+
 export default function SurveyDashboardContent() {
+  const [stockUsage, setStockUsage] = useState<Record<string, Record<string, number>>>({}); // 🚀 재고 상태
   const [surveys, setSurveys] = useState<any[]>([]);
   const [myResponses, setMyResponses] = useState<Record<string, any>>({}); 
   const [allResponses, setAllResponses] = useState<Record<string, any>>({});
@@ -16,8 +40,7 @@ export default function SurveyDashboardContent() {
      
   const [filterPending, setFilterPending] = useState<boolean>(false);
   const [filterNudged, setFilterNudged] = useState<boolean>(false);
-  const [filterClosingToday, setFilterClosingToday] = useState<boolean>(false); // 💡 요 부분 한 줄 추가!
-  // 🚀 [DB 연동 완료]: 관리자가 독촉한 설문 ID 배열 (로컬스토리지 대신 서버에서 수신)
+  const [filterClosingToday, setFilterClosingToday] = useState<boolean>(false);
   const [nudgedSurveys, setNudgedSurveys] = useState<string[]>([]);
      
   const [introModalSurvey, setIntroModalSurvey] = useState<any | null>(null); 
@@ -39,7 +62,6 @@ export default function SurveyDashboardContent() {
       }
     }
      
-    // 🚀 [DB 정합성 코어]: 모든 데이터를 캐시 없이 서버(PostgreSQL)에서 직접 가져옴
     const fetchData = async () => {
       try {
         const ts = Date.now();
@@ -70,7 +92,6 @@ export default function SurveyDashboardContent() {
           setAllUsers(mappedUsers);
         }
      
-        // 🚀 [DB 정합성 코어 1]: 모든 응답을 중앙 DB에서 직접 수거하여 개인 제출/전체 통계 완벽 분리
         const respRes = await fetch('/api/survey/general', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -83,9 +104,11 @@ export default function SurveyDashboardContent() {
           const nextMyRes: Record<string, any> = {};
           const nextAllRes: Record<string, any> = {};
           
+          setStockUsage(calculateStockUsage(dbResponses)); // 🚀 재고 초기 세팅
+          
           dbResponses.forEach((r: any) => {
             if (r.surveyId && r.userEmail) {
-              nextAllRes[`${r.surveyId}_${r.userEmail}`] = true; // 전사 참여율 계산용 플래그
+              nextAllRes[`${r.surveyId}_${r.userEmail}`] = true; 
               
               if (userData && r.userEmail === userData.email) {
                 const formattedDate = r.submittedAt 
@@ -107,7 +130,6 @@ export default function SurveyDashboardContent() {
           const loadedSurveys = await surveyRes.json();
           setSurveys(loadedSurveys);
           
-          // 🚀 [로컬스토리지 파기]: 서버 데이터 기반 독촉 대상 맵핑 처리
           const serverNudged = loadedSurveys
             .filter((s: any) => s.nudgedUsers && s.nudgedUsers.includes(userData?.email))
             .map((s: any) => s.id);
@@ -168,36 +190,29 @@ export default function SurveyDashboardContent() {
     return false;
   };
      
-// 💡 [원인 해결] UTC 시차 문제 제거! 한국 로컬 시간 기준으로 완벽한 '오늘 날짜' 생성
-const todayStr = useMemo(() => {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-}, []);
-
-const visibleSurveys = useMemo(() => surveys.filter(s => s.status === '진행중' || s.status === '완료'), [surveys]);
+  // 💡 [원인 해결] 전역 공통 KST 함수 적용
+  const todayStr = getKSTDateString();
+    
+  const visibleSurveys = useMemo(() => surveys.filter(s => s.status === '진행중' || s.status === '완료'), [surveys]);
    
-// 💡 필터링 로직 (오늘 마감 우선순위 적용)
-const filteredSurveys = useMemo(() => {
-  // 🔥 1순위: 오늘 마감 배너 클릭 시 가장 먼저 필터링!
-  if (filterClosingToday) {
-    return visibleSurveys.filter(s => s.status === '진행중' && s.endDate === todayStr);
-  }
-  
-  if (filterNudged) {
-    return visibleSurveys.filter(s => { 
-      const isTargeted = currentUser?.roles?.includes('LV_1') || checkHierarchyTarget(s.target, currentUser?.unit?.unit_name); 
-      return s.status === '진행중' && isTargeted && !myResponses[s.id] && nudgedSurveys.includes(s.id); 
-    });
-  }
-  if (filterPending) {
-    return visibleSurveys.filter(s => { 
-      const isTargeted = currentUser?.roles?.includes('LV_1') || checkHierarchyTarget(s.target, currentUser?.unit?.unit_name); 
-      return s.status === '진행중' && isTargeted && !myResponses[s.id]; 
-    });
-  }
-  
-  return visibleSurveys;
-}, [visibleSurveys, filterPending, filterNudged, filterClosingToday, myResponses, currentUser, unitsList, nudgedSurveys, todayStr]);
+  const filteredSurveys = useMemo(() => {
+    if (filterClosingToday) {
+      return visibleSurveys.filter(s => s.status === '진행중' && s.endDate === todayStr);
+    }
+    if (filterNudged) {
+      return visibleSurveys.filter(s => { 
+        const isTargeted = currentUser?.roles?.includes('LV_1') || checkHierarchyTarget(s.target, currentUser?.unit?.unit_name); 
+        return s.status === '진행중' && isTargeted && !myResponses[s.id] && nudgedSurveys.includes(s.id); 
+      });
+    }
+    if (filterPending) {
+      return visibleSurveys.filter(s => { 
+        const isTargeted = currentUser?.roles?.includes('LV_1') || checkHierarchyTarget(s.target, currentUser?.unit?.unit_name); 
+        return s.status === '진행중' && isTargeted && !myResponses[s.id]; 
+      });
+    }
+    return visibleSurveys;
+  }, [visibleSurveys, filterPending, filterNudged, filterClosingToday, myResponses, currentUser, unitsList, nudgedSurveys, todayStr]);
      
   const stats = useMemo(() => {
     if (!currentUser) return { ongoingCount: 0, closingTodayCount: 0, myPendingCount: 0, nudgeCount: 0 };
@@ -214,25 +229,29 @@ const filteredSurveys = useMemo(() => {
   const handleStartSurvey = () => {
     const survey = introModalSurvey;
     
-    // 🚀 [핵심 안정화]: 버전 대조형 안전 임시 저장 로드 엔진 적용
-    const draftRaw = localStorage.getItem(`survey_draft_${survey.id}_${currentUserEmail}`);
+    // 🚀 [핵심 안정화]: 안전한 키 생성 및 찌꺼기 삭제
+    const safeEmail = currentUserEmail || 'unknown_user';
+    const draftKey = `survey_draft_${survey.id}_${safeEmail}`;
+    const draftRaw = localStorage.getItem(draftKey);
+    
     if (draftRaw) {
       try {
         const draft = JSON.parse(draftRaw);
-        // 서버 측 공고의 최종 수정일(updatedAt)과 임시저장 시점의 수정일 비교
         if (draft.updatedAt === survey.updatedAt) {
           if (confirm('💾 이전에 작성 중이던 임시 저장 내역이 있습니다.\n이어서 작성하시겠습니까?')) {
             setFormData(draft.answers || {});
           } else {
+            localStorage.removeItem(draftKey); // 🧹 찌꺼기 삭제
             setFormData({});
           }
         } else {
           console.warn("설문 내용이 변경되어 기존 임시 저장 데이터를 초기화합니다.");
           setFormData({});
-          localStorage.removeItem(`survey_draft_${survey.id}_${currentUserEmail}`);
+          localStorage.removeItem(draftKey);
         }
       } catch (e) {
         setFormData({});
+        localStorage.removeItem(draftKey); // 🛡️ 파싱 에러 방어
       }
     } else {
       setFormData({});
@@ -259,24 +278,43 @@ const filteredSurveys = useMemo(() => {
      
   const handleSaveDraft = () => {
     if (!activeFullScreenSurvey) return;
+    const safeEmail = currentUserEmail || 'unknown_user';
     try {
-      // 🚀 [핵심 안정화]: 임시 저장 시 현재 설문의 버전을 함께 패키징
       const payload = {
         updatedAt: activeFullScreenSurvey.updatedAt,
         answers: formData
       };
-      localStorage.setItem(`survey_draft_${activeFullScreenSurvey.id}_${currentUserEmail}`, JSON.stringify(payload));
+      localStorage.setItem(`survey_draft_${activeFullScreenSurvey.id}_${safeEmail}`, JSON.stringify(payload));
       alert('💾 현재까지 작성한 설문 내용이 안전하게 임시 저장되었습니다.');
     } catch (e) {
-      alert('⚠️ 파일 용량 초과로 임시 저장이 실패했습니다.');
+      alert('⚠️ 첨부된 파일의 용량이 초과되어 임시 저장이 제한됩니다.');
     }
   };
      
-  // 🚀 [DB 정합성 코어 2]: 응답 데이터를 브라우저에 가두지 않고 서버 DB로 즉시 밀어넣어 동기화 완료
   const handleSubmitForm = async () => {
+    // 🚀 [보안] 제출 시점 재검증
+    const now = new Date();
+    const deadline = new Date(`${activeFullScreenSurvey.endDate}T${activeFullScreenSurvey.endTime || '23:59'}:00`);
+    if (activeFullScreenSurvey.status === '완료' || now > deadline) {
+      alert('❌ 기한이 만료되었거나 관리자에 의해 마감 처리되어 제출할 수 없습니다.');
+      setActiveFullScreenSurvey(null);
+      return;
+    }
+
     for (const q of activeFullScreenSurvey.questions) {
-      if (q.type !== 'SECTION' && q.isRequired && (!formData[q.id] || formData[q.id].length === 0)) {
-        return alert(`✏️ [${q.title}] 문항은 필수 응답 사항입니다. 답변을 채워주세요.`);
+      if (q.type !== 'SECTION' && q.isRequired) {
+        // 🚀 주소 및 파일 정밀 검증
+        if (q.type === 'SEARCH_ADDRESS') {
+          if (!formData[q.id]?.zipCode || !formData[q.id]?.roadAddress || !formData[q.id]?.detailAddress) {
+            return alert(`📍 [${q.title}]의 우편번호 및 상세주소를 완벽히 기입해 주세요.`);
+          }
+        } else if (q.type === 'FILE') {
+          if (!formData[q.id]?.fileName) {
+            return alert(`📎 [${q.title}]에 필수 파일을 첨부해 주세요.`);
+          }
+        } else if (!formData[q.id] || formData[q.id].length === 0) {
+          return alert(`✏️ [${q.title}] 문항은 필수 응답 사항입니다. 답변을 채워주세요.`);
+        }
       }
     }
     if (!confirm('설문 응답을 최종 제출하시겠습니까?\n제출 후에는 게시 마감전까지 나의 참여 이력에서 수정할 수 있습니다.')) return;
@@ -298,9 +336,24 @@ const filteredSurveys = useMemo(() => {
         const nextResponses = { ...myResponses, [activeFullScreenSurvey.id]: { submittedAt: submittedDate, answers: formData } };
         
         setMyResponses(nextResponses);
-        localStorage.removeItem(`survey_draft_${activeFullScreenSurvey.id}_${currentUserEmail}`); 
-        alert(`✅ ${submittedDate}에 정상적으로 제출되었습니다.\n설문 참여에 감사드립니다.`);
+        // 🚀 본인 제출 내역 즉시 반영 (참여율 실시간 갱신)
+        setAllResponses(prev => ({ ...prev, [`${activeFullScreenSurvey.id}_${currentUserEmail}`]: true }));
+        
+        const safeEmail = currentUserEmail || 'unknown_user';
+        localStorage.removeItem(`survey_draft_${activeFullScreenSurvey.id}_${safeEmail}`); 
+        alert(`✅ 정상적으로 제출되었습니다.\n설문 참여에 감사드립니다.`);
         setActiveFullScreenSurvey(null); 
+        
+        // 🚀 백그라운드 재고 최신화
+        fetch('/api/survey/general', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'GET_RESPONSES' }),
+          cache: 'no-store'
+        }).then(r => r.ok ? r.json() : null).then(dbResponses => {
+          if (dbResponses) setStockUsage(calculateStockUsage(dbResponses));
+        }).catch(e => console.error("통계 동기화 실패", e));
+
       } else {
         alert('❌ 서버 데이터 제출 처리에 실패했습니다.');
       }
@@ -345,7 +398,6 @@ const filteredSurveys = useMemo(() => {
             <div><p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">진행 중 조사</p><h3 className="text-3xl font-black text-slate-800 mt-1">{stats.ongoingCount} <span className="text-sm font-bold text-slate-400">건</span></h3></div><div className="w-12 h-12 bg-blue-50 text-blue-600 rounded-2xl flex items-center justify-center text-2xl">📝</div>
           </div>
           
-          {/* 💡 [수정] 오늘 마감 배너를 클릭 가능하도록 버튼화! */}
           <div onClick={() => { if (stats.closingTodayCount === 0) return alert('오늘 마감이 임박한 조사가 없습니다.'); setFilterClosingToday(!filterClosingToday); setFilterPending(false); setFilterNudged(false); }} className={`flex-1 p-5 rounded-[2.5rem] shadow-sm flex items-center justify-between min-h-[120px] cursor-pointer transition-all border-2 ${filterClosingToday ? 'bg-red-50 border-red-400 scale-[1.02] shadow-lg' : 'bg-white border-slate-200 hover:border-red-200 hover:bg-red-50/30'}`}>
             <div><p className="text-[10px] font-black text-red-400 uppercase tracking-widest mb-1">오늘 마감</p><h3 className="text-3xl font-black text-red-600 mt-1">{stats.closingTodayCount} <span className="text-sm font-bold text-red-300">건</span></h3></div><div className={`w-12 h-12 rounded-2xl flex items-center justify-center text-2xl transition-all ${filterClosingToday ? 'bg-red-500 text-white animate-pulse' : 'bg-red-50'}`}>⏰</div>
           </div>
@@ -363,7 +415,6 @@ const filteredSurveys = useMemo(() => {
           <div className="flex items-center gap-2">
             {filterPending && <span className="text-[10px] font-black bg-indigo-500 text-white px-2 py-0.5 rounded-full border border-indigo-600 animate-pulse">대상 내역 표시 중</span>}
             {filterNudged && <span className="text-[10px] font-black bg-red-500 text-white px-2 py-0.5 rounded-full border border-red-600 animate-pulse">독촉 건만 표시 중</span>}
-            {/* 💡 요기 뱃지 추가! */}
             {filterClosingToday && <span className="text-[10px] font-black bg-red-50 text-red-600 px-2 py-0.5 rounded-full border border-red-200 animate-pulse">오늘 마감 건 표시 중</span>}
             
             <span className="text-xs font-black bg-slate-700 text-indigo-300 px-2.5 py-0.5 rounded-full border border-slate-600">조회 {filteredSurveys.length}건</span>
@@ -393,31 +444,31 @@ const filteredSurveys = useMemo(() => {
                 const nudgedSurveysList = nudgedSurveys || [];
                 const isNudged = isTargeted && !isSubmitted && nudgedSurveysList.includes(s.id);
   
-                // 💡 [시간 마감 정밀 계산 및 D-Day 적용]
+                // 💡 [시간 마감 정밀 계산 및 완벽 차단 로직]
                 const now = new Date();
                 const deadline = new Date(`${s.endDate}T${s.endTime || '23:59'}:00`);
-                const isTimeOver = s.status === '진행중' && now > deadline;
+                const isTimeOver = now > deadline;
+                const isClosed = s.status === '완료' || isTimeOver;
                 
                 const todayDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
                 const endDateDate = new Date(deadline.getFullYear(), deadline.getMonth(), deadline.getDate());
                 const pureDaysDiff = Math.round((endDateDate.getTime() - todayDate.getTime()) / (1000 * 60 * 60 * 24));
                 
-                // 💡 D-Day 텍스트 설정 (D-3 ~ D-Day)
                 let dDayText = null;
-                if (!isTimeOver) {
+                if (!isClosed) {
                   if (pureDaysDiff === 0) dDayText = "D-Day";
                   else if (pureDaysDiff > 0 && pureDaysDiff <= 3) dDayText = `D-${pureDaysDiff}`;
                 }
                 const isUrgent = dDayText !== null;
-
+     
                 return (
                   <tr 
                     key={s.id} 
                     className={`transition-all ${
                       !isTargeted 
                         ? 'bg-slate-50 opacity-40 cursor-not-allowed grayscale' 
-                        : isTimeOver 
-                          ? 'bg-slate-100/70 opacity-50 grayscale text-slate-400 line-through-none' 
+                        : isClosed 
+                          ? 'bg-slate-100/70 opacity-50 grayscale text-slate-400' 
                           : isNudged 
                             ? 'bg-red-50/40 hover:bg-red-50' 
                             : 'hover:bg-slate-50/50'
@@ -431,23 +482,22 @@ const filteredSurveys = useMemo(() => {
                       <div className="flex flex-col gap-1 items-start">
                         <div className="flex items-center gap-2">
                           <button 
-                            onClick={() => isTargeted && !isSubmitted && !isTimeOver && handleOpenIntro(s)} 
-                            className={`font-black text-[12px] text-left line-clamp-1 ${!isTargeted || isTimeOver || isSubmitted ? 'text-slate-400 cursor-not-allowed' : 'text-slate-800 hover:text-blue-600 hover:underline'}`}
-                            disabled={!isTargeted || isSubmitted || isTimeOver}
+                            onClick={() => isTargeted && !isSubmitted && !isClosed && handleOpenIntro(s)} 
+                            className={`font-black text-[12px] text-left line-clamp-1 ${!isTargeted || isClosed || isSubmitted ? 'text-slate-400 cursor-not-allowed' : 'text-slate-800 hover:text-blue-600 hover:underline'}`}
+                            disabled={!isTargeted || isSubmitted || isClosed}
                           >
                             {s.title}
                           </button>
                           
-                          {/* 💡 기존 '마감임박' 대신 동적 D-Day 표시 */}
                           {dDayText && (
                             <span className="shrink-0 bg-red-600 text-white text-[8px] px-1.5 py-0.5 rounded font-black animate-pulse">
                               {dDayText}
                             </span>
                           )}
                           
-                          {isTimeOver && <span className="shrink-0 bg-slate-500 text-white text-[8px] px-1.5 py-0.5 rounded font-black">종료됨</span>}
+                          {isClosed && <span className="shrink-0 bg-slate-500 text-white text-[8px] px-1.5 py-0.5 rounded font-black">종료됨</span>}
                         </div>
-                        {isNudged && !isTimeOver && (
+                        {isNudged && !isClosed && (
                           <span className="inline-block bg-red-100 text-red-600 border border-red-200 text-[8px] px-2 py-0.5 rounded shadow-sm font-black animate-pulse">🚨 관리자 참여 요청</span>
                         )}
                       </div>
@@ -461,7 +511,7 @@ const filteredSurveys = useMemo(() => {
                     
                     <td className="text-center text-slate-500 text-[10px] px-3 py-4">
                       <div>{s.startDate} ~</div>
-                      <div className={isTimeOver ? 'text-red-400 font-bold' : isUrgent ? 'text-red-500 font-black' : ''}>
+                      <div className={isClosed ? 'text-red-400 font-bold' : isUrgent ? 'text-red-500 font-black' : ''}>
                         {s.endDate} <span className="text-[8px]">({s.endTime || '23:59'})</span>
                       </div>
                     </td>
@@ -475,9 +525,9 @@ const filteredSurveys = useMemo(() => {
                         <button disabled className="px-4 py-1.5 rounded-lg font-black text-[10px] bg-slate-200 text-slate-500 cursor-not-allowed">🚫 대상아님</button>
                       ) : isSubmitted ? (
                         <button onClick={() => alert(`✅ 제출 내역 정보: ${myResponses[s.id].submittedAt}`)} className="px-3 py-1.5 rounded-lg font-black text-[10px] bg-emerald-50 border border-emerald-100 text-emerald-700 hover:bg-emerald-100/50">📬 제출완료</button>
-                      ) : isTimeOver ? (
-                        <button disabled className="px-4 py-1.5 rounded-lg font-black text-[10px] bg-red-50 text-red-500 border border-red-200 cursor-not-allowed">
-                          ⏰ 기간종료
+                      ) : isClosed ? (
+                        <button disabled className="px-4 py-1.5 rounded-lg font-black text-[10px] bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed">
+                          {s.status === '완료' ? '🔒 마감됨' : '⏰ 기간종료'}
                         </button>
                       ) : (
                         <button 
@@ -561,48 +611,84 @@ const filteredSurveys = useMemo(() => {
      
                   {q.type === 'CHOICE_SINGLE' && (
                     <div className="space-y-2 pt-1">
-                      {q.options?.map((opt: any, oIdx: number) => (
-                        <label key={oIdx} className="flex items-center gap-3 p-3 bg-slate-50 border border-slate-200 rounded-xl cursor-pointer hover:bg-blue-50/40 transition-colors">
-                          <input type="radio" name={q.id} checked={formData[q.id] === opt.label} onChange={() => {
-                            handleInputChange(q.id, opt.label);
-                            if (opt.goToSectionId && opt.goToSectionId !== 'SUBMIT') setCurrentSectionId(opt.goToSectionId);
-                          }} className="w-3.5 h-3.5 accent-blue-600" />
-                          <div className="flex flex-col flex-1">
-                            <span className="font-bold text-slate-700">{opt.label}</span>
-                            {opt.referenceLink && <a href={opt.referenceLink} target="_blank" rel="noopener noreferrer" className="text-[9px] text-blue-500 hover:underline mt-0.5" onClick={e => e.stopPropagation()}>🔗 상세 명세 링크</a>}
-                            {opt.imageUrl && (
-                              <img 
-                                src={opt.imageUrl} 
-                                onClick={(e) => { e.preventDefault(); e.stopPropagation(); setZoomedImage(opt.imageUrl); }} 
-                                className="mt-2 max-h-24 object-contain rounded border bg-white w-fit cursor-pointer hover:ring-2 hover:ring-blue-500 transition-all hover:scale-[1.02]" 
-                                title="클릭하면 크게 보실 수 있습니다."
-                              />
-                            )}
-                          </div>
-                        </label>
-                      ))}
+                      {q.options?.map((opt: any, oIdx: number) => {
+                        const limit = opt.stockLimit;
+                        const usedCount = stockUsage[activeFullScreenSurvey.id]?.[`${q.id}_${opt.label}`] || 0;
+                        const isStockLimited = limit !== undefined && limit !== null && limit !== '';
+                        const remaining = isStockLimited ? Number(limit) - usedCount : null;
+                        const isOutOfStock = isStockLimited && remaining! <= 0;
+                        const isChecked = formData[q.id] === opt.label;
+                        
+                        return (
+                          <label key={oIdx} className={`flex items-center gap-3 p-3 bg-slate-50 border border-slate-200 rounded-xl transition-colors ${
+                            isOutOfStock 
+                            ? 'bg-slate-100 border-slate-200 opacity-60 cursor-not-allowed grayscale select-none' 
+                            : isChecked ? 'border-blue-500 bg-blue-50/30 cursor-pointer' : 'border-slate-200 hover:bg-blue-50/40 cursor-pointer'
+                          }`}>
+                            <input type="radio" name={q.id} disabled={isOutOfStock} checked={isChecked} onChange={() => {
+                              handleInputChange(q.id, opt.label);
+                              if (opt.goToSectionId && opt.goToSectionId !== 'SUBMIT') setCurrentSectionId(opt.goToSectionId);
+                            }} className="w-3.5 h-3.5 accent-blue-600" />
+                            <div className="flex flex-col flex-1">
+                              <span className={`font-bold ${isOutOfStock ? 'text-slate-400 line-through' : 'text-slate-700'}`}>{opt.label}</span>
+                              {isOutOfStock ? (
+                                <span className="text-[10px] w-fit mt-1 font-black bg-red-100 text-red-600 border border-red-200 px-1.5 py-0.5 rounded shadow-sm animate-pulse">SOLD OUT</span>
+                              ) : isStockLimited ? (
+                                <span className="text-[10px] w-fit mt-1 font-black text-pink-600 bg-pink-50 border border-pink-100 px-1.5 py-0.5 rounded shadow-sm">잔여: {remaining}개</span>
+                              ) : null}
+                              {opt.referenceLink && <a href={opt.referenceLink} target="_blank" rel="noopener noreferrer" className="text-[9px] text-blue-500 hover:underline mt-0.5 w-fit" onClick={e => e.stopPropagation()}>🔗 상세 명세 링크</a>}
+                              {opt.imageUrl && (
+                                <img 
+                                  src={opt.imageUrl} 
+                                  onClick={(e) => { e.preventDefault(); e.stopPropagation(); setZoomedImage(opt.imageUrl); }} 
+                                  className="mt-2 max-h-24 object-contain rounded border bg-white w-fit cursor-pointer hover:ring-2 hover:ring-blue-500 transition-all hover:scale-[1.02]" 
+                                  title="클릭하면 크게 보실 수 있습니다."
+                                />
+                              )}
+                            </div>
+                          </label>
+                        )
+                      })}
                     </div>
                   )}
      
                   {q.type === 'CHOICE_MULTI' && (
                     <div className="space-y-2 pt-1">
-                      {q.options?.map((opt: any, oIdx: number) => (
-                        <label key={oIdx} className="flex items-center gap-3 p-3 bg-slate-50 border border-slate-200 rounded-xl cursor-pointer hover:bg-blue-50/40 transition-colors">
-                          <input type="checkbox" checked={(formData[q.id] || []).includes(opt.label)} onChange={(e) => handleCheckboxChange(q.id, opt.label, e.target.checked)} className="w-3.5 h-3.5 accent-blue-600 rounded" />
-                          <div className="flex flex-col flex-1">
-                            <span className="font-bold text-slate-700">{opt.label}</span>
-                            {opt.referenceLink && <a href={opt.referenceLink} target="_blank" rel="noopener noreferrer" className="text-[9px] text-blue-500 hover:underline mt-0.5" onClick={e => e.stopPropagation()}>🔗 관련 링크</a>}
-                            {opt.imageUrl && (
-                              <img 
-                                src={opt.imageUrl} 
-                                onClick={(e) => { e.preventDefault(); e.stopPropagation(); setZoomedImage(opt.imageUrl); }} 
-                                className="mt-2 max-h-24 object-contain rounded border bg-white w-fit cursor-pointer hover:ring-2 hover:ring-blue-500 transition-all hover:scale-[1.02]" 
-                                title="클릭하면 크게 보실 수 있습니다."
-                              />
-                            )}
-                          </div>
-                        </label>
-                      ))}
+                      {q.options?.map((opt: any, oIdx: number) => {
+                        const limit = opt.stockLimit;
+                        const usedCount = stockUsage[activeFullScreenSurvey.id]?.[`${q.id}_${opt.label}`] || 0;
+                        const isStockLimited = limit !== undefined && limit !== null && limit !== '';
+                        const remaining = isStockLimited ? Number(limit) - usedCount : null;
+                        const isOutOfStock = isStockLimited && remaining! <= 0;
+                        const isChecked = (formData[q.id] || []).includes(opt.label);
+                        
+                        return (
+                          <label key={oIdx} className={`flex items-center gap-3 p-3 bg-slate-50 border border-slate-200 rounded-xl transition-colors ${
+                            isOutOfStock 
+                            ? 'bg-slate-100 border-slate-200 opacity-60 cursor-not-allowed grayscale select-none' 
+                            : isChecked ? 'border-blue-500 bg-blue-50/30 cursor-pointer' : 'border-slate-200 hover:bg-blue-50/40 cursor-pointer'
+                          }`}>
+                            <input type="checkbox" disabled={isOutOfStock} checked={isChecked} onChange={(e) => handleCheckboxChange(q.id, opt.label, e.target.checked)} className="w-3.5 h-3.5 accent-blue-600 rounded" />
+                            <div className="flex flex-col flex-1">
+                              <span className={`font-bold ${isOutOfStock ? 'text-slate-400 line-through' : 'text-slate-700'}`}>{opt.label}</span>
+                              {isOutOfStock ? (
+                                <span className="text-[10px] w-fit mt-1 font-black bg-red-100 text-red-600 border border-red-200 px-1.5 py-0.5 rounded shadow-sm animate-pulse">SOLD OUT</span>
+                              ) : isStockLimited ? (
+                                <span className="text-[10px] w-fit mt-1 font-black text-pink-600 bg-pink-50 border border-pink-100 px-1.5 py-0.5 rounded shadow-sm">잔여: {remaining}개</span>
+                              ) : null}
+                              {opt.referenceLink && <a href={opt.referenceLink} target="_blank" rel="noopener noreferrer" className="text-[9px] text-blue-500 hover:underline mt-0.5 w-fit" onClick={e => e.stopPropagation()}>🔗 관련 링크</a>}
+                              {opt.imageUrl && (
+                                <img 
+                                  src={opt.imageUrl} 
+                                  onClick={(e) => { e.preventDefault(); e.stopPropagation(); setZoomedImage(opt.imageUrl); }} 
+                                  className="mt-2 max-h-24 object-contain rounded border bg-white w-fit cursor-pointer hover:ring-2 hover:ring-blue-500 transition-all hover:scale-[1.02]" 
+                                  title="클릭하면 크게 보실 수 있습니다."
+                                />
+                              )}
+                            </div>
+                          </label>
+                        )
+                      })}
                     </div>
                   )}
      

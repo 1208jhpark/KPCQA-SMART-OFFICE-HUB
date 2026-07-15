@@ -2,6 +2,7 @@
   
 import React, { useState, useEffect, useMemo, Suspense } from 'react';
 import * as XLSX from 'xlsx';
+import { getKSTDateString } from '@/utils/dateUtils';
 
 // [UI 표준] 공통 HeaderLight 컴포넌트
 const HeaderLight = ({ title, count, children }: { title: string, count: number, children?: React.ReactNode }) => (
@@ -258,7 +259,7 @@ function DeptDistributionContent() {
     const targetList = selectedIds.size > 0 ? distributions.filter(d => selectedIds.has(d.id)) : finalFilteredList;
     if (targetList.length === 0) return alert("다운로드할 데이터가 없습니다.");
     const exportData = targetList.map((d, i) => ({
-      '지급신청일': new Date(d.createdAt).toISOString().split('T')[0],
+      '지급신청일': getKSTDateString(d.createdAt),
       '고객사(회사명)': d.client_name,
       '고객사 부서': d.client_dept,
       '물품명': d.item?.name || '(삭제됨)',
@@ -279,7 +280,7 @@ function DeptDistributionContent() {
     const targetList = selectedPurchaseIds.size > 0 ? purchases.filter(p => selectedPurchaseIds.has(p.id)) : finalFilteredPurchases;
     if (targetList.length === 0) return alert("다운로드할 입고 데이터가 없습니다.");
     const exportData = targetList.map((p, i) => ({
-      '입고일자': new Date(p.purchase_date).toISOString().split('T')[0],
+      '입고일자': getKSTDateString(p.purchase_date),
       '물품명': p.item?.name || '(삭제됨)',
       '단가(원)': p.unit_price,
       '수량': p.qty,
@@ -456,7 +457,7 @@ function DeptDistributionContent() {
                 <tr><td colSpan={12} className="p-16 text-center text-slate-400">부서 지급 내역 장부가 비어있습니다.</td></tr>
               ) : paginatedList.map((d, idx) => {
                 const isSelected = selectedIds.has(d.id);
-                const reqDate = new Date(d.createdAt).toISOString().split('T')[0];
+                const reqDate = getKSTDateString(d.createdAt);
                 
                 return (
                   <tr key={d.id} className={`transition-colors h-14 ${isSelected ? 'bg-indigo-50/50' : 'hover:bg-slate-50/50'}`}>
@@ -609,7 +610,7 @@ function DeptDistributionContent() {
                   <tr><td colSpan={11} className="p-16 text-center text-slate-400">부서에 배정된 매입 입고 데이터가 없습니다.</td></tr>
                 ) : paginatedPurchases.map((p, idx) => {
                   const isSelected = selectedPurchaseIds.has(p.id);
-                  const pDate = new Date(p.purchase_date).toISOString().split('T')[0];
+                  const pDate = getKSTDateString(p.purchase_date);
 
                   return (
                     <tr key={p.id} className={`transition-colors h-14 ${isSelected ? 'bg-emerald-50/50' : 'hover:bg-slate-50/50'}`}>

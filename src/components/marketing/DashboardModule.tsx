@@ -4,6 +4,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
+import { getKSTDateString } from '@/utils/dateUtils';
 
 const COLORS = ['#4f46e5', '#10b981', '#f59e0b', '#f43f5e', '#8b5cf6', '#64748b'];
 
@@ -307,7 +308,7 @@ export default function DashboardModule() {
                         <>
                           <td className="p-3 text-slate-600">{row.client_name}</td>
                           <td className="p-3 text-center text-indigo-600 font-black">{row.qty}EA</td>
-                          <td className="p-3 text-center text-slate-400 font-mono">{new Date(row.createdAt).toISOString().split('T')[0]}</td>
+                          <td className="p-3 text-center text-slate-400 font-mono">{getKSTDateString(row.createdAt)}</td>
                           <td className="p-3 text-center text-slate-600">
                              <span className="font-black block">{row.sender_name}</span>
                              <span className="text-[9px] text-slate-400 block mt-0.5">{row.sender_dept}</span>

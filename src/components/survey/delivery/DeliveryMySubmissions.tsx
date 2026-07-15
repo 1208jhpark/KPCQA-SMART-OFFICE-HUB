@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { saveAs } from 'file-saver';
+import { getKSTDateString } from '@/utils/dateUtils';
      
 // 🚀 [UI 표준] 전사 공통 헤더 컴포넌트
 const HeaderLight = ({ title, count, children }: { title: string, count: number, children?: React.ReactNode }) => (
@@ -216,21 +217,33 @@ export default function DeliveryMySubmissions() {
     if (isEditMode) {
       setFormData(myResponses[survey.id]?.answers || {});
     } else {
-      // 🚀 [핵심 안정화]: 버전 대조형 안전 임시 저장 로드 엔진
-      const draftRaw = localStorage.getItem(`delivery_draft_${survey.id}_${currentUser?.email}`);
+      // 🚀 이메일 로딩 지연에 따른 undefined 키 생성 방어
+      const safeEmail = currentUser?.email || 'unknown_user';
+      const draftKey = `delivery_draft_${survey.id}_${safeEmail}`;
+      const draftRaw = localStorage.getItem(draftKey);
+      
       if (draftRaw) {
         try {
           const draft = JSON.parse(draftRaw);
           // 서버 공고의 최종 수정일(updatedAt)과 임시저장 시점의 수정일 비교
           if (draft.updatedAt === survey.updatedAt) {
-            setFormData(draft.answers || {});
+            // 💡 폼 진입 시점에 사용자에게 이어서 작성할지 명시적으로 확인
+            if (confirm('💾 이전에 작성 중이던 임시 저장 내역이 있습니다.\n이어서 작성하시겠습니까?')) {
+              setFormData(draft.answers || {});
+            } else {
+              // 🧹 클린업: 사용자가 취소하면 오염된 찌꺼기 즉시 영구 삭제!
+              localStorage.removeItem(draftKey);
+              setFormData({});
+            }
           } else {
             console.warn("공고 내용이 변경되어 기존 임시 저장 데이터를 초기화합니다.");
             setFormData({});
-            localStorage.removeItem(`delivery_draft_${survey.id}_${currentUser?.email}`);
+            localStorage.removeItem(draftKey);
           }
         } catch (e) {
+          console.error("로컬 스토리지 데이터 오염 감지, 초기화 진행", e);
           setFormData({});
+          localStorage.removeItem(draftKey); // 🛡️ 파싱 에러 시 찌꺼기 확실히 제거
         }
       } else {
         setFormData({});
@@ -255,7 +268,8 @@ export default function DeliveryMySubmissions() {
       updatedAt: activeFullScreenSurvey.updatedAt,
       answers: formData
     };
-    localStorage.setItem(`delivery_draft_${activeFullScreenSurvey.id}_${currentUser?.email}`, JSON.stringify(payload));
+    const safeEmail = currentUser?.email || 'unknown_user';
+    localStorage.setItem(`delivery_draft_${activeFullScreenSurvey.id}_${safeEmail}`, JSON.stringify(payload));
     alert('💾 작성 중인 배송지 내용이 안전하게 임시 저장되었습니다.');
   };
   
@@ -289,7 +303,7 @@ export default function DeliveryMySubmissions() {
       });
      
       if (res.ok) {
-        const submittedDate = `${new Date().toISOString().split('T')[0]} ${new Date().toLocaleTimeString('ko-KR', { hour12: false })}`;
+        const submittedDate = `${getKSTDateString()} ${new Date().toLocaleTimeString('ko-KR', { hour12: false })}`;
         const currentCount = myResponses[activeFullScreenSurvey.id]?.revisionCount || 0;
         const newCount = activeFullScreenSurvey.isEditMode ? currentCount + 1 : currentCount;
         
@@ -304,7 +318,9 @@ export default function DeliveryMySubmissions() {
         };
         
         setMyResponses(nextResponses);
-        localStorage.removeItem(`delivery_draft_${activeFullScreenSurvey.id}_${currentUser?.email}`);
+        // 🧹 DB 제출 성공 시 로컬 임시 저장소 확실히 비우기 (오염 방지)
+        const safeEmail = currentUser?.email || 'unknown_user';
+        localStorage.removeItem(`delivery_draft_${activeFullScreenSurvey.id}_${safeEmail}`);
         
         alert('✅ 배송지 제출 및 수정 사항 반영이 완료되었습니다.');
         setActiveFullScreenSurvey(null);

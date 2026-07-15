@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation'; // 🚀 중복 임
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
 import * as XLSX from 'xlsx';
+import { getKSTDateString } from '@/utils/dateUtils';
 
 // 🚀 전사 표준: 공통 Header 컴포넌트
 const HeaderLight = ({ title, count, children }: { title: string, count: number, children?: React.ReactNode }) => (
@@ -141,7 +142,7 @@ export default function EquipmentClient({ categoryId, tabId, currentUser, master
   const addMonthsToDateStr = (dateStr: string | null | undefined, months: number | null | undefined) => {
     if (!dateStr || !months) return null;
     const d = new Date(dateStr); d.setMonth(d.getMonth() + Number(months));
-    return d.toISOString().split('T')[0];
+    return getKSTDateString(d);
   };
   
   const getLatestCalibDate = (histories: any[]) => {
@@ -217,7 +218,7 @@ export default function EquipmentClient({ categoryId, tabId, currentUser, master
     const ws = XLSX.utils.json_to_sheet(exportData);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "활성장비목록");
-    XLSX.writeFile(wb, `장비목록_${categoryId}_${new Date().toISOString().split('T')[0]}.xlsx`);
+    XLSX.writeFile(wb, `장비목록_${categoryId}_${getKSTDateString()}.xlsx`);
   };
   
   const handleExportArchiveExcel = () => {
@@ -238,11 +239,11 @@ export default function EquipmentClient({ categoryId, tabId, currentUser, master
     const ws = XLSX.utils.json_to_sheet(exportData);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "장비폐기함");
-    XLSX.writeFile(wb, `장비폐기함_${categoryId}_${archiveYear}_${new Date().toISOString().split('T')[0]}.xlsx`);
+    XLSX.writeFile(wb, `장비폐기함_${categoryId}_${archiveYear}_${getKSTDateString()}.xlsx`);
   };
   
   const handleAddEq = () => {
-    const today = new Date().toISOString().split('T')[0];
+    const today = getKSTDateString();
     const newEq = {
       id: `NEW-${Date.now()}`, asset_no: '', name: '', brand: '', model_name: '', qty: 1, spec_summary: '', department: currentUser?.unit?.unit_name || '',
       purchase_date: today, replace_cycle_mo: 0, last_replace_date: today, calib_cycle_mo: 12, calib_memo: '', thumbnail_url: '', histories: [], purpose: '', next_calib_date: null

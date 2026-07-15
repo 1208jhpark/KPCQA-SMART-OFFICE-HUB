@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { saveAs } from 'file-saver';
+import { getKSTDateString } from '@/utils/dateUtils';
   
 type QuestionType = 'CHOICE_SINGLE' | 'CHOICE_MULTI' | 'TEXT_SHORT' | 'TEXT_LONG' | 'SCALE' | 'FILE' | 'SEARCH_ADDRESS' | 'CALENDAR' | 'SECTION';
   
@@ -11,6 +12,7 @@ interface SurveyOption {
   imageUrl?: string;
   referenceLink?: string; 
   goToSectionId?: string;
+  stockLimit?: string; // 🚀 재고 제한 수량 프로퍼티 신설!
 }
   
 interface Question {
@@ -35,6 +37,7 @@ interface Question {
 export default function SurveyBuilderPage() {
   const [surveyId, setSurveyId] = useState<string | null>(null);
   const [questions, setQuestions] = useState<Question[]>([]);
+  const [loading, setLoading] = useState(true); // 🚀 로딩 상태 추가
   
   const dragItem = useRef<number | null>(null);
   const dragOverItem = useRef<number | null>(null);
@@ -55,14 +58,32 @@ export default function SurveyBuilderPage() {
     const id = params.get('id');
     setSurveyId(id);
   
-    // 🚀 [캐시 원천 차단]: 무조건 서버 DB의 최신 스키마를 불러오도록 보완
-    if (id) {
-      const ts = Date.now();
-      fetch(`/api/survey/general?t=${ts}`, { cache: 'no-store' })
-        .then(res => res.json())
-        .then(data => {
+    // 💡 1. ID 없이 진입 시 로딩 해제 후 즉시 차단
+    if (!id) {
+      setLoading(false);
+      alert('잘못된 접근입니다. 현황판에서 설문을 선택해 주세요.');
+      window.location.href = '/survey/general/admin/active-surveys';
+      return;
+    }
+  
+    const ts = Date.now();
+    fetch(`/api/survey/general?t=${ts}`, { cache: 'no-store' })
+      .then(res => {
+        if (!res.ok) throw new Error('API 로드 실패');
+        return res.json();
+      })
+      .then(data => {
+        if (Array.isArray(data)) {
           const targetSurvey = data.find((s: any) => s.id === id);
-          if (targetSurvey && targetSurvey.questions) {
+          
+          // 💡 2. ID는 있는데 DB에 설문이 존재하지 않을 때 차단 (빈 캔버스 방지)
+          if (!targetSurvey) {
+            alert('존재하지 않거나 삭제된 설문입니다.');
+            window.location.href = '/survey/general/admin/active-surveys';
+            return;
+          }
+
+          if (targetSurvey.questions) {
             try {
               const parsed = typeof targetSurvey.questions === 'string' 
                 ? JSON.parse(targetSurvey.questions) 
@@ -73,19 +94,25 @@ export default function SurveyBuilderPage() {
               const migratedData = targetArray.map((q: any) => ({
                 ...q,
                 options: q.options?.map((opt: any) => 
-                  typeof opt === 'string' ? { label: opt, imageUrl: '', referenceLink: '', goToSectionId: '' } : opt
+                  typeof opt === 'string' ? { label: opt, imageUrl: '', referenceLink: '', goToSectionId: '', stockLimit: '' } : opt
                 )
               }));
               setQuestions(migratedData);
             } catch (e) {
               console.error("문항 구조 역직렬화 실패:", e);
+              // 💡 3. 문항 파싱 실패 시 조용히 넘어가지 않고 명확한 알림
+              alert('문항 데이터를 불러오는 중 구조 오류가 발생했습니다. (데이터 손상 의심)');
             }
           }
-        })
-        .catch(err => console.error("DB 로드 실패:", err));
-    }
+        }
+      })
+      .catch(err => {
+        console.error("DB 로드 실패:", err);
+        alert('설문 데이터를 불러오는데 실패했습니다. 권한이나 네트워크 상태를 확인해 주세요.');
+      })
+      .finally(() => setLoading(false));
   }, []);
-  
+
   const handleSort = () => {
     if (dragItem.current === null || dragOverItem.current === null) return;
     const _questions = [...questions];
@@ -113,12 +140,10 @@ export default function SurveyBuilderPage() {
     return `${dateObj.getFullYear()}년 ${dateObj.getMonth() + 1}월 ${dateObj.getDate()}일`;
   };
   
-  // 🚀 [DB 정합성 코어]: 동시성 충돌로 인한 메타데이터 증발을 완벽 차단하는 원자적 저장 엔진
   const handleSaveSurvey = async () => {
     if (questions.length === 0) return alert('최소 1개 이상의 문항을 추가해주세요.');
     if (!surveyId) return alert('설문 ID가 유효하지 않습니다. 현황판에서 다시 진입해주세요.');
     
-    // 대용량 첨부파일/이미지로 인해 페이로드가 터지는 현상 사전 가드
     try {
       const serializedLength = JSON.stringify(questions).length;
       if (serializedLength > 4500000) {
@@ -129,21 +154,19 @@ export default function SurveyBuilderPage() {
     }
      
     try {
-      // 🚀 [캐시 원천 차단]: 덮어쓰기 전 최신 서버 상태 재수집 (이전 캐시 오염 방지)
       const ts = Date.now();
       const getRes = await fetch(`/api/survey/general?t=${ts}`, { cache: 'no-store' });
+      if (!getRes.ok) throw new Error('메타데이터 동기화 실패');
       const surveys = await getRes.json();
       const currentSurvey = surveys.find((s: any) => s.id === surveyId);
        
       if (!currentSurvey) return alert('해당 설문 공고를 시스템에서 찾을 수 없습니다.');
        
-      // 파싱 오류를 방지하기 위해 캔버스 상태의 배열 구조를 완전 데이터 포맷으로 정제
       const sanitizedQuestions = questions.map(q => ({
         ...q,
         options: q.options ? q.options.map(opt => ({ ...opt })) : undefined
       }));
      
-      // 실시간 메타데이터 스냅샷에 문항 데이터만 정밀 병합(Merge)하여 원장 무결성 보장
       const payload = { ...currentSurvey, questions: sanitizedQuestions };
      
       const res = await fetch('/api/survey/general', {
@@ -155,7 +178,9 @@ export default function SurveyBuilderPage() {
       if (res.ok) {
         alert('✅ 설문 신청 양식 문항이 DB에 성공적으로 저장되었습니다!');
       } else {
-        alert('❌ 서버 인프라 저장 처리 가드가 실패했습니다.');
+        // 🚀 API 에러 파싱 로직 추가
+        const errData = await res.json();
+        alert(`❌ 저장 실패: ${errData.error || '서버 인프라 저장 처리 가드가 실패했습니다.'}`);
       }
     } catch (error) {
       alert('❌ 네트워크 인프라 인터페이스 통신 오류가 발생했습니다.');
@@ -165,15 +190,33 @@ export default function SurveyBuilderPage() {
   const addQuestion = (type: QuestionType) => {
     setQuestions([...questions, { 
       id: `Q_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`, type, title: type === 'SECTION' ? '새로운 섹션 단락' : '', isRequired: false, 
-      options: type.includes('CHOICE') ? [{ label: '옵션 1', imageUrl: '', referenceLink: '', goToSectionId: '' }] : undefined, 
+      options: type.includes('CHOICE') ? [{ label: '옵션 1', imageUrl: '', referenceLink: '', goToSectionId: '', stockLimit: '' }] : undefined, 
       scaleMax: type === 'SCALE' ? 5 : undefined,
-      questionImageUrl: '', dummyDateValue: type === 'CALENDAR' ? new Date().toISOString().split('T')[0] : undefined,
+      questionImageUrl: '', dummyDateValue: type === 'CALENDAR' ? getKSTDateString() : undefined,
       description: '', referenceLink: '', goToSectionId: ''
     }]);
   };
   
   const updateQuestion = (id: string, field: keyof Question, value: any) => {
-    setQuestions(prev => prev.map(q => q.id === id ? { ...q, [field]: value } : q));
+    setQuestions(prev => prev.map(q => {
+      if (q.id !== id) return q;
+      
+      // 🚀 문항 타입 변경 시 불필요한 더미 데이터 찌꺼기 완전 청소 (Clean up)
+      if (field === 'type') {
+        const newType = value as QuestionType;
+        return {
+          ...q,
+          type: newType,
+          options: newType.includes('CHOICE') ? [{ label: '옵션 1', imageUrl: '', referenceLink: '', goToSectionId: '', stockLimit: '' }] : undefined,
+          scaleMax: newType === 'SCALE' ? 5 : undefined,
+          dummyDateValue: newType === 'CALENDAR' ? getKSTDateString() : undefined,
+          zipCode: undefined, roadAddress: undefined, detailAddress: undefined,
+          templateFileName: undefined, templateFileData: undefined
+        };
+      }
+      
+      return { ...q, [field]: value };
+    }));
   };
   
   const deleteQuestion = (id: string) => {
@@ -202,7 +245,7 @@ export default function SurveyBuilderPage() {
   };
   
   const addOption = (qId: string) => {
-    setQuestions(prev => prev.map(q => q.id === qId && q.options ? { ...q, options: [...q.options, { label: `옵션 ${q.options.length + 1}`, imageUrl: '', referenceLink: '', goToSectionId: '' }] } : q));
+    setQuestions(prev => prev.map(q => q.id === qId && q.options ? { ...q, options: [...q.options, { label: `옵션 ${q.options.length + 1}`, imageUrl: '', referenceLink: '', goToSectionId: '', stockLimit: '' }] } : q));
   };
   
   const removeOption = (qId: string, optIndex: number) => {
@@ -232,6 +275,14 @@ export default function SurveyBuilderPage() {
      
   const availableSections = questions.filter(q => q.type === 'SECTION');
   
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-slate-100 flex items-center justify-center font-sans">
+        <div className="text-xl font-black text-indigo-500 animate-pulse tracking-widest uppercase">Builder Engine Loading...</div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-slate-100 font-sans text-slate-900 pb-32 animate-fade-in relative text-[11px]">
       <div className="sticky top-0 z-50 bg-white border-b border-slate-200 px-8 py-4 flex justify-between items-center shadow-sm">
@@ -268,7 +319,7 @@ export default function SurveyBuilderPage() {
                   <input 
                     type="text" value={q.title} onChange={(e) => updateQuestion(q.id, 'title', e.target.value)}
                     className={`w-full bg-slate-50 p-3.5 rounded-xl border border-transparent focus:border-indigo-300 focus:bg-white outline-none font-bold ${q.type === 'SECTION' ? 'text-sm text-indigo-700 bg-indigo-50/50' : 'text-[13px]'}`}
-                    placeholder={q.type === 'SECTION' ? "구분용 대단락 섹션 타벨을 명시하세요" : "질문을 입력해주세요"}
+                    placeholder={q.type === 'SECTION' ? "구분용 대단락 섹션 라벨을 명시하세요" : "질문을 입력해주세요"}
                   />
                   
                   {q.type !== 'SECTION' && !['SCALE', 'FILE', 'SEARCH_ADDRESS', 'CALENDAR'].includes(q.type) && (
@@ -337,9 +388,12 @@ export default function SurveyBuilderPage() {
                     <div key={oIdx} className="flex flex-col gap-2 p-3 bg-slate-50 border border-slate-200 rounded-xl group/opt">
                       <div className="flex items-center gap-3">
                         <span className="text-slate-300 text-lg">{q.type === 'CHOICE_SINGLE' ? '○' : '□'}</span>
-                        <input type="text" value={opt.label} onChange={(e) => updateOption(q.id, oIdx, 'label', e.target.value)} className="flex-1 border-b border-transparent hover:border-slate-300 focus:border-indigo-500 outline-none py-1.5 text-xs text-slate-700 font-bold bg-transparent" />
+                        <input type="text" value={opt.label} onChange={(e) => updateOption(q.id, oIdx, 'label', e.target.value)} className="flex-1 border-b border-transparent hover:border-slate-300 focus:border-indigo-500 outline-none py-1.5 text-xs text-slate-700 font-bold bg-transparent min-w-[120px]" />
                         
-                        <input type="text" value={opt.referenceLink || ''} onChange={(e) => updateOption(q.id, oIdx, 'referenceLink', e.target.value)} className="w-40 px-2 py-1 bg-white border border-slate-200 rounded text-[10px] font-medium outline-none" placeholder="🔗 외부링크 URL" />
+                        {/* 🚀 재고(선착순) 제한 입력 폼 신설 */}
+                        <input type="number" min="0" value={opt.stockLimit || ''} onChange={(e) => updateOption(q.id, oIdx, 'stockLimit', e.target.value)} className="w-20 px-2 py-1.5 bg-white border border-pink-200 text-pink-600 focus:border-pink-500 rounded text-[10px] font-black outline-none" placeholder="재고(수량)" title="입력하지 않으면 무제한입니다." />
+                        
+                        <input type="text" value={opt.referenceLink || ''} onChange={(e) => updateOption(q.id, oIdx, 'referenceLink', e.target.value)} className="w-32 px-2 py-1.5 bg-white border border-slate-200 rounded text-[10px] font-medium outline-none" placeholder="🔗 외부링크 URL" />
      
                         <label className="cursor-pointer px-2.5 py-1.5 border border-slate-300 bg-white hover:bg-slate-100 rounded text-[10px] font-black text-slate-600 transition-colors shrink-0">
                           {opt.imageUrl ? '이미지 변경' : '이미지 추가'}
@@ -354,7 +408,7 @@ export default function SurveyBuilderPage() {
                       {availableSections.length > 0 && (
                         <div className="ml-8 flex items-center gap-2 border-t border-slate-200/60 pt-2 mt-1">
                           <span className="text-[10px] text-slate-400 font-bold">↳ 이 타겟 선택 시:</span>
-                          <select value={opt.goToSectionId || ''} onChange={(e) => updateOption(q.id, oIdx, 'goToSectionId', e.target.value)} className="p-1 border bg-white rounded text-[10px] outline-none text-indigo-600 font-bold">
+                          <select value={opt.goToSectionId || ''} onChange={(e) => updateOption(q.id, oIdx, 'goToSectionId', e.target.value)} className="p-1 border bg-white rounded text-[10px] outline-none text-indigo-600 font-bold cursor-pointer">
                             <option value="">다음 문항으로 계속 진행 (기본)</option>
                             <option value="SUBMIT">🏁 이대로 답변 제출 및 종료</option>
                             {availableSections.map(s => <option key={s.id} value={s.id}>➔ 섹션: {s.title || '제목 없음'} (으)로 점프</option>)}
@@ -401,7 +455,7 @@ export default function SurveyBuilderPage() {
               {availableSections.length > 0 && (
                  <div className="mt-4 pt-3 border-t border-slate-200/60">
                     <label className="text-[10px] font-black text-slate-500 flex items-center gap-1">↳ 이 항목 응답 후 다음 이동 경로:</label>
-                    <select value={q.goToSectionId || ''} onChange={(e) => updateQuestion(q.id, 'goToSectionId', e.target.value)} className="w-full mt-2 p-2.5 rounded-lg border border-slate-200 text-[11px] font-bold outline-none text-indigo-700 bg-slate-50 focus:bg-white focus:border-indigo-400 transition-colors">
+                    <select value={q.goToSectionId || ''} onChange={(e) => updateQuestion(q.id, 'goToSectionId', e.target.value)} className="w-full mt-2 p-2.5 rounded-lg border border-slate-200 text-[11px] font-bold outline-none text-indigo-700 bg-slate-50 focus:bg-white focus:border-indigo-400 transition-colors cursor-pointer">
                       <option value="">순서대로 다음 항목 진행 (기본)</option>
                       <option value="SUBMIT">🏁 설문 제출하기 (여기서 즉시 종료)</option>
                       {availableSections.filter(s => s.id !== q.id).map(s => <option key={s.id} value={s.id}>➔ 다음 섹션 점프: {s.title || '제목 없는 섹션'}</option>)}

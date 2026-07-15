@@ -5,6 +5,7 @@ import * as XLSX from 'xlsx';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
 import { useRouter } from 'next/navigation'; // 🚀 Next.js App Router 필수 임포트
+import { getKSTDateString } from '@/utils/dateUtils';
      
 export default function AuditModule() {
   const router = useRouter(); // 🚀 이 선언문이 있어야 router.push를 사용할 수 있습니다!
@@ -67,7 +68,7 @@ export default function AuditModule() {
     return roles.includes('LV_1');
   }, [currentUser]);
   
-  const todayStr = new Date().toISOString().split('T')[0];
+  const todayStr = getKSTDateString();
   const activeAudits = useMemo(() => audits.filter(a => a.status !== '보관됨').sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()), [audits]);
   const historyAuditsRaw = useMemo(() => audits.filter(a => a.status === '보관됨').sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()), [audits]);
   

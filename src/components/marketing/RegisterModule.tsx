@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useMemo, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import * as XLSX from 'xlsx'; 
+import { getKSTDateString } from '@/utils/dateUtils';
 
 // [UI 표준] 공통 HeaderLight 컴포넌트
 const HeaderLight = ({ title, count, children }: { title: string, count: number, children?: React.ReactNode }) => (
@@ -31,7 +32,7 @@ function RegisterContent() {
   const [showClientModal, setShowClientModal] = useState(false);
   const [clientSearch, setClientSearch] = useState('');
      
-  const todayStr = new Date().toISOString().split('T')[0];
+  const todayStr = getKSTDateString();
      
   const initialForm = { 
     item_id: '', 
@@ -215,7 +216,7 @@ function RegisterContent() {
     if (targetList.length === 0) return alert("다운로드할 데이터가 없습니다.");
      
     const exportData = targetList.map((d, i) => ({
-      '지급신청일': new Date(d.createdAt).toISOString().split('T')[0],
+      '지급신청일': getKSTDateString(d.createdAt),
       '고객사(회사명)': d.client_name,
       '고객사 부서': d.client_dept,
       '물품명': d.item?.name || '(삭제됨)',
@@ -454,7 +455,7 @@ function RegisterContent() {
                 <tr><td colSpan={12} className="p-16 text-center text-slate-400">데이터가 없습니다.</td></tr>
               ) : paginatedList.map((d, idx) => {
                 const isSelected = selectedIds.has(d.id);
-                const reqDate = new Date(d.createdAt).toISOString().split('T')[0];
+                const reqDate = getKSTDateString(d.createdAt);
 
                 return (
                   <tr key={d.id} className={`transition-colors h-14 ${isSelected ? 'bg-indigo-50/50' : 'hover:bg-slate-50/50'}`}>

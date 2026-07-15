@@ -3,7 +3,8 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import Link from 'next/link';
 import { saveAs } from 'file-saver';
-  
+import { getKSTDateString } from '@/utils/dateUtils'; // 🚀 이 줄을 추가합니다!
+
 export default function DeliveryDashboardContent() {
   const [surveys, setSurveys] = useState<any[]>([]);
   const [myResponses, setMyResponses] = useState<Record<string, any>>({}); 
@@ -166,11 +167,8 @@ export default function DeliveryDashboardContent() {
     return false;
   };
      
-  // 💡 [수정] UTC 오차 방지 및 오늘 마감 필터 연동
-  const todayStr = useMemo(() => {
-    const d = new Date();
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-  }, []);
+ // 💡 [수정] 전역 공통 KST 함수 적용 (오전 9시 이전 오차 완벽 방지)
+ const todayStr = getKSTDateString();
      
  // 🚀 수정된 visibleSurveys (관리자가 마감시킨 '완료' 건은 제외)
   const visibleSurveys = useMemo(() => {
@@ -261,13 +259,25 @@ export default function DeliveryDashboardContent() {
      
   const handleStartSurvey = () => {
     const surveyId = introModalSurvey.id;
-    // 🚀 임시 저장은 UX를 위해 로컬 스토리지를 제한적으로 사용 (폼 기입 데이터에만 한정)
-    const draftData = localStorage.getItem(`delivery_draft_${surveyId}_${currentUserEmail}`);
+    // 🚀 이메일 로딩 지연에 따른 undefined 키 생성 방어
+    const safeEmail = currentUserEmail || 'unknown_user';
+    const draftKey = `delivery_draft_${surveyId}_${safeEmail}`;
+    
+    const draftData = localStorage.getItem(draftKey);
     
     if (draftData) {
       if (confirm('💾 이전에 작성 중이던 주소지 임시 저장 내역이 있습니다.\n이어서 작성하시겠습니까?')) {
-        setFormData(JSON.parse(draftData));
+        try {
+          // 🛡️ 파싱 에러 방어막: 데이터가 오염되었을 경우 화면 다운 방지
+          setFormData(JSON.parse(draftData));
+        } catch (e) {
+          console.error("로컬 스토리지 데이터 오염 감지, 초기화 진행", e);
+          localStorage.removeItem(draftKey);
+          setFormData({});
+        }
       } else {
+        // 🧹 클린업: 사용자가 이어서 안 한다고 하면 찌꺼기 즉시 영구 삭제!
+        localStorage.removeItem(draftKey);
         setFormData({});
       }
     } else {
@@ -293,11 +303,13 @@ export default function DeliveryDashboardContent() {
     setIntroModalSurvey(null);
   };
      
-  const handleSaveDraft = () => {
-    if (!activeFullScreenSurvey) return;
-    localStorage.setItem(`delivery_draft_${activeFullScreenSurvey.id}_${currentUserEmail}`, JSON.stringify(formData));
-    alert('💾 현재까지 작성한 배송지 내역이 임시 저장되었습니다.');
-  };
+// --- 중간 저장 함수 ---
+const handleSaveDraft = () => {
+  if (!activeFullScreenSurvey) return;
+  const safeEmail = currentUserEmail || 'unknown_user';
+  localStorage.setItem(`delivery_draft_${activeFullScreenSurvey.id}_${safeEmail}`, JSON.stringify(formData));
+  alert('💾 현재까지 작성한 배송지 내역이 임시 저장되었습니다.');
+};
   
   
   const handleSubmitForm = async () => {
@@ -349,7 +361,8 @@ export default function DeliveryDashboardContent() {
         
         setMyResponses(nextResponses);
         // DB 제출 성공 시 로컬 임시 저장소 확실히 비우기
-        localStorage.removeItem(`delivery_draft_${activeFullScreenSurvey.id}_${currentUserEmail}`); 
+        const safeEmail = currentUserEmail || 'unknown_user';
+        localStorage.removeItem(`delivery_draft_${activeFullScreenSurvey.id}_${safeEmail}`);
         
         alert(`🚚 정상적으로 접수되었습니다.\n운영 부서에서 확인 후 순차 배송을 시작합니다.`);
         setActiveFullScreenSurvey(null);
