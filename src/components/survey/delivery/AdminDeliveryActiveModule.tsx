@@ -105,27 +105,48 @@ export default function AdminDeliveryActiveModule() {
     fetchOrgData();
   }, []);
      
-  const pendingAlwaysApprovals = useMemo(() => {
-    const pendings: any[] = [];
-    surveys.filter(s => s.deliveryType === 'ALWAYS').forEach(survey => {
-      users.forEach(user => {
+// 🚀 1. 함수를 먼저 정의합니다! (여기로 이동 완료)
+const isOrgAllowed = (targetDepts: string[], userDeptName: string) => {
+  if (targetDepts.includes('전사')) return true;
+  if (targetDepts.includes(userDeptName)) return true;
+  let currentUnit = unitsList.find(u => u.unit_name === userDeptName);
+  while (currentUnit && currentUnit.parent_id) {
+    const parentUnit = unitsList.find(u => u.id === currentUnit.parent_id);
+    if (parentUnit && targetDepts.includes(parentUnit.unit_name)) return true;
+    currentUnit = parentUnit;
+  }
+  return false;
+};
+
+// 🚀 2. 이제 에러 없이 필터 함수를 안전하게 사용할 수 있습니다.
+const pendingAlwaysApprovals = useMemo(() => {
+  const pendings: any[] = [];
+  surveys.filter(s => s.deliveryType === 'ALWAYS').forEach(survey => {
+    const targetDepts = survey.target ? survey.target.split(',').map((t: string) => t.trim()) : ['전사'];
+    users.forEach(user => {
+      // 여기서 isOrgAllowed를 호출함
+      if (isOrgAllowed(targetDepts, user.dept)) {
         const resp = responses[`${survey.id}_${user.email}`];
         if (resp && resp.isDone && !resp.isApproved) pendings.push({ survey, user, resp });
-      });
+      }
     });
-    return pendings.sort((a, b) => new Date(b.resp.fullDate).getTime() - new Date(a.resp.fullDate).getTime());
-  }, [surveys, users, responses]);
+  });
+  return pendings.sort((a, b) => new Date(b.resp.fullDate).getTime() - new Date(a.resp.fullDate).getTime());
+}, [surveys, users, responses, unitsList]);
      
   const pendingPeriodApprovals = useMemo(() => {
     const pendings: any[] = [];
     surveys.filter(s => s.deliveryType === 'PERIOD').forEach(survey => {
+      const targetDepts = survey.target ? survey.target.split(',').map((t: string) => t.trim()) : ['전사'];
       users.forEach(user => {
-        const resp = responses[`${survey.id}_${user.email}`];
-        if (resp && resp.isDone && !resp.isApproved) pendings.push({ survey, user, resp });
+        if (isOrgAllowed(targetDepts, user.dept)) {
+          const resp = responses[`${survey.id}_${user.email}`];
+          if (resp && resp.isDone && !resp.isApproved) pendings.push({ survey, user, resp });
+        }
       });
     });
     return pendings.sort((a, b) => new Date(b.resp.fullDate).getTime() - new Date(a.resp.fullDate).getTime());
-  }, [surveys, users, responses]);
+  }, [surveys, users, responses, unitsList]);
    
   const stats = useMemo(() => ({
     activeCount: surveys.filter(s => s.status === '진행중').length,
@@ -157,17 +178,7 @@ export default function AdminDeliveryActiveModule() {
   const toggleDept = (dept: string) => { const next = new Set(collapsedDepts); next.has(dept) ? next.delete(dept) : next.add(dept); setCollapsedDepts(next); };
   const collapseAll = () => setCollapsedDepts(new Set(Object.keys(groupedUsers)));
   const expandAll = () => { setCollapsedDepts(new Set()); setMatrixUserFilter({ surveyId: '', type: 'ALL' }); };
-  const isOrgAllowed = (targetDepts: string[], userDeptName: string) => {
-    if (targetDepts.includes('전사')) return true;
-    if (targetDepts.includes(userDeptName)) return true;
-    let currentUnit = unitsList.find(u => u.unit_name === userDeptName);
-    while (currentUnit && currentUnit.parent_id) {
-      const parentUnit = unitsList.find(u => u.id === currentUnit.parent_id);
-      if (parentUnit && targetDepts.includes(parentUnit.unit_name)) return true;
-      currentUnit = parentUnit;
-    }
-    return false;
-  };
+ 
      
   const handleCopyUnsubmittedEmails = (survey: any) => {
     const targetDepts = survey.target.split(',').map((t: string) => t.trim());
@@ -235,7 +246,9 @@ export default function AdminDeliveryActiveModule() {
     const survey = surveys.find(s => s.id === id);
     if (!survey) return;
      
+    // 🚀 이 변수 선언이 지워져서 에러가 났던 것입니다! 복구 완료.
     let updatedSurvey = { ...survey };
+    
     if (action === 'UP') updatedSurvey = { ...updatedSurvey, status: '진행중', postDate: todayStr, hasBeenPublished: true };
     if (action === 'DOWN') updatedSurvey = { ...updatedSurvey, status: '게시중단' };
     if (action === 'FORCE_COMPLETE') {
@@ -243,7 +256,7 @@ export default function AdminDeliveryActiveModule() {
       updatedSurvey = { ...updatedSurvey, status: '완료' };
     }
     if (action === 'ARCHIVE') {
-      alert('보관함으로 이동되었습니다.');
+      if (!confirm("이 공고를 보관함으로 이동하시겠습니까?")) return; // 🚀 확인창 추가
       updatedSurvey = { ...updatedSurvey, status: '보관됨' };
     }
      
@@ -253,15 +266,20 @@ export default function AdminDeliveryActiveModule() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(updatedSurvey)
       });
+      
       if (res.ok) {
         const savedSurvey = await res.json();
         setSurveys(prev => prev.map(s => s.id === id ? savedSurvey : s));
+        if (action === 'ARCHIVE') alert('✅ 보관함으로 성공적으로 이동되었습니다.'); // 🚀 성공 시 얼럿
+      } else {
+        alert('❌ 서버 처리 중 오류가 발생했습니다.');
       }
     } catch (e) {
       console.error("Status Change Error:", e);
+      alert('❌ 네트워크 오류가 발생했습니다.');
     }
   };
-     
+  
   const handleNudge = (surveyId: string) => {
     const survey = surveys.find(s => s.id === surveyId);
     const targetDepts = survey.target.split(',').map((t: string) => t.trim());
@@ -284,7 +302,8 @@ export default function AdminDeliveryActiveModule() {
       const res = await fetch('/api/survey/delivery', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(previewModal)
+        // 🚀 수정 포인트: updatedSurvey -> previewModal 로 변경!
+        body: JSON.stringify(previewModal) 
       });
       if (res.ok) {
         const savedSurvey = await res.json();
@@ -298,33 +317,13 @@ export default function AdminDeliveryActiveModule() {
     }
   };
      
-  const handleSaveEdit = async (e: React.FormEvent) => {
+  const handleSaveEdit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    const targetNames = editModal.target.split(',').map((s: string) => s.trim()).filter(Boolean);
-    let expandedDepts = ['전사'];
      
-    if (!targetNames.includes('전사')) {
-      const result = new Set<string>();
-      const addSubDepts = (parentId: string) => {
-        unitsList.filter(u => u.parent_id === parentId).forEach(u => {
-          result.add(u.unit_name);
-          addSubDepts(u.id);
-        });
-      };
-      unitsList.forEach(u => {
-        if (targetNames.includes(u.unit_name)) {
-          result.add(u.unit_name);
-          addSubDepts(u.id);
-        }
-      });
-      expandedDepts = Array.from(result);
-    }
-     
-    // 💡 [수정됨] DB로 보낼 때 endTime이 비어있으면 23:59로 묶어서 보냄
+    // 🚀 [스키마 싱크]: 불필요한 allowedDepts 계산 로직 제거. (대상 부서는 target 필드 하나로 관리됨)
     const finalEditData = { 
       ...editModal, 
       endTime: editModal.endTime || '23:59', 
-      allowedDepts: expandedDepts,
       isAnonymous: editModal.isAnonymous === true || editModal.isAnonymous === 'true'
     };
      
@@ -947,9 +946,10 @@ const handleDownloadZipAll = async () => {
                                     </div>
                                     <div className="flex flex-col items-center justify-center h-full gap-1 p-1 text-center">
                                       {(() => {
-                                        const revCount = resp.revisionCount || 0;
-                                        const isModified = revCount > 0;
-                                        const submitLabel = isModified ? `${revCount}차수정(${resp.date})` : `최초제출(${resp.date})`;
+                                        // 🚀 [로직 픽스]: API가 최초 제출을 1로 기록하므로, 2이상일 때를 '수정'으로 판별
+                                        const revCount = resp.revisionCount || 1;
+                                        const isModified = revCount > 1;
+                                        const submitLabel = isModified ? `${revCount - 1}차수정(${resp.date})` : `최초제출(${resp.date})`;
                                         const submitColor = isModified ? 'text-red-600 font-extrabold' : 'text-slate-500 font-medium';
      
                                         return (
@@ -1267,7 +1267,6 @@ const handleDownloadZipAll = async () => {
                       const res = await fetch('/api/survey/delivery', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        // 💡 (수정됨) 서버로 targetEmails 데이터를 함께 쏴줍니다.
                         body: JSON.stringify({ 
                           action: 'NUDGE', 
                           surveyId: nudgeModal.surveyId,
@@ -1277,6 +1276,12 @@ const handleDownloadZipAll = async () => {
                       });
                       
                       if (res.ok) {
+                        // 🚀 [상태 동기화 추가]: 독촉한 내역을 로컬 state에도 즉시 반영하여 직원 화면과 매끄럽게 연동되도록 함
+                        setSurveys(prev => prev.map(s => 
+                          s.id === nudgeModal.surveyId 
+                            ? { ...s, nudgedUsers: nudgeModal.targetEmails } 
+                            : s
+                        ));
                         alert(`✅ 미참여자 ${nudgeModal.count}명에게 독촉 알림이 전송되었습니다.`);
                         setNudgeModal(null);
                       } else {
@@ -1286,7 +1291,7 @@ const handleDownloadZipAll = async () => {
                       console.error(e);
                       alert('❌ 네트워크 오류가 발생했습니다.');
                     }
-                  }} 
+                  }}
                   className="flex-[1.5] py-3 bg-red-500 text-white rounded-xl text-xs font-black shadow-lg shadow-red-200 hover:bg-red-600 transition-all"
                 >
                   🚀 즉시 알림 발송

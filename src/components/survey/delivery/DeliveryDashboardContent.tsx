@@ -77,49 +77,39 @@ export default function DeliveryDashboardContent() {
           setAllUsers(mappedUsers);
         }
      
-        const respRes = await fetch('/api/survey/delivery?t=' + ts, {
+        // 🚀 1. 내 제출 내역 전용 호출
+        const myRespRes = await fetch('/api/survey/delivery?t=' + ts, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ action: 'GET_RESPONSES' }),
           cache: 'no-store'
-        });
+        }).catch(() => null);
         
-        if (respRes.ok) {
-          const dbResponses = await respRes.json();
+        // 🚀 2. 전사 재고 및 참여 통계 호출
+        const statsRes = await fetch('/api/survey/delivery?t=' + ts, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'GET_STATS' }),
+          cache: 'no-store'
+        }).catch(() => null);
+
+        if (myRespRes && myRespRes.ok) {
+          const myDbResponses = await myRespRes.json();
           const nextMyRes: Record<string, any> = {};
-          const nextAllRes: Record<string, any> = {};
-          
-          const usageMap: Record<string, Record<string, number>> = {};
-          
-          dbResponses.forEach((r: any) => {
-            nextAllRes[`${r.surveyId}_${r.userEmail}`] = true;
-            
-            if (r.answers) {
-              if (!usageMap[r.surveyId]) usageMap[r.surveyId] = {};
-              Object.entries(r.answers).forEach(([qId, val]) => {
-                if (typeof val === 'string') {
-                  const key = `${qId}_${val}`;
-                  usageMap[r.surveyId][key] = (usageMap[r.surveyId][key] || 0) + 1;
-                } else if (Array.isArray(val)) {
-                  val.forEach((item: string) => {
-                    const key = `${qId}_${item}`;
-                    usageMap[r.surveyId][key] = (usageMap[r.surveyId][key] || 0) + 1;
-                  });
-                }
-              });
-            }
-     
+          myDbResponses.forEach((r: any) => {
             if (userData && r.userEmail === userData.email) {
-              nextMyRes[r.surveyId] = {
-                submittedAt: r.submittedAt,
-                answers: r.answers
-              };
+              nextMyRes[r.surveyId] = { submittedAt: r.submittedAt, answers: r.answers };
             }
           });
-          
-          setAllResponses(nextAllRes);
-          setStockUsage(usageMap); 
           setMyResponses(nextMyRes);
+        }
+
+        if (statsRes && statsRes.ok) {
+          const statsData = await statsRes.json();
+          setStockUsage(statsData.stockUsage || {}); 
+          setAllResponses(statsData.participation || {}); // { [surveyId]: number (제출 건수) }
+        } else {
+          alert('⚠️ 전사 참여율 및 재고 정보를 동기화하지 못했습니다.');
         }
      
         const surveyRes = await fetch('/api/survey/delivery?t=' + ts, { cache: 'no-store' });
@@ -322,19 +312,53 @@ const handleSaveDraft = () => {
       return;
     }
     
-    for (const q of activeFullScreenSurvey.questions) {
-      if (q.isRequired) {
-        if (q.type === 'SEARCH_ADDRESS') {
-          if (!formData[`${q.id}_zip`] || !formData[`${q.id}_road`] || !formData[`${q.id}_detail`]) {
-            alert(`📍 [${q.title}]의 우편번호 검색 및 상세주소를 완벽히 기입해 주세요.`);
-            return;
-          }
-        } else if (!formData[q.id] || formData[q.id].length === 0) {
-          alert(`✏️ [${q.title}] 문항은 필수 기입 항목입니다.`);
-          return;
-        }
-      }
-    }
+   // 🚀 [버그 픽스]: 현재 답변 상태를 기반으로 눈에 보이는 문항 목록만 추출 (검증 불일치 해소)
+   const visibleQuestions: any[] = [];
+   const questions = activeFullScreenSurvey.questions || [];
+   let currentIndex = 0;
+   
+   while (currentIndex < questions.length) {
+     const q = questions[currentIndex];
+     visibleQuestions.push(q);
+     const userAns = formData[q.id];
+     
+     let nextSectionId: string | undefined = undefined;
+     if (q.type === 'CHOICE_SINGLE' && userAns) {
+       const selectedOpt = q.options?.find((o: any) => o.label === userAns);
+       if (selectedOpt?.goToSectionId) nextSectionId = selectedOpt.goToSectionId;
+     }
+     
+     // 🚀 [조기 점프 방지]: 유저의 응답(텍스트, 날짜 등)이 존재할 때만 문항 레벨 분기 가드 발동
+     if (!nextSectionId && q.goToSectionId && userAns !== undefined && userAns !== null && userAns !== '') {
+       nextSectionId = q.goToSectionId;
+     }
+     
+     if (nextSectionId) {
+       if (nextSectionId === 'SUBMIT') break;
+       const targetIdx = questions.findIndex((item: any) => item.id === nextSectionId);
+       if (targetIdx !== -1 && targetIdx > currentIndex) {
+         currentIndex = targetIdx;
+         continue;
+       }
+     }
+     currentIndex++;
+   }
+
+   // 🚀 눈에 보이는 필수 문항만 검사 (SECTION은 무조건 패스)
+   for (const q of visibleQuestions) {
+     if (q.type === 'SECTION') continue;
+     if (q.isRequired) {
+       if (q.type === 'SEARCH_ADDRESS') {
+         if (!formData[`${q.id}_zip`] || !formData[`${q.id}_road`] || !formData[`${q.id}_detail`]) {
+           alert(`📍 [${q.title}]의 우편번호 검색 및 상세주소를 완벽히 기입해 주세요.`);
+           return;
+         }
+       } else if (!formData[q.id] || formData[q.id].length === 0) {
+         alert(`✏️ [${q.title}] 문항은 필수 기입 항목입니다.`);
+         return;
+       }
+     }
+   }
      
     if (!confirm('배송지 명세를 최종 접수하시겠습니까?\n제출 후에는 게시 마감전까지 나의 참여 이력에서 수정할 수 있습니다.')) return;
      
@@ -352,29 +376,56 @@ const handleSaveDraft = () => {
         })
       });
       
+      // 🚀 [여기서부터 붙여넣기] ---------------------------------------------
       if (res.ok) {
-        const submittedDate = `${todayStr} ${new Date().toLocaleTimeString()}`;
+        const submittedDate = `${todayStr} ${new Date().toLocaleTimeString('ko-KR', {hour12: false})}`;
+        const isAlreadySubmitted = Boolean(myResponses[activeFullScreenSurvey.id]);
+        
         const nextResponses = {
           ...myResponses,
           [activeFullScreenSurvey.id]: { submittedAt: submittedDate, answers: formData }
         };
-        
         setMyResponses(nextResponses);
-        // DB 제출 성공 시 로컬 임시 저장소 확실히 비우기
+        
+        // 🚀 1. 낙관적 업데이트: 화면에서 즉시 참여자 수 +1 (중복 방지)
+        setAllResponses(prev => ({
+          ...prev,
+          [activeFullScreenSurvey.id]: (prev[activeFullScreenSurvey.id] || 0) + (isAlreadySubmitted ? 0 : 1)
+        }));
+        
+        // DB 제출 성공 시 로컬 임시 저장소 비우기
         const safeEmail = currentUserEmail || 'unknown_user';
         localStorage.removeItem(`delivery_draft_${activeFullScreenSurvey.id}_${safeEmail}`);
         
         alert(`🚚 정상적으로 접수되었습니다.\n운영 부서에서 확인 후 순차 배송을 시작합니다.`);
         setActiveFullScreenSurvey(null);
+        
+        // 🚀 2. 서버 원장 통계 백그라운드 갱신 (재고 및 참여율 실시간 동기화)
+        fetch('/api/survey/delivery', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'GET_STATS' }),
+          cache: 'no-store'
+        })
+        .then(r => r.ok ? r.json() : null)
+        .then(statsData => {
+          if (statsData) {
+            if (statsData.stockUsage) setStockUsage(statsData.stockUsage);
+            if (statsData.participation) setAllResponses(statsData.participation);
+          }
+        })
+        .catch(e => console.error("통계 동기화 실패", e));
+        
       } else {
         alert('❌ 제출에 실패했습니다. 서버 상태를 확인하세요.');
       }
+      // 🚀 [여기까지 붙여넣기] -----------------------------------------------
     } catch (e) {
       console.error(e);
       alert('❌ 네트워크 오류가 발생했습니다.');
     }
-  };
-     
+  }; // 👈 썰려 나갔던 꼬리표 복구 완료!
+  
   if (loading) return <div className="p-20 text-center font-black text-blue-600 animate-pulse text-xl uppercase tracking-widest">Delivery Dashboard Syncing...</div>;
      
   return (
@@ -509,17 +560,18 @@ const handleSaveDraft = () => {
               {paginatedSurveys.length === 0 ? (
                 <tr><td colSpan={11} className="py-24 text-center text-slate-400 font-bold bg-slate-50/30">조건에 맞는 배달/조사 내역이 없습니다.</td></tr>
               ) : paginatedSurveys.map((s, idx) => {
-                let done = 0, total = 0;
-     
+                // 🚀 프론트 대상자 + 서버 제출자 결합
+                let total = 0;
                 if (allUsers.length > 0) {
                   const targetUsers = allUsers.filter(u => checkHierarchyTarget(s.target, u.dept));
                   total = targetUsers.length;
-                  done = targetUsers.filter(u => allResponses[`${s.id}_${u.email}`]).length;
                 }
+                const done = allResponses[s.id] || 0;
+                const rate = total > 0 ? Math.round((done / total) * 100) : 0;
      
-                const rate = total > 0 ? Math.round((done/total)*100) : 0;
                 const isSubmitted = Boolean(myResponses[s.id]);
-                const isTargeted = checkHierarchyTarget(s.target, currentUser?.unit?.unit_name);                
+                // 🚀 관리자(LV_1)는 묻지도 따지지도 않고 접근 가능하게 우회
+                const isTargeted = currentUser?.roles?.includes('LV_1') || checkHierarchyTarget(s.target, currentUser?.unit?.unit_name);                
                 const isNudged = isTargeted && !isSubmitted && nudgedSurveys.includes(s.id);
                 
                 // 💡 [시간 및 날짜 정밀 계산]
@@ -736,11 +788,65 @@ const handleSaveDraft = () => {
               {activeFullScreenSurvey.description && <p className="text-sm font-bold text-slate-500 leading-relaxed whitespace-pre-wrap text-left">{activeFullScreenSurvey.description}</p>}
             </div>
      
-            {activeFullScreenSurvey.questions.map((q: any, qIdx: number) => (
-              <div key={q.id} className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm space-y-4 relative">
-                <label className="block text-base font-black text-slate-800">
-                  <span className="text-blue-500 mr-2">{qIdx + 1}.</span> {q.title} {q.isRequired && <span className="text-red-500 ml-1">*</span>}
-                </label>
+            {(() => {
+              // 🚀 동적 분기 흐름 제어 계산 엔진
+              const visibleQuestions: any[] = [];
+              const questions = activeFullScreenSurvey.questions || [];
+              
+              let currentIndex = 0;
+              while (currentIndex < questions.length) {
+                const q = questions[currentIndex];
+                visibleQuestions.push(q);
+
+                const userAns = formData[q.id];
+                
+                // 1. 단일 선택형 옵션 분기 검사
+                let nextSectionId: string | undefined = undefined;
+                if (q.type === 'CHOICE_SINGLE' && userAns) {
+                  const selectedOpt = q.options?.find((o: any) => o.label === userAns);
+                  if (selectedOpt?.goToSectionId) {
+                    nextSectionId = selectedOpt.goToSectionId;
+                  }
+                }
+
+                // 🚀 [조기 점프 방지]: 문항 레벨 분기도 응답이 입력된 순간에만 점프 구동
+                if (!nextSectionId && q.goToSectionId && userAns !== undefined && userAns !== null && userAns !== '') {
+                  nextSectionId = q.goToSectionId;
+                }
+
+                // 분기 조건 충족 시 점프(Warp) 처리
+                if (nextSectionId) {
+                  if (nextSectionId === 'SUBMIT') {
+                    break; // 즉시 종료
+                  } else {
+                    const targetIdx = questions.findIndex((item: any) => item.id === nextSectionId);
+                    if (targetIdx !== -1 && targetIdx > currentIndex) {
+                      currentIndex = targetIdx;
+                      continue;
+                    }
+                  }
+                }
+                currentIndex++;
+              }
+
+              // 계산된 활성화 문항들만 최종 렌더링
+              return visibleQuestions.map((q, qIdx) => (
+                <div key={q.id} className={`bg-white p-8 rounded-3xl border border-slate-200 shadow-sm space-y-4 relative ${q.type === 'SECTION' ? 'border-l-8 border-l-teal-600 bg-teal-50/10' : ''}`}>
+                  <label className="block text-base font-black text-slate-800">
+                    <span className="text-blue-500 mr-2">{qIdx + 1}.</span> {q.title} {q.isRequired && <span className="text-red-500 ml-1">*</span>}
+                  </label>
+
+                {/* 🚀 [연동 갭 해결 1]: 빌더에서 등록한 문항별 안내 이미지 표출 */}
+                {q.questionImageUrl && (
+                  <div className="my-3">
+                    <img 
+                      src={q.questionImageUrl} 
+                      alt="문항 안내 이미지" 
+                      className="max-h-64 rounded-2xl border border-slate-200 object-contain shadow-sm cursor-zoom-in"
+                      onClick={() => setZoomedImage(q.questionImageUrl)}
+                    />
+                  </div>
+                )}
                 
                 {(q.description || q.referenceLink) && (
                   <div className="p-4 bg-slate-50 border border-slate-100 rounded-xl space-y-2 mb-4">
@@ -789,8 +895,22 @@ const handleSaveDraft = () => {
                             className="accent-blue-600 w-4 h-4 disabled:opacity-50" 
                           />
                           <div className="flex flex-col gap-1.5 flex-1">
-                            <div className="flex items-center gap-2">
+                          <div className="flex items-center gap-2 flex-wrap">
                               <span className={`font-bold text-sm whitespace-pre-wrap text-left ${isOutOfStock ? 'text-slate-400 line-through' : 'text-slate-700'}`}>{opt.label}</span>
+                              
+                              {/* 🚀 [연동 갭 해결 2]: 사은품/물품 옵션별 개별 외부 참조 링크 표출 */}
+                              {opt.referenceLink && (
+                                <a 
+                                  href={opt.referenceLink} 
+                                  target="_blank" 
+                                  rel="noopener noreferrer" 
+                                  onClick={(e) => e.stopPropagation()} // 라벨 클릭으로 인한 체크방지
+                                  className="inline-flex items-center gap-1 text-[10px] text-blue-500 hover:text-blue-700 hover:underline bg-blue-50 border border-blue-200 px-1.5 py-0.5 rounded font-black shrink-0"
+                                >
+                                  🔗 상세정보
+                                </a>
+                              )}
+
                               {isOutOfStock ? (
                                 <span className="text-[10px] font-black bg-red-100 text-red-600 border border-red-200 px-1.5 py-0.5 rounded shadow-sm animate-pulse">
                                   SOLD OUT (재고없음)
@@ -874,7 +994,8 @@ const handleSaveDraft = () => {
                   </div>
                 )}
               </div>
-            ))}
+              ));
+            })()}
      
             <div className="flex justify-center pt-8">
               <button onClick={handleSubmitForm} className="px-10 py-4 bg-blue-600 text-white rounded-full text-sm font-black shadow-xl hover:bg-blue-700 hover:scale-105 transition-all">

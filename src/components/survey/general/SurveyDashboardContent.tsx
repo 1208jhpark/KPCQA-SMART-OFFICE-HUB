@@ -5,28 +5,6 @@ import Link from 'next/link';
 import { saveAs } from 'file-saver';
 import { getKSTDateString } from '@/utils/dateUtils'; // 🚀 날짜 유틸 추가
 
-// 🚀 전사 재고 집계 헬퍼 함수
-const calculateStockUsage = (dbResponses: any[]) => {
-  const usageMap: Record<string, Record<string, number>> = {};
-  dbResponses.forEach((r: any) => {
-    if (r.answers) {
-      if (!usageMap[r.surveyId]) usageMap[r.surveyId] = {};
-      Object.entries(r.answers).forEach(([qId, val]) => {
-        if (typeof val === 'string') {
-          const key = `${qId}_${val}`;
-          usageMap[r.surveyId][key] = (usageMap[r.surveyId][key] || 0) + 1;
-        } else if (Array.isArray(val)) {
-          val.forEach((item: string) => {
-            const key = `${qId}_${item}`;
-            usageMap[r.surveyId][key] = (usageMap[r.surveyId][key] || 0) + 1;
-          });
-        }
-      });
-    }
-  });
-  return usageMap;
-};
-
 export default function SurveyDashboardContent() {
   const [stockUsage, setStockUsage] = useState<Record<string, Record<string, number>>>({}); // 🚀 재고 상태
   const [surveys, setSurveys] = useState<any[]>([]);
@@ -92,39 +70,50 @@ export default function SurveyDashboardContent() {
           setAllUsers(mappedUsers);
         }
      
-        const respRes = await fetch('/api/survey/general', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'GET_RESPONSES' }),
-          cache: 'no-store'
-        });
+       // 🚀 1. 내 제출 내역 전용 호출 (보안 격리됨)
+       const myRespRes = await fetch('/api/survey/general', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'GET_RESPONSES' }),
+        cache: 'no-store'
+      }).catch(() => null);
+      
+      // 🚀 2. 전사 재고 및 참여 통계 전용 호출 (새로 뚫어둔 API)
+      const statsRes = await fetch('/api/survey/general', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'GET_STATS' }),
+        cache: 'no-store'
+      }).catch(() => null);
+
+      // 내 데이터 처리
+      if (myRespRes && myRespRes.ok) {
+        const myDbResponses = await myRespRes.json();
+        const nextMyRes: Record<string, any> = {};
         
-        if (respRes.ok) {
-          const dbResponses = await respRes.json();
-          const nextMyRes: Record<string, any> = {};
-          const nextAllRes: Record<string, any> = {};
-          
-          setStockUsage(calculateStockUsage(dbResponses)); // 🚀 재고 초기 세팅
-          
-          dbResponses.forEach((r: any) => {
-            if (r.surveyId && r.userEmail) {
-              nextAllRes[`${r.surveyId}_${r.userEmail}`] = true; 
-              
-              if (userData && r.userEmail === userData.email) {
-                const formattedDate = r.submittedAt 
-                  ? r.submittedAt.split('T')[0] + ' ' + new Date(r.submittedAt).toLocaleTimeString('ko-KR', { hour12: false }) 
-                  : '-';
-                nextMyRes[r.surveyId] = {
-                  submittedAt: formattedDate,
-                  answers: r.answers || {},
-                  isApproved: r.isApproved || false
-                };
-              }
-            }
-          });
-          setAllResponses(nextAllRes);
-          if (userData) setMyResponses(nextMyRes);
-        }
+        myDbResponses.forEach((r: any) => {
+          if (userData && r.userEmail === userData.email) {
+            const formattedDate = r.submittedAt 
+              ? r.submittedAt.split('T')[0] + ' ' + new Date(r.submittedAt).toLocaleTimeString('ko-KR', { hour12: false }) 
+              : '-';
+            nextMyRes[r.surveyId] = {
+              submittedAt: formattedDate,
+              answers: r.answers || {},
+              isApproved: r.isApproved || false
+            };
+          }
+        });
+        if (userData) setMyResponses(nextMyRes);
+      }
+
+      // 전사 통계 데이터 처리 (서버에서 마스킹/집계된 통계 객체 직접 매핑)
+      if (statsRes && statsRes.ok) {
+        const statsData = await statsRes.json();
+        setStockUsage(statsData.stockUsage || {}); 
+        setAllResponses(statsData.participation || {}); // { [surveyId]: number (제출자 수) }
+      } else {
+        alert('⚠️ 전사 참여율 및 재고 정보를 동기화하지 못했습니다.');
+      }
   
         if (surveyRes.ok) {
           const loadedSurveys = await surveyRes.json();
@@ -333,26 +322,40 @@ export default function SurveyDashboardContent() {
      
       if (res.ok) {
         const submittedDate = `${todayStr} ${new Date().toLocaleTimeString('ko-KR', {hour12: false})}`;
-        const nextResponses = { ...myResponses, [activeFullScreenSurvey.id]: { submittedAt: submittedDate, answers: formData } };
         
+        // 이 설문에 이미 제출했었는지 여부 확인 (수정 제출 시 중복 카운팅 방지)
+        const isAlreadySubmitted = Boolean(myResponses[activeFullScreenSurvey.id]);
+        
+        // 1. 내 응답 상태 갱신
+        const nextResponses = { ...myResponses, [activeFullScreenSurvey.id]: { submittedAt: submittedDate, answers: formData } };
         setMyResponses(nextResponses);
-        // 🚀 본인 제출 내역 즉시 반영 (참여율 실시간 갱신)
-        setAllResponses(prev => ({ ...prev, [`${activeFullScreenSurvey.id}_${currentUserEmail}`]: true }));
+        
+        // 2. 낙관적 업데이트 (참여 인원 카운트 즉시 1 증가, 수정 제출인 경우 유지)
+        setAllResponses(prev => ({
+          ...prev,
+          [activeFullScreenSurvey.id]: (prev[activeFullScreenSurvey.id] || 0) + (isAlreadySubmitted ? 0 : 1)
+        }));
         
         const safeEmail = currentUserEmail || 'unknown_user';
         localStorage.removeItem(`survey_draft_${activeFullScreenSurvey.id}_${safeEmail}`); 
         alert(`✅ 정상적으로 제출되었습니다.\n설문 참여에 감사드립니다.`);
         setActiveFullScreenSurvey(null); 
         
-        // 🚀 백그라운드 재고 최신화
+        // 3. 🚀 백그라운드 연동 (재고 최신화 + 참여율 원장 실시간 수신 및 동기화)
         fetch('/api/survey/general', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'GET_RESPONSES' }),
+          body: JSON.stringify({ action: 'GET_STATS' }),
           cache: 'no-store'
-        }).then(r => r.ok ? r.json() : null).then(dbResponses => {
-          if (dbResponses) setStockUsage(calculateStockUsage(dbResponses));
-        }).catch(e => console.error("통계 동기화 실패", e));
+        })
+        .then(r => r.ok ? r.json() : null)
+        .then(statsData => {
+          if (statsData) {
+            if (statsData.stockUsage) setStockUsage(statsData.stockUsage);
+            if (statsData.participation) setAllResponses(statsData.participation); // participation(건수)도 함께 갱신!
+          }
+        })
+        .catch(e => console.error("통계 동기화 실패", e));
 
       } else {
         alert('❌ 서버 데이터 제출 처리에 실패했습니다.');
@@ -431,14 +434,16 @@ export default function SurveyDashboardContent() {
               {filteredSurveys.length === 0 ? (
                 <tr><td colSpan={11} className="py-24 text-center text-slate-400 font-bold bg-slate-50/30">조건에 맞는 설문이 없습니다.</td></tr>
               ) : filteredSurveys.map((s, idx) => {
-                let done = 0, total = 0;
-                if (allUsers.length > 0) {
-                  const targetUsers = allUsers.filter(u => checkHierarchyTarget(s.target, u.dept));
-                  total = targetUsers.length;
-                  done = targetUsers.filter(u => allResponses[`${s.id}_${u.email}`]).length;
-                }
-                const rate = total > 0 ? Math.round((done/total)*100) : 0;
                 
+               // 🚀 [여기로 교체] 프론트엔드의 대상자 계산(total) + 서버의 안전한 참여자 수(done) 결합
+               let total = 0;
+               if (allUsers.length > 0) {
+                 const targetUsers = allUsers.filter(u => checkHierarchyTarget(s.target, u.dept));
+                 total = targetUsers.length;
+               }
+               const done = allResponses[s.id] || 0; // 서버에서 안전하게 받아온 숫자
+               const rate = total > 0 ? Math.round((done / total) * 100) : 0;
+
                 const isSubmitted = Boolean(myResponses[s.id]);
                 const isTargeted = currentUser?.roles?.includes('LV_1') || checkHierarchyTarget(s.target, currentUser?.unit?.unit_name);
                 const nudgedSurveysList = nudgedSurveys || [];
@@ -627,8 +632,15 @@ export default function SurveyDashboardContent() {
                           }`}>
                             <input type="radio" name={q.id} disabled={isOutOfStock} checked={isChecked} onChange={() => {
                               handleInputChange(q.id, opt.label);
-                              if (opt.goToSectionId && opt.goToSectionId !== 'SUBMIT') setCurrentSectionId(opt.goToSectionId);
-                            }} className="w-3.5 h-3.5 accent-blue-600" />
+                              if (opt.goToSectionId) {
+                                if (opt.goToSectionId === 'SUBMIT') {
+                                  // 🚀 즉시 제출 분기 (마지막 섹션인 것처럼 트릭 부여 후 제출 함수 호출 유도)
+                                  setTimeout(() => handleSubmitForm(), 100); 
+                                } else {
+                                  setCurrentSectionId(opt.goToSectionId);
+                                }
+                              }
+                            }} className="w-3.5 h-3.5 accent-blue-600 cursor-pointer" />
                             <div className="flex flex-col flex-1">
                               <span className={`font-bold ${isOutOfStock ? 'text-slate-400 line-through' : 'text-slate-700'}`}>{opt.label}</span>
                               {isOutOfStock ? (

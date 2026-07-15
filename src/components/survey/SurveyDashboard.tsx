@@ -23,7 +23,7 @@ export default function SurveyDashboard() {
     const syncData = async () => {
       try {
         const ts = Date.now();
-        // 🚀 [DB 정합성 코어 1]: 마스터 데이터 파이프라인 병렬 실시간 수신 (캐시 원천 차단)
+        // 🚀 [DB 정합성 코어 1]: 마스터 데이터 파이프라인 병렬 실시간 수신
         const [uRes, unitsRes, generalSurveyRes, deliverySurveyRes] = await Promise.all([
           fetch('/api/auth/me?t=' + ts, { cache: 'no-store' }).catch(() => null),
           fetch('/api/admin/units?active=true&t=' + ts, { cache: 'no-store' }).catch(() => null),
@@ -36,100 +36,132 @@ export default function SurveyDashboard() {
         const generalSurveys = generalSurveyRes && generalSurveyRes.ok ? await generalSurveyRes.json() : [];
         const deliverySurveys = deliverySurveyRes && deliverySurveyRes.ok ? await deliverySurveyRes.json() : [];
      
-        if (currentUser) {
-          const myUnit = unitsList.find((u: any) => u.id === currentUser.dept_id);
-          currentUser.unit = myUnit || { unit_name: '소속없음' };
-          const userEmail = currentUser.email || 'user@kpcqa.or.kr';
-     
-          // 조직도 타겟팅 확인 함수 (상세 페이지 로직 완벽 복제)
-          const checkTarget = (targetString: string, userDeptName: string) => {
-            if (!targetString || targetString === '전사') return true;
-            const targetDepts = targetString.split(',').map(t => t.trim());
-            if (!userDeptName) return false;
-            if (targetDepts.includes(userDeptName)) return true;
-             
-            let currentId = unitsList.find((u: any) => u.unit_name === userDeptName)?.id;
-            while (currentId) {
-              const unit = unitsList.find((u: any) => u.id === currentId);
-              if (unit && unit.parent_id) {
-                const parentUnit = unitsList.find((u: any) => u.id === unit.parent_id);
-                if (parentUnit && targetDepts.includes(parentUnit.unit_name)) return true; 
-                currentId = unit.parent_id;
-              } else break;
-            }
-            return false;
-          };
-          
-          // 🚀 [DB 정합성 코어 2]: 제출 여부를 완벽 대조하기 위해 각 도메인별 응답 대장 서버 실시간 호출
-          const [generalRespRes, deliveryRespRes] = await Promise.all([
-            fetch('/api/survey/general', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ action: 'GET_RESPONSES' }),
-              cache: 'no-store'
-            }).catch(() => null),
-            fetch('/api/survey/delivery', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ action: 'GET_RESPONSES' }),
-              cache: 'no-store'
-            }).catch(() => null)
-          ]);
-
-          const dbGeneralResponses = generalRespRes && generalRespRes.ok ? await generalRespRes.json() : [];
-          const dbDeliveryResponses = deliveryRespRes && deliveryRespRes.ok ? await deliveryRespRes.json() : [];
-
-          // 내 참여 여부 판단용 해시맵 빌드
-          const generalResponsesMap: Record<string, boolean> = {};
-          dbGeneralResponses.forEach((r: any) => {
-            if (r.userEmail === userEmail) generalResponsesMap[r.surveyId] = true;
-          });
-
-          const deliveryResponsesMap: Record<string, boolean> = {};
-          dbDeliveryResponses.forEach((r: any) => {
-            if (r.userEmail === userEmail) deliveryResponsesMap[r.surveyId] = true;
-          });
-     
-          // -------------------------------------------------------------
-          // [1] 일반 설문 (General) 데이터 실시간 DB 계산 (로컬스토리지 완전 대체)
-          // -------------------------------------------------------------
-          let gPending = 0, gNudge = 0, gTotal = 0;
-          generalSurveys.forEach((s: any) => {
-            if (s.status === '진행중') {
-              gTotal++;
-              const isTargeted = currentUser.roles?.includes('LV_1') || checkTarget(s.target, currentUser.unit.unit_name);
-              if (isTargeted && !generalResponsesMap[s.id]) {
-                gPending++;
-                // 서버 원장에 명시된 독촉 대상 배열 검사
-                if (s.nudgedUsers && s.nudgedUsers.includes(userEmail)) gNudge++;
-              }
-            }
-          });
-     
-          // -------------------------------------------------------------
-          // [2] 배달/신청 (Delivery) 데이터 실시간 DB 계산 (로컬스토리지 완전 대체)
-          // -------------------------------------------------------------
-          let dPending = 0, dNudge = 0, dTotal = 0;
-          deliverySurveys.forEach((s: any) => {
-            if (s.status === '진행중') {
-              dTotal++;
-              const isTargeted = currentUser.roles?.includes('LV_1') || checkTarget(s.target, currentUser.unit.unit_name);
-              if (isTargeted && !deliveryResponsesMap[s.id]) {
-                dPending++;
-                // 서버 원장에 명시된 독촉 대상 배열 검사
-                if (s.nudgedUsers && s.nudgedUsers.includes(userEmail)) dNudge++;
-              }
-            }
-          });
-     
-          // 최종 상태 업데이트
-          setStats({
-            general: { pending: gPending, nudge: gNudge, total: gTotal },
-            delivery: { pending: dPending, nudge: dNudge, total: dTotal }
-          });
+        if (!currentUser) {
+          // 💡 미로그인/세션 만료 시 무음 실패 방지
+          setLoading(false);
+          return;
         }
+
+        const myUnit = unitsList.find((u: any) => u.id === currentUser.dept_id);
+        currentUser.unit = myUnit || { unit_name: '소속없음' };
+        const userEmail = currentUser.email || 'user@kpcqa.or.kr';
+    
+        // 조직도 타겟팅 확인 함수
+        const checkTarget = (targetString: string, userDeptName: string) => {
+          if (!targetString || targetString === '전사') return true;
+          const targetDepts = targetString.split(',').map(t => t.trim());
+          if (!userDeptName) return false;
+          if (targetDepts.includes(userDeptName)) return true;
+            
+          let currentId = unitsList.find((u: any) => u.unit_name === userDeptName)?.id;
+          while (currentId) {
+            const unit = unitsList.find((u: any) => u.id === currentId);
+            if (unit && unit.parent_id) {
+              const parentUnit = unitsList.find((u: any) => u.id === unit.parent_id);
+              if (parentUnit && targetDepts.includes(parentUnit.unit_name)) return true; 
+              currentId = unit.parent_id;
+            } else break;
+          }
+          return false;
+        };
+
+        // 🚀 [DB 정합성 코어 2]: 응답 대장 서버 실시간 호출 (도메인별 에러 완전 격리)
+        let gFetchFailed = false;
+        let dFetchFailed = false;
+        
+        const [generalRespRes, deliveryRespRes] = await Promise.all([
+          fetch('/api/survey/general', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'GET_RESPONSES' }),
+            cache: 'no-store'
+          }).catch(() => null),
+          fetch('/api/survey/delivery', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'GET_RESPONSES' }),
+            cache: 'no-store'
+          }).catch(() => null)
+        ]);
+
+        if (!generalRespRes || !generalRespRes.ok) gFetchFailed = true;
+        if (!deliveryRespRes || !deliveryRespRes.ok) dFetchFailed = true;
+
+        if (gFetchFailed || dFetchFailed) {
+          alert('일부 응답 데이터를 가져오는데 실패했습니다. 해당 영역의 통계가 0건으로 보일 수 있습니다.');
+        }
+
+        const dbGeneralResponses = !gFetchFailed ? await generalRespRes!.json() : [];
+        const dbDeliveryResponses = !dFetchFailed ? await deliveryRespRes!.json() : [];
+
+        // 내 참여 여부 판단용 해시맵 빌드
+        const generalResponsesMap: Record<string, boolean> = {};
+        dbGeneralResponses.forEach((r: any) => {
+          if (r.userEmail === userEmail) generalResponsesMap[r.surveyId] = true;
+        });
+
+        const deliveryResponsesMap: Record<string, boolean> = {};
+        dbDeliveryResponses.forEach((r: any) => {
+          if (r.userEmail === userEmail) deliveryResponsesMap[r.surveyId] = true;
+        });
+    
+        const now = new Date();
+
+        // -------------------------------------------------------------
+        // [1] 일반 설문 (General) 데이터 실시간 DB 계산
+        // -------------------------------------------------------------
+        let gPending = 0, gNudge = 0, gTotal = 0;
+        generalSurveys.forEach((s: any) => {
+          if (s.status === '진행중') {
+            const deadline = new Date(`${s.endDate}T${s.endTime || '23:59'}:00`);
+            const isTimeOver = now > deadline;
+
+            if (!isTimeOver) {
+              const isTargeted = checkTarget(s.target, currentUser.unit.unit_name);
+              
+              if (isTargeted) {
+                gTotal++; 
+                if (!gFetchFailed && !generalResponsesMap[s.id]) { // 🚀 일반 에러 플래그 적용
+                  gPending++;
+                  if (s.nudgedUsers && s.nudgedUsers.includes(userEmail)) gNudge++;
+                }
+              }
+            }
+          }
+        });
+    
+        // -------------------------------------------------------------
+        // [2] 배달/신청 (Delivery) 데이터 실시간 DB 계산
+        // -------------------------------------------------------------
+        let dPending = 0, dNudge = 0, dTotal = 0;
+        deliverySurveys.forEach((s: any) => {
+          if (s.status === '진행중') {
+            const deadline = new Date(`${s.endDate}T${s.endTime || '23:59'}:00`);
+            const isTimeOver = now > deadline;
+
+            if (!isTimeOver) {
+              const isTargeted = checkTarget(s.target, currentUser.unit.unit_name);
+              
+              if (isTargeted) {
+                dTotal++;
+                if (!dFetchFailed && !deliveryResponsesMap[s.id]) { // 🚀 배달 에러 플래그 적용
+                  dPending++;
+                  if (s.nudgedUsers && s.nudgedUsers.includes(userEmail)) dNudge++;
+                }
+              }
+            }
+          }
+        });
+    
+        // 최종 상태 업데이트
+        setStats({
+          general: { pending: gPending, nudge: gNudge, total: gTotal },
+          delivery: { pending: dPending, nudge: dNudge, total: dTotal }
+        });
+        
       } catch (err) {
         console.error("Dashboard Sync Error:", err);
+        alert('대시보드 데이터를 동기화하는 중 오류가 발생했습니다.');
       } finally {
         setLoading(false);
       }

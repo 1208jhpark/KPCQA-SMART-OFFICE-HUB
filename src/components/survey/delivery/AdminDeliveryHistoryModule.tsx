@@ -1,17 +1,17 @@
 'use client';
      
-import React, { useState, useEffect, useMemo, Fragment } from 'react';
-import { usePathname, useRouter } from 'next/navigation'; // 🚀 내비게이션 툴 장착
+import React, { useState, useEffect, useMemo } from 'react';
+import { usePathname } from 'next/navigation';
 import Link from 'next/link'; // 🚀 표준 규격 next/link로 복구
 import * as XLSX from 'xlsx';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
   
 export default function AdminDeliveryHistoryModule() {
-  const pathname = usePathname(); 
-  const router = useRouter();
+  const pathname = usePathname();
   const [surveys, setSurveys] = useState<any[]>([]);
   const [users, setUsers] = useState<any[]>([]);
+  const [unitsList, setUnitsList] = useState<any[]>([]);
   const [responses, setResponses] = useState<Record<string, any>>({});
   const [loading, setLoading] = useState(true);
   const [currentUser, setCurrentUser] = useState<any>(null);
@@ -46,34 +46,39 @@ export default function AdminDeliveryHistoryModule() {
         setCurrentUser(meData);
       }
    
+      let unitData: any[] = [];
+      if (unitRes.ok) {
+        unitData = await unitRes.json();
+        setUnitsList(unitData);
+      }
+
       if (uRes.ok && unitRes.ok) {
         const uData = await uRes.json();
-        const unitData = await unitRes.json();
         const mappedUsers = (uData.users || []).map((u:any) => ({ 
           ...u, 
           dept: unitData.find((un:any) => un.id === u.unit_id)?.unit_name || '소속없음' 
         }));
         setUsers(mappedUsers);
+      }
 
-        const respRes = await fetch('/api/survey/delivery', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'GET_RESPONSES' }),
-          cache: 'no-store' // 캐시 원천 차단
+      const respRes = await fetch('/api/survey/delivery', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'GET_RESPONSES' }),
+        cache: 'no-store'
+      });
+
+      if (respRes.ok) {
+        const dbResponses = await respRes.json();
+        const realRes: Record<string, any> = {};
+        dbResponses.forEach((r: any) => {
+          realRes[`${r.surveyId}_${r.userEmail}`] = {
+            isDone: true,
+            date: r.submittedAt ? r.submittedAt.split('T')[0] : '-',
+            answers: r.answers
+          };
         });
-        
-        if (respRes.ok) {
-          const dbResponses = await respRes.json();
-          const realRes: Record<string, any> = {};
-          dbResponses.forEach((r: any) => {
-            realRes[`${r.surveyId}_${r.userEmail}`] = {
-              isDone: true,
-              date: r.submittedAt ? r.submittedAt.split('T')[0] : '-',
-              answers: r.answers
-            };
-          });
-          setResponses(realRes);
-        }
+        setResponses(realRes);
       }
     } catch (error) { 
       console.error("Archive Data Sync Error:", error); 
@@ -119,7 +124,9 @@ export default function AdminDeliveryHistoryModule() {
       
       if (res.ok) {
         alert('운영 공고 리스트로 정상 복원되었습니다.');
-        fetchArchiveData(); // 🚀 [DB 연동] 프론트엔드 조작 대신 서버 데이터 즉시 재호출로 정합성 보장
+        fetchArchiveData();
+      } else {
+        alert('서버 처리 중 오류가 발생하여 복원하지 못했습니다.');
       }
     } catch (e) {
       console.error(e);
@@ -148,7 +155,26 @@ export default function AdminDeliveryHistoryModule() {
   const isOrgAllowed = (targetDepts: string[], userDeptName: string) => {
     if (targetDepts.includes('전사')) return true;
     if (targetDepts.includes(userDeptName)) return true;
+    let currentUnit = unitsList.find(u => u.unit_name === userDeptName);
+    while (currentUnit && currentUnit.parent_id) {
+      const parentUnit = unitsList.find(u => u.id === currentUnit.parent_id);
+      if (parentUnit && targetDepts.includes(parentUnit.unit_name)) return true;
+      currentUnit = parentUnit;
+    }
     return false;
+  };
+
+  const getTargetUsers = (target: string) => {
+    const targetDepts = target.split(',').map((t: string) => t.trim());
+    return users.filter(u => isOrgAllowed(targetDepts, u.dept));
+  };
+
+  const formatAddressAnswer = (q: any, ans: Record<string, any>) => {
+    const zip = ans[`${q.id}_zip`] || ans[q.id]?.zipCode;
+    const road = ans[`${q.id}_road`] || ans[q.id]?.roadAddress;
+    const detail = ans[`${q.id}_detail`] || ans[q.id]?.detailAddress;
+    if (zip || road) return `[${zip || ''}] ${road || ''} ${detail || ''}`;
+    return '(미입력)';
   };
      
   // 🚀 [기능 100% 보존]: 배달 전용 3단 가로 분할 시안 엑셀 시트 도출 팩토리
@@ -159,8 +185,7 @@ export default function AdminDeliveryHistoryModule() {
     } catch (e) { parsedQuestions = []; }
     const questions = parsedQuestions.length > 0 ? parsedQuestions : [{ id: 'dq1', title: '1. 상세 배송 주소지 정보 명세' }];
     
-    const targetDepts = survey.target.split(',').map((t: string) => t.trim());
-    const targetUsers = targetDepts.includes('전사') ? users : users.filter(u => targetDepts.includes(u.dept));
+    const targetUsers = getTargetUsers(survey.target);
     const submittedUsers = targetUsers.filter(u => responses[`${survey.id}_${u.email}`]?.isDone);
     
     if (submittedUsers.length === 0) return alert("본 공고에 신청된 명세 완료 데이터가 없어 엑셀을 출력할 수 없습니다.");
@@ -173,15 +198,17 @@ export default function AdminDeliveryHistoryModule() {
       const rowData = [q.title];
       submittedUsers.forEach(u => {
         const ans = responses[`${survey.id}_${u.email}`]?.answers;
-        if (!ans || !ans[q.id]) {
-          if (q.type === 'SEARCH_ADDRESS' && ans && ans[`${q.id}_road`]) {
-            rowData.push(`[${ans[`${q.id}_zip`]}] ${ans[`${q.id}_road`]} ${ans[`${q.id}_detail`] || ''}`);
-          } else {
-            rowData.push('(미입력)');
-          }
+        if (!ans) {
+          rowData.push('(미입력)');
+        } else if (q.type === 'SEARCH_ADDRESS') {
+          rowData.push(formatAddressAnswer(q, ans));
         } else {
           const a = ans[q.id];
-          rowData.push(Array.isArray(a) ? a.join(', ') : (a.fileName ? `[첨부파일] ${a.fileName}` : a));
+          if (a === undefined || a === null || a === '') {
+            rowData.push('(미입력)');
+          } else {
+            rowData.push(Array.isArray(a) ? a.join(', ') : (a.fileName ? `[첨부파일] ${a.fileName}` : a));
+          }
         }
       });
       return rowData;
@@ -197,8 +224,7 @@ export default function AdminDeliveryHistoryModule() {
   // 🚀 [기능 100% 보존]: ZIP 패키징 다운로드
   const handleDownloadZip = async (survey: any) => {
     const zip = new JSZip();
-    const targetDepts = survey.target.split(',').map((t:string) => t.trim());
-    const targetUsers = targetDepts.includes('전사') ? users : users.filter(u => targetDepts.includes(u.dept));
+    const targetUsers = getTargetUsers(survey.target);
     const submittedUsers = targetUsers.filter(u => responses[`${survey.id}_${u.email}`]?.isDone);
   
     if (submittedUsers.length === 0) return alert("제출된 배송 명세 응답 내역이 없습니다.");
@@ -221,15 +247,20 @@ export default function AdminDeliveryHistoryModule() {
       
       storedQuestions.forEach((q: any, i: number) => {
          content += `Q${i+1}. ${q.title}\n`;
-         const ans = resp.answers ? resp.answers[q.id] : null;
-  
-         if (ans && ans.fileName) {
+         const answers = resp.answers || {};
+
+         if (q.type === 'SEARCH_ADDRESS') {
+           content += `A. ${formatAddressAnswer(q, answers).replace('(미입력)', '미입력')}\n\n`;
+         } else {
+           const ans = answers[q.id];
+           if (ans && ans.fileName) {
              content += `A. [첨부파일 명세] ${ans.fileName}\n\n`;
              if (ans.fileData) {
-                 folder?.file(`${identifier}_${ans.fileName}`, ans.fileData.split(',')[1], {base64: true});
+               folder?.file(`${identifier}_${ans.fileName}`, ans.fileData.split(',')[1], {base64: true});
              }
-         } else {
+           } else {
              content += `A. ${Array.isArray(ans) ? ans.join(', ') : (ans || '미입력')}\n\n`;
+           }
          }
       });
       folder?.file(`${fileNameBase}_배송명세확인서.txt`, "\ufeff" + content); 
@@ -243,8 +274,7 @@ export default function AdminDeliveryHistoryModule() {
   const handleExportListExcel = () => {
     if (filteredHistory.length === 0) return alert("추출할 아카이브 리스트 내역이 없습니다.");
     const exportData = filteredHistory.map((h, idx) => {
-      const targetDepts = h.target.split(',').map((t:string) => t.trim());
-      const targetUsers = targetDepts.includes('전사') ? users : users.filter(u => targetDepts.includes(u.dept));
+      const targetUsers = getTargetUsers(h.target);
       const done = targetUsers.filter(u => responses[`${h.id}_${u.email}`]?.isDone).length;
       const total = targetUsers.length;
   
@@ -375,8 +405,7 @@ export default function AdminDeliveryHistoryModule() {
               {filteredHistory.length === 0 ? (
                 <tr><td colSpan={isLv1 ? 15 : 14} className="py-20 text-center text-slate-400 font-black text-sm">{selectedYear}년도에 보관된 배달 복지 이력이 없습니다.</td></tr>
               ) : currentHistory.map((s, i) => {
-                const targetDepts = s.target.split(',').map((t:string) => t.trim());
-                const targetUsers = targetDepts.includes('전사') ? users : users.filter(u => targetDepts.includes(u.dept));
+                const targetUsers = getTargetUsers(s.target);
                 const done = targetUsers.filter(u => responses[`${s.id}_${u.email}`]?.isDone).length;
                 const total = targetUsers.length;
                 const notDone = total - done;

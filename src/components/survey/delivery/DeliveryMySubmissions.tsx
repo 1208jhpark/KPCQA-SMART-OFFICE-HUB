@@ -44,7 +44,35 @@ export default function DeliveryMySubmissions() {
      
   // 🚀 [재고 연동 코어] 옵션별 전사 실시간 소진 누적 개수 해시맵 컨텍스트 선언
   const [stockUsage, setStockUsage] = useState<Record<string, Record<string, number>>>({});
-     
+     // 🚀 [추가] 캘린더 날짜 표시를 위한 헬퍼 함수
+  const formatDeliveryDate = (dateStr: string) => {
+    if (!dateStr) return '날짜를 지정해 주세요.';
+    const dayNames = ['일요일', '월요일', '화요일', '수요일', '목요일', '금요일', '토요일'];
+    const dateObj = new Date(dateStr);
+    if (isNaN(dateObj.getTime())) return dateStr;
+    const yyyy = dateObj.getFullYear();
+    const mm = String(dateObj.getMonth() + 1).padStart(2, '0');
+    const dd = String(dateObj.getDate()).padStart(2, '0');
+    const dayOfWeek = dayNames[dateObj.getDay()];
+    return `${yyyy}년 ${mm}월 ${dd}일 (${dayOfWeek})`;
+  };
+  // 🚀 카카오(Daum) 주소 검색 엔진 호출 함수
+  const openPostcodeEngine = (qId: string) => {
+    if (typeof window !== 'undefined' && (window as any).daum?.Postcode) {
+      new (window as any).daum.Postcode({
+        oncomplete: (data: any) => {
+          setFormData((prev: any) => ({
+            ...prev,
+            [`${qId}_zip`]: data.zonecode,
+            [`${qId}_road`]: data.roadAddress || data.address
+          }));
+        }
+      }).open();
+    } else {
+      alert('주소 검색 엔진이 로드되지 않았습니다. 페이지를 새로고침 후 다시 시도해 주세요.');
+    }
+  };
+
   useEffect(() => {
     if (typeof window !== 'undefined') {
       const scriptId = 'kakao-postcode-script-sub';
@@ -83,40 +111,32 @@ export default function DeliveryMySubmissions() {
           setSurveys([]);
         }
   
+      
         if (userData) {
           userData.unit = unitsData.find((u: any) => u.id === userData.dept_id) || { unit_name: '소속없음' };
           setCurrentUser(userData);
           
-          // 🚀 [DB 연동 1] 로컬스토리지 파기 & 중앙 DB에서 내 응답 가져오기 및 실시간 전사 재고 집계 연산
-          const respRes = await fetch('/api/survey/delivery', {
+          // 🚀 1. 내 제출 내역 전용 격리 조회
+          const myRespRes = await fetch('/api/survey/delivery', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ action: 'GET_RESPONSES' }),
             cache: 'no-store'
-          });
+          }).catch(() => null);
           
-          if (respRes.ok) {
-            const dbResponses = await respRes.json();
+          // 🚀 2. 전사 재고 정보 호출 (보안이 마스킹된 안전 통계 API)
+          const statsRes = await fetch('/api/survey/delivery', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'GET_STATS' }),
+            cache: 'no-store'
+          }).catch(() => null);
+
+          if (myRespRes && myRespRes.ok) {
+            const myDbResponses = await myRespRes.json();
             const nextMyRes: Record<string, any> = {};
-            const usageMap: Record<string, Record<string, number>> = {};
             
-            dbResponses.forEach((r: any) => {
-              // 전사 실시간 재고 맵 집계 연산 (상시/기간 복지 물품 카운팅)
-              if (r.answers) {
-                if (!usageMap[r.surveyId]) usageMap[r.surveyId] = {};
-                Object.entries(r.answers).forEach(([qId, val]) => {
-                  if (typeof val === 'string') {
-                    const key = `${qId}_${val}`;
-                    usageMap[r.surveyId][key] = (usageMap[r.surveyId][key] || 0) + 1;
-                  } else if (Array.isArray(val)) {
-                    val.forEach((item: string) => {
-                      const key = `${qId}_${item}`;
-                      usageMap[r.surveyId][key] = (usageMap[r.surveyId][key] || 0) + 1;
-                    });
-                  }
-                });
-              }
-     
+            myDbResponses.forEach((r: any) => {
               if (r.userEmail === userData.email) {
                 nextMyRes[r.surveyId] = {
                   submittedAt: r.submittedAt ? r.submittedAt.split('T')[0] + ' ' + new Date(r.submittedAt).toLocaleTimeString('ko-KR', { hour12: false }) : '-',
@@ -129,10 +149,18 @@ export default function DeliveryMySubmissions() {
               }
             });
             setMyResponses(nextMyRes);
-            setStockUsage(usageMap);
+          } else {
+            alert('⚠️ 나의 이전 제출 정보를 가져오지 못했습니다.');
+          }
+
+          if (statsRes && statsRes.ok) {
+            const statsData = await statsRes.json();
+            setStockUsage(statsData.stockUsage || {}); // 실시간 전사 품절 현황 정확하게 연동
+          } else {
+            alert('⚠️ 전사 실시간 상품 재고 현황을 동기화하지 못했습니다.');
           }
         }
-  
+
       } catch (error) {
         console.error("Delivery MySubmissions Sync Error:", error);
       } finally {
@@ -217,33 +245,26 @@ export default function DeliveryMySubmissions() {
     if (isEditMode) {
       setFormData(myResponses[survey.id]?.answers || {});
     } else {
-      // 🚀 이메일 로딩 지연에 따른 undefined 키 생성 방어
       const safeEmail = currentUser?.email || 'unknown_user';
       const draftKey = `delivery_draft_${survey.id}_${safeEmail}`;
       const draftRaw = localStorage.getItem(draftKey);
       
       if (draftRaw) {
         try {
-          const draft = JSON.parse(draftRaw);
-          // 서버 공고의 최종 수정일(updatedAt)과 임시저장 시점의 수정일 비교
-          if (draft.updatedAt === survey.updatedAt) {
-            // 💡 폼 진입 시점에 사용자에게 이어서 작성할지 명시적으로 확인
-            if (confirm('💾 이전에 작성 중이던 임시 저장 내역이 있습니다.\n이어서 작성하시겠습니까?')) {
-              setFormData(draft.answers || {});
-            } else {
-              // 🧹 클린업: 사용자가 취소하면 오염된 찌꺼기 즉시 영구 삭제!
-              localStorage.removeItem(draftKey);
-              setFormData({});
-            }
+          const parsed = JSON.parse(draftRaw);
+          // 🚀 대시보드와 나의 제출함 양쪽의 임시저장 포맷(direct formData vs object) 유연한 호환성 확보
+          const answers = (parsed && typeof parsed === 'object' && 'answers' in parsed) ? parsed.answers : parsed;
+          
+          if (confirm('💾 이전에 작성 중이던 임시 저장 내역이 있습니다.\n이어서 작성하시겠습니까?')) {
+            setFormData(answers || {});
           } else {
-            console.warn("공고 내용이 변경되어 기존 임시 저장 데이터를 초기화합니다.");
-            setFormData({});
             localStorage.removeItem(draftKey);
+            setFormData({});
           }
         } catch (e) {
           console.error("로컬 스토리지 데이터 오염 감지, 초기화 진행", e);
           setFormData({});
-          localStorage.removeItem(draftKey); // 🛡️ 파싱 에러 시 찌꺼기 확실히 제거
+          localStorage.removeItem(draftKey);
         }
       } else {
         setFormData({});
@@ -261,36 +282,79 @@ export default function DeliveryMySubmissions() {
     
     setActiveFullScreenSurvey({ ...survey, questions, isEditMode });
   };
-  
+
   const handleSaveDraft = () => {
-    // 🚀 [핵심 안정화]: 임시 저장 시 현재 공고의 버전을 함께 패키징
-    const payload = {
-      updatedAt: activeFullScreenSurvey.updatedAt,
-      answers: formData
-    };
+    if (!activeFullScreenSurvey) return;
     const safeEmail = currentUser?.email || 'unknown_user';
-    localStorage.setItem(`delivery_draft_${activeFullScreenSurvey.id}_${safeEmail}`, JSON.stringify(payload));
+    // 대시보드 구조와 동일하게 폼 데이터 직접 직렬화
+    localStorage.setItem(`delivery_draft_${activeFullScreenSurvey.id}_${safeEmail}`, JSON.stringify(formData));
     alert('💾 작성 중인 배송지 내용이 안전하게 임시 저장되었습니다.');
   };
   
   const handleSubmitForm = async () => {
-    for (const q of activeFullScreenSurvey.questions) {
-      if (q.isRequired) {
-        if (q.type === 'SEARCH_ADDRESS') {
-          if (!formData[`${q.id}_zip`] || !formData[`${q.id}_road`] || !formData[`${q.id}_detail`]) {
-            alert(`📍 [${q.title}]의 우편번호 검색 및 상세주소를 완벽히 기입해 주세요.`);
+    // 🚀 1. 제출 순간 시간 만료 및 상태 마감 클라이언트 사이드 철저 가드
+    const now = new Date();
+    const hasValidDate = typeof activeFullScreenSurvey.endDate === 'string' && activeFullScreenSurvey.endDate.includes('-');
+    const rawTime = (activeFullScreenSurvey.endTime || '').trim();
+    const timeStr = rawTime === '' ? '23:59' : rawTime;
+    const deadline = hasValidDate ? new Date(`${activeFullScreenSurvey.endDate.trim()}T${timeStr}:00`) : null;
+    
+    if (deadline && now > deadline) {
+      alert('❌ 기한이 만료되어 배송 정보를 접수하거나 수정할 수 없습니다.');
+      setActiveFullScreenSurvey(null);
+      return;
+    }
+
+      // 🚀 [새로운 코드 시작]
+      const visibleQuestions: any[] = [];
+      const questions = activeFullScreenSurvey.questions || [];
+      let currentIndex = 0;
+      
+      while (currentIndex < questions.length) {
+        const q = questions[currentIndex];
+        visibleQuestions.push(q);
+        const userAns = formData[q.id];
+        
+        let nextSectionId: string | undefined = undefined;
+        if (q.type === 'CHOICE_SINGLE' && userAns) {
+          const selectedOpt = q.options?.find((o: any) => o.label === userAns);
+          if (selectedOpt?.goToSectionId) nextSectionId = selectedOpt.goToSectionId;
+        }
+        
+        if (!nextSectionId && q.goToSectionId && userAns !== undefined && userAns !== null && userAns !== '') {
+          nextSectionId = q.goToSectionId;
+        }
+        
+        if (nextSectionId) {
+          if (nextSectionId === 'SUBMIT') break;
+          const targetIdx = questions.findIndex((item: any) => item.id === nextSectionId);
+          if (targetIdx !== -1 && targetIdx > currentIndex) {
+            currentIndex = targetIdx;
+            continue;
+          }
+        }
+        currentIndex++;
+      }
+  
+      for (const q of visibleQuestions) {
+        if (q.type === 'SECTION') continue;
+        if (q.isRequired) {
+          if (q.type === 'SEARCH_ADDRESS') {
+            if (!formData[`${q.id}_zip`] || !formData[`${q.id}_road`] || !formData[`${q.id}_detail`]) {
+              alert(`📍 [${q.title}]의 우편번호 검색 및 상세주소를 완벽히 기입해 주세요.`);
+              return;
+            }
+          } else if (!formData[q.id] || formData[q.id].length === 0) {
+            alert(`✏️ [${q.title}] 문항은 필수 기입 항목입니다.`);
             return;
           }
-        } else if (!formData[q.id] || formData[q.id].length === 0) {
-          alert(`✏️ [${q.title}] 문항은 필수 기입 항목입니다.`);
-          return;
         }
       }
-    }
+      // 🚀 [새로운 코드 끝]
+  
     if (!confirm(activeFullScreenSurvey.isEditMode ? '배송지 수정을 완료하시겠습니까?' : '배송지를 최종 제출하시겠습니까?')) return;
   
     try {
-      // 🚀 DB 제출: 프론트엔드의 간섭 없이 순수하게 서버 데이터 전송
       const res = await fetch('/api/survey/delivery', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -303,28 +367,48 @@ export default function DeliveryMySubmissions() {
       });
      
       if (res.ok) {
+        const serverRes = await res.json();
         const submittedDate = `${getKSTDateString()} ${new Date().toLocaleTimeString('ko-KR', { hour12: false })}`;
-        const currentCount = myResponses[activeFullScreenSurvey.id]?.revisionCount || 0;
-        const newCount = activeFullScreenSurvey.isEditMode ? currentCount + 1 : currentCount;
         
+        // 🚀 2. [SPA 최적화] 무거운 window.location.reload()를 완전히 제거하고
+        // 서버 DB의 실제 반환값(revisionCount 및 결재 플래그)을 다이렉트로 매핑
         const nextResponses = {
           ...myResponses,
           [activeFullScreenSurvey.id]: { 
             ...myResponses[activeFullScreenSurvey.id],
             submittedAt: submittedDate, 
             answers: formData,
-            revisionCount: newCount 
+            revisionCount: serverRes.revisionCount || 1,
+            isApproved: serverRes.isApproved,
+            isRevoked: serverRes.isRevoked,
+            feedbackMsg: serverRes.feedbackMsg
           }
         };
         
         setMyResponses(nextResponses);
-        // 🧹 DB 제출 성공 시 로컬 임시 저장소 확실히 비우기 (오염 방지)
+
+        // 로컬 임시 저장소 확실히 제거
         const safeEmail = currentUser?.email || 'unknown_user';
         localStorage.removeItem(`delivery_draft_${activeFullScreenSurvey.id}_${safeEmail}`);
         
         alert('✅ 배송지 제출 및 수정 사항 반영이 완료되었습니다.');
         setActiveFullScreenSurvey(null);
-        window.location.reload(); // 재고 큐 리컴파일링 리로드
+
+        // 🚀 3. 백그라운드로 전사 실시간 재고 갱신 호출 (동작 방해 없는 고성능 패치)
+        fetch('/api/survey/delivery', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'GET_STATS' }),
+          cache: 'no-store'
+        })
+        .then(r => r.ok ? r.json() : null)
+        .then(statsData => {
+          if (statsData && statsData.stockUsage) {
+            setStockUsage(statsData.stockUsage); // 즉시 폼 내의 품절 여부 재가공 반영
+          }
+        })
+        .catch(e => console.error("통계 동기화 실패", e));
+
       } else {
         alert('❌ 제출 처리에 실패했습니다.');
       }
@@ -332,7 +416,7 @@ export default function DeliveryMySubmissions() {
       console.error(error);
       alert('❌ 네트워크 오류가 발생했습니다.');
     }
-  };
+  }
   
   const formatAnswerForView = (q: any, answers: any) => {
     if (!answers) return '응답 없음';
@@ -682,115 +766,165 @@ export default function DeliveryMySubmissions() {
               {activeFullScreenSurvey.description && <p className="text-sm font-bold text-slate-500 leading-relaxed whitespace-pre-wrap text-left">{activeFullScreenSurvey.description}</p>}
             </div>
      
-            {activeFullScreenSurvey.questions.map((q: any, i: number) => (
-              <div key={q.id} className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm space-y-4">
-                <label className="block text-base font-black text-slate-800"><span className="text-teal-500 mr-2">{i + 1}.</span> {q.title} {q.isRequired && <span className="text-red-500 ml-1">*</span>}</label>
+            {(() => {
+              const visibleQuestions: any[] = [];
+              const questions = activeFullScreenSurvey.questions || [];
+              let currentIndex = 0;
+              
+              while (currentIndex < questions.length) {
+                const q = questions[currentIndex];
+                visibleQuestions.push(q);
+                const userAns = formData[q.id];
                 
-                {(q.description || q.referenceLink) && (
-                  <div className="p-4 bg-slate-50 border border-slate-100 rounded-xl space-y-2 mb-4">
-                    {q.description && <p className="text-xs font-bold text-slate-600 leading-relaxed whitespace-pre-wrap text-left">{q.description}</p>}
-                    {q.referenceLink && (
-                      <a href={q.referenceLink} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-50 text-blue-600 border border-blue-200 rounded-lg text-[10px] font-black hover:bg-blue-100 transition-colors w-fit">
-                        🔗 첨부된 참조 링크 열기
-                      </a>
-                    )}
-                  </div>
-                )}
-     
-                {/* 🚀 [재고 계산 수정 가드 장착]: 수정 화면 라디오/체크박스 기선점 차감 연동 */}
-                {q.type.includes('CHOICE') ? (
-                  <div className="grid grid-cols-1 gap-2 mt-4">
-                    {q.options?.map((opt: any, oIdx: number) => {
-                      // 전체 전사 소진 개수 수거
-                      const limit = opt.stockLimit;
-                      let usedCount = stockUsage[activeFullScreenSurvey.id]?.[`${q.id}_${opt.label}`] || 0;
-                      
-                      // 🎯 [핵심 자가 선점 예외 엔진]: 내가 과거 신청대장에 이 항목을 마킹했다면 수량 1개를 반환(차감)해준다.
-                      const myPastAnswers = myResponses[activeFullScreenSurvey.id]?.answers || {};
-                      const wasCheckedByMe = q.type === 'CHOICE_SINGLE'
-                        ? myPastAnswers[q.id] === opt.label
-                        : (myPastAnswers[q.id] || []).includes(opt.label);
+                let nextSectionId: string | undefined = undefined;
+                if (q.type === 'CHOICE_SINGLE' && userAns) {
+                  const selectedOpt = q.options?.find((o: any) => o.label === userAns);
+                  if (selectedOpt?.goToSectionId) nextSectionId = selectedOpt.goToSectionId;
+                }
+                if (!nextSectionId && q.goToSectionId && userAns !== undefined && userAns !== null && userAns !== '') {
+                  nextSectionId = q.goToSectionId;
+                }
+                if (nextSectionId) {
+                  if (nextSectionId === 'SUBMIT') break;
+                  const targetIdx = questions.findIndex((item: any) => item.id === nextSectionId);
+                  if (targetIdx !== -1 && targetIdx > currentIndex) {
+                    currentIndex = targetIdx;
+                    continue;
+                  }
+                }
+                currentIndex++;
+              }
+
+              return visibleQuestions.map((q, i) => (
+                <div key={q.id} className={`bg-white p-8 rounded-3xl border border-slate-200 shadow-sm space-y-4 ${q.type === 'SECTION' ? 'border-l-8 border-l-teal-600 bg-teal-50/10' : ''}`}>
+                  <label className="block text-base font-black text-slate-800">
+                    <span className="text-teal-500 mr-2">{i + 1}.</span> {q.title} {q.isRequired && <span className="text-red-500 ml-1">*</span>}
+                  </label>
+
+                  {q.questionImageUrl && (
+                    <div className="my-3">
+                      <img src={q.questionImageUrl} alt="문항 안내 이미지" className="max-h-64 rounded-2xl border border-slate-200 object-contain shadow-sm cursor-zoom-in" onClick={() => setZoomedImage(q.questionImageUrl)} />
+                    </div>
+                  )}
+
+                  {(q.description || q.referenceLink) && (
+                    <div className="bg-teal-50 p-4 rounded-xl border border-teal-100 mb-4">
+                      {q.description && <p className="text-sm font-bold text-teal-800 whitespace-pre-wrap leading-relaxed">{q.description}</p>}
+                      {q.referenceLink && (
+                        <a href={q.referenceLink} target="_blank" rel="noopener noreferrer" className="inline-block mt-2 px-3 py-1.5 bg-white text-teal-600 font-black text-xs rounded shadow-sm border border-teal-200 hover:bg-teal-600 hover:text-white transition-colors">
+                          🔗 참조 링크 열기
+                        </a>
+                      )}
+                    </div>
+                  )}
+
+                  {q.type.includes('CHOICE') ? (
+                    <div className="space-y-2 mt-4">
+                      {q.options?.map((opt: any, oIdx: number) => {
+                        const isChecked = q.type === 'CHOICE_SINGLE' ? formData[q.id] === opt.label : (formData[q.id] || []).includes(opt.label);
+                        const usageKey = `${q.id}_${opt.label}`;
+                        let currentUsage = stockUsage[activeFullScreenSurvey.id]?.[usageKey] || 0;
                         
-                      if (wasCheckedByMe && usedCount > 0) {
-                        usedCount = usedCount - 1; // 내 지분 확보 복구 연산
-                      }
-     
-                      const isStockLimited = limit !== undefined && limit !== null && limit !== '';
-                      const remaining = isStockLimited ? Number(limit) - usedCount : null;
-                      const isOutOfStock = isStockLimited && remaining! <= 0;
-     
-                      const isChecked = q.type === 'CHOICE_SINGLE' 
-                        ? formData[q.id] === opt.label 
-                        : (formData[q.id] || []).includes(opt.label);
+                        const myPreviousAnswers = myResponses[activeFullScreenSurvey.id]?.answers || {};
+                        let wasCheckedByMe = false;
+                        if (q.type === 'CHOICE_SINGLE') {
+                          wasCheckedByMe = myPreviousAnswers[q.id] === opt.label;
+                        } else if (Array.isArray(myPreviousAnswers[q.id])) {
+                          wasCheckedByMe = myPreviousAnswers[q.id].includes(opt.label);
+                        }
+                        if (wasCheckedByMe && currentUsage > 0) currentUsage -= 1;
                         
-                      return (
-                        <label key={oIdx} className={`flex items-center gap-3 p-4 rounded-xl border transition-all ${
-                          isOutOfStock 
-                            ? 'bg-slate-100 border-slate-200 opacity-60 cursor-not-allowed grayscale select-none' 
-                            : isChecked ? 'border-teal-500 bg-teal-50/30 cursor-pointer' : 'border-slate-200 hover:bg-slate-50 cursor-pointer'
-                        }`}>
-                          <input 
-                            type={q.type === 'CHOICE_SINGLE' ? 'radio' : 'checkbox'} 
-                            checked={isChecked} 
-                            disabled={isOutOfStock}
-                            onChange={(e) => {
-                              if(q.type === 'CHOICE_SINGLE') setFormData({...formData, [q.id]: opt.label});
-                              else {
-                                const curr = formData[q.id] || [];
-                                const next = e.target.checked ? [...curr, opt.label] : curr.filter((l:string)=>l!==opt.label);
-                                setFormData({...formData, [q.id]: next});
-                              }
-                            }} 
-                            className="accent-teal-600 w-4 h-4 disabled:opacity-40" 
-                          />
-                          <div className="flex flex-col gap-1.5 flex-1">
-                            <div className="flex items-center gap-2">
-                              <span className={`font-bold text-sm ${isOutOfStock ? 'text-slate-400 line-through' : 'text-slate-700'}`}>{opt.label}</span>
-                              {isOutOfStock ? (
-                                <span className="text-[10px] font-black bg-red-100 text-red-600 border border-red-200 px-1.5 py-0.5 rounded shadow-sm animate-pulse">
-                                  SOLD OUT (재고없음)
-                                </span>
-                              ) : isStockLimited ? (
-                                <span className="text-[10px] font-black text-pink-600 bg-pink-50 border border-pink-100 px-1.5 py-0.5 rounded shadow-sm">
-                                  잔여 재고: {remaining}개 {wasCheckedByMe && <span className="text-[9px] text-teal-600 font-black">(기존 내 선택 품목)</span>}
-                                </span>
-                              ) : null}
-                            </div>
-                            {opt.imageUrl && (
-                              <img 
-                                src={opt.imageUrl} 
-                                onClick={(e) => { e.preventDefault(); e.stopPropagation(); if(!isOutOfStock) setZoomedImage(opt.imageUrl); }}
-                                className={`w-48 h-32 object-cover rounded-lg border border-slate-200 mt-2 shadow-sm transition-all ${isOutOfStock ? 'cursor-not-allowed opacity-50' : 'cursor-pointer hover:ring-2 hover:ring-teal-500 hover:scale-[1.02]'}`} 
-                                title="클릭하면 크게 보실 수 있습니다."
+                        const isOutOfStock = opt.stockLimit !== null && opt.stockLimit !== undefined && currentUsage >= opt.stockLimit;
+
+                        return (
+                          <label key={oIdx} className={`flex items-center p-3 rounded-xl border-2 cursor-pointer transition-all ${isOutOfStock ? 'bg-slate-100 border-slate-200 opacity-60 cursor-not-allowed' : isChecked ? 'border-teal-500 bg-teal-50' : 'border-slate-200 hover:border-teal-300'}`}>
+                            <div className="flex items-center gap-3 w-full">
+                              <input type={q.type === 'CHOICE_SINGLE' ? 'radio' : 'checkbox'} name={`q_${q.id}`} value={opt.label} checked={isChecked} disabled={isOutOfStock}
+                                onChange={(e) => {
+                                  if (q.type === 'CHOICE_SINGLE') {
+                                    setFormData({ ...formData, [q.id]: e.target.value });
+                                  } else {
+                                    const prev = formData[q.id] || [];
+                                    if (e.target.checked) setFormData({ ...formData, [q.id]: [...prev, e.target.value] });
+                                    else setFormData({ ...formData, [q.id]: prev.filter((v: string) => v !== e.target.value) });
+                                  }
+                                }}
+                                className={`w-5 h-5 cursor-pointer accent-teal-600 ${isOutOfStock ? 'grayscale opacity-50' : ''}`}
                               />
-                            )}
-                          </div>
-                        </label>
-                      );
-                    })}
-                  </div>
-                ) : q.type === 'SEARCH_ADDRESS' ? (
-                  <div className="space-y-2 bg-slate-50 p-4 border border-slate-200 rounded-xl">
-                    <div className="flex items-center gap-2">
-                      <div className="flex items-center gap-2 border bg-white px-3 py-2 rounded-xl shadow-sm">
-                        <span className="font-black text-slate-400 text-[10px] uppercase">우편번호</span>
-                        <input type="text" value={formData[`${q.id}_zip`] || ''} className="w-20 font-mono text-center font-black text-teal-600 bg-transparent outline-none" readOnly />
+                              {opt.imageUrl && <img src={opt.imageUrl} alt={opt.label} className="w-12 h-12 rounded-lg object-cover border border-slate-200" />}
+                              <div className="flex-1 flex items-center justify-between">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <span className={`font-bold text-sm whitespace-pre-wrap text-left ${isOutOfStock ? 'text-slate-400 line-through' : 'text-slate-700'}`}>{opt.label}</span>
+                                  {opt.referenceLink && (
+                                    <a href={opt.referenceLink} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} className="inline-flex items-center gap-1 text-[10px] text-blue-500 hover:text-blue-700 hover:underline bg-blue-50 border border-blue-200 px-1.5 py-0.5 rounded font-black shrink-0">🔗 상세정보</a>
+                                  )}
+                                  {isOutOfStock ? (
+                                    <span className="px-2 py-0.5 bg-red-100 text-red-600 text-[10px] font-black rounded border border-red-200 ml-2">SOLD OUT</span>
+                                  ) : (opt.stockLimit !== null && opt.stockLimit !== undefined) ? (
+                                    <span className="px-2 py-0.5 bg-teal-100 text-teal-700 text-[10px] font-black rounded border border-teal-200 ml-2">잔여: {opt.stockLimit - currentUsage}개</span>
+                                  ) : null}
+                                </div>
+                              </div>
+                            </div>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  ) : q.type === 'SEARCH_ADDRESS' ? (
+                    <div className="space-y-3 bg-slate-50 p-5 border border-slate-200 rounded-2xl">
+                      <div className="flex items-center gap-2">
+                        <input type="text" value={formData[`${q.id}_zip`] || ''} placeholder="우편번호" readOnly className="w-24 p-3 border border-slate-300 rounded-xl text-center text-sm font-black outline-none bg-white shadow-sm text-teal-700" />
+                        <button type="button" onClick={() => handleOpenUserPostcode(q.id)} className="px-4 py-3 bg-slate-800 text-white rounded-xl text-xs font-black shadow-md hover:bg-black transition-all">🔍 주소 검색</button>
                       </div>
-                      <button type="button" onClick={() => handleOpenUserPostcode(q.id)} className="px-5 py-2.5 bg-slate-900 text-white rounded-xl font-black text-xs hover:bg-slate-800 transition-transform active:scale-95 shadow-sm">🔍 우편번호 검색</button>
+                      <input type="text" value={formData[`${q.id}_road`] || ''} placeholder="기본 주소가 이곳에 자동 입력됩니다." readOnly className="w-full p-3 border border-slate-300 rounded-xl text-sm font-bold outline-none bg-white shadow-sm text-slate-600" />
+                      <input type="text" value={formData[`${q.id}_detail`] || ''} onChange={(e) => setFormData({ ...formData, [`${q.id}_detail`]: e.target.value })} placeholder="동, 호수 등 상세 주소를 정확히 기재해주세요." className="w-full p-3 border border-teal-400 rounded-xl text-sm font-bold outline-none bg-white shadow-sm focus:border-teal-500 focus:ring-2 focus:ring-teal-100 transition-all text-slate-800" />
                     </div>
-                    <input type="text" value={formData[`${q.id}_road`] || ''} placeholder="기본 도로명 주소" className="w-full p-3 border border-slate-200 rounded-xl bg-white text-slate-700 font-bold outline-none shadow-sm" readOnly />
-                    <div className="flex items-center border border-teal-300 rounded-xl px-3 bg-white shadow-sm focus-within:ring-2 focus-within:ring-teal-200">
-                      <span className="font-black text-teal-600 whitespace-nowrap text-xs pr-2">상세주소 :</span>
-                      <input type="text" value={formData[`${q.id}_detail`] || ''} onChange={(e) => setFormData({ ...formData, [`${q.id}_detail`]: e.target.value })} placeholder="동, 호수 및 건물 상세 주소 기입" className="w-full p-3 text-sm font-bold text-slate-800 outline-none bg-transparent" />
+                  ) : q.type === 'CALENDAR' ? (
+                    <div className="space-y-3 bg-slate-50 p-4 border border-slate-200 rounded-xl relative z-0">
+                      <input type="date" value={formData[q.id] || ''} onChange={(e) => setFormData({ ...formData, [q.id]: e.target.value })} className="p-3 border border-slate-300 rounded-xl text-sm font-black outline-none focus:border-teal-500 text-slate-700 bg-white shadow-sm" />
+                      {formData[q.id] && (
+                        <div className="p-3 bg-blue-50 border border-blue-100 rounded-xl flex items-center gap-2">
+                          <span className="text-blue-500 text-base">📅</span>
+                          <span className="text-sm font-black text-slate-800">요청일 변환: <span className="text-blue-600 underline font-extrabold">{formatDeliveryDate(formData[q.id])}</span></span>
+                        </div>
+                      )}
                     </div>
-                  </div>
-                ) : q.type === 'CALENDAR' ? (
-                  <input type="date" value={formData[q.id] || ''} onChange={(e) => setFormData({ ...formData, [q.id]: e.target.value })} className="p-3 border border-slate-300 rounded-xl text-sm font-black outline-none focus:border-teal-500 text-slate-700 bg-white shadow-sm" />
-                ) : (
-                  <input type="text" value={formData[q.id] || ''} onChange={e => setFormData({...formData, [q.id]: e.target.value})} className="w-full p-4 bg-slate-50 border border-slate-200 rounded-xl font-bold outline-none focus:border-blue-500 focus:bg-white text-sm" />
-                )}
-              </div>
-            ))}
+                  ) : q.type === 'TEXT_LONG' ? (
+                    <textarea value={formData[q.id] || ''} onChange={e => setFormData({...formData, [q.id]: e.target.value})} className="w-full p-4 bg-slate-50 border border-slate-200 rounded-xl font-bold outline-none focus:border-teal-500 focus:bg-white transition-colors min-h-[120px] text-sm whitespace-pre-wrap text-left" placeholder="상세한 내역을 자유롭게 기재해 주세요." />
+                  ) : q.type === 'SCALE' ? (
+                    <div className="flex flex-wrap gap-2 py-2">
+                      {Array.from({ length: q.scaleMax || 5 }).map((_, sIdx) => {
+                        const score = sIdx + 1;
+                        return (
+                          <button key={score} type="button" onClick={() => setFormData({...formData, [q.id]: score})} className={`w-12 h-12 rounded-xl font-black text-sm transition-all ${formData[q.id] === score ? 'bg-teal-600 text-white shadow-md scale-110' : 'bg-slate-100 text-slate-400 hover:bg-slate-200'}`}>
+                            {score}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : q.type === 'FILE' ? (
+                    <div className="p-5 bg-slate-50 border border-slate-200 rounded-xl space-y-3 relative z-0">
+                      {q.templateFileName && (
+                        <div className="flex justify-between items-center bg-white p-3 rounded-lg border border-slate-200 shadow-sm relative z-0">
+                          <span className="text-xs font-bold text-slate-600">📋 첨부된 안내 서식: <span className="font-black text-slate-800 text-left">{q.templateFileName}</span></span>
+                          <button type="button" onClick={() => fetch(q.templateFileData).then(r=>r.blob()).then(b=>saveAs(b, q.templateFileName))} className="bg-slate-800 text-white px-3 py-1.5 rounded-lg text-[10px] font-black hover:bg-black transition-colors shrink-0">다운로드</button>
+                        </div>
+                      )}
+                      <label className="block w-full cursor-pointer bg-white border-2 border-dashed border-teal-200 p-6 rounded-xl text-center hover:bg-teal-50 transition-colors relative z-0">
+                        <span className="text-2xl mb-2 block">📤</span>
+                        <span className="text-xs font-black text-teal-600">제출할 파일을 선택하여 업로드하세요.</span>
+                        {formData[q.id]?.fileName && <div className="mt-3 text-[11px] font-bold text-slate-500 bg-slate-100 py-1.5 px-3 rounded-full inline-block text-left">{formData[q.id].fileName}</div>}
+                        <input type="file" onChange={(e) => { const file = e.target.files?.[0]; if (file) setFormData({...formData, [q.id]: { fileName: file.name } }); }} className="hidden" />
+                      </label>
+                    </div>
+                  ) : q.type === 'SECTION' ? (
+                    <div className="hidden" />
+                  ) : (
+                    <input type="text" value={formData[q.id] || ''} onChange={e => setFormData({...formData, [q.id]: e.target.value})} className="w-full p-4 bg-slate-50 border border-slate-200 rounded-xl font-bold outline-none focus:border-teal-500 focus:bg-white text-sm" placeholder="정보를 입력하세요." />
+                  )}
+                </div>
+              ));
+            })()}
           </div>
         </div>
       )}
@@ -814,9 +948,22 @@ export default function DeliveryMySubmissions() {
               </div>
             )}
      
-            {viewSurveyHistory.questions?.map((q: any, i: number) => (
+     {viewSurveyHistory.questions?.map((q: any, i: number) => (
               <div key={q.id} className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm space-y-4">
                 <label className="block text-base font-black text-slate-800">{i + 1}. {q.title}</label>
+                
+                {/* 🚀 [연동 갭 해결]: 기록 열람 시에도 빌더 이미지를 동일하게 매핑 */}
+                {q.questionImageUrl && (
+                  <div className="my-3">
+                    <img 
+                      src={q.questionImageUrl} 
+                      alt="문항 안내 이미지" 
+                      className="max-h-64 rounded-2xl border border-slate-200 object-contain shadow-sm cursor-zoom-in"
+                      onClick={() => setZoomedImage(q.questionImageUrl)}
+                    />
+                  </div>
+                )}
+
                 <div className="w-full p-4 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 text-sm whitespace-pre-wrap text-left">
                   {formatAnswerForView(q, viewSurveyHistory.myAnswers)}
                 </div>

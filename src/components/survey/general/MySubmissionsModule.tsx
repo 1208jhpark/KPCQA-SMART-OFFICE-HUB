@@ -17,31 +17,7 @@ const HeaderLight = ({ title, count, children }: { title: string, count: number,
   </div>
 );
   
-// 🚀 [리팩토링] 전사 재고 집계 헬퍼 함수 (중복 로직 제거)
-const calculateStockUsage = (dbResponses: any[]) => {
-  const usageMap: Record<string, Record<string, number>> = {};
-  dbResponses.forEach((r: any) => {
-    if (r.answers) {
-      if (!usageMap[r.surveyId]) usageMap[r.surveyId] = {};
-      Object.entries(r.answers).forEach(([qId, val]) => {
-        if (typeof val === 'string') {
-          const key = `${qId}_${val}`;
-          usageMap[r.surveyId][key] = (usageMap[r.surveyId][key] || 0) + 1;
-        } else if (Array.isArray(val)) {
-          val.forEach((item: string) => {
-            const key = `${qId}_${item}`;
-            usageMap[r.surveyId][key] = (usageMap[r.surveyId][key] || 0) + 1;
-          });
-        }
-      });
-    }
-  });
-  return usageMap;
-};
-
-export default function MySubmissionsModule() {
-  const router = useRouter();
-  
+export default function MySubmissionsModule() {  
   const [currentUser, setCurrentUser] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [pageConfig, setPageConfig] = useState<any>(null);
@@ -53,6 +29,16 @@ export default function MySubmissionsModule() {
   const [activeFullScreenSurvey, setActiveFullScreenSurvey] = useState<any | null>(null);
   const [viewSurveyHistory, setViewSurveyHistory] = useState<any | null>(null);
   const [formData, setFormData] = useState<Record<string, any>>({});
+  // 🚀 [추가] 사용자가 거쳐온 섹션 히스토리 추적 스택 (이전 단계 복구용 및 분기 검증용)
+  const [sectionHistory, setSectionHistory] = useState<(string | null)[]>([]);
+
+  // 🚀 [추가] 문항의 부모 섹션을 안전하게 추적하는 헬퍼 함수
+  const getParentSectionId = (q: any, questions: any[]) => {
+    if (q.type === 'SECTION') return q.id;
+    const idx = questions.findIndex(item => item.id === q.id);
+    const lastSection = questions.slice(0, idx + 1).reverse().find((item: any) => item.type === 'SECTION');
+    return lastSection ? lastSection.id : null;
+  };
   const [currentSectionId, setCurrentSectionId] = useState<string | null>(null);
   
   const [historyYear, setHistoryYear] = useState<string>('ALL');
@@ -101,22 +87,27 @@ export default function MySubmissionsModule() {
           userData.unit = myUnit || { unit_name: '소속없음' };
           setCurrentUser(userData);
           
+          // 🚀 1. 내 제출 내역 조회
           const respRes = await fetch('/api/survey/general', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ action: 'GET_RESPONSES' }),
             cache: 'no-store'
-          });
+          }).catch(() => null);
+
+          // 🚀 2. 전사 실제 안전 소진율 통계 조회 (GET_STATS 연동 완료)
+          const statsRes = await fetch('/api/survey/general', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'GET_STATS' }),
+            cache: 'no-store'
+          }).catch(() => null);
           
-          if (respRes.ok) {
+          if (respRes && respRes.ok) {
             const dbResponses = await respRes.json();
             const nextMyRes: Record<string, any> = {};
             
-            // 🚀 헬퍼 함수 적용! (단 한 줄로 압축)
-            const usageMap = calculateStockUsage(dbResponses);
-            
             dbResponses.forEach((r: any) => {
-              // (재고 집계 로직은 헬퍼로 빠졌으므로 내 응답 필터링만 남깁니다)
               if (r.userEmail === userData.email) {
                 nextMyRes[r.surveyId] = {
                   submittedAt: r.submittedAt ? r.submittedAt.split('T')[0] + ' ' + new Date(r.submittedAt).toLocaleTimeString('ko-KR', { hour12: false }) : '-',
@@ -126,7 +117,15 @@ export default function MySubmissionsModule() {
               }
             });
             setMyResponses(nextMyRes);
-            setStockUsage(usageMap);
+          } else {
+            alert('⚠️ 나의 이전 제출 정보를 가져오지 못했습니다.');
+          }
+
+          if (statsRes && statsRes.ok) {
+            const statsData = await statsRes.json();
+            setStockUsage(statsData.stockUsage || {}); // 실시간 전사 품절 현황의 안전한 동기화 완료
+          } else {
+            alert('⚠️ 실시간 상품 재고 통계 현황을 동기화하지 못했습니다.');
           }
         }
   
@@ -243,20 +242,15 @@ export default function MySubmissionsModule() {
       
       if (draftRaw) {
         try {
-          const draft = JSON.parse(draftRaw);
-          if (draft.updatedAt === survey.updatedAt) {
-            // 💡 폼 진입 시점에 사용자에게 이어서 작성할지 명시적으로 확인
-            if (confirm('💾 이전에 작성 중이던 임시 저장 내역이 있습니다.\n이어서 작성하시겠습니까?')) {
-              setFormData(draft.answers || {});
-            } else {
-              // 🧹 클린업: 사용자가 취소하면 찌꺼기 즉시 영구 삭제!
-              localStorage.removeItem(draftKey);
-              setFormData({});
-            }
+          const parsed = JSON.parse(draftRaw);
+          // 🚀 [포맷 호환 가드]: 대시보드와 제출 모듈 간의 포맷 불일치로 인한 오염 차단
+          const answers = (parsed && typeof parsed === 'object' && 'answers' in parsed) ? parsed.answers : parsed;
+          
+          if (confirm('💾 이전에 작성 중이던 임시 저장 내역이 있습니다.\n이어서 작성하시겠습니까?')) {
+            setFormData(answers || {});
           } else {
-            console.warn("설문 내용이 변경되어 기존 임시 저장 데이터를 초기화합니다.");
-            setFormData({});
             localStorage.removeItem(draftKey);
+            setFormData({});
           }
         } catch (e) {
           console.error("로컬 스토리지 데이터 오염 감지, 초기화 진행", e);
@@ -277,15 +271,20 @@ export default function MySubmissionsModule() {
      console.error("문항 파싱 오류:", e);
    }
     
-    const sectionsOrder: (string | null)[] = [];
-    if (questions.length > 0 && questions[0].type !== 'SECTION') sectionsOrder.push(null);
-    questions.filter((q: any) => q.type === 'SECTION').forEach((s: any) => sectionsOrder.push(s.id));
-    setCurrentSectionId(sectionsOrder.length > 0 ? sectionsOrder[0] : null);
-     
+   const sectionsOrder: (string | null)[] = [];
+   if (questions.length > 0 && questions[0].type !== 'SECTION') sectionsOrder.push(null);
+   questions.filter((q: any) => q.type === 'SECTION').forEach((s: any) => sectionsOrder.push(s.id));
+   
+   const initialSection = sectionsOrder.length > 0 ? sectionsOrder[0] : null;
+    setCurrentSectionId(initialSection);
+    // 🚀 [수정 완료]: null(첫 섹션 이전 문항 그룹)도 유효한 히스토리 스택으로 취급하여 필수 검증 누락 방지
+    setSectionHistory(sectionsOrder.length > 0 ? [sectionsOrder[0]] : []);
+      
     setActiveFullScreenSurvey({ ...survey, questions, isEditMode });
   };
   
   const handleSaveDraft = () => {
+    if (!activeFullScreenSurvey) return; // 🚀 가드 추가
     try {
       const payload = {
         updatedAt: activeFullScreenSurvey.updatedAt,
@@ -299,10 +298,100 @@ export default function MySubmissionsModule() {
     }
   };
   
+// 🚀 [추가]: 다단계 분기 가드를 반영한 고도화 네비게이션 컨트롤러
+const handleNextSection = () => {
+  const activeQuestions = activeFullScreenSurvey?.questions || [];
+  
+  // 1. 현재 소속된 섹션 문항들에 대한 즉석 필수 검증 (중도 방지)
+  const currentSectionQuestions = activeQuestions.filter((q: any) => {
+    if (q.type === 'SECTION') return false;
+    return getParentSectionId(q, activeQuestions) === currentSectionId;
+  });
+
+  for (const q of currentSectionQuestions) {
+    if (q.isRequired) {
+      if (q.type === 'SEARCH_ADDRESS') {
+        if (!formData[q.id]?.zipCode || !formData[q.id]?.roadAddress || !formData[q.id]?.detailAddress) {
+          return alert(`📍 [${q.title}]의 우편번호 및 상세주소를 입력해 주세요.`);
+        }
+      } else if (q.type === 'FILE') {
+        if (!formData[q.id]?.fileName) {
+          return alert(`📎 [${q.title}]에 필수 서식을 첨부해 주세요.`);
+        }
+      } else if (!formData[q.id] || formData[q.id].length === 0) {
+        return alert(`✏️ [${q.title}] 문항은 필수 응답 항목입니다.`);
+      }
+    }
+  }
+
+  // 2. 분기(Jump) 연산 작동
+  let nextSecId: string | null = null;
+  const singleChoiceQuestions = currentSectionQuestions.filter((q: any) => q.type === 'CHOICE_SINGLE');
+  
+  for (const q of singleChoiceQuestions) {
+    const selectedValue = formData[q.id];
+    if (selectedValue) {
+      const opt = q.options?.find((o: any) => o.label === selectedValue);
+      if (opt?.goToSectionId) {
+        nextSecId = opt.goToSectionId;
+        break;
+      }
+    }
+  }
+
+// 🚀 [수정 완료]: 개별 문항 분기는 유효한 응답(텍스트 등)이 실제로 입력된 상태에서만 작동하도록 가드
+if (!nextSecId) {
+  for (const q of currentSectionQuestions) {
+    const userAns = formData[q.id];
+    // 텍스트, 날짜, 배열 등 값이 비어있지 않은지 검사
+    const hasAnswer = userAns !== undefined && userAns !== null && userAns !== '' && (Array.isArray(userAns) ? userAns.length > 0 : true);
+    
+    if (q.goToSectionId && hasAnswer) {
+      nextSecId = q.goToSectionId;
+      break;
+    }
+  }
+}
+
+  // 분기가 없으면 순차 목록 이동
+  if (!nextSecId) {
+    const nextIdx = sectionsOrder.indexOf(currentSectionId) + 1;
+    nextSecId = nextIdx < sectionsOrder.length ? sectionsOrder[nextIdx] : 'SUBMIT';
+  }
+
+  if (nextSecId === 'SUBMIT') {
+    if (confirm('🏁 분기 조건에 따라 더 이상 진행할 단계가 없습니다. 이대로 최종 답변서를 제출하시겠습니까?')) {
+      handleSubmitForm();
+    }
+    return;
+  }
+
+  if (nextSecId) {
+    setCurrentSectionId(nextSecId);
+    setSectionHistory(prev => [...prev, nextSecId]);
+  }
+};
+
+const handlePrevSection = () => {
+  if (sectionHistory.length <= 1) return;
+  const updatedHistory = [...sectionHistory];
+  updatedHistory.pop(); // 현재 내역 탈출
+  const prevSecId = updatedHistory[updatedHistory.length - 1];
+  setCurrentSectionId(prevSecId);
+  setSectionHistory(updatedHistory); // 이전 흔적으로 안전 워프
+};
+
   const handleSubmitForm = async () => {
-    for (const q of activeFullScreenSurvey.questions) {
-      if (q.type !== 'SECTION' && q.isRequired) {
-        // 🚀 주소 및 파일 타입 정밀 검증 추가
+    // 🚀 [정합성 가드]: 실제 유저가 지나온 섹션 역사(sectionHistory)에 속한 문항만 필터링
+    const visibleQuestions = activeFullScreenSurvey.questions.filter((q: any) => {
+      if (!hasSections) return true;
+      if (q.type === 'SECTION') return false;
+      const parentSecId = getParentSectionId(q, activeFullScreenSurvey.questions);
+      return sectionHistory.includes(parentSecId);
+    });
+
+    for (const q of visibleQuestions) {
+      if (q.isRequired) {
         if (q.type === 'SEARCH_ADDRESS') {
           if (!formData[q.id]?.zipCode || !formData[q.id]?.roadAddress || !formData[q.id]?.detailAddress) {
             return alert(`📍 [${q.title}]의 우편번호 및 상세주소를 완벽히 기입해 주세요.`);
@@ -316,6 +405,7 @@ export default function MySubmissionsModule() {
         }
       }
     }
+
     if (!confirm(activeFullScreenSurvey.isEditMode ? '답변 수정을 완료하시겠습니까?' : '설문을 최종 제출하시겠습니까?')) return;
   
     try {
@@ -344,15 +434,15 @@ export default function MySubmissionsModule() {
         alert('✅ 설문 응답 및 수정 사항이 시스템에 성공적으로 제출되었습니다.');
         setActiveFullScreenSurvey(null);
         
+        // 🚀 [수정 완료]: 제출 후 내 응답(GET_RESPONSES)이 아닌 전사 재고 통계(GET_STATS)를 직접 호출하여 완벽 동기화
         fetch('/api/survey/general', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'GET_RESPONSES' }),
+          body: JSON.stringify({ action: 'GET_STATS' }),
           cache: 'no-store'
-        }).then(r => r.ok ? r.json() : null).then(dbResponses => {
-          if (dbResponses) {
-            // 🚀 헬퍼 함수 적용!
-            setStockUsage(calculateStockUsage(dbResponses));
+        }).then(r => r.ok ? r.json() : null).then(statsData => {
+          if (statsData && statsData.stockUsage) {
+            setStockUsage(statsData.stockUsage);
           }
         }).catch(e => console.error("재고 동기화 실패", e));
 
@@ -719,8 +809,7 @@ export default function MySubmissionsModule() {
                             : isChecked ? 'border-blue-500 bg-blue-50/30 cursor-pointer' : 'border-slate-200 hover:bg-blue-50/40 cursor-pointer'
                           }`}>
                             <input type="radio" name={q.id} disabled={isOutOfStock} checked={isChecked} onChange={() => {
-                              handleInputChange(q.id, opt.label);
-                              if (opt.goToSectionId && opt.goToSectionId !== 'SUBMIT') setCurrentSectionId(opt.goToSectionId);
+                              handleInputChange(q.id, opt.label); // 다음 단계 클릭 시 분기 연산 처리하도록 이관
                             }} className="w-3.5 h-3.5 accent-blue-600" />
                             <div className="flex flex-col flex-1">
                               <span className={`font-bold ${isOutOfStock ? 'text-slate-400 line-through' : 'text-slate-700'}`}>{opt.label}</span>
@@ -824,10 +913,12 @@ export default function MySubmissionsModule() {
               );
             })}
      
-            <div className="pt-4 flex justify-between gap-4">
-              {hasSections && currentSectionIndex > 0 && <button type="button" onClick={() => setCurrentSectionId(sectionsOrder[currentSectionIndex - 1])} className="px-5 py-3.5 bg-white border border-slate-300 rounded-xl font-black text-slate-600 shadow-sm hover:bg-slate-50">◀ 이전 단계</button>}
+     <div className="pt-4 flex justify-between gap-4">
+              {hasSections && sectionHistory.length > 1 && (
+                <button type="button" onClick={handlePrevSection} className="px-5 py-3.5 bg-white border border-slate-300 rounded-xl font-black text-slate-600 shadow-sm hover:bg-slate-50">◀ 이전 단계</button>
+              )}
               {!isLastSection ? (
-                <button type="button" onClick={() => setCurrentSectionId(sectionsOrder[currentSectionIndex + 1])} className="flex-1 py-3.5 bg-blue-600 text-white font-black text-xs rounded-xl shadow-lg hover:bg-blue-700 transition-all">다음 단계 진행하기 ▶</button>
+                <button type="button" onClick={handleNextSection} className="flex-1 py-3.5 bg-blue-600 text-white font-black text-xs rounded-xl shadow-lg hover:bg-blue-700 transition-all">다음 단계 진행하기 ▶</button>
               ) : (
                 <button type="button" onClick={handleSubmitForm} className="flex-1 py-3.5 bg-slate-900 text-white font-black text-xs rounded-xl shadow-lg hover:bg-black transition-all">💾 {activeFullScreenSurvey.isEditMode ? '수정 완료' : '최종 답변서 제출하기'}</button>
               )}
