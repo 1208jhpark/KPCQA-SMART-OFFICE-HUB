@@ -70,7 +70,7 @@ export default function AdminSurveyHistoryModule() {
           if (r.surveyId && r.userEmail) {
             realRes[`${r.surveyId}_${r.userEmail}`] = {
               isDone: true,
-              date: r.submittedAt ? r.submittedAt.split('T')[0] : '-',
+              date: r.submittedAt ? getKSTDateString(r.submittedAt) : '-',
               answers: r.answers || {}
             };
           }

@@ -6,7 +6,7 @@ import Link from 'next/link';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
 import * as XLSX from 'xlsx'; 
-import { getKSTDateString } from '@/utils/dateUtils';
+import { getKSTDateString, isPastKSTDeadline } from '@/utils/dateUtils';
      
 export default function ActiveSurveysAdminPage() {
   const pathname = usePathname();
@@ -95,7 +95,7 @@ const formatAnswerForExport = (ans: any) => {
           if (r.surveyId && r.userEmail) {
             realRes[`${r.surveyId}_${r.userEmail}`] = {
               isDone: true,
-              date: r.submittedAt ? r.submittedAt.split('T')[0] : '-',
+              date: r.submittedAt ? getKSTDateString(r.submittedAt) : '-',
               result: '제출완료',
               answers: r.answers || {}
             };
@@ -553,11 +553,7 @@ const formatAnswerForExport = (ans: any) => {
                 const notDone = total - done;
                 const rate = total > 0 ? Math.round((done/total)*100) : 0;
                 
-                const now = new Date();
-                const deadlineStr = `${s.endDate}T${s.endTime || '23:59'}:00`;
-                const deadline = new Date(deadlineStr);
-                
-                const isTimeOver = s.status === '진행중' && now > deadline;
+                const isTimeOver = s.status === '진행중' && isPastKSTDeadline(s.endDate, s.endTime);
                 const displayStatus = isTimeOver ? '기간종료' : s.status;
       
                 return (

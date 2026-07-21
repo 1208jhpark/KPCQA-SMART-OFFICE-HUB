@@ -238,7 +238,7 @@ model CalibrationHistory {
 // 10~13. 마케팅 물품 관리
 // -----------------------------------------------------------------
 model MarketingItem {
-  id            String   @id @default(cuid())
+id            String   @id @default(cuid())
   owner_type    String   @default("CENTER") 
   owner_dept    String?  
   name          String   
@@ -249,10 +249,21 @@ model MarketingItem {
   description   String?  @default("") 
   unit          String?  @default("EA")   
   is_archived   Boolean? @default(false)  
+
+  // 🚀 [추가] 등록(또는 종료 처리) 담당자 정보 화석화
+  creator_name  String?  // 등록자 이름
+  creator_dept  String?  // 등록자 부서
+  creator_email String?  // 동명이인 방지 — 등록자 매칭 키
+
+  // 종료(아카이브) 처리자 — 부서지급대장 종료 탭 표시용
+  archived_by_name  String?
+  archived_by_dept  String?
+  archived_by_email String?
+
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
   distributions MarketingDistribution[]
-  purchases     MarketingPurchase[] 
+  purchases     MarketingPurchase[]
 }
      
 model MarketingDistribution {
@@ -261,13 +272,14 @@ model MarketingDistribution {
   item            MarketingItem @relation(fields: [item_id], references: [id])
   client_id       String?
   client_master   MarketingClient? @relation(fields: [client_id], references: [id])
-  client_name     String   
-  client_dept     String?  
+  client_name     String
+  client_dept     String?
   qty             Int      @default(1)
-  purpose         String?  
-  sender_name     String   
-  sender_dept     String   
-  dist_date       DateTime @default(now()) 
+  purpose         String?
+  sender_name     String
+  sender_dept     String
+  sender_email    String?  // 동명이인 방지 — 본인 매칭 키
+  dist_date       DateTime @default(now())
   createdAt       DateTime @default(now())
 }
      
@@ -277,7 +289,15 @@ model MarketingClient {
   location    String?  
   category    String?  
   departments Json?    @default("[]") 
-  is_active   Boolean  @default(true) 
+  is_active   Boolean  @default(true)
+  is_archived Boolean  @default(false) // 보관함 (운영목록에서만 숨김)
+  archived_at       DateTime? // 보관함 처리 시각
+  archived_by_name  String?   // 보관 처리자
+  archived_by_dept  String?   // 처리자 소속
+  archived_by_email String?   // 동명이인 대비 (UI 미표시)
+  creator_name  String?  // 신규 등록자
+  creator_dept  String?
+  creator_email String?  // 등록자 매칭 — 미사용(지급 0건) 시 본인 영구삭제 허용
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
   distributions MarketingDistribution[]
@@ -286,16 +306,17 @@ model MarketingClient {
 model MarketingPurchase {
   id              String   @id @default(cuid())
   item_id         String
-  qty             Int      @default(0) 
-  unit_price      Float    @default(0) 
-  total_price     Float    @default(0) 
-  note            String?  
-  purchaser_name  String   
-  purchaser_dept  String   
-  purchase_date   DateTime @default(now()) 
+  qty             Int      @default(0)
+  unit_price      Float    @default(0)
+  total_price     Float    @default(0)
+  note            String?
+  purchaser_name  String
+  purchaser_dept  String
+  purchaser_email String?  // 동명이인 방지 — 입고자 매칭 키
+  purchase_date   DateTime @default(now())
   createdAt       DateTime @default(now())
   item            MarketingItem @relation(fields: [item_id], references: [id], onDelete: Cascade)
-       
+
   // 🚀 기존 데이터를 살리기 위해 DB의 기존 'vendor' 컬럼을 매핑 보존합니다.
   old_vendor      String?  @map("vendor")
 

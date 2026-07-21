@@ -2,7 +2,7 @@
   
 import React, { useState, useEffect, useMemo } from 'react';
 import * as XLSX from 'xlsx';
-import { getKSTDateString } from '@/utils/dateUtils';
+import { getKSTDateString, getKSTYearMonth, getKSTNowYearMonth } from '@/utils/dateUtils';
 
 // 🚀 [UI 표준] 공통 HeaderLight 컴포넌트
 const HeaderLight = ({ title, count, children }: { title: string, count: number, children?: React.ReactNode }) => (
@@ -15,6 +15,49 @@ const HeaderLight = ({ title, count, children }: { title: string, count: number,
     {children}
   </div>
 );
+
+function emailsEqual(a?: string | null, b?: string | null) {
+  return !!(a && b && a.trim().toLowerCase() === b.trim().toLowerCase());
+}
+
+/** 역할 문자열 정규화 (Register/Catalog와 동일) */
+function normalizeRoles(roles: unknown): string[] {
+  if (!roles) return [];
+  const arr = Array.isArray(roles) ? roles : [roles];
+  return arr.map((r) => {
+    const s = String(r).trim();
+    const m = s.match(/(\d+)/);
+    return m ? `LV_${m[1]}` : s;
+  });
+}
+
+function normalizeRoleId(r: unknown) {
+  const s = String(r ?? '').trim();
+  const m = s.match(/(\d+)/);
+  return m ? `LV_${m[1]}` : s;
+}
+
+async function readApiError(res: Response, fallback: string) {
+  try {
+    const body = await res.json();
+    return body?.error || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+/** 지급 이력의 KST 연·월 매칭 (month1to12 생략 시 연도만) */
+function distMatchesKstYearMonth(
+  createdAt: string | Date | null | undefined,
+  year: number,
+  month1to12?: number
+) {
+  const ym = getKSTYearMonth(createdAt as string);
+  if (!ym) return false;
+  if (ym.year !== year) return false;
+  if (month1to12 != null && ym.month !== month1to12) return false;
+  return true;
+}
   
 export default function ClientSearchModule() {
   const [clients, setClients] = useState<any[]>([]);
@@ -23,6 +66,9 @@ export default function ClientSearchModule() {
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   
+  // 🚀 [추가] 탭 상태 관리 (운영중 / 보관함)
+  const [activeTab, setActiveTab] = useState<'ACTIVE' | 'ARCHIVED'>('ACTIVE');
+
   const [showHiddenDepts, setShowHiddenDepts] = useState(false);
   const [selectedCategory, setSelectedCategory] = useState('ALL');
      
@@ -52,9 +98,7 @@ export default function ClientSearchModule() {
   const [currentUser, setCurrentUser] = useState<any>(null); 
   const [interfaceConfig, setInterfaceConfig] = useState<any>(null);
 
-  const now = new Date();
-  const currentMonth = now.getMonth();
-  const currentYear = now.getFullYear();
+  const { year: kstYear, month: kstMonth } = getKSTNowYearMonth();
      
   useEffect(() => { fetchClients(); }, []);
      
@@ -68,7 +112,7 @@ export default function ClientSearchModule() {
         fetch('/api/admin/interface?t=' + ts),
         fetch('/api/auth/me?t=' + ts)
       ]);
-     
+      
       if (cRes.ok) setClients(await cRes.json());
       if (meRes.ok) setCurrentUser(await meRes.json());
       
@@ -83,7 +127,7 @@ export default function ClientSearchModule() {
         const config = interfaces.find((m: any) => m.path === '/marketing/distribution/client-search' || m.path?.includes('client-search'));
         setInterfaceConfig(config);
       }
-     
+      
       if (mRes.ok && configData?.client_category_group) {
         const masterData = await mRes.json();
         const categoryGroup = masterData.find((g: any) => g.id === configData.client_category_group);
@@ -114,8 +158,10 @@ export default function ClientSearchModule() {
     return Array.from(new Set(categories)).sort();
   }, [clients]);
      
+  // 🚀 필터링 시 Active 탭과 Archived 탭 구분
   const filteredClients = useMemo(() => {
-    return clients.filter(c => {
+    const baseList = clients.filter(c => activeTab === 'ACTIVE' ? !c.is_archived : c.is_archived);
+    return baseList.filter(c => {
       const matchCategory = selectedCategory === 'ALL' || c.category === selectedCategory;
       const matchSearch = !searchQuery || 
         c.name.toLowerCase().includes(searchQuery.toLowerCase()) || 
@@ -123,9 +169,10 @@ export default function ClientSearchModule() {
         (c.category && c.category.toLowerCase().includes(searchQuery.toLowerCase()));
       return matchCategory && matchSearch;
     });
-  }, [clients, searchQuery, selectedCategory]);
+  }, [clients, searchQuery, selectedCategory, activeTab]);
      
-  useEffect(() => { setCurrentPage(1); }, [searchQuery, selectedCategory]);
+  // 🚀 탭이나 필터가 변경되면 1페이지로 리셋
+  useEffect(() => { setCurrentPage(1); setSelectedClientIds(new Set()); }, [searchQuery, selectedCategory, activeTab]);
      
   const totalPages = Math.max(1, Math.ceil(filteredClients.length / itemsPerPage));
   const paginatedClients = filteredClients.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
@@ -138,7 +185,7 @@ export default function ClientSearchModule() {
      
   const openHistory = (clientName: string, deptName: string, distributions: any[]) => {
     const filtered = distributions
-      .filter(d => d.client_dept === deptName && new Date(d.createdAt).getFullYear() === currentYear)
+      .filter((d) => d.client_dept === deptName && distMatchesKstYearMonth(d.createdAt, kstYear))
       .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()); 
     setHistoryModal({ isOpen: true, clientName, deptName, list: filtered });
   };
@@ -148,24 +195,38 @@ export default function ClientSearchModule() {
     try { return JSON.parse(val) || []; } catch(e) { return []; }
   };
 
+  const myRoles = useMemo(() => normalizeRoles(currentUser?.roles), [currentUser]);
+  const isLv1 = myRoles.includes('LV_1');
+  const isMenuMaster =
+    isLv1 || (!!currentUser?.id && interfaceConfig?.master_editor_id === currentUser.id);
+
+  /** admin/interface 편집자 — 수정·부서관리·숨김·보관. 신규 등록은 제외 */
   const canSeeAddForm = useMemo(() => {
     if (!currentUser) return false;
-    if (currentUser.roles?.includes('LV_1')) return true; 
+    if (isLv1) return true;
     if (!interfaceConfig) return false;
-    
-    const myRoles = currentUser.roles || [];
+
     const myEmail = currentUser.email;
     const myId = currentUser.id;
-    const eRoles = safeArray(interfaceConfig.edit_role_ids);
+    const eRoles = safeArray(interfaceConfig.edit_role_ids).map(normalizeRoleId);
     const tMasters = safeArray(interfaceConfig.task_masters);
-    
+
     if (interfaceConfig.master_editor_id === myId) return true;
-    
-    if (myRoles.some((r: string) => eRoles.includes(r))) return true; 
-    if (tMasters.some((tm: any) => tm.email === myEmail)) return true;
-    
+    if (myRoles.some((r: string) => eRoles.includes(r))) return true;
+    if (tMasters.some((tm: any) => emailsEqual(tm.email, myEmail))) return true;
+
     return false;
-  }, [currentUser, interfaceConfig]);
+  }, [currentUser, interfaceConfig, isLv1, myRoles]);
+
+  /** 영구삭제: LV_1·메뉴마스터·등록자(본인) — 지급 0건일 때만 (서버와 동일) */
+  const canHardDeleteClient = (client: any) => {
+    if (!currentUser) return false;
+    if (isLv1 || isMenuMaster) return true;
+    return emailsEqual(client?.creator_email, currentUser.email);
+  };
+
+  const clientHasDistributions = (client: any) =>
+    Array.isArray(client?.distributions) && client.distributions.length > 0;
 
   const handleSelectAll = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.checked) {
@@ -191,8 +252,12 @@ export default function ClientSearchModule() {
     const dataToExport = clients
       .filter(c => selectedClientIds.has(c.id))
       .map(c => {
-        const thisYearDists = c.distributions?.filter((d:any) => new Date(d.createdAt).getFullYear() === currentYear) || [];
-        const thisMonthDists = thisYearDists.filter((d:any) => new Date(d.createdAt).getMonth() === currentMonth);
+        const thisYearDists = c.distributions?.filter((d: any) =>
+          distMatchesKstYearMonth(d.createdAt, kstYear)
+        ) || [];
+        const thisMonthDists = thisYearDists.filter((d: any) =>
+          distMatchesKstYearMonth(d.createdAt, kstYear, kstMonth)
+        );
         
         const monthTotal = thisMonthDists.reduce((sum: number, d: any) => sum + (d.qty * (d.item?.unit_price || 0)), 0);
         const yearTotal = thisYearDists.reduce((sum: number, d: any) => sum + (d.qty * (d.item?.unit_price || 0)), 0);
@@ -203,6 +268,7 @@ export default function ClientSearchModule() {
           '고객사명': c.name,
           '업무범주': c.category || '-',
           '소재지': c.location || '-',
+          '상태': c.is_archived ? '보관됨' : '운영중',
           '등록된 하위부서 수': getNormalizedSortedDepts(c.departments).filter((d:any)=>!d.is_hidden).length,
           '이번달 지급 총액(원)': monthTotal,
           '올해 누적 지급 총액(원)': yearTotal,
@@ -265,10 +331,10 @@ export default function ClientSearchModule() {
      
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!canSeeAddForm) return alert("고객사 마스터 등록/수정 권한이 없습니다."); 
+    if (editClient && !canSeeAddForm) return alert("고객사 마스터 수정 권한이 없습니다.");
     if (!formData.name) return alert("고객사명은 필수입니다.");
     if (masterCategories.length > 0 && !formData.category) return alert("업무 범주를 선택해주세요.");
-     
+      
     const url = '/api/marketing/clients';
     const method = editClient ? 'PATCH' : 'POST';
     const res = await fetch(url, {
@@ -285,11 +351,59 @@ export default function ClientSearchModule() {
     }
   };
      
+// 보관(Archive) / 복구(Restore) / 영구삭제(Hard Delete)
   const handleArchiveClient = async (id: string) => {
-    if (!canSeeAddForm) return alert("고객사 숨김 권한이 없습니다."); 
-    if (!confirm('이 고객사를 목록에서 숨김(보관) 처리하시겠습니까?')) return;
+    if (!canSeeAddForm) return alert('고객사 보관 권한이 없습니다.');
+    if (!confirm('이 고객사를 보관함으로 이동하시겠습니까?')) return;
+
+    const res = await fetch('/api/marketing/clients', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, is_archived: true }),
+    });
+
+    if (res.ok) {
+      await fetchClients();
+      setActiveTab('ARCHIVED');
+      alert('보관함으로 이동되었습니다.');
+    } else {
+      alert(await readApiError(res, '보관 처리에 실패했습니다.'));
+    }
+  };
+
+  const handleRestoreClient = async (id: string) => {
+    if (!canSeeAddForm) return alert('고객사 복구 권한이 없습니다.');
+    if (!confirm('이 고객사를 운영중인 마스터 목록으로 복구하시겠습니까?')) return;
+    const res = await fetch('/api/marketing/clients', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, is_archived: false }),
+    });
+    if (res.ok) {
+      await fetchClients();
+      setActiveTab('ACTIVE');
+      alert('목록으로 복구되었습니다.');
+    } else {
+      alert(await readApiError(res, '복구에 실패했습니다.'));
+    }
+  };
+
+  const handleHardDeleteClient = async (id: string) => {
+    const client = clients.find((c) => c.id === id);
+    if (!canHardDeleteClient(client)) {
+      return alert('영구 삭제는 등록자 본인 또는 LV_1·마스터만 가능합니다.');
+    }
+    if (clientHasDistributions(client)) {
+      return alert('지급 이력이 있어 영구 삭제할 수 없습니다. 보관 처리만 가능합니다.');
+    }
+    if (!confirm('정말 삭제하시겠습니까?\n이 작업은 되돌릴 수 없으며, 마스터에서 완전히 영구 삭제됩니다.')) return;
     const res = await fetch(`/api/marketing/clients?id=${id}`, { method: 'DELETE' });
-    if (res.ok) { alert('숨김 처리되었습니다.'); fetchClients(); }
+    if (res.ok) {
+      await fetchClients();
+      alert('완전히 삭제되었습니다.');
+    } else {
+      alert(await readApiError(res, '삭제 실패'));
+    }
   };
 
   const calculateTotalAmount = (distributions: any[]) => {
@@ -325,40 +439,51 @@ export default function ClientSearchModule() {
   return (
     <div className="w-full max-w-[1600px] mx-auto space-y-6 p-8 font-sans text-slate-900 pb-24 animate-fade-in">
       
-{/* 🌑 [디자인 1원칙: 현황/관리 대장 = 먹색 테마 배너] 고객사별 수령 현황 보드 (박스 제거 및 서체 강조형 리파인) */}
-<div className="w-full bg-slate-800 p-6 rounded-[2.5rem] min-h-[140px] flex flex-col justify-center text-white shadow-xl relative overflow-hidden group">
-  
-  {/* ✨ 슬레이트 테마 전용 은은한 우측 상단 빛 번짐 효과 매칭 */}
-  <div className="absolute right-[-10px] top-[-10px] w-24 h-24 bg-white/10 rounded-full blur-2xl group-hover:scale-150 transition-transform duration-700"></div>
+      {/* 🌌 [고객사 전용 테마] 고객사별 수령 현황 보드 (Deep Indigo + V2 Glassmorphism) */}
+      <div className="w-full bg-indigo-950 p-8 rounded-[2.5rem] min-h-[140px] flex flex-col justify-center text-white shadow-xl relative overflow-hidden group">
+        <div className="absolute right-[-20px] top-[-20px] w-48 h-48 bg-sky-400/20 rounded-full blur-3xl group-hover:scale-150 transition-transform duration-700"></div>
 
-  <div className="relative z-10 flex justify-between items-end w-full">
-    <div>
-      {/* 1. 상단 라벨 (mb-3 표준 여백 & text-slate-400 톤 세팅) */}
-      <h3 className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-3">
-        CLIENT DISTRIBUTION STATUS
-      </h3>
-      
-      {/* 2. 메인 타이틀 (어색한 박스 뱃지 완전 탈탈 털어내고 텍스트 강조 구조로 피팅) */}
-      <h1 className="text-2xl font-black tracking-tight text-white leading-none flex items-center flex-wrap gap-2">
-        {/* 🏢 고객사 고정 속성명 (박스 없이 글씨만 인디고/블루 톤으로 선명하게 강조) */}
-        <span className="text-indigo-300 shrink-0 select-none">
-          고객사별
-        </span>
-        
-        {/* 🎯 메인 타이틀 텍스트 */}
-        <span className="text-white">수령 현황 대장</span>
-      </h1>
-      
-      {/* 3. 하단 설명 (mt-4 표준 가독성 마감) */}
-      <p className="text-slate-300 text-xs font-semibold mt-4 opacity-90">
-        등록된 고객사들의 물품 지급 내역과 마스터 정보를 통합 모니터링하고 철저하게 관리합니다.
-      </p>
-    </div>
-  </div>
-</div>
+        <div className="relative z-10 flex justify-between items-end w-full">
+          <div>
+            <h3 className="text-[10px] font-black uppercase tracking-widest text-indigo-300 mb-3">
+              CLIENT DISTRIBUTION STATUS
+            </h3>
+            <h1 className="text-2xl font-black tracking-tight text-white leading-none flex items-center flex-wrap gap-2.5">
+              <span className="text-sky-300">고객사별</span>
+              <span>수령 현황 대장</span>
+            </h1>
+            <p className="text-indigo-200/80 text-xs font-semibold mt-4 leading-relaxed">
+              고객사를 (각 부서 관리 가능) 신규 등록할 수 있습니다.<br/>
+              등록된 고객사와 각 부서별 물품 지급 내역을 확인합니다.
+            </p>
+          </div>
+          
+          <div className="hidden md:block">
+            <div className="w-12 h-12 rounded-[1rem] bg-white/10 flex items-center justify-center text-xl backdrop-blur-sm border border-white/20 shadow-inner">
+              🤝
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* 🚀 탭 네비게이션 */}
+      <div className="flex flex-wrap gap-2 p-1.5 bg-slate-200/50 rounded-[1.25rem] w-fit shadow-inner mt-6">
+        <button 
+          onClick={() => setActiveTab('ACTIVE')} 
+          className={`px-6 py-3 rounded-xl text-xs font-black transition-all duration-300 ${activeTab === 'ACTIVE' ? 'bg-white text-indigo-600 shadow-md scale-100' : 'text-slate-500 hover:bg-slate-300/50 hover:text-slate-700 scale-95'}`}
+        >
+          🏢 운영중인 고객사
+        </button>
+        <button 
+          onClick={() => setActiveTab('ARCHIVED')} 
+          className={`px-6 py-3 rounded-xl text-xs font-black transition-all duration-300 ${activeTab === 'ARCHIVED' ? 'bg-white text-slate-800 shadow-md scale-100' : 'text-slate-500 hover:bg-slate-300/50 hover:text-slate-700 scale-95'}`}
+        >
+          🛑 보관함
+        </button>
+      </div>
      
-      <div className="mt-6 bg-white border border-slate-200 rounded-[2.5rem] shadow-sm overflow-hidden">
-        <HeaderLight title="고객사 데이터 대장" count={filteredClients.length}>
+      <div className="bg-white border border-slate-200 rounded-[2.5rem] shadow-sm overflow-hidden">
+        <HeaderLight title={activeTab === 'ACTIVE' ? "고객사 데이터 대장" : "보관된 고객사 목록"} count={filteredClients.length}>
           <div className="flex items-center gap-3">
             <label className="flex items-center gap-2 cursor-pointer group mr-2">
                 <input type="checkbox" checked={showHiddenDepts} onChange={(e) => setShowHiddenDepts(e.target.checked)} className="sr-only peer" />
@@ -385,20 +510,21 @@ export default function ClientSearchModule() {
             </div>
             
             {canSeeAddForm && (
-              <>
-                <button onClick={handleExcelDownload} className="px-3 py-1 bg-emerald-600 text-white rounded-lg text-[10px] font-black shadow-sm hover:bg-emerald-700 transition-all whitespace-nowrap">
-                  📥 선택 엑셀 다운
-                </button>
-                <button onClick={() => { setEditClient(null); setFormData({name:'', location:'', category:''}); setShowModal(true); }} className="px-3 py-1 bg-slate-900 text-white rounded-lg text-[10px] font-black shadow-sm hover:bg-indigo-600 transition-all whitespace-nowrap">
-                  + 신규 등록
-                </button>
-              </>
+              <button onClick={handleExcelDownload} className="px-3 py-1 bg-emerald-600 text-white rounded-lg text-[10px] font-black shadow-sm hover:bg-emerald-700 transition-all whitespace-nowrap">
+                📥 선택 엑셀 다운
+              </button>
+            )}
+            
+            {activeTab === 'ACTIVE' && (
+              <button onClick={() => { setEditClient(null); setFormData({name:'', location:'', category:''}); setShowModal(true); }} className="px-3 py-1 bg-slate-900 text-white rounded-lg text-[10px] font-black shadow-sm hover:bg-indigo-600 transition-all whitespace-nowrap">
+                + 신규 등록
+              </button>
             )}
           </div>
         </HeaderLight>
 
         <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse min-w-[1300px]">
+          <table className={`w-full text-left border-collapse ${activeTab === 'ARCHIVED' ? 'min-w-[1520px]' : 'min-w-[1340px]'}`}>
             <thead className="bg-slate-100 text-slate-700 text-[10px] font-black uppercase tracking-widest border-b border-slate-200">
               <tr>
                 <th className="h-12 text-center w-[40px] pl-4">
@@ -412,22 +538,35 @@ export default function ClientSearchModule() {
                 <th className="h-12 px-4 w-[250px] text-right">이번 달 합계</th>
                 <th className="h-12 px-4 w-[250px] text-right">올해 누적 합계</th>
                 <th className="h-12 text-center w-[100px]">최근 지급일</th>
-                <th className="h-12 pr-6 text-center w-[120px]">마스터 관리</th>
+                {activeTab === 'ARCHIVED' && (
+                  <>
+                    <th className="h-12 px-2 text-center w-[96px] whitespace-nowrap">보관함처리일</th>
+                    <th className="h-12 px-2 text-center w-[120px] whitespace-nowrap">처리자(소속)</th>
+                  </>
+                )}
+                <th className="h-12 pr-4 text-center w-[160px] whitespace-nowrap">마스터 관리</th>
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-slate-100 text-xs font-bold text-slate-700">
               {paginatedClients.length === 0 ? (
-                <tr><td colSpan={10} className="p-16 text-center text-slate-400 text-sm">조건에 맞는 고객사가 없습니다.</td></tr>
+                <tr><td colSpan={activeTab === 'ARCHIVED' ? 12 : 10} className="p-16 text-center text-slate-400 text-sm">{activeTab === 'ACTIVE' ? '조건에 맞는 고객사가 없습니다.' : '보관된 고객사가 없습니다.'}</td></tr>
               ) : paginatedClients.map((client, idx) => {
                 const isExpanded = expandedClients.has(client.id);
                 const allDepts = getNormalizedSortedDepts(client.departments);
                 const visibleDepts = allDepts.filter(d => showHiddenDepts || !d.is_hidden);
                 
-                const thisYearDists = client.distributions.filter((d:any) => new Date(d.createdAt).getFullYear() === currentYear);
-                const thisMonthDists = thisYearDists.filter((d:any) => new Date(d.createdAt).getMonth() === currentMonth);
+                const thisYearDists = client.distributions?.filter((d: any) =>
+                  distMatchesKstYearMonth(d.createdAt, kstYear)
+                ) || [];
+                const thisMonthDists = thisYearDists.filter((d: any) =>
+                  distMatchesKstYearMonth(d.createdAt, kstYear, kstMonth)
+                );
                 
                 const lastDist = [...(client.distributions||[])].sort((a,b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
                 const lastDistDate = lastDist ? getKSTDateString(lastDist.createdAt) : '-';
+                const archivedAt = client.archived_at ? getKSTDateString(client.archived_at) : '-';
+                const archiverName = client.archived_by_name || '-';
+                const archiverDept = client.archived_by_dept || '-';
      
                 return (
                   <React.Fragment key={client.id}>
@@ -447,8 +586,15 @@ export default function ClientSearchModule() {
                           <span className="bg-slate-100 text-slate-500 text-[10px] px-2 py-0.5 rounded-full font-black border border-slate-200">
                             {allDepts.filter(d => !d.is_hidden).length}
                           </span>
-                          {canSeeAddForm && (
-                            <button onClick={(e) => { e.stopPropagation(); setDeptModal({ isOpen: true, client, deptIndex: null, name: '' }); }} className="w-5 h-5 flex items-center justify-center bg-indigo-600 text-white rounded-md text-xs hover:bg-slate-800 shadow-sm">＋</button>
+                          {canSeeAddForm && activeTab === 'ACTIVE' && (
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); setDeptModal({ isOpen: true, client, deptIndex: null, name: '' }); }}
+                              className="px-1.5 py-0.5 flex items-center justify-center bg-indigo-600 text-white rounded-md text-[9px] font-black hover:bg-slate-800 shadow-sm whitespace-nowrap"
+                              title="부서 추가"
+                            >
+                              부서+
+                            </button>
                           )}
                         </div>
                       </td>
@@ -476,14 +622,52 @@ export default function ClientSearchModule() {
                         )}
                       </td>
 
-                      <td className="pr-6 border-l border-slate-100 text-center">
-                        {canSeeAddForm ? (
-                          <div className="flex justify-center gap-1">
-                            <button onClick={(e) => { e.stopPropagation(); setEditClient(client); setFormData({name:client.name, location:client.location||'', category:client.category||''}); setShowModal(true); }} className="px-3 py-1 bg-white border border-slate-200 text-slate-600 rounded-lg text-[9px] font-black hover:bg-slate-50 transition-colors shadow-sm">수정</button>
-                            <button onClick={(e) => { e.stopPropagation(); handleArchiveClient(client.id); }} className="px-3 py-1 bg-slate-50 border border-slate-200 text-slate-400 rounded-lg text-[9px] font-black hover:bg-slate-200 transition-colors shadow-sm">숨김</button>
+                      {activeTab === 'ARCHIVED' && (
+                        <>
+                          <td className="px-2 text-center font-mono text-[10px] text-slate-700 border-l border-slate-100 whitespace-nowrap">
+                            {archivedAt}
+                          </td>
+                          <td className="px-2 text-center text-slate-800 border-l border-slate-100">
+                            <div className="flex flex-col items-center justify-center leading-tight min-w-[6.5rem]">
+                              <span className="text-[11px] font-bold truncate max-w-[110px]" title={archiverName}>{archiverName}</span>
+                              <span className="text-[9px] text-slate-600 truncate max-w-[110px]" title={archiverDept}>({archiverDept})</span>
+                            </div>
+                          </td>
+                        </>
+                      )}
+
+                      <td className="pr-4 border-l border-slate-100 text-center whitespace-nowrap" onClick={(e)=>e.stopPropagation()}>
+                        {activeTab === 'ACTIVE' ? (
+                          <div className="flex justify-center items-center gap-1 flex-nowrap">
+                            {canSeeAddForm && (
+                              <>
+                                <button onClick={() => { setEditClient(client); setFormData({name:client.name, location:client.location||'', category:client.category||''}); setShowModal(true); }} className="px-3 py-1 bg-white border border-slate-200 text-slate-600 rounded-lg text-[9px] font-black hover:bg-slate-50 transition-colors shadow-sm whitespace-nowrap">수정</button>
+                                <button onClick={() => handleArchiveClient(client.id)} className="px-3 py-1 bg-slate-50 border border-slate-200 text-slate-400 rounded-lg text-[9px] font-black hover:bg-slate-200 transition-colors shadow-sm whitespace-nowrap">보관</button>
+                              </>
+                            )}
+                            {canHardDeleteClient(client) && !clientHasDistributions(client) && (
+                              <button onClick={() => handleHardDeleteClient(client.id)} className="px-3 py-1 bg-red-50 border border-red-200 text-red-500 rounded-lg text-[9px] font-black hover:bg-red-500 hover:text-white transition-colors shadow-sm whitespace-nowrap">삭제</button>
+                            )}
+                            {!canSeeAddForm && !(canHardDeleteClient(client) && !clientHasDistributions(client)) && (
+                              <span className="text-slate-300 text-[10px] whitespace-nowrap">권한제한</span>
+                            )}
                           </div>
                         ) : (
-                          <span className="text-slate-300 text-[10px]">권한제한</span>
+                          <div className="flex justify-center items-center gap-1 flex-nowrap">
+                            {canSeeAddForm && (
+                              <button onClick={() => handleRestoreClient(client.id)} className="px-3 py-1 bg-white border border-slate-200 text-slate-600 rounded-lg text-[9px] font-black hover:bg-slate-50 transition-colors shadow-sm whitespace-nowrap">복구</button>
+                            )}
+                            {canHardDeleteClient(client) && (
+                              clientHasDistributions(client) ? (
+                                <span className="px-2 py-1 text-[9px] font-black text-slate-400 border border-slate-200 rounded-lg cursor-not-allowed whitespace-nowrap" title="지급 이력이 얽혀 있어 삭제 불가">삭제불가</span>
+                              ) : (
+                                <button onClick={() => handleHardDeleteClient(client.id)} className="px-3 py-1 bg-red-50 border border-red-200 text-red-500 rounded-lg text-[9px] font-black hover:bg-red-500 hover:text-white transition-colors shadow-sm whitespace-nowrap">삭제</button>
+                              )
+                            )}
+                            {!canSeeAddForm && !canHardDeleteClient(client) && (
+                              <span className="text-slate-300 text-[10px] whitespace-nowrap">권한제한</span>
+                            )}
+                          </div>
                         )}
                       </td>
                     </tr>
@@ -496,7 +680,7 @@ export default function ClientSearchModule() {
                         <tr key={`${client.id}-${dept.name}`} className={`bg-slate-50/50 border-t border-dashed border-slate-200 h-12 ${dept.is_hidden ? 'opacity-50 grayscale' : ''}`}>
                           <td colSpan={2} className="text-center border-r border-slate-100"></td>
                           <td colSpan={2} className="pl-6 text-slate-600 text-[11px] font-bold border-r border-slate-100">
-                            <div className="flex items-center gap-2 group cursor-pointer" onClick={() => openHistory(client.name, dept.name, client.distributions)}>
+                            <div className="flex items-center gap-2 group cursor-pointer" onClick={() => openHistory(client.name, dept.name, client.distributions || [])}>
                                 <span className="text-slate-300">└</span> 
                                 <span className={`${dept.is_hidden ? 'line-through text-slate-400' : 'group-hover:text-indigo-600'} truncate max-w-[150px] flex items-center`}>
                                   {dept.name} 
@@ -507,7 +691,7 @@ export default function ClientSearchModule() {
                             </div>
                           </td>
                           <td colSpan={2} className="px-3 text-center border-r border-slate-100">
-                            {canSeeAddForm ? (
+                            {canSeeAddForm && activeTab === 'ACTIVE' ? (
                               <div className="flex justify-center gap-1">
                                   <button onClick={() => setDeptModal({ isOpen: true, client, deptIndex: originalIndex, name: dept.name })} className="px-2 py-1 bg-white border border-slate-200 rounded text-[9px] font-black text-slate-500 hover:bg-indigo-600 hover:text-white shadow-sm transition-colors">EDIT</button>
                                   <button onClick={() => handleToggleDeptHide(client, originalIndex)} className={`px-2 py-1 border rounded text-[9px] font-black shadow-sm transition-colors ${dept.is_hidden ? 'bg-indigo-50 border-indigo-200 text-indigo-600 hover:bg-indigo-600 hover:text-white' : 'bg-white border-slate-200 text-slate-400 hover:bg-slate-600 hover:text-white'}`}>{dept.is_hidden ? 'SHOW' : 'HIDE'}</button>
@@ -521,7 +705,7 @@ export default function ClientSearchModule() {
                           </td>
                           <td className="px-4 border-r border-slate-100">{renderAggregatedItems(deptMonthDists)}</td>
                           <td className="px-4 border-r border-slate-100">{renderAggregatedItems(deptYearDists)}</td>
-                          <td colSpan={2}></td>
+                          <td colSpan={activeTab === 'ARCHIVED' ? 4 : 2}></td>
                         </tr>
                       );
                     })}
@@ -592,7 +776,6 @@ export default function ClientSearchModule() {
                 <span className="font-bold text-slate-500">담당 지급자</span>
                 <span className="font-black text-slate-800">{lastDistModal.distData.sender_name}</span>
               </div>
-              {/* 🚀 신규 추가된 지급자 소속 영역 */}
               <div className="flex justify-between items-center bg-slate-50 p-3 rounded-xl border border-slate-100">
                 <span className="font-bold text-slate-500">지급자 소속</span>
                 <span className="font-black text-slate-800">{lastDistModal.distData.sender_dept || '-'}</span>
@@ -610,7 +793,7 @@ export default function ClientSearchModule() {
             <div className="flex justify-between items-center border-b border-slate-100 pb-5 mb-6">
               <div>
                 <h3 className="text-xl font-black text-slate-900">{historyModal.clientName} - <span className="text-indigo-600">{historyModal.deptName}</span></h3>
-                <p className="text-xs font-bold text-slate-400 mt-1 uppercase tracking-widest">{currentYear} YEAR CUMULATIVE HISTORY</p>
+                <p className="text-xs font-bold text-slate-400 mt-1 uppercase tracking-widest">{kstYear} YEAR CUMULATIVE HISTORY</p>
               </div>
               <button onClick={() => setHistoryModal({...historyModal, isOpen: false})} className="w-10 h-10 flex items-center justify-center bg-slate-100 text-slate-400 rounded-full hover:bg-slate-900 hover:text-white transition-all text-xl">✕</button>
             </div>

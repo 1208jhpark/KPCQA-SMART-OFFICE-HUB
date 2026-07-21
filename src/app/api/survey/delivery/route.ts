@@ -3,6 +3,7 @@ import { cookies } from 'next/headers';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcrypt';
 import prisma from '@/lib/prisma';
+import { parseKSTDeadline } from '@/utils/dateUtils';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'kpcqa_secret_key';
 
@@ -21,13 +22,30 @@ async function getAuth() {
   }
 }
 
-// 🟢 [GET] 배달/조사 설문 목록 조회
+// 🟢 [GET] 배달/조사 설문 목록 조회 (로그인 필수 / 비관리자는 독촉 이메일 목록 최소화)
 export async function GET() {
   try {
+    const auth = await getAuth();
+    if (!auth.isAuth || !auth.email) {
+      return NextResponse.json({ error: '로그인 후 이용할 수 있습니다.' }, { status: 401 });
+    }
+
     const surveys = await prisma.deliverySurvey.findMany({
       orderBy: { postNumber: 'asc' },
     });
-    return NextResponse.json(surveys, {
+
+    // LV_1: 전체 필드 / 일반: nudgedUsers에 본인 이메일만 남겨 타인 이메일 노출 차단
+    const payload = auth.isAdmin
+      ? surveys
+      : surveys.map((s: any) => {
+          const nudged = Array.isArray(s.nudgedUsers) ? s.nudgedUsers : [];
+          return {
+            ...s,
+            nudgedUsers: nudged.includes(auth.email!) ? [auth.email!] : [],
+          };
+        });
+
+    return NextResponse.json(payload, {
       headers: { 'Cache-Control': 'no-store, max-age=0, must-revalidate' }
     });
   } catch (error) {
@@ -136,9 +154,10 @@ if (action === 'SUBMIT_RESPONSE') {
   if (!survey) return NextResponse.json({ error: '존재하지 않는 설문입니다.' }, { status: 404 });
   if (survey.status === '완료') return NextResponse.json({ error: '이미 마감 처리된 설문입니다.' }, { status: 403 });
   
-  const now = new Date();
-  const deadline = new Date(`${survey.endDate}T${survey.endTime || '23:59'}:00`);
-  if (now > deadline) return NextResponse.json({ error: '제출 기한이 만료되었습니다.' }, { status: 403 });
+  const deadline = parseKSTDeadline(survey.endDate, survey.endTime);
+  if (Number.isNaN(deadline.getTime()) || Date.now() > deadline.getTime()) {
+    return NextResponse.json({ error: '제출 기한이 만료되었습니다.' }, { status: 403 });
+  }
 
   const newResponse = await prisma.deliveryResponse.upsert({
     where: { surveyId_userEmail: { surveyId, userEmail: secureEmail } },

@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import Link from 'next/link'; 
 import { saveAs } from 'file-saver';
-import { getKSTDateString } from '@/utils/dateUtils';
+import { getKSTDateString, formatKSTCalendarLabel } from '@/utils/dateUtils';
   
 type QuestionType = 'CHOICE_SINGLE' | 'CHOICE_MULTI' | 'TEXT_SHORT' | 'TEXT_LONG' | 'SCALE' | 'FILE' | 'SEARCH_ADDRESS' | 'CALENDAR' | 'SECTION';
   
@@ -181,7 +181,31 @@ export default function AdminDeliveryBuilderModule() {
   };
   
   const updateQuestion = (id: string, field: keyof Question, value: any) => {
-    setQuestions(prev => prev.map(q => q.id === id ? { ...q, [field]: value } : q));
+    setQuestions(prev => prev.map(q => {
+      if (q.id !== id) return q;
+
+      // 🚀 문항 타입 변경 시 이전 타입 잔여 필드 정리 (일반 빌더와 동일)
+      if (field === 'type') {
+        const newType = value as QuestionType;
+        return {
+          ...q,
+          type: newType,
+          options: newType.includes('CHOICE')
+            ? [{ label: '옵션 1', imageUrl: '', referenceLink: '', goToSectionId: '', stockLimit: null }]
+            : undefined,
+          scaleMax: newType === 'SCALE' ? 5 : undefined,
+          dummyDateValue: newType === 'CALENDAR' ? getKSTDateString() : undefined,
+          zipCode: newType === 'SEARCH_ADDRESS' ? '' : undefined,
+          roadAddress: newType === 'SEARCH_ADDRESS' ? '' : undefined,
+          detailAddress: newType === 'SEARCH_ADDRESS' ? '' : undefined,
+          templateFileName: undefined,
+          templateFileData: undefined,
+          goToSectionId: q.goToSectionId || '',
+        };
+      }
+
+      return { ...q, [field]: value };
+    }));
   };
   
   const deleteQuestion = (id: string) => {
@@ -250,19 +274,8 @@ export default function AdminDeliveryBuilderModule() {
     }
   };
      
-  const formatDeliveryDate = (dateStr: string) => {
-    if (!dateStr) return '날짜를 지정해 주세요.';
-    const dayNames = ['일요일', '월요일', '화요일', '수요일', '목요일', '금요일', '토요일'];
-    const dateObj = new Date(dateStr);
-    if (isNaN(dateObj.getTime())) return dateStr;
-     
-    const yyyy = dateObj.getFullYear();
-    const mm = String(dateObj.getMonth() + 1).padStart(2, '0');
-    const dd = String(dateObj.getDate()).padStart(2, '0');
-    const dayOfWeek = dayNames[dateObj.getDay()];
-     
-    return `${yyyy}년 ${mm}월 ${dd}일 (${dayOfWeek})`;
-  };
+  const formatDeliveryDate = (dateStr: string) =>
+    formatKSTCalendarLabel(dateStr, '날짜를 지정해 주세요.');
      
   const availableSections = questions.filter(q => q.type === 'SECTION');
   

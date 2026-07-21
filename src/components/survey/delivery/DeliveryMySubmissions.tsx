@@ -3,7 +3,8 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { saveAs } from 'file-saver';
-import { getKSTDateString } from '@/utils/dateUtils';
+import { getKSTDateString, getKSTTimeString, formatKSTDateTime, isPastKSTDeadline, getKSTDaysUntil, formatKSTCalendarLabel } from '@/utils/dateUtils';
+import { getVisibleQuestionsByBranch } from '@/utils/surveyBranching';
      
 // 🚀 [UI 표준] 전사 공통 헤더 컴포넌트
 const HeaderLight = ({ title, count, children }: { title: string, count: number, children?: React.ReactNode }) => (
@@ -44,18 +45,8 @@ export default function DeliveryMySubmissions() {
      
   // 🚀 [재고 연동 코어] 옵션별 전사 실시간 소진 누적 개수 해시맵 컨텍스트 선언
   const [stockUsage, setStockUsage] = useState<Record<string, Record<string, number>>>({});
-     // 🚀 [추가] 캘린더 날짜 표시를 위한 헬퍼 함수
-  const formatDeliveryDate = (dateStr: string) => {
-    if (!dateStr) return '날짜를 지정해 주세요.';
-    const dayNames = ['일요일', '월요일', '화요일', '수요일', '목요일', '금요일', '토요일'];
-    const dateObj = new Date(dateStr);
-    if (isNaN(dateObj.getTime())) return dateStr;
-    const yyyy = dateObj.getFullYear();
-    const mm = String(dateObj.getMonth() + 1).padStart(2, '0');
-    const dd = String(dateObj.getDate()).padStart(2, '0');
-    const dayOfWeek = dayNames[dateObj.getDay()];
-    return `${yyyy}년 ${mm}월 ${dd}일 (${dayOfWeek})`;
-  };
+  const formatDeliveryDate = (dateStr: string) =>
+    formatKSTCalendarLabel(dateStr, '날짜를 지정해 주세요.');
   // 🚀 카카오(Daum) 주소 검색 엔진 호출 함수
   const openPostcodeEngine = (qId: string) => {
     if (typeof window !== 'undefined' && (window as any).daum?.Postcode) {
@@ -139,7 +130,7 @@ export default function DeliveryMySubmissions() {
             myDbResponses.forEach((r: any) => {
               if (r.userEmail === userData.email) {
                 nextMyRes[r.surveyId] = {
-                  submittedAt: r.submittedAt ? r.submittedAt.split('T')[0] + ' ' + new Date(r.submittedAt).toLocaleTimeString('ko-KR', { hour12: false }) : '-',
+                  submittedAt: r.submittedAt ? formatKSTDateTime(r.submittedAt) : '-',
                   answers: r.answers,
                   isApproved: r.isApproved,
                   isRevoked: r.isRevoked,
@@ -292,49 +283,18 @@ export default function DeliveryMySubmissions() {
   };
   
   const handleSubmitForm = async () => {
-    // 🚀 1. 제출 순간 시간 만료 및 상태 마감 클라이언트 사이드 철저 가드
-    const now = new Date();
-    const hasValidDate = typeof activeFullScreenSurvey.endDate === 'string' && activeFullScreenSurvey.endDate.includes('-');
-    const rawTime = (activeFullScreenSurvey.endTime || '').trim();
-    const timeStr = rawTime === '' ? '23:59' : rawTime;
-    const deadline = hasValidDate ? new Date(`${activeFullScreenSurvey.endDate.trim()}T${timeStr}:00`) : null;
-    
-    if (deadline && now > deadline) {
+    // 🚀 1. KST 기준 마감 가드
+    if (isPastKSTDeadline(activeFullScreenSurvey.endDate, activeFullScreenSurvey.endTime)) {
       alert('❌ 기한이 만료되어 배송 정보를 접수하거나 수정할 수 없습니다.');
       setActiveFullScreenSurvey(null);
       return;
     }
 
-      // 🚀 [새로운 코드 시작]
-      const visibleQuestions: any[] = [];
-      const questions = activeFullScreenSurvey.questions || [];
-      let currentIndex = 0;
-      
-      while (currentIndex < questions.length) {
-        const q = questions[currentIndex];
-        visibleQuestions.push(q);
-        const userAns = formData[q.id];
-        
-        let nextSectionId: string | undefined = undefined;
-        if (q.type === 'CHOICE_SINGLE' && userAns) {
-          const selectedOpt = q.options?.find((o: any) => o.label === userAns);
-          if (selectedOpt?.goToSectionId) nextSectionId = selectedOpt.goToSectionId;
-        }
-        
-        if (!nextSectionId && q.goToSectionId && userAns !== undefined && userAns !== null && userAns !== '') {
-          nextSectionId = q.goToSectionId;
-        }
-        
-        if (nextSectionId) {
-          if (nextSectionId === 'SUBMIT') break;
-          const targetIdx = questions.findIndex((item: any) => item.id === nextSectionId);
-          if (targetIdx !== -1 && targetIdx > currentIndex) {
-            currentIndex = targetIdx;
-            continue;
-          }
-        }
-        currentIndex++;
-      }
+      const visibleQuestions = getVisibleQuestionsByBranch(
+        activeFullScreenSurvey.questions || [],
+        formData,
+        'delivery'
+      );
   
       for (const q of visibleQuestions) {
         if (q.type === 'SECTION') continue;
@@ -368,7 +328,7 @@ export default function DeliveryMySubmissions() {
      
       if (res.ok) {
         const serverRes = await res.json();
-        const submittedDate = `${getKSTDateString()} ${new Date().toLocaleTimeString('ko-KR', { hour12: false })}`;
+        const submittedDate = `${getKSTDateString()} ${getKSTTimeString()}`;
         
         // 🚀 2. [SPA 최적화] 무거운 window.location.reload()를 완전히 제거하고
         // 서버 DB의 실제 반환값(revisionCount 및 결재 플래그)을 다이렉트로 매핑
@@ -500,24 +460,16 @@ export default function DeliveryMySubmissions() {
                 const submissionTimeStr = myResponses[survey.id]?.submittedAt || '-';
                 const reverseNo = eligibleSurveys.length - ((eligiblePage - 1) * itemsPerPage + index);
                 
-                // 💡 [시간 및 날짜 정밀 계산] - 시간이 비어있어도 에러 안 나게 안전 처리!
-                const hasValidDate = typeof survey.endDate === 'string' && survey.endDate.includes('-');
+                // 💡 [KST 마감·D-day]
                 const rawTime = (survey.endTime || '').trim();
                 const timeStr = rawTime === '' ? '23:59' : rawTime;
-                
-                const deadline = hasValidDate ? new Date(`${survey.endDate.trim()}T${timeStr}:00`) : null;
-                const now = new Date();
-                const isTimeOver = deadline ? now > deadline : false;
+                const isTimeOver = typeof survey.endDate === 'string' && survey.endDate.includes('-')
+                  ? isPastKSTDeadline(survey.endDate, timeStr)
+                  : false;
                 
                 let dDayText = null;
-                
-                // 🚨 [원인 해결!] '상시' 분류여도 마감일이 정해져 있으면 무조건 D-Day를 띄우도록 제한 해제!
-                if (deadline && !isTimeOver) {
-                  const todayDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-                  const endDateDate = new Date(deadline.getFullYear(), deadline.getMonth(), deadline.getDate());
-                  
-                  const pureDaysDiff = Math.round((endDateDate.getTime() - todayDate.getTime()) / (1000 * 60 * 60 * 24));
-                  
+                if (!isTimeOver && typeof survey.endDate === 'string') {
+                  const pureDaysDiff = getKSTDaysUntil(survey.endDate);
                   if (pureDaysDiff === 0) dDayText = "D-Day";
                   else if (pureDaysDiff > 0 && pureDaysDiff <= 3) dDayText = `D-${pureDaysDiff}`;
                 }
@@ -767,33 +719,11 @@ export default function DeliveryMySubmissions() {
             </div>
      
             {(() => {
-              const visibleQuestions: any[] = [];
-              const questions = activeFullScreenSurvey.questions || [];
-              let currentIndex = 0;
-              
-              while (currentIndex < questions.length) {
-                const q = questions[currentIndex];
-                visibleQuestions.push(q);
-                const userAns = formData[q.id];
-                
-                let nextSectionId: string | undefined = undefined;
-                if (q.type === 'CHOICE_SINGLE' && userAns) {
-                  const selectedOpt = q.options?.find((o: any) => o.label === userAns);
-                  if (selectedOpt?.goToSectionId) nextSectionId = selectedOpt.goToSectionId;
-                }
-                if (!nextSectionId && q.goToSectionId && userAns !== undefined && userAns !== null && userAns !== '') {
-                  nextSectionId = q.goToSectionId;
-                }
-                if (nextSectionId) {
-                  if (nextSectionId === 'SUBMIT') break;
-                  const targetIdx = questions.findIndex((item: any) => item.id === nextSectionId);
-                  if (targetIdx !== -1 && targetIdx > currentIndex) {
-                    currentIndex = targetIdx;
-                    continue;
-                  }
-                }
-                currentIndex++;
-              }
+              const visibleQuestions = getVisibleQuestionsByBranch(
+                activeFullScreenSurvey.questions || [],
+                formData,
+                'delivery'
+              );
 
               return visibleQuestions.map((q, i) => (
                 <div key={q.id} className={`bg-white p-8 rounded-3xl border border-slate-200 shadow-sm space-y-4 ${q.type === 'SECTION' ? 'border-l-8 border-l-teal-600 bg-teal-50/10' : ''}`}>

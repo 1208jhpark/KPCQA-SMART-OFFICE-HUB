@@ -6,6 +6,7 @@ import Link from 'next/link'; // 🚀 표준 규격 next/link로 복구
 import * as XLSX from 'xlsx';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
+import { getKSTDateString } from '@/utils/dateUtils';
   
 export default function AdminDeliveryHistoryModule() {
   const pathname = usePathname();
@@ -17,7 +18,7 @@ export default function AdminDeliveryHistoryModule() {
   const [currentUser, setCurrentUser] = useState<any>(null);
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 20;
-  const [selectedYear, setSelectedYear] = useState(new Date().getFullYear().toString());
+  const [selectedYear, setSelectedYear] = useState(getKSTDateString().substring(0, 4));
   
   useEffect(() => { setCurrentPage(1); }, [selectedYear]);
   
@@ -74,7 +75,7 @@ export default function AdminDeliveryHistoryModule() {
         dbResponses.forEach((r: any) => {
           realRes[`${r.surveyId}_${r.userEmail}`] = {
             isDone: true,
-            date: r.submittedAt ? r.submittedAt.split('T')[0] : '-',
+            date: r.submittedAt ? getKSTDateString(r.submittedAt) : '-',
             answers: r.answers
           };
         });
@@ -103,7 +104,7 @@ export default function AdminDeliveryHistoryModule() {
   const availableYears = useMemo(() => {
     const years = archivedSurveys.map(h => (h.endDate || h.postDate || '').substring(0, 4)).filter(Boolean);
     const uniqueYears = Array.from(new Set(years));
-    const currentYear = new Date().getFullYear().toString();
+    const currentYear = getKSTDateString().substring(0, 4);
     if (!uniqueYears.includes(currentYear)) uniqueYears.push(currentYear);
     return uniqueYears.sort((a, b) => b.localeCompare(a)); 
   }, [archivedSurveys]);

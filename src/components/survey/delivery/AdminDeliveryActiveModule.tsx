@@ -6,7 +6,7 @@ import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
 import * as XLSX from 'xlsx';
 import { usePathname, useRouter } from 'next/navigation'; // 🚀 내비게이션 도구 통합
-import { getKSTDateString } from '@/utils/dateUtils';
+import { getKSTDateString, isPastKSTDeadline } from '@/utils/dateUtils';
      
 const getStatusBadge = (status: string) => {
   switch (status) {
@@ -82,13 +82,13 @@ export default function AdminDeliveryActiveModule() {
           dbResponses.forEach((r: any) => {
             realRes[`${r.surveyId}_${r.userEmail}`] = {
               isDone: true,
-              date: r.submittedAt ? r.submittedAt.split('T')[0] : '-',
+              date: r.submittedAt ? getKSTDateString(r.submittedAt) : '-',
               fullDate: r.submittedAt,
               result: '제출완료',
               answers: r.answers,
               isApproved: r.isApproved,
-              approvedAt: r.approvedAt ? r.approvedAt.split('T')[0] : null,
-              feedbackAt: r.feedbackAt ? r.feedbackAt.split('T')[0] : null,
+              approvedAt: r.approvedAt ? getKSTDateString(r.approvedAt) : null,
+              feedbackAt: r.feedbackAt ? getKSTDateString(r.feedbackAt) : null,
               feedbackMsg: r.feedbackMsg,
               revisionCount: r.revisionCount,
               isRevoked: r.isRevoked
@@ -460,8 +460,16 @@ const handleExportAnalysisAll = () => {
   const wb = XLSX.utils.book_new();
   const recordsBySurvey: Record<string, any[]> = {};
    
+  // 🚀 [버그 픽스]: ID가 D_... 형태이므로 split('_') 불가 → 이메일 '@' 앞 마지막 '_'로 분리
+  const parseCellKey = (key: string) => {
+    const atIdx = key.indexOf('@');
+    const sepIdx = atIdx === -1 ? key.lastIndexOf('_') : key.lastIndexOf('_', atIdx);
+    if (sepIdx <= 0) return { surveyId: '', userEmail: '' };
+    return { surveyId: key.slice(0, sepIdx), userEmail: key.slice(sepIdx + 1) };
+  };
+
   selectedCellKeys.forEach(key => {
-    const [surveyId, userEmail] = key.split('_');
+    const { surveyId, userEmail } = parseCellKey(key);
     const survey = surveys.find(s => s.id === surveyId);
     const user = users.find(u => u.email === userEmail);
     const resp = responses[key];
@@ -753,12 +761,8 @@ const handleDownloadZipAll = async () => {
               const notDone = total - done;
               const rate = total > 0 ? Math.round((done / total) * 100) : 0;
               
-              // 현재 시간과 마감 시간 정밀 비교
-              const now = new Date();
-              const deadlineStr = `${s.endDate}T${s.endTime || '23:59'}:00`;
-              const deadline = new Date(deadlineStr);
-              
-              const isTimeOver = s.status === '진행중' && now > deadline;
+              // 한국시간(KST) 기준 마감 비교
+              const isTimeOver = s.status === '진행중' && isPastKSTDeadline(s.endDate, s.endTime);
               const displayStatus = isTimeOver ? '기간종료' : s.status;
    
               return (
@@ -819,7 +823,7 @@ const handleDownloadZipAll = async () => {
                     <div className="flex items-center justify-center gap-1 w-full">
                       <button onClick={() => handleStatusChange(s.id, 'UP')} disabled={s.status === '진행중' || s.status === '완료'} className={`flex-1 py-1.5 rounded text-[9px] font-black whitespace-nowrap transition-all shadow-sm border ${s.status === '게시전' || s.status === '게시중단' ? 'bg-indigo-600 text-white border-indigo-600 hover:bg-indigo-700' : 'bg-slate-50 border-slate-200 text-slate-300 cursor-not-allowed'}`}>게시</button>
                       <button onClick={() => handleStatusChange(s.id, 'DOWN')} disabled={s.status !== '진행중'} className={`flex-1 py-1.5 rounded text-[9px] font-black whitespace-nowrap transition-all shadow-sm border ${s.status === '진행중' ? 'bg-white border-slate-300 text-slate-700 hover:bg-slate-100' : 'bg-slate-50 border-slate-200 text-slate-300 cursor-not-allowed'}`}>중단</button>
-                      <button onClick={() => handleStatusChange(s.id, 'FORCE_COMPLETE')} disabled={s.status !== '진행중'} className={`flex-1 py-1.5 rounded text-[9px] font-black whitespace-nowrap transition-all shadow-sm border ${s.status === '진행중' ? 'bg-emerald-600 text-white border-emerald-600 hover:bg-emerald-700' : 'bg-slate-50 border-slate-200 text-slate-300 cursor-not-allowed'}`}>마감</button>
+                      <button onClick={() => handleStatusChange(s.id, 'FORCE_COMPLETE')} disabled={s.status !== '진행중'} className={`flex-1 py-1.5 rounded text-[9px] font-black whitespace-nowrap transition-all shadow-sm border ${s.status === '진행중' ? (isTimeOver ? 'bg-red-600 text-white border-red-600 hover:bg-red-700 animate-bounce' : 'bg-emerald-600 text-white border-emerald-600 hover:bg-emerald-700') : 'bg-slate-50 border-slate-200 text-slate-300 cursor-not-allowed'}`}>마감</button>
                     </div>
                   </td>
                   <td className="py-2 pr-4 align-middle bg-slate-50/50">

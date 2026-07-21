@@ -44,7 +44,6 @@ const DeptArchivePanel = dynamic(() => import('../asset/production/DeptArchivePa
 const MarketingDashboard = dynamic(() => import('../../components/marketing/DashboardModule').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
 const MarketingCatalog = dynamic(() => import('../marketing/CatalogModule').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
 const MarketingClientSearch = dynamic(() => import('../marketing/ClientSearchModule').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
-const MarketingOrgDistribution = dynamic(() => import('@/components/marketing/OrgDistributionModule').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
 const MarketingRegister = dynamic(() => import('../marketing/RegisterModule').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
 const MarketingDeptDistribution = dynamic(() => import('../marketing/DeptDistributionModule').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
   
@@ -97,7 +96,6 @@ export const ModuleRegistry: Record<string, React.ComponentType<any>> = {
   '/marketing/dashboard': MarketingDashboard,
   '/marketing/distribution/catalog': MarketingCatalog,
   '/marketing/distribution/client-search': MarketingClientSearch,
-  '/marketing/distribution/org': MarketingOrgDistribution,
   '/marketing/distribution/register': MarketingRegister,
   '/marketing/distribution/dept': MarketingDeptDistribution,
      

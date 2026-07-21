@@ -3,7 +3,13 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { saveAs } from 'file-saver';
-import { getKSTDateString } from '@/utils/dateUtils';
+import { getKSTDateString, getKSTTimeString, formatKSTDateTime, isPastKSTDeadline, getKSTDaysUntil } from '@/utils/dateUtils';
+import {
+  resolveBranchTarget,
+  getVisibleQuestionsByBranch,
+  buildSectionHistoryFromAnswers,
+  getParentSectionId as getParentSectionIdShared,
+} from '@/utils/surveyBranching';
      
 // 🚀 [UI 표준 지침] 전사 공통 Header 컴포넌트 분리 선언
 const HeaderLight = ({ title, count, children }: { title: string, count: number, children?: React.ReactNode }) => (
@@ -32,13 +38,7 @@ export default function MySubmissionsModule() {
   // 🚀 [추가] 사용자가 거쳐온 섹션 히스토리 추적 스택 (이전 단계 복구용 및 분기 검증용)
   const [sectionHistory, setSectionHistory] = useState<(string | null)[]>([]);
 
-  // 🚀 [추가] 문항의 부모 섹션을 안전하게 추적하는 헬퍼 함수
-  const getParentSectionId = (q: any, questions: any[]) => {
-    if (q.type === 'SECTION') return q.id;
-    const idx = questions.findIndex(item => item.id === q.id);
-    const lastSection = questions.slice(0, idx + 1).reverse().find((item: any) => item.type === 'SECTION');
-    return lastSection ? lastSection.id : null;
-  };
+  const getParentSectionId = (q: any, questions: any[]) => getParentSectionIdShared(q, questions);
   const [currentSectionId, setCurrentSectionId] = useState<string | null>(null);
   
   const [historyYear, setHistoryYear] = useState<string>('ALL');
@@ -110,7 +110,7 @@ export default function MySubmissionsModule() {
             dbResponses.forEach((r: any) => {
               if (r.userEmail === userData.email) {
                 nextMyRes[r.surveyId] = {
-                  submittedAt: r.submittedAt ? r.submittedAt.split('T')[0] + ' ' + new Date(r.submittedAt).toLocaleTimeString('ko-KR', { hour12: false }) : '-',
+                  submittedAt: r.submittedAt ? formatKSTDateTime(r.submittedAt) : '-',
                   answers: r.answers || {},
                   isApproved: r.isApproved || false
                 };
@@ -232,10 +232,11 @@ export default function MySubmissionsModule() {
   const handleOpenSurvey = (survey: any, isEditMode: boolean) => {
     if (isEditMode && survey.isAnonymous) return alert('🔒 본 설문조사는 익명 보안 서식입니다. 제출 완료 후 답변 수정이 불가능합니다.');
     
+    let initialAnswers: Record<string, any> = {};
+
     if (isEditMode) {
-      setFormData(myResponses[survey.id]?.answers || {});
+      initialAnswers = myResponses[survey.id]?.answers || {};
     } else {
-      // 🚀 이메일 로딩 지연 방어 및 안전한 키 생성
       const safeEmail = currentUser?.email || 'unknown_user';
       const draftKey = `survey_draft_${survey.id}_${safeEmail}`;
       const draftRaw = localStorage.getItem(draftKey);
@@ -243,24 +244,23 @@ export default function MySubmissionsModule() {
       if (draftRaw) {
         try {
           const parsed = JSON.parse(draftRaw);
-          // 🚀 [포맷 호환 가드]: 대시보드와 제출 모듈 간의 포맷 불일치로 인한 오염 차단
           const answers = (parsed && typeof parsed === 'object' && 'answers' in parsed) ? parsed.answers : parsed;
           
           if (confirm('💾 이전에 작성 중이던 임시 저장 내역이 있습니다.\n이어서 작성하시겠습니까?')) {
-            setFormData(answers || {});
+            initialAnswers = answers || {};
           } else {
             localStorage.removeItem(draftKey);
-            setFormData({});
+            initialAnswers = {};
           }
         } catch (e) {
           console.error("로컬 스토리지 데이터 오염 감지, 초기화 진행", e);
-          setFormData({});
-          localStorage.removeItem(draftKey); // 🛡️ 파싱 에러 시 확실히 제거
+          initialAnswers = {};
+          localStorage.removeItem(draftKey);
         }
-      } else {
-        setFormData({});
       }
     }
+
+    setFormData(initialAnswers);
     
    let questions = [];
    try {
@@ -275,10 +275,20 @@ export default function MySubmissionsModule() {
    if (questions.length > 0 && questions[0].type !== 'SECTION') sectionsOrder.push(null);
    questions.filter((q: any) => q.type === 'SECTION').forEach((s: any) => sectionsOrder.push(s.id));
    
-   const initialSection = sectionsOrder.length > 0 ? sectionsOrder[0] : null;
-    setCurrentSectionId(initialSection);
-    // 🚀 [수정 완료]: null(첫 섹션 이전 문항 그룹)도 유효한 히스토리 스택으로 취급하여 필수 검증 누락 방지
-    setSectionHistory(sectionsOrder.length > 0 ? [sectionsOrder[0]] : []);
+   // 🚀 수정/임시저장: 답변으로 분기 경로(sectionHistory) 복원 · 신규: 첫 섹션만
+   const hasLoadedAnswers = Object.keys(initialAnswers).length > 0;
+   if (hasLoadedAnswers) {
+     const restored = buildSectionHistoryFromAnswers(questions, initialAnswers, 'general');
+     const history = restored.length > 0
+       ? restored
+       : (sectionsOrder.length > 0 ? [sectionsOrder[0]] : []);
+     setSectionHistory(history);
+     setCurrentSectionId(history[history.length - 1] ?? null);
+   } else {
+     const initialSection = sectionsOrder.length > 0 ? sectionsOrder[0] : null;
+     setCurrentSectionId(initialSection);
+     setSectionHistory(sectionsOrder.length > 0 ? [sectionsOrder[0]] : []);
+   }
       
     setActiveFullScreenSurvey({ ...survey, questions, isEditMode });
   };
@@ -324,34 +334,15 @@ const handleNextSection = () => {
     }
   }
 
-  // 2. 분기(Jump) 연산 작동
+  // 2. 분기(Jump): 단일/다중선택 옵션 + 주소·문항 레벨 goToSectionId
   let nextSecId: string | null = null;
-  const singleChoiceQuestions = currentSectionQuestions.filter((q: any) => q.type === 'CHOICE_SINGLE');
-  
-  for (const q of singleChoiceQuestions) {
-    const selectedValue = formData[q.id];
-    if (selectedValue) {
-      const opt = q.options?.find((o: any) => o.label === selectedValue);
-      if (opt?.goToSectionId) {
-        nextSecId = opt.goToSectionId;
-        break;
-      }
-    }
-  }
-
-// 🚀 [수정 완료]: 개별 문항 분기는 유효한 응답(텍스트 등)이 실제로 입력된 상태에서만 작동하도록 가드
-if (!nextSecId) {
   for (const q of currentSectionQuestions) {
-    const userAns = formData[q.id];
-    // 텍스트, 날짜, 배열 등 값이 비어있지 않은지 검사
-    const hasAnswer = userAns !== undefined && userAns !== null && userAns !== '' && (Array.isArray(userAns) ? userAns.length > 0 : true);
-    
-    if (q.goToSectionId && hasAnswer) {
-      nextSecId = q.goToSectionId;
+    const target = resolveBranchTarget(q, formData, 'general');
+    if (target) {
+      nextSecId = target;
       break;
     }
   }
-}
 
   // 분기가 없으면 순차 목록 이동
   if (!nextSecId) {
@@ -382,13 +373,12 @@ const handlePrevSection = () => {
 };
 
   const handleSubmitForm = async () => {
-    // 🚀 [정합성 가드]: 실제 유저가 지나온 섹션 역사(sectionHistory)에 속한 문항만 필터링
-    const visibleQuestions = activeFullScreenSurvey.questions.filter((q: any) => {
-      if (!hasSections) return true;
-      if (q.type === 'SECTION') return false;
-      const parentSecId = getParentSectionId(q, activeFullScreenSurvey.questions);
-      return sectionHistory.includes(parentSecId);
-    });
+    // 🚀 답변 기준 분기 경로로 검증 (수정 모드 sectionHistory 미복원 오차단/검증 누락 방지)
+    const visibleQuestions = getVisibleQuestionsByBranch(
+      activeFullScreenSurvey.questions || [],
+      formData,
+      'general'
+    ).filter((q: any) => q.type !== 'SECTION');
 
     for (const q of visibleQuestions) {
       if (q.isRequired) {
@@ -421,7 +411,7 @@ const handlePrevSection = () => {
       });
      
       if (res.ok) {
-        const submittedDate = `${getKSTDateString()} ${new Date().toLocaleTimeString('ko-KR', { hour12: false })}`;
+        const submittedDate = `${getKSTDateString()} ${getKSTTimeString()}`;
         const nextResponses = { 
           ...myResponses, 
           [activeFullScreenSurvey.id]: { submittedAt: submittedDate, answers: formData } 
@@ -538,23 +528,16 @@ const handlePrevSection = () => {
               {paginatedEligible.map((survey: any, index: number) => {
                 const isAnonymousAndSubmitted = survey.isAnonymous && Boolean(myResponses[survey.id]);
                 
-                // 💡 1. 마감 시간 및 만료 여부 정밀 체크
-                const hasValidDate = typeof survey.endDate === 'string' && survey.endDate.includes('-');
+                // 💡 1. KST 마감·D-day
                 const rawTime = (survey.endTime || '').trim();
                 const timeStr = rawTime === '' ? '23:59' : rawTime;
-                
-                const deadline = hasValidDate ? new Date(`${survey.endDate.trim()}T${timeStr}:00`) : null;
-                const now = new Date();
-                const isTimeOver = deadline ? now > deadline : false;
+                const isTimeOver = typeof survey.endDate === 'string' && survey.endDate.includes('-')
+                  ? isPastKSTDeadline(survey.endDate, timeStr)
+                  : false;
                 
                 let dDayText = null;
-                
-                // 💡 2. 자정(00:00) 기준으로 순수 날짜 차이(D-Day) 계산
-                if (deadline && !isTimeOver) {
-                  const todayDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-                  const endDateDate = new Date(deadline.getFullYear(), deadline.getMonth(), deadline.getDate());
-                  const pureDaysDiff = Math.round((endDateDate.getTime() - todayDate.getTime()) / (1000 * 60 * 60 * 24));
-                  
+                if (!isTimeOver && typeof survey.endDate === 'string') {
+                  const pureDaysDiff = getKSTDaysUntil(survey.endDate);
                   if (pureDaysDiff === 0) dDayText = "D-Day";
                   else if (pureDaysDiff > 0 && pureDaysDiff <= 3) dDayText = `D-${pureDaysDiff}`;
                 }

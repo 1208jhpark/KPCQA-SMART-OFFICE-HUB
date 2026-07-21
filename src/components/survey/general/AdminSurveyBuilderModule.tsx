@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { saveAs } from 'file-saver';
-import { getKSTDateString } from '@/utils/dateUtils';
+import { getKSTDateString, formatKSTCalendarLabel } from '@/utils/dateUtils';
   
 type QuestionType = 'CHOICE_SINGLE' | 'CHOICE_MULTI' | 'TEXT_SHORT' | 'TEXT_LONG' | 'SCALE' | 'FILE' | 'SEARCH_ADDRESS' | 'CALENDAR' | 'SECTION';
   
@@ -135,9 +135,9 @@ export default function SurveyBuilderPage() {
      
   const formatDisplayDate = (dateStr: string) => {
     if (!dateStr) return '날짜를 지정해 주세요.';
-    const dateObj = new Date(dateStr);
-    if (isNaN(dateObj.getTime())) return dateStr;
-    return `${dateObj.getFullYear()}년 ${dateObj.getMonth() + 1}월 ${dateObj.getDate()}일`;
+    const m = String(dateStr).trim().match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (!m) return formatKSTCalendarLabel(dateStr, dateStr);
+    return `${Number(m[1])}년 ${Number(m[2])}월 ${Number(m[3])}일`;
   };
   
   const handleSaveSurvey = async () => {

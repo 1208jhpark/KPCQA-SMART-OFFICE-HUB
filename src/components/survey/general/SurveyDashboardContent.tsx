@@ -3,7 +3,8 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import Link from 'next/link';
 import { saveAs } from 'file-saver';
-import { getKSTDateString } from '@/utils/dateUtils'; // 🚀 날짜 유틸 추가
+import { getKSTDateString, getKSTTimeString, formatKSTDateTime, isPastKSTDeadline, getKSTDaysUntil } from '@/utils/dateUtils';
+import { getVisibleQuestionsByBranch } from '@/utils/surveyBranching';
 
 export default function SurveyDashboardContent() {
   const [stockUsage, setStockUsage] = useState<Record<string, Record<string, number>>>({}); // 🚀 재고 상태
@@ -94,7 +95,7 @@ export default function SurveyDashboardContent() {
         myDbResponses.forEach((r: any) => {
           if (userData && r.userEmail === userData.email) {
             const formattedDate = r.submittedAt 
-              ? r.submittedAt.split('T')[0] + ' ' + new Date(r.submittedAt).toLocaleTimeString('ko-KR', { hour12: false }) 
+              ? formatKSTDateTime(r.submittedAt) 
               : '-';
             nextMyRes[r.surveyId] = {
               submittedAt: formattedDate,
@@ -282,28 +283,32 @@ export default function SurveyDashboardContent() {
      
   const handleSubmitForm = async () => {
     // 🚀 [보안] 제출 시점 재검증
-    const now = new Date();
-    const deadline = new Date(`${activeFullScreenSurvey.endDate}T${activeFullScreenSurvey.endTime || '23:59'}:00`);
-    if (activeFullScreenSurvey.status === '완료' || now > deadline) {
+    if (activeFullScreenSurvey.status === '완료' || isPastKSTDeadline(activeFullScreenSurvey.endDate, activeFullScreenSurvey.endTime)) {
       alert('❌ 기한이 만료되었거나 관리자에 의해 마감 처리되어 제출할 수 없습니다.');
       setActiveFullScreenSurvey(null);
       return;
     }
 
-    for (const q of activeFullScreenSurvey.questions) {
-      if (q.type !== 'SECTION' && q.isRequired) {
-        // 🚀 주소 및 파일 정밀 검증
-        if (q.type === 'SEARCH_ADDRESS') {
-          if (!formData[q.id]?.zipCode || !formData[q.id]?.roadAddress || !formData[q.id]?.detailAddress) {
-            return alert(`📍 [${q.title}]의 우편번호 및 상세주소를 완벽히 기입해 주세요.`);
-          }
-        } else if (q.type === 'FILE') {
-          if (!formData[q.id]?.fileName) {
-            return alert(`📎 [${q.title}]에 필수 파일을 첨부해 주세요.`);
-          }
-        } else if (!formData[q.id] || formData[q.id].length === 0) {
-          return alert(`✏️ [${q.title}] 문항은 필수 응답 사항입니다. 답변을 채워주세요.`);
+    // 🚀 분기 경로 문항만 검증 (단일/다중선택·주소 goToSectionId 포함)
+    const visibleQuestions = getVisibleQuestionsByBranch(
+      activeFullScreenSurvey.questions || [],
+      formData,
+      'general'
+    );
+
+    for (const q of visibleQuestions) {
+      if (q.type === 'SECTION' || !q.isRequired) continue;
+
+      if (q.type === 'SEARCH_ADDRESS') {
+        if (!formData[q.id]?.zipCode || !formData[q.id]?.roadAddress || !formData[q.id]?.detailAddress) {
+          return alert(`📍 [${q.title}]의 우편번호 및 상세주소를 완벽히 기입해 주세요.`);
         }
+      } else if (q.type === 'FILE') {
+        if (!formData[q.id]?.fileName) {
+          return alert(`📎 [${q.title}]에 필수 파일을 첨부해 주세요.`);
+        }
+      } else if (!formData[q.id] || formData[q.id].length === 0) {
+        return alert(`✏️ [${q.title}] 문항은 필수 응답 사항입니다. 답변을 채워주세요.`);
       }
     }
     if (!confirm('설문 응답을 최종 제출하시겠습니까?\n제출 후에는 게시 마감전까지 나의 참여 이력에서 수정할 수 있습니다.')) return;
@@ -321,7 +326,7 @@ export default function SurveyDashboardContent() {
       });
      
       if (res.ok) {
-        const submittedDate = `${todayStr} ${new Date().toLocaleTimeString('ko-KR', {hour12: false})}`;
+        const submittedDate = `${todayStr} ${getKSTTimeString()}`;
         
         // 이 설문에 이미 제출했었는지 여부 확인 (수정 제출 시 중복 카운팅 방지)
         const isAlreadySubmitted = Boolean(myResponses[activeFullScreenSurvey.id]);
@@ -449,15 +454,10 @@ export default function SurveyDashboardContent() {
                 const nudgedSurveysList = nudgedSurveys || [];
                 const isNudged = isTargeted && !isSubmitted && nudgedSurveysList.includes(s.id);
   
-                // 💡 [시간 마감 정밀 계산 및 완벽 차단 로직]
-                const now = new Date();
-                const deadline = new Date(`${s.endDate}T${s.endTime || '23:59'}:00`);
-                const isTimeOver = now > deadline;
+                // 💡 [KST 마감·D-day 계산]
+                const isTimeOver = isPastKSTDeadline(s.endDate, s.endTime);
                 const isClosed = s.status === '완료' || isTimeOver;
-                
-                const todayDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-                const endDateDate = new Date(deadline.getFullYear(), deadline.getMonth(), deadline.getDate());
-                const pureDaysDiff = Math.round((endDateDate.getTime() - todayDate.getTime()) / (1000 * 60 * 60 * 24));
+                const pureDaysDiff = getKSTDaysUntil(s.endDate);
                 
                 let dDayText = null;
                 if (!isClosed) {

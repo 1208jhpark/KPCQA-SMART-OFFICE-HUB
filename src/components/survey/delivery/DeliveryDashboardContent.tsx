@@ -3,7 +3,8 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import Link from 'next/link';
 import { saveAs } from 'file-saver';
-import { getKSTDateString } from '@/utils/dateUtils'; // 🚀 이 줄을 추가합니다!
+import { getKSTDateString, getKSTTimeString, isPastKSTDeadline, getKSTDaysUntil, formatKSTCalendarLabel } from '@/utils/dateUtils';
+import { getVisibleQuestionsByBranch } from '@/utils/surveyBranching';
 
 export default function DeliveryDashboardContent() {
   const [surveys, setSurveys] = useState<any[]>([]);
@@ -210,13 +211,7 @@ export default function DeliveryDashboardContent() {
     };
   }, [surveys, visibleSurveys, myResponses, todayStr, currentUser, unitsList, nudgedSurveys]);
      
-  const formatDeliveryDate = (dateStr: string) => {
-    if (!dateStr) return '';
-    const dayNames = ['일요일', '월요일', '화요일', '수요일', '목요일', '금요일', '토요일'];
-    const dateObj = new Date(dateStr);
-    if (isNaN(dateObj.getTime())) return dateStr;
-    return `${dateObj.getFullYear()}년 ${String(dateObj.getMonth() + 1).padStart(2, '0')}월 ${String(dateObj.getDate()).padStart(2, '0')}일 (${dayNames[dateObj.getDay()]})`;
-  };
+  const formatDeliveryDate = (dateStr: string) => formatKSTCalendarLabel(dateStr, '');
      
   const handleOpenUserPostcode = (qId: string) => {
     if (typeof window !== 'undefined' && (window as any).daum?.Postcode) {
@@ -235,12 +230,7 @@ export default function DeliveryDashboardContent() {
   };
      
   const handleOpenIntro = (survey: any) => {
-    // 💡 [추가] 마감 시간 체크 로직
-    const now = new Date();
-    const deadline = new Date(`${survey.endDate}T${survey.endTime || '23:59'}:00`);
-    const isTimeOver = now > deadline;
-
-    if (survey.status === '완료' || isTimeOver) {
+    if (survey.status === '완료' || isPastKSTDeadline(survey.endDate, survey.endTime)) {
       alert('🔒 본 배송 신청의 기한이 만료되어 마감되었습니다.');
       return;
     }
@@ -304,45 +294,18 @@ const handleSaveDraft = () => {
   
   const handleSubmitForm = async () => {
     // 💡 [추가] 제출 버튼을 누른 시점에 한 번 더 시간 체크
-    const now = new Date();
-    const deadline = new Date(`${activeFullScreenSurvey.endDate}T${activeFullScreenSurvey.endTime || '23:59'}:00`);
-    if (now > deadline) {
+    if (isPastKSTDeadline(activeFullScreenSurvey.endDate, activeFullScreenSurvey.endTime)) {
       alert('❌ 기한이 만료되어 제출할 수 없습니다.');
       setActiveFullScreenSurvey(null);
       return;
     }
     
-   // 🚀 [버그 픽스]: 현재 답변 상태를 기반으로 눈에 보이는 문항 목록만 추출 (검증 불일치 해소)
-   const visibleQuestions: any[] = [];
-   const questions = activeFullScreenSurvey.questions || [];
-   let currentIndex = 0;
-   
-   while (currentIndex < questions.length) {
-     const q = questions[currentIndex];
-     visibleQuestions.push(q);
-     const userAns = formData[q.id];
-     
-     let nextSectionId: string | undefined = undefined;
-     if (q.type === 'CHOICE_SINGLE' && userAns) {
-       const selectedOpt = q.options?.find((o: any) => o.label === userAns);
-       if (selectedOpt?.goToSectionId) nextSectionId = selectedOpt.goToSectionId;
-     }
-     
-     // 🚀 [조기 점프 방지]: 유저의 응답(텍스트, 날짜 등)이 존재할 때만 문항 레벨 분기 가드 발동
-     if (!nextSectionId && q.goToSectionId && userAns !== undefined && userAns !== null && userAns !== '') {
-       nextSectionId = q.goToSectionId;
-     }
-     
-     if (nextSectionId) {
-       if (nextSectionId === 'SUBMIT') break;
-       const targetIdx = questions.findIndex((item: any) => item.id === nextSectionId);
-       if (targetIdx !== -1 && targetIdx > currentIndex) {
-         currentIndex = targetIdx;
-         continue;
-       }
-     }
-     currentIndex++;
-   }
+   // 🚀 분기 경로 문항만 검증 (단일/다중선택·주소 goToSectionId 포함)
+   const visibleQuestions = getVisibleQuestionsByBranch(
+     activeFullScreenSurvey.questions || [],
+     formData,
+     'delivery'
+   );
 
    // 🚀 눈에 보이는 필수 문항만 검사 (SECTION은 무조건 패스)
    for (const q of visibleQuestions) {
@@ -378,7 +341,7 @@ const handleSaveDraft = () => {
       
       // 🚀 [여기서부터 붙여넣기] ---------------------------------------------
       if (res.ok) {
-        const submittedDate = `${todayStr} ${new Date().toLocaleTimeString('ko-KR', {hour12: false})}`;
+        const submittedDate = `${todayStr} ${getKSTTimeString()}`;
         const isAlreadySubmitted = Boolean(myResponses[activeFullScreenSurvey.id]);
         
         const nextResponses = {
@@ -574,23 +537,16 @@ const handleSaveDraft = () => {
                 const isTargeted = currentUser?.roles?.includes('LV_1') || checkHierarchyTarget(s.target, currentUser?.unit?.unit_name);                
                 const isNudged = isTargeted && !isSubmitted && nudgedSurveys.includes(s.id);
                 
-                // 💡 [시간 및 날짜 정밀 계산]
-                const hasValidDate = typeof s.endDate === 'string' && s.endDate.includes('-');
+                // 💡 [KST 마감·D-day 계산]
                 const rawTime = (s.endTime || '').trim();
                 const timeStr = rawTime === '' ? '23:59' : rawTime;
-                
-                const deadline = hasValidDate ? new Date(`${s.endDate.trim()}T${timeStr}:00`) : null;
-                const now = new Date();
-                const isTimeOver = deadline ? (s.status === '진행중' && now > deadline) : false;
+                const isTimeOver = typeof s.endDate === 'string' && s.endDate.includes('-')
+                  ? (s.status === '진행중' && isPastKSTDeadline(s.endDate, timeStr))
+                  : false;
                 
                 let dDayText = null;
-                
-                if (deadline && !isTimeOver) {
-                  const todayDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-                  const endDateDate = new Date(deadline.getFullYear(), deadline.getMonth(), deadline.getDate());
-                  
-                  const pureDaysDiff = Math.round((endDateDate.getTime() - todayDate.getTime()) / (1000 * 60 * 60 * 24));
-                  
+                if (!isTimeOver && typeof s.endDate === 'string') {
+                  const pureDaysDiff = getKSTDaysUntil(s.endDate);
                   if (pureDaysDiff === 0) dDayText = "D-Day";
                   else if (pureDaysDiff > 0 && pureDaysDiff <= 3) dDayText = `D-${pureDaysDiff}`;
                 }
@@ -789,47 +745,12 @@ const handleSaveDraft = () => {
             </div>
      
             {(() => {
-              // 🚀 동적 분기 흐름 제어 계산 엔진
-              const visibleQuestions: any[] = [];
-              const questions = activeFullScreenSurvey.questions || [];
-              
-              let currentIndex = 0;
-              while (currentIndex < questions.length) {
-                const q = questions[currentIndex];
-                visibleQuestions.push(q);
+              const visibleQuestions = getVisibleQuestionsByBranch(
+                activeFullScreenSurvey.questions || [],
+                formData,
+                'delivery'
+              );
 
-                const userAns = formData[q.id];
-                
-                // 1. 단일 선택형 옵션 분기 검사
-                let nextSectionId: string | undefined = undefined;
-                if (q.type === 'CHOICE_SINGLE' && userAns) {
-                  const selectedOpt = q.options?.find((o: any) => o.label === userAns);
-                  if (selectedOpt?.goToSectionId) {
-                    nextSectionId = selectedOpt.goToSectionId;
-                  }
-                }
-
-                // 🚀 [조기 점프 방지]: 문항 레벨 분기도 응답이 입력된 순간에만 점프 구동
-                if (!nextSectionId && q.goToSectionId && userAns !== undefined && userAns !== null && userAns !== '') {
-                  nextSectionId = q.goToSectionId;
-                }
-
-                // 분기 조건 충족 시 점프(Warp) 처리
-                if (nextSectionId) {
-                  if (nextSectionId === 'SUBMIT') {
-                    break; // 즉시 종료
-                  } else {
-                    const targetIdx = questions.findIndex((item: any) => item.id === nextSectionId);
-                    if (targetIdx !== -1 && targetIdx > currentIndex) {
-                      currentIndex = targetIdx;
-                      continue;
-                    }
-                  }
-                }
-                currentIndex++;
-              }
-
-              // 계산된 활성화 문항들만 최종 렌더링
               return visibleQuestions.map((q, qIdx) => (
                 <div key={q.id} className={`bg-white p-8 rounded-3xl border border-slate-200 shadow-sm space-y-4 relative ${q.type === 'SECTION' ? 'border-l-8 border-l-teal-600 bg-teal-50/10' : ''}`}>
                   <label className="block text-base font-black text-slate-800">

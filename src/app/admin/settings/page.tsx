@@ -155,14 +155,15 @@ export default function AdminSettingsPage() {
             </thead>
             <tbody className="divide-y divide-slate-100 font-bold text-slate-700">
               <tr className="hover:bg-indigo-50/30 transition-colors h-16">
-                <td className="px-8">
-                  <span className="text-slate-800 font-black text-[13px]">마케팅 자산관리 {'>'} 카탈로그 관리</span>
-                </td>
-                <td className="px-5 text-slate-400 font-mono text-[10px]">/marketing/distribution/catalog</td>
-                <td className="px-5 text-center">
-                  <span className="bg-indigo-100 text-indigo-700 px-3 py-1 rounded-full font-black tracking-widest text-[9px]">GLOBAL_MGMT</span>
-                </td>
-                <td className="px-8">
+              <td className="px-8 flex flex-col justify-center">
+    <span className="text-slate-800 font-black text-[13px]">전사(최상위 조직) 자산 총괄 부서 지정</span>
+    <span className="text-[10px] text-slate-500 font-bold mt-1">최상위 조직의 입고/매입 및 종료 물품 장부 관리 권한</span>
+  </td>
+  <td className="px-5 text-slate-400 font-mono text-[10px]">/marketing/distribution/*</td>
+  <td className="px-5 text-center">
+    <span className="bg-indigo-100 text-indigo-700 px-3 py-1 rounded-full font-black tracking-widest text-[9px]">GLOBAL_MGMT</span>
+  </td>
+  <td className="px-8">
                   <select 
                     value={config?.global_mgmt_dept || ''} 
                     onChange={(e) => setConfig((prev: any) => ({ ...prev, global_mgmt_dept: e.target.value }))}

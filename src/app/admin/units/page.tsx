@@ -90,7 +90,7 @@ export default function AdminUnitsPage() {
             onChange={e => setNewUnit({...newUnit, parent_id: e.target.value})} 
             className="p-2 border-0 rounded-xl text-xs font-bold bg-white outline-none"
           >
-            <option value="">KPCQA (전사 기본)</option>
+            <option value="">최상위 (상위 없음)</option>
             {units.filter(u => u.unit_type === 'HQ' || u.unit_type === 'ORGANIZATION').map((u:any) => (
               <option key={u.id} value={u.id}>{u.unit_name}</option>
             ))}
@@ -157,7 +157,7 @@ export default function AdminUnitsPage() {
                 <td className="p-6">
                   {u.unit_type === 'ORGANIZATION' ? (
                     <div className="text-gray-300 font-black text-[10px] italic bg-gray-50 py-2 px-3 rounded-lg border border-dashed border-gray-200 text-center">
-                      KPCQA (최상위 법인)
+                      최상위 법인 (상위 없음)
                     </div>
                   ) : (
                     <select 
@@ -166,7 +166,7 @@ export default function AdminUnitsPage() {
                       onChange={(e) => handleLiveUpdate(u.id, { parent_id: e.target.value || null })}
                       className="p-2 border border-gray-100 rounded-xl text-xs bg-white w-full max-w-[200px] font-black text-blue-600 disabled:text-gray-300 cursor-pointer shadow-sm"
                     >
-                      <option value="">KPCQA (전사)</option>
+                      <option value="">최상위 (상위 없음)</option>
                       {units.filter(t => (t.unit_type === 'HQ' || t.unit_type === 'ORGANIZATION') && t.id !== u.id).map((hq: any) => (
                         <option key={hq.id} value={hq.id}>{hq.unit_name}</option>
                       ))}

@@ -1,8 +1,10 @@
 'use client';
   
 import React, { useState, useEffect } from 'react';
-import { useParams, useRouter } from 'next/navigation';
+import { useParams } from 'next/navigation';
 import { saveAs } from 'file-saver';
+import { isPastKSTDeadline } from '@/utils/dateUtils';
+import { getVisibleQuestionsByBranch } from '@/utils/surveyBranching';
   
 interface SurveyOption {
   label: string;
@@ -23,20 +25,28 @@ interface Question {
   questionImageUrl?: string;
   description?: string;
   referenceLink?: string;
+  goToSectionId?: string;
 }
-  
+
+/** 진행중 + KST 마감 전인 설문만 배포 링크로 참여 가능 */
+const isSurveyOpen = (survey: any) => {
+  if (!survey || survey.status !== '진행중') return false;
+  if (!survey.endDate) return false;
+  return !isPastKSTDeadline(survey.endDate, survey.endTime);
+};
+
 export default function PublicSurveyResponsePage() {
   const params = useParams();
-  const router = useRouter();
   const id = params?.id as string;
      
   const [surveyMeta, setSurveyMeta] = useState<any>(null);
   const [questions, setQuestions] = useState<Question[]>([]);
   const [loading, setLoading] = useState(true);
+  const [unavailableReason, setUnavailableReason] = useState<string | null>(null);
   
   const [email, setEmail] = useState('');
-  const [password, setPassword] = useState(''); // 🚀 비밀번호 상태 추가
-  const [isAuthLoading, setIsAuthLoading] = useState(false); // 🚀 인증 애니메이션용
+  const [password, setPassword] = useState('');
+  const [isAuthLoading, setIsAuthLoading] = useState(false);
   const [isEmailVerified, setIsEmailVerified] = useState(false);
   const [isIntroConfirmed, setIsIntroConfirmed] = useState(false);
   const [isSubmitCompleted, setIsSubmitCompleted] = useState(false); 
@@ -73,26 +83,45 @@ export default function PublicSurveyResponsePage() {
         if (generalMatch) activeMeta = { ...generalMatch, _domain: 'GENERAL' };
         else if (deliveryMatch) activeMeta = { ...deliveryMatch, _domain: 'DELIVERY' };
         
-        if (activeMeta) {
-          setSurveyMeta(activeMeta);
+        if (!activeMeta) {
+          setUnavailableReason('존재하지 않거나 삭제된 배포 링크입니다.');
+          return;
+        }
+
+        // 🚀 설문 상태·마감 가드: 진행중이 아니거나 기한 지나면 작성 UI 진입 차단
+        if (activeMeta.status !== '진행중') {
+          setUnavailableReason(
+            activeMeta.status === '완료' || activeMeta.status === '보관됨'
+              ? '이미 마감·보관 처리된 배포 링크입니다. 더 이상 응답할 수 없습니다.'
+              : `현재 참여할 수 없는 상태입니다. (상태: ${activeMeta.status || '알 수 없음'})`
+          );
+          return;
+        }
+
+        if (isPastKSTDeadline(activeMeta.endDate, activeMeta.endTime)) {
+          setUnavailableReason('제출 기한이 만료되어 더 이상 응답할 수 없습니다.');
+          return;
+        }
+
+        setSurveyMeta(activeMeta);
           
-          if (activeMeta.questions) {
-            const parsed = typeof activeMeta.questions === 'string' ? JSON.parse(activeMeta.questions) : activeMeta.questions;
-            const safeQuestions = Array.isArray(parsed) ? parsed : [];
-            setQuestions(safeQuestions);
-            
-            if (safeQuestions.length > 0) {
-              if (safeQuestions[0].type !== 'SECTION') {
-                setCurrentSectionId(null);
-              } else {
-                const firstSection = safeQuestions.find((q: any) => q.type === 'SECTION');
-                if (firstSection) setCurrentSectionId(firstSection.id);
-              }
+        if (activeMeta.questions) {
+          const parsed = typeof activeMeta.questions === 'string' ? JSON.parse(activeMeta.questions) : activeMeta.questions;
+          const safeQuestions = Array.isArray(parsed) ? parsed : [];
+          setQuestions(safeQuestions);
+          
+          if (safeQuestions.length > 0) {
+            if (safeQuestions[0].type !== 'SECTION') {
+              setCurrentSectionId(null);
+            } else {
+              const firstSection = safeQuestions.find((q: any) => q.type === 'SECTION');
+              if (firstSection) setCurrentSectionId(firstSection.id);
             }
           }
         }
       } catch (e) { 
-        console.error("인프라 동기화 에러:", e); 
+        console.error("인프라 동기화 에러:", e);
+        setUnavailableReason('설문 정보를 불러오는 중 오류가 발생했습니다.');
       } finally { 
         setLoading(false); 
       }
@@ -101,6 +130,14 @@ export default function PublicSurveyResponsePage() {
   }, [id]);
      
   const isDelivery = surveyMeta?._domain === 'DELIVERY';
+
+  const isAddressComplete = (q: Question, ans: Record<string, any>) => {
+    if (isDelivery) {
+      return Boolean(ans[`${q.id}_zip`] && ans[`${q.id}_road`] && ans[`${q.id}_detail`]);
+    }
+    const addr = ans[q.id];
+    return Boolean(addr?.zipCode && addr?.roadAddress && addr?.detailAddress);
+  };
   
   const openPostcodeEngine = (qId: string) => {
     if (typeof window !== 'undefined' && (window as any).daum?.Postcode) {
@@ -118,9 +155,11 @@ export default function PublicSurveyResponsePage() {
     }
   };
      
-  // 🚀 [보안 강화]: 단순히 리스트를 대조하던 방식에서 서버에 비번 정합성을 검증하고 토큰을 받는 구조로 개편
   const handleAuthSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!surveyMeta || !isSurveyOpen(surveyMeta)) {
+      return alert('참여할 수 없는 설문입니다. 기한·상태를 확인해 주세요.');
+    }
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(email)) return alert('올바른 이메일 형식을 입력해 주세요.');
     if (!password.trim()) return alert('비밀번호를 입력해 주세요.');
@@ -141,7 +180,7 @@ export default function PublicSurveyResponsePage() {
       if (res.ok) {
         setIsEmailVerified(true);
       } else {
-        const errData = await res.json();
+        const errData = await res.json().catch(() => ({}));
         alert(errData.error || '인증에 실패했습니다. 이메일과 비밀번호를 다시 확인해 주세요.');
       }
     } catch (err) {
@@ -173,13 +212,28 @@ export default function PublicSurveyResponsePage() {
   };
      
   const handleSubmitSurvey = async () => {
-    for (const q of questions) {
-      if (q.type !== 'SECTION' && q.isRequired) {
-        if (q.type === 'SEARCH_ADDRESS' && isDelivery) {
-          if (!answers[`${q.id}_zip`] || !answers[`${q.id}_road`] || !answers[`${q.id}_detail`]) {
-            return alert(`📍 [ ${q.title} ] 항목의 주소를 완벽히 기입해 주세요.`);
-          }
-        } else if (!answers[q.id] || (Array.isArray(answers[q.id]) && answers[q.id].length === 0)) {
+    if (!surveyMeta || !isSurveyOpen(surveyMeta)) {
+      return alert('❌ 기한이 만료되었거나 마감 처리되어 제출할 수 없습니다.');
+    }
+
+    // 🚀 분기 경로상 노출된 문항만 필수 검증 (단일/다중·주소 분기 포함)
+    const domain = isDelivery ? 'delivery' : 'general';
+    const visibleQuestions = getVisibleQuestionsByBranch(questions, answers, domain);
+
+    for (const q of visibleQuestions) {
+      if (q.type === 'SECTION' || !q.isRequired) continue;
+
+      if (q.type === 'SEARCH_ADDRESS') {
+        if (!isAddressComplete(q, answers)) {
+          return alert(`📍 [ ${q.title} ] 항목의 우편번호·기본주소·상세주소를 모두 기입해 주세요.`);
+        }
+      } else if (q.type === 'FILE') {
+        if (!answers[q.id]?.fileName) {
+          return alert(`📎 [ ${q.title} ] 항목에 필수 파일을 첨부해 주세요.`);
+        }
+      } else {
+        const val = answers[q.id];
+        if (val === undefined || val === null || val === '' || (Array.isArray(val) && val.length === 0)) {
           return alert(`💡 [ ${q.title} ] 항목은 필수 기입 사항입니다.`);
         }
       }
@@ -195,7 +249,7 @@ export default function PublicSurveyResponsePage() {
         body: JSON.stringify({
           action: 'SUBMIT_RESPONSE',
           surveyId: id,
-          userEmail: email, // 토큰 기반으로 작동하되 비로그인 fallback 유지용 전송
+          userEmail: email,
           answers: answers
         })
       });
@@ -204,7 +258,8 @@ export default function PublicSurveyResponsePage() {
         alert(isDelivery ? '🚚 배송 신청이 정상적으로 완료되었습니다.' : '✅ 답변서 제출이 완료되었습니다.');
         setIsSubmitCompleted(true); 
       } else {
-        alert('❌ 서버 제출 처리에 실패했습니다. 기한 만료 여부를 확인하세요.');
+        const errData = await res.json().catch(() => ({}));
+        alert(errData.error || '❌ 서버 제출 처리에 실패했습니다. 기한 만료 여부를 확인하세요.');
       }
     } catch (err) {
       alert('❌ 네트워크 오류가 발생했습니다.');
@@ -212,7 +267,13 @@ export default function PublicSurveyResponsePage() {
   };
      
   if (loading) return <div className="p-20 text-center font-black text-slate-400 animate-pulse">인프라 로드 중...</div>;
-  if (!surveyMeta) return <div className="p-20 text-center font-black text-red-500 text-lg mt-20">존재하지 않거나 이미 마감된 배포 링크입니다.</div>;
+  if (!surveyMeta) {
+    return (
+      <div className="p-20 text-center font-black text-red-500 text-lg mt-20">
+        {unavailableReason || '존재하지 않거나 이미 마감된 배포 링크입니다.'}
+      </div>
+    );
+  }
      
   if (isSubmitCompleted) {
     return (

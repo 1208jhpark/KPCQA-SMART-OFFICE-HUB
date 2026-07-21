@@ -2,6 +2,7 @@
   
 import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
+import { isPastKSTDeadline } from '@/utils/dateUtils';
   
 // 로딩 스켈레톤 (와이드 형태)
 const LoadingSkeleton = () => (
@@ -105,49 +106,37 @@ export default function SurveyDashboard() {
           if (r.userEmail === userEmail) deliveryResponsesMap[r.surveyId] = true;
         });
     
-        const now = new Date();
-
         // -------------------------------------------------------------
-        // [1] 일반 설문 (General) 데이터 실시간 DB 계산
+        // [1] 일반 설문 (General) — KST 마감 기준
         // -------------------------------------------------------------
         let gPending = 0, gNudge = 0, gTotal = 0;
         generalSurveys.forEach((s: any) => {
-          if (s.status === '진행중') {
-            const deadline = new Date(`${s.endDate}T${s.endTime || '23:59'}:00`);
-            const isTimeOver = now > deadline;
-
-            if (!isTimeOver) {
-              const isTargeted = checkTarget(s.target, currentUser.unit.unit_name);
-              
-              if (isTargeted) {
-                gTotal++; 
-                if (!gFetchFailed && !generalResponsesMap[s.id]) { // 🚀 일반 에러 플래그 적용
-                  gPending++;
-                  if (s.nudgedUsers && s.nudgedUsers.includes(userEmail)) gNudge++;
-                }
+          if (s.status === '진행중' && !isPastKSTDeadline(s.endDate, s.endTime)) {
+            const isTargeted = checkTarget(s.target, currentUser.unit.unit_name);
+            
+            if (isTargeted) {
+              gTotal++; 
+              if (!gFetchFailed && !generalResponsesMap[s.id]) {
+                gPending++;
+                if (s.nudgedUsers && s.nudgedUsers.includes(userEmail)) gNudge++;
               }
             }
           }
         });
     
         // -------------------------------------------------------------
-        // [2] 배달/신청 (Delivery) 데이터 실시간 DB 계산
+        // [2] 배달/신청 (Delivery) — KST 마감 기준
         // -------------------------------------------------------------
         let dPending = 0, dNudge = 0, dTotal = 0;
         deliverySurveys.forEach((s: any) => {
-          if (s.status === '진행중') {
-            const deadline = new Date(`${s.endDate}T${s.endTime || '23:59'}:00`);
-            const isTimeOver = now > deadline;
-
-            if (!isTimeOver) {
-              const isTargeted = checkTarget(s.target, currentUser.unit.unit_name);
-              
-              if (isTargeted) {
-                dTotal++;
-                if (!dFetchFailed && !deliveryResponsesMap[s.id]) { // 🚀 배달 에러 플래그 적용
-                  dPending++;
-                  if (s.nudgedUsers && s.nudgedUsers.includes(userEmail)) dNudge++;
-                }
+          if (s.status === '진행중' && !isPastKSTDeadline(s.endDate, s.endTime)) {
+            const isTargeted = checkTarget(s.target, currentUser.unit.unit_name);
+            
+            if (isTargeted) {
+              dTotal++;
+              if (!dFetchFailed && !deliveryResponsesMap[s.id]) {
+                dPending++;
+                if (s.nudgedUsers && s.nudgedUsers.includes(userEmail)) dNudge++;
               }
             }
           }
