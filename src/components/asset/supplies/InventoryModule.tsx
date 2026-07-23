@@ -11,7 +11,8 @@ export default function InventoryModule() {
   const [searchQuery, setSearchQuery] = useState('');
   
   const [selectedItem, setSelectedItem] = useState<any>(null);
-  const [reqForm, setReqForm] = useState({ qty: 1, note: '' });
+  const [reqForm, setReqForm] = useState<{ qty: number | ''; note: string }>({ qty: 1, note: '' });
+  const [submitting, setSubmitting] = useState(false);
      
   // 🚀 유저 정보와 컴포넌트 최초 아이템 데이터 바인딩 로드 분리
   useEffect(() => { 
@@ -27,23 +28,29 @@ export default function InventoryModule() {
   const fetchCurrentUser = async () => {
     try {
       const res = await fetch(`/api/auth/me?t=${Date.now()}`, { cache: 'no-store' });
-      if (res.ok) setCurrentUser(await res.ok && res.json ? await res.json() : null);
+      if (res.ok) setCurrentUser(await res.json());
     } catch (e) {
       console.error("유저 정보 로드 실패:", e);
     }
   };
 
   // 🚀 초고속 순수 아이템 동기화 전용 엔진 (네트워크 병목 완전 제거)
-  const syncItemsOnly = async () => {
+  const syncItemsOnly = async (): Promise<any[]> => {
     try {
       const itemRes = await fetch(`/api/asset/supplies/inventory?t=${Date.now()}`, { cache: 'no-store' });
       if (itemRes.ok) {
         const itemData = await itemRes.json();
-        setItems(itemData.items || []); 
+        const nextItems = itemData.items || [];
+        setItems(nextItems);
+        return nextItems;
+      } else if (itemRes.status === 401 || itemRes.status === 403) {
+        const err = await itemRes.json().catch(() => ({}));
+        alert(err.error || '소모품 목록을 볼 권한이 없습니다.');
       }
-    } catch (e) { 
-      console.error("실시간 재고 동기화 실패:", e); 
+    } catch (e) {
+      console.error("실시간 재고 동기화 실패:", e);
     }
+    return [];
   };
      
   const openPopup = (item: any) => {
@@ -52,51 +59,80 @@ export default function InventoryModule() {
   };
      
   const handleRequestSubmit = async () => {
-    const qty = Number(reqForm.qty) || 1;
-    if (qty <= 0) return alert('1개 이상 신청해주세요.');
+    if (submitting) return;
+    if (!currentUser?.id) return alert('로그인 정보가 없습니다. 새로고침 후 다시 시도해 주세요.');
+
+    const qty = typeof reqForm.qty === 'number' ? reqForm.qty : NaN;
+    if (!Number.isInteger(qty) || qty <= 0) return alert('신청 수량은 1 이상의 정수만 가능합니다.');
     if (qty > Number(selectedItem.current_stock)) return alert('현재고보다 많이 신청할 수 없습니다.');
     
-    // 1️⃣ 낙관적 업데이트 즉시 적용 (화면 재고 선다운)
-    setItems(prevItems => prevItems.map(item => 
-      item.id === selectedItem.id 
-        ? { ...item, current_stock: Math.max(0, item.current_stock - qty) } 
+    setSubmitting(true);
+
+    const itemId = selectedItem.id;
+
+    // 1️⃣ 낙관적 업데이트 즉시 적용 (목록 + 열린 모달 재고 선다운)
+    setItems(prevItems => prevItems.map(item =>
+      item.id === itemId
+        ? { ...item, current_stock: Math.max(0, Number(item.current_stock) - qty) }
         : item
     ));
-     
+    setSelectedItem((prev: any) =>
+      prev?.id === itemId
+        ? { ...prev, current_stock: Math.max(0, Number(prev.current_stock) - qty) }
+        : prev
+    );
+
+    const syncModalStock = (freshItems: any[]) => {
+      // sync 실패(빈 배열)면 모달 유지 — 다음 수동 재조회/재시도에 맡김
+      if (!freshItems.length) return;
+      const fresh = freshItems.find((i) => i.id === itemId);
+      if (!fresh) {
+        setSelectedItem(null);
+        return;
+      }
+      setSelectedItem((prev: any) =>
+        prev?.id === itemId ? { ...prev, current_stock: fresh.current_stock } : prev
+      );
+      // 품절이면 수량 입력도 맞추기
+      if (Number(fresh.current_stock) <= 0) {
+        setReqForm((f) => ({ ...f, qty: 1 }));
+      } else {
+        setReqForm((f) => ({
+          ...f,
+          qty: Math.min(Number(f.qty) || 1, Number(fresh.current_stock)),
+        }));
+      }
+    };
+
     try {
-      let sUnit = '';
-      try {
-         const ext = selectedItem.description ? JSON.parse(selectedItem.description) : {};
-         sUnit = ext.r_unit || ext.s_unit || '';
-      } catch (e) {}
-     
       const payload = {
-        item_id: selectedItem.id,
-        item_name: selectedItem.name,
+        item_id: itemId,
         qty: qty,
         note: reqForm.note,
-        unit: sUnit,
-        user_id: currentUser?.id 
       };
-     
+
       const res = await fetch('/api/asset/supplies/inventory', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
-       
+
       if (res.ok) {
         alert('✅ 정상적으로 신청이 완료되었습니다.\n(신청 수량만큼 재고가 우선 차감되었습니다.)');
         setSelectedItem(null);
-        await syncItemsOnly(); // 🚀 유저 조회 빼고 오직 재고만 백그라운드 갱신 (딜레이 제로)
-      } else { 
-        const errorText = await res.text();
-        alert(`🚨 서버에서 신청을 거부했습니다.\n상세 오류: ${errorText}`); 
-        await syncItemsOnly(); 
+        await syncItemsOnly();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        alert(`🚨 서버에서 신청을 거부했습니다.\n${err.error || '알 수 없는 오류'}`);
+        const freshItems = await syncItemsOnly();
+        syncModalStock(freshItems);
       }
     } catch (e) {
       alert('서버와 통신할 수 없습니다.');
-      await syncItemsOnly(); 
+      const freshItems = await syncItemsOnly();
+      syncModalStock(freshItems);
+    } finally {
+      setSubmitting(false);
     }
   };
      
@@ -252,7 +288,41 @@ export default function InventoryModule() {
                   <div className="grid grid-cols-[90px_1fr] items-center gap-2 py-3 border-b border-slate-100">
                     <span className="text-[12px] font-bold text-slate-400">신청 수량</span>
                     <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-xl px-3 py-1.5 focus-within:border-indigo-400 transition-colors">
-                      <input type="number" min="1" max={selectedItem.current_stock} value={reqForm.qty} onChange={(e) => setReqForm({...reqForm, qty: Number(e.target.value)})} className="w-full bg-transparent text-sm font-black text-indigo-600 outline-none" />
+                      <input
+                        type="number"
+                        inputMode="numeric"
+                        pattern="[0-9]*"
+                        step={1}
+                        min={1}
+                        max={Number(selectedItem.current_stock) || 1}
+                        value={reqForm.qty}
+                        onChange={(e) => {
+                          const raw = e.target.value;
+                          if (raw === '') {
+                            setReqForm({ ...reqForm, qty: '' });
+                            return;
+                          }
+                          // 소수·음수·문자 차단 → 양의 정수만
+                          const digits = raw.replace(/[^\d]/g, '');
+                          if (!digits) {
+                            setReqForm({ ...reqForm, qty: '' });
+                            return;
+                          }
+                          const n = parseInt(digits, 10);
+                          const maxStock = Math.max(1, Number(selectedItem.current_stock) || 1);
+                          setReqForm({ ...reqForm, qty: Math.min(Math.max(1, n), maxStock) });
+                        }}
+                        onBlur={() => {
+                          if (reqForm.qty === '' || !Number.isInteger(reqForm.qty) || reqForm.qty < 1) {
+                            setReqForm({ ...reqForm, qty: 1 });
+                          }
+                        }}
+                        onKeyDown={(e) => {
+                          // 소수점·e·+/- 입력 차단
+                          if (['.', ',', 'e', 'E', '+', '-'].includes(e.key)) e.preventDefault();
+                        }}
+                        className="w-full bg-transparent text-sm font-black text-indigo-600 outline-none"
+                      />
                       {sUnit && <span className="text-[11px] font-black text-slate-400">{sUnit}</span>}
                     </div>
                   </div>
@@ -262,8 +332,8 @@ export default function InventoryModule() {
                   </div>
                 </div>
                 <div className="flex gap-3 pt-2">
-                  <button onClick={() => setSelectedItem(null)} className="flex-1 py-4 bg-slate-100 rounded-2xl text-[13px] font-black text-slate-500 hover:bg-slate-200 transition-colors">취소</button>
-                  <button onClick={handleRequestSubmit} className="flex-1 py-4 bg-blue-600 text-white rounded-2xl text-[13px] font-black hover:bg-blue-700 shadow-lg shadow-blue-200 transition-all active:scale-95">신청 완료</button>
+                  <button type="button" disabled={submitting} onClick={() => setSelectedItem(null)} className="flex-1 py-4 bg-slate-100 rounded-2xl text-[13px] font-black text-slate-500 hover:bg-slate-200 transition-colors disabled:opacity-50">취소</button>
+                  <button type="button" disabled={submitting} onClick={handleRequestSubmit} className="flex-1 py-4 bg-blue-600 text-white rounded-2xl text-[13px] font-black hover:bg-blue-700 shadow-lg shadow-blue-200 transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed">{submitting ? '신청 중…' : '신청 완료'}</button>
                 </div>
               </div>
             </div>

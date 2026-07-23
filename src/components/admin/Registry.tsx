@@ -63,7 +63,10 @@ const AdminDeliveryBuilder = dynamic(() => import('../survey/delivery/AdminDeliv
 const AdminDeliveryHistory = dynamic(() => import('../survey/delivery/AdminDeliveryHistoryModule').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
 const DeliveryDashboardContent = dynamic(() => import('../survey/delivery/DeliveryDashboardContent').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
 const DeliveryMySubmissions = dynamic(() => import('../survey/delivery/DeliveryMySubmissions').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
-  
+
+// --- [장비 관리] ---
+const EquipmentDashboardModule = dynamic(() => import('../equipment/EquipmentDashboardClient').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
+
 // 3. 레지스트리 객체 명세 (🚀 스탭3 상위 경로와 하위 스탭4 컴포넌트 간의 고정 결합 원천 제거)
 export const ModuleRegistry: Record<string, React.ComponentType<any>> = {
   // [IT 자산 관리]
@@ -116,4 +119,7 @@ export const ModuleRegistry: Record<string, React.ComponentType<any>> = {
   '/survey/delivery/admin/active-surveys': AdminDeliveryActive, 
   '/survey/delivery/admin/survey-builder': AdminDeliveryBuilder,
   '/survey/delivery/admin/history': AdminDeliveryHistory,
+
+// [장비 관리]
+'/equipment/main': EquipmentDashboardModule,
 };

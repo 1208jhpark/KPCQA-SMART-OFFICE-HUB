@@ -21,20 +21,46 @@ async function main() {
   
   const hashedPassword = await bcrypt.hash('password123', 10);
   
-  // 2. 시스템 글로벌 설정 (💡 링크 세팅 포함)
+  // ─────────────────────────────────────────────────────────────
+  // 2. SystemConfig (id: 'global') — 한 행에 성격이 다른 설정이 공존
+  // ─────────────────────────────────────────────────────────────
   await prisma.systemConfig.create({
-    data: { 
-      id: 'global', 
-      main_headline: "SMART OFFICE HUB", 
-      sub_headline: "KPCQA 통합 자산 및 업무 관리 시스템", 
+    data: {
+      id: 'global',
+
+      // ── [A] /admin/interface 최상위 설정 탭 ─────────────────────
+      //     홈 메인 문구 · 그리드 · 연동 사이트
+      main_headline: 'SMART OFFICE HUB',
+      sub_headline: 'KPCQA 통합 자산 및 업무 관리 시스템',
       home_grid_cols: 4,
       linked_sites: [
-        { name: "KPCQA 공식 홈페이지", url: "https://www.kpcqa.or.kr", icon: "🏠" },
-        { name: "사내 그룹웨어 (메일/결재)", url: "https://gw.kpcqa.or.kr", icon: "🏢" },
-        { name: "인사/근태 관리 시스템", url: "https://hr.kpcqa.or.kr", icon: "👥" },
-        { name: "법인카드 정산 (비즈플레이)", url: "https://www.bizplay.co.kr", icon: "💳" }
-      ]
-    }
+        { name: 'KPCQA Main Home', url: 'https://www.kpcqa.or.kr/' },
+        { name: 'KPCQA Groupware', url: 'https://ep.kpcqa.or.kr/' },
+        { name: 'News Clipping', url: 'http://ax.kpcqa.or.kr:9043/' },
+        { name: 'ProdAI', url: 'https://ax.kpcqa.or.kr:8000/' },
+        { name: '다과신청', url: 'https://qa.kpcqa.or.kr:8500/' },
+        { name: '법정의무교육', url: 'https://onkpc.or.kr/prohrd' },
+        { name: 'KPI SYSTEM - coming soon', url: '-' },
+      ],
+
+      // 공통 운영 부서명 (마케팅 등 global_mgmt_dept 참조)
+      global_mgmt_dept: '경영기획본부',
+
+      // ── [B] /admin/settings 마스터 그룹 연동 ────────────────────
+      //     MasterGroup.id 와 연결 (아래 §5에서 동일 ID로 생성)
+      //     → /admin/master-data 의 그룹을 각 기능 드롭다운에 바인딩
+      // 인사 (직책·직급 → 명함/유저관리)
+      job_duty_group: 'GRP_DUTY',
+      job_grade_group: 'GRP_GRADE',
+      // 일반 (고객사 / 소모품 / 단위)
+      client_category_group: 'GRP_CLIENT_CATEGORY',
+      supply_category_group: 'GRP_SUPPLY',
+      unit_category_group: 'GRP_UNIT',
+      // IT·업무자산 (대범주 / 품목 / 조달유형)
+      it_category_group: 'GRP_IT_CATEGORY',
+      it_master_group: 'GRP_IT_TYPE',
+      it_rental_group: 'GRP_PROCUREMENT',
+    },
   });
   
   // 3. 조직 체계 생성 (💡 영문명 포함)
@@ -45,6 +71,10 @@ async function main() {
   };
   
   const rootOrg = await createOrg('KPCQA', 'KPCQA', 'ORGANIZATION', null, 1);
+  // 경영진 전용 유닛 (최상위 직속 대신 하위 HQ로 분리 → 부서 대장 범위 격리)
+  await createOrg('KPCQA[원장]', '', 'HQ', rootOrg.id, 5);
+  await createOrg('KPCQA[부원장]', '', 'HQ', rootOrg.id, 6);
+  await createOrg('KPCQA[상무]', '', 'HQ', rootOrg.id, 7);
   const hqPlanning = await createOrg('경영기획본부', 'Planning and Management Division', 'HQ', rootOrg.id, 10);
   const centerPlanning = await createOrg('경영기획센터', 'Planning and Management Center', 'CENTER', hqPlanning.id, 11);
   const hqGreen = await createOrg('녹색건축본부', 'Green Building Division', 'HQ', rootOrg.id, 20);
@@ -61,22 +91,64 @@ async function main() {
   await createOrg('ISMS인증센터', 'ISMS Certification Center', 'CENTER', hqFuture.id, 51);
   await createOrg('AX혁신센터', 'AX Innovation Center', 'CENTER', hqFuture.id, 52);
   
-  // 4. 사용자 생성
+  // 4. 사용자 생성 (가입 체계: 성명/영문명/사번/소속 필수 · 직책·직급은 관리자 배정)
   await prisma.user.create({
-    data: { email: 'admin@kpcqa.or.kr', name: '관리자', password: hashedPassword, roles: ['LV_1'], unit_id: centerPlanning.id, status: 'Active' },
+    data: {
+      email: 'admin@kpcqa.or.kr',
+      name: '관리자',
+      name_en: 'Admin User',
+      employee_no: '100001',
+      password: hashedPassword,
+      roles: ['LV_1'],
+      unit_id: centerPlanning.id,
+      status: 'Active',
+      duty: '',
+      duty_en: '',
+      grade: '수석전문위원',
+      grade_en: 'Chief Expert Advisor',
+      must_reset_password: false,
+    },
   });
   await prisma.user.create({
-    data: { email: 'center@kpcqa.or.kr', name: '센터장', password: hashedPassword, roles: ['LV_2'], unit_id: centerPlanning.id, status: 'Active' },
+    data: {
+      email: 'center@kpcqa.or.kr',
+      name: '센터장',
+      name_en: 'Center Manager',
+      employee_no: '100002',
+      password: hashedPassword,
+      roles: ['LV_2'],
+      unit_id: centerPlanning.id,
+      status: 'Active',
+      duty: '센터장',
+      duty_en: 'Manager',
+      grade: '책임전문위원',
+      grade_en: 'Chief Technical Expert',
+      must_reset_password: false,
+    },
   });
   await prisma.user.create({
-    data: { email: 'user@kpcqa.or.kr', name: '사용자', password: hashedPassword, roles: ['LV_3'], unit_id: centerPlanning.id, status: 'Active' },
+    data: {
+      email: 'user@kpcqa.or.kr',
+      name: '사용자',
+      name_en: 'Normal User',
+      employee_no: '100003',
+      password: hashedPassword,
+      roles: ['LV_3'],
+      unit_id: centerPlanning.id,
+      status: 'Active',
+      duty: '',
+      duty_en: '',
+      grade: '전문위원',
+      grade_en: 'Technical Expert',
+      must_reset_password: false,
+    },
   });
   
-  // 5. 공통 마스터 데이터 시딩
+  // 5. 공통 마스터 데이터 시딩 (/admin/master-data + SystemConfig 매핑 대상)
   console.log('📦 공통 마스터 데이터 엔진 가동 중...');
   const masterGroups = [
     { 
-      id: 'GRP_SUPPLY', name: '소모품(경영)', 
+      id: 'GRP_SUPPLY', name: '소모품(경영)', sort_order: 10,
       codes: [
         { label: 'A4 용지', value: 'VAL_1' }, { label: 'A3 용지', value: 'VAL_2' }, { label: '상장케이스', value: 'VAL_3' }, 
         { label: '컬러대봉투(양면테잎)(330*245)', value: 'VAL_4' }, { label: '쇼핑백(중)(230*70*320)', value: 'VAL_5' }, 
@@ -84,22 +156,7 @@ async function main() {
       ] 
     },
     { 
-      id: 'GRP_IT_TYPE', name: 'IT 자산 분류', 
-      codes: [
-        { label: '노트북', value: 'VAL_1' }, { label: '데스크탑', value: 'VAL_2' }, { label: '모니터', value: 'VAL_3' }, 
-        { label: 'Cursor', value: 'VAL_4' }, { label: 'ZW CAD', value: 'VAL_5' }, { label: 'PDF PRO', value: 'VAL_6' },
-        { label: '베리데스크(대형)', value: 'VAL_7' }, { label: '베리데스크(중형)', value: 'VAL_8' }
-      ] 
-    },
-    { 
-      id: 'GRP_CLIENT_CATEGORY', name: '고객사 업무범주', 
-      codes: [
-        { label: '건물 인증 관련', value: 'VAL_1' }, { label: 'ISO 인증 관련', value: 'VAL_2' }, { label: '지속가능 인증 관련', value: 'VAL_3' }, 
-        { label: 'ESG 인증 관련', value: 'VAL_4' }, { label: '용역', value: 'VAL_5' }, { label: '행사', value: 'VAL_6' }, { label: '기타', value: 'VAL_7' }
-      ] 
-    },
-    { 
-      id: 'GRP_UNIT', name: '단위', 
+      id: 'GRP_UNIT', name: '단위', sort_order: 20,
       codes: [
         { label: '개(EA)', value: 'VAL_1' }, { label: '박스(BOX)', value: 'VAL_2' }, { label: '번들(BDL)', value: 'VAL_3' }, 
         { label: '세트(SET)', value: 'VAL_4' }, { label: '팩(PACK)', value: 'VAL_5' }, { label: '부(Copy)', value: 'VAL_6' },
@@ -108,22 +165,37 @@ async function main() {
       ] 
     },
     { 
-      id: 'GRP_PROCUREMENT', name: '조달유형', 
-      codes: [{ label: '구매', value: 'VAL_1' }, { label: '렌탈', value: 'VAL_2' }, { label: '구독', value: 'VAL_3' }] 
+      id: 'GRP_CLIENT_CATEGORY', name: '고객사 업무범주', sort_order: 30,
+      codes: [
+        { label: '건물 인증 관련', value: 'VAL_1' }, { label: 'ISO 인증 관련', value: 'VAL_2' }, { label: '지속가능 인증 관련', value: 'VAL_3' }, 
+        { label: 'ESG 인증 관련', value: 'VAL_4' }, { label: '용역', value: 'VAL_5' }, { label: '행사', value: 'VAL_6' }, { label: '기타', value: 'VAL_7' }
+      ] 
     },
     { 
-      id: 'GRP_IT_CATEGORY', name: 'IT·업무자산 범주', 
+      id: 'GRP_IT_CATEGORY', name: 'IT·업무자산 대범주', sort_order: 40,
       codes: [{ label: 'HW', value: 'VAL_1' }, { label: 'SW', value: 'VAL_2' }, { label: '비품', value: 'VAL_3' }, { label: '기타', value: 'VAL_4' }] 
     },
     { 
-      id: 'GRP_DUTY', name: '직책', 
+      id: 'GRP_IT_TYPE', name: 'IT·업무자산 품목', sort_order: 50,
+      codes: [
+        { label: '노트북', value: 'VAL_1' }, { label: '데스크탑', value: 'VAL_2' }, { label: '모니터', value: 'VAL_3' }, 
+        { label: 'Cursor', value: 'VAL_4' }, { label: 'ZW CAD', value: 'VAL_5' }, { label: 'PDF PRO', value: 'VAL_6' },
+        { label: '베리데스크(대형)', value: 'VAL_7' }, { label: '베리데스크(중형)', value: 'VAL_8' }
+      ] 
+    },
+    { 
+      id: 'GRP_PROCUREMENT', name: '조달유형', sort_order: 60,
+      codes: [{ label: '구매', value: 'VAL_1' }, { label: '렌탈', value: 'VAL_2' }, { label: '구독', value: 'VAL_3' }] 
+    },
+    { 
+      id: 'GRP_DUTY', name: '직책', sort_order: 70,
       codes: [
         { label: '원장', value: 'CEO' }, { label: '부원장', value: 'Vice President' }, { label: '상무', value: 'Executive Director' },
         { label: '본부장', value: 'Director' }, { label: '센터장', value: 'Manager' }
       ] 
     },
     { 
-      id: 'GRP_GRADE', name: '직급', 
+      id: 'GRP_GRADE', name: '직급', sort_order: 80,
       codes: [
         { label: '수석전문위원', value: 'Chief Expert Advisor' }, { label: '책임전문위원', value: 'Chief Technical Expert' },
         { label: '선임전문위원', value: 'Senior Technical Expert' }, { label: '전문위원', value: 'Technical Expert' },
@@ -134,7 +206,12 @@ async function main() {
   
   for (const group of masterGroups) {
     const createdGroup = await prisma.masterGroup.create({
-      data: { id: group.id, name: group.name, is_active: true }
+      data: {
+        id: group.id,
+        name: group.name,
+        sort_order: group.sort_order,
+        is_active: true,
+      }
     });
     for (const [idx, code] of group.codes.entries()) {
       await prisma.masterCode.create({

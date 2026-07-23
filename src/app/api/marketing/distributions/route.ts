@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import prisma from '@/lib/prisma';
-import { parseKSTDateOnly } from '@/utils/dateUtils';
+import { parseKSTDateOnly, getKSTYearMonth } from '@/utils/dateUtils';
 import { resolveTopOrgName, canDistributeMarketingOwnerDept } from '@/utils/orgUnits';
 import {
   authorizeMarketingApi,
@@ -49,9 +49,16 @@ export async function GET(req: Request) {
   const dept = searchParams.get('dept');
   const deptsRaw = searchParams.get('depts'); // 콤마 구분 — 본부+하위 센터 롤업
   const mine = searchParams.get('mine'); // '1' | 'true' → 로그인 사용자 본인만
+  const clientId = searchParams.get('clientId') || searchParams.get('client_id');
+  const clientDept = searchParams.get('clientDept') || searchParams.get('client_dept');
+  const yearRaw = searchParams.get('year');
+  const yearFilter = yearRaw ? Number(yearRaw) : null;
 
   try {
     const whereClause: any = {};
+
+    if (clientId) whereClause.client_id = clientId;
+    if (clientDept) whereClause.client_dept = clientDept;
 
     if (mine === '1' || mine === 'true' || senderEmail === 'me') {
       const email = (auth.user.email || '').trim();
@@ -82,12 +89,21 @@ export async function GET(req: Request) {
       else if (deptList.length > 1) whereClause.sender_dept = { in: deptList };
     }
 
-    const distributions = await prisma.marketingDistribution.findMany({
+    let distributions = await prisma.marketingDistribution.findMany({
       where: whereClause,
       include: { item: true },
       // 신청 쌓인 순(최신 위). 동일 시각 대비 id는 FE에서 보조
       orderBy: [{ createdAt: 'desc' }, { dist_date: 'desc' }],
     });
+
+    // KST 연도 필터 (고객사 이력 보기 등)
+    if (yearFilter && Number.isFinite(yearFilter)) {
+      distributions = distributions.filter((d) => {
+        const ym = getKSTYearMonth(d.createdAt);
+        return ym?.year === yearFilter;
+      });
+    }
+
     return NextResponse.json(distributions);
   } catch (error) {
     return NextResponse.json({ error: '데이터 로드 실패' }, { status: 500 });

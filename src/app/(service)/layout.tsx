@@ -54,6 +54,14 @@ export default function ServiceLayout({ children }: { children: React.ReactNode 
   useEffect(() => {
     fetchInitialData();
   }, []);
+
+  // 관리자 초기화 후: 비밀번호 변경 강제
+  useEffect(() => {
+    if (loading || !user) return;
+    if (user.must_reset_password && !pathname.startsWith('/account/password')) {
+      router.replace('/account/password?forced=1');
+    }
+  }, [loading, user?.must_reset_password, pathname, router]);
    
   useEffect(() => {
     const validateAccessAndRouting = async () => {
@@ -234,6 +242,9 @@ export default function ServiceLayout({ children }: { children: React.ReactNode 
           </div>
           
           <div className="flex items-center gap-5 font-sans">
+            <Link href="/account/password" className="text-slate-400 font-bold hover:text-slate-200 transition-colors text-[11px] tracking-wide uppercase active:scale-95">
+              비밀번호
+            </Link>
             <Link href="/admin" className="text-indigo-400 font-bold hover:text-indigo-300 transition-colors text-[11px] tracking-wide uppercase active:scale-95">
               Admin
             </Link>

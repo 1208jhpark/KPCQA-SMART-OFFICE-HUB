@@ -4,7 +4,7 @@ import { cookies } from 'next/headers';
 import jwt from 'jsonwebtoken';
   
 export const dynamic = 'force-dynamic';
-const JWT_SECRET = process.env.JWT_SECRET || 'kpcqa_secret_key';
+import { JWT_SECRET } from '@/lib/jwt';
   
 // 유저 인증 유틸리티
 async function getAuthUser() {

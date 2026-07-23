@@ -45,25 +45,13 @@ async function readApiError(res: Response, fallback: string) {
     return fallback;
   }
 }
-
-/** 지급 이력의 KST 연·월 매칭 (month1to12 생략 시 연도만) */
-function distMatchesKstYearMonth(
-  createdAt: string | Date | null | undefined,
-  year: number,
-  month1to12?: number
-) {
-  const ym = getKSTYearMonth(createdAt as string);
-  if (!ym) return false;
-  if (ym.year !== year) return false;
-  if (month1to12 != null && ym.month !== month1to12) return false;
-  return true;
-}
   
 export default function ClientSearchModule() {
   const [clients, setClients] = useState<any[]>([]);
   const [masterCategories, setMasterCategories] = useState<string[]>([]);
   const [systemConfig, setSystemConfig] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   
   // 🚀 [추가] 탭 상태 관리 (운영중 / 보관함)
@@ -73,11 +61,25 @@ export default function ClientSearchModule() {
   const [selectedCategory, setSelectedCategory] = useState('ALL');
      
   const [currentPage, setCurrentPage] = useState(1);
-  const itemsPerPage = 10; 
+  const itemsPerPage = 10;
+
+  const { year: kstYear } = getKSTNowYearMonth();
      
-  const [historyModal, setHistoryModal] = useState<{ isOpen: boolean; clientName: string; deptName: string; list: any[] }>({
-    isOpen: false, clientName: '', deptName: '', list: []
+  const [historyModal, setHistoryModal] = useState<{
+    isOpen: boolean;
+    clientId: string;
+    clientName: string;
+    deptName: string;
+    list: any[];
+    loading: boolean;
+  }>({
+    isOpen: false, clientId: '', clientName: '', deptName: '', list: [], loading: false
   });
+  /** 이력 모달: year / month(0=전체) / page */
+  const [historyYear, setHistoryYear] = useState(kstYear);
+  const [historyMonth, setHistoryMonth] = useState(0);
+  const [historyPage, setHistoryPage] = useState(1);
+  const historyPerPage = 10;
   
   // 🚀 최근 지급일 상세 정보 팝업 모달 상태
   const [lastDistModal, setLastDistModal] = useState<{ isOpen: boolean; distData: any }>({
@@ -97,12 +99,11 @@ export default function ClientSearchModule() {
 
   const [currentUser, setCurrentUser] = useState<any>(null); 
   const [interfaceConfig, setInterfaceConfig] = useState<any>(null);
-
-  const { year: kstYear, month: kstMonth } = getKSTNowYearMonth();
      
   useEffect(() => { fetchClients(); }, []);
      
   const fetchClients = async () => {
+    setLoadError(null);
     try {
       const ts = Date.now();
       const [cRes, mRes, sysRes, ifRes, meRes] = await Promise.all([
@@ -112,10 +113,16 @@ export default function ClientSearchModule() {
         fetch('/api/admin/interface?t=' + ts),
         fetch('/api/auth/me?t=' + ts)
       ]);
-      
+
+      const failed: string[] = [];
       if (cRes.ok) setClients(await cRes.json());
+      else {
+        setClients([]);
+        failed.push('고객사');
+      }
       if (meRes.ok) setCurrentUser(await meRes.json());
-      
+      else failed.push('사용자');
+
       let configData = null;
       if (sysRes.ok) {
         configData = await sysRes.json();
@@ -139,7 +146,22 @@ export default function ClientSearchModule() {
           setMasterCategories(activeCodes);
         }
       }
-    } catch(e) { console.error("Data Fetch Error:", e); }
+
+      if (failed.length > 0) {
+        const status = [cRes, meRes].find((r) => !r.ok)?.status;
+        setLoadError(
+          status === 401
+            ? '로그인 세션이 만료되었거나 권한이 없습니다.'
+            : status === 403
+              ? '고객사 메뉴 접근 권한이 없습니다.'
+              : `일부 데이터를 불러오지 못했습니다. (${failed.join(', ')})`
+        );
+      }
+    } catch (e) {
+      console.error('Data Fetch Error:', e);
+      setClients([]);
+      setLoadError('네트워크 오류로 데이터를 불러오지 못했습니다.');
+    }
     setLoading(false);
   };
      
@@ -183,11 +205,87 @@ export default function ClientSearchModule() {
     setExpandedClients(next);
   };
      
-  const openHistory = (clientName: string, deptName: string, distributions: any[]) => {
-    const filtered = distributions
-      .filter((d) => d.client_dept === deptName && distMatchesKstYearMonth(d.createdAt, kstYear))
-      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()); 
-    setHistoryModal({ isOpen: true, clientName, deptName, list: filtered });
+  const openHistory = async (clientId: string, clientName: string, deptName: string) => {
+    setHistoryYear(kstYear);
+    setHistoryMonth(0);
+    setHistoryPage(1);
+    setHistoryModal({ isOpen: true, clientId, clientName, deptName, list: [], loading: true });
+    try {
+      // 부서 전체 이력을 한 번 로드 → 연·월 필터는 클라이언트 집계
+      const qs = new URLSearchParams({
+        clientId,
+        clientDept: deptName,
+        t: String(Date.now()),
+      });
+      const res = await fetch(`/api/marketing/distributions?${qs}`);
+      if (!res.ok) {
+        setHistoryModal((prev) => ({ ...prev, list: [], loading: false }));
+        alert(await readApiError(res, '이력을 불러오지 못했습니다.'));
+        return;
+      }
+      const list = await res.json();
+      const sorted = Array.isArray(list)
+        ? [...list].sort(
+            (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+          )
+        : [];
+      setHistoryModal({ isOpen: true, clientId, clientName, deptName, list: sorted, loading: false });
+    } catch (e) {
+      console.error(e);
+      setHistoryModal((prev) => ({ ...prev, list: [], loading: false }));
+      alert('이력을 불러오지 못했습니다.');
+    }
+  };
+
+  const historyYearOptions = useMemo(() => {
+    const years = new Set<number>([kstYear]);
+    for (const d of historyModal.list) {
+      const ym = getKSTYearMonth(d.createdAt);
+      if (ym?.year) years.add(ym.year);
+    }
+    return Array.from(years).sort((a, b) => b - a);
+  }, [historyModal.list, kstYear]);
+
+  const filteredHistoryList = useMemo(() => {
+    return historyModal.list.filter((d) => {
+      const ym = getKSTYearMonth(d.createdAt);
+      if (!ym || ym.year !== historyYear) return false;
+      if (historyMonth !== 0 && ym.month !== historyMonth) return false;
+      return true;
+    });
+  }, [historyModal.list, historyYear, historyMonth]);
+
+  const historyAgg = useMemo(() => {
+    let totalAmount = 0;
+    let totalQty = 0;
+    const itemMap: Record<string, number> = {};
+    for (const d of filteredHistoryList) {
+      const qty = Number(d.qty) || 0;
+      totalQty += qty;
+      totalAmount += qty * (d.item?.unit_price || 0);
+      const name = d.item?.name || '(삭제됨)';
+      itemMap[name] = (itemMap[name] || 0) + qty;
+    }
+    const items = Object.entries(itemMap)
+      .map(([name, qty]) => ({ name, qty }))
+      .sort((a, b) => a.name.localeCompare(b.name, 'ko'));
+    return { count: filteredHistoryList.length, totalQty, totalAmount, items };
+  }, [filteredHistoryList]);
+
+  const historyTotalPages = Math.max(1, Math.ceil(filteredHistoryList.length / historyPerPage));
+  const paginatedHistory = filteredHistoryList.slice(
+    (historyPage - 1) * historyPerPage,
+    historyPage * historyPerPage
+  );
+
+  useEffect(() => {
+    if (historyPage > historyTotalPages) setHistoryPage(1);
+  }, [historyPage, historyTotalPages]);
+
+  const closeHistoryModal = () => {
+    setHistoryModal({
+      isOpen: false, clientId: '', clientName: '', deptName: '', list: [], loading: false
+    });
   };
 
   const safeArray = (val: any) => {
@@ -226,7 +324,7 @@ export default function ClientSearchModule() {
   };
 
   const clientHasDistributions = (client: any) =>
-    Array.isArray(client?.distributions) && client.distributions.length > 0;
+    Number(client?.distCount ?? 0) > 0;
 
   const handleSelectAll = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.checked) {
@@ -252,28 +350,16 @@ export default function ClientSearchModule() {
     const dataToExport = clients
       .filter(c => selectedClientIds.has(c.id))
       .map(c => {
-        const thisYearDists = c.distributions?.filter((d: any) =>
-          distMatchesKstYearMonth(d.createdAt, kstYear)
-        ) || [];
-        const thisMonthDists = thisYearDists.filter((d: any) =>
-          distMatchesKstYearMonth(d.createdAt, kstYear, kstMonth)
-        );
-        
-        const monthTotal = thisMonthDists.reduce((sum: number, d: any) => sum + (d.qty * (d.item?.unit_price || 0)), 0);
-        const yearTotal = thisYearDists.reduce((sum: number, d: any) => sum + (d.qty * (d.item?.unit_price || 0)), 0);
-        
-        const lastDist = [...(c.distributions||[])].sort((a,b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
-
         return {
           '고객사명': c.name,
           '업무범주': c.category || '-',
           '소재지': c.location || '-',
           '상태': c.is_archived ? '보관됨' : '운영중',
           '등록된 하위부서 수': getNormalizedSortedDepts(c.departments).filter((d:any)=>!d.is_hidden).length,
-          '이번달 지급 총액(원)': monthTotal,
-          '올해 누적 지급 총액(원)': yearTotal,
-          '올해 지급 횟수': thisYearDists.length,
-          '최근 지급일': lastDist ? getKSTDateString(lastDist.createdAt) : '지급 이력 없음'
+          '이번달 지급 총액(원)': Number(c.monthTotal ?? 0),
+          '올해 누적 지급 총액(원)': Number(c.yearTotal ?? 0),
+          '올해 지급 횟수': Number(c.yearDistCount ?? 0),
+          '최근 지급일': c.lastDist ? getKSTDateString(c.lastDist.createdAt) : '지급 이력 없음'
         };
       });
 
@@ -302,6 +388,7 @@ export default function ClientSearchModule() {
       body: JSON.stringify({ id: client.id, departments: depts, oldDeptName: oldName || undefined, newDeptName: oldName ? name : undefined })
     });
     if (res.ok) { setDeptModal({ ...deptModal, isOpen: false }); fetchClients(); }
+    else alert(await readApiError(res, '부서 저장에 실패했습니다.'));
   };
      
   const handleDeleteDept = async (client: any, deptName: string) => {
@@ -314,7 +401,7 @@ export default function ClientSearchModule() {
       body: JSON.stringify({ id: client.id, action: 'delete_dept', targetDeptName: deptName })
     });
     if (res.ok) { alert('부서가 삭제되었습니다.'); fetchClients(); }
-    else { const err = await res.json(); alert(err.error || '삭제 실패'); }
+    else alert(await readApiError(res, '삭제 실패'));
   };
      
   const handleToggleDeptHide = async (client: any, index: number) => {
@@ -327,20 +414,34 @@ export default function ClientSearchModule() {
       body: JSON.stringify({ id: client.id, departments: depts })
     });
     if (res.ok) fetchClients();
+    else alert(await readApiError(res, '부서 상태 변경에 실패했습니다.'));
   };
      
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (editClient && !canSeeAddForm) return alert("고객사 마스터 수정 권한이 없습니다.");
-    if (!formData.name) return alert("고객사명은 필수입니다.");
+    const clientName = formData.name.trim().replace(/\s+/g, ' ');
+    if (!clientName) return alert("고객사명은 필수입니다.");
     if (masterCategories.length > 0 && !formData.category) return alert("업무 범주를 선택해주세요.");
+
+    // FE 선검사 (서버도 동일 검증)
+    const nameTaken = clients.some((c) => {
+      if (editClient && c.id === editClient.id) return false;
+      return String(c.name || '').trim().toLowerCase() === clientName.toLowerCase();
+    });
+    if (nameTaken) {
+      return alert(`이미 등록된 고객사명입니다. ("${clientName}")`);
+    }
       
     const url = '/api/marketing/clients';
     const method = editClient ? 'PATCH' : 'POST';
+    const payload = editClient
+      ? { id: editClient.id, ...formData, name: clientName }
+      : { ...formData, name: clientName };
     const res = await fetch(url, {
       method,
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(editClient ? { id: editClient.id, ...formData } : formData)
+      body: JSON.stringify(payload)
     });
     if (res.ok) {
       alert(editClient ? '수정되었습니다.' : '등록되었습니다.');
@@ -348,6 +449,8 @@ export default function ClientSearchModule() {
       setEditClient(null);
       setFormData({ name: '', location: '', category: '' });
       fetchClients();
+    } else {
+      alert(await readApiError(res, editClient ? '수정에 실패했습니다.' : '등록에 실패했습니다.'));
     }
   };
      
@@ -406,24 +509,12 @@ export default function ClientSearchModule() {
     }
   };
 
-  const calculateTotalAmount = (distributions: any[]) => {
-    return distributions.reduce((sum, d) => {
-      const price = d.item?.unit_price || 0;
-      return sum + (d.qty * price);
-    }, 0);
-  };
-     
-  const renderAggregatedItems = (distributions: any[]) => {
-    const map: Record<string, number> = {};
-    distributions.forEach(d => {
-      const itemName = d.item?.name || '기타';
-      map[itemName] = (map[itemName] || 0) + d.qty;
-    });
-    const entries = Object.entries(map);
+  const renderAggregatedItems = (items: { name: string; qty: number }[] | undefined) => {
+    const entries = Array.isArray(items) ? items : [];
     if (entries.length === 0) return <span className="text-slate-300 block text-right">-</span>;
     return (
       <div className="flex flex-wrap justify-end gap-1 w-full">
-        {entries.map(([name, qty]) => (
+        {entries.map(({ name, qty }) => (
           <span key={name} className="bg-slate-50 border border-slate-200 text-slate-500 text-[9px] px-1.5 py-0.5 rounded-md font-bold">
             {name} <strong className="text-indigo-600">{qty}</strong>
           </span>
@@ -438,6 +529,19 @@ export default function ClientSearchModule() {
 
   return (
     <div className="w-full max-w-[1600px] mx-auto space-y-6 p-8 font-sans text-slate-900 pb-24 animate-fade-in">
+
+      {loadError && (
+        <div className="bg-amber-50 border border-amber-200 text-amber-800 px-5 py-3 rounded-2xl text-xs font-bold flex justify-between items-center gap-4">
+          <span>⚠️ {loadError}</span>
+          <button
+            type="button"
+            onClick={() => { setLoading(true); fetchClients(); }}
+            className="shrink-0 px-3 py-1.5 bg-amber-600 text-white rounded-lg text-[10px] font-black hover:bg-amber-700"
+          >
+            다시 시도
+          </button>
+        </div>
+      )}
       
       {/* 🌌 [고객사 전용 테마] 고객사별 수령 현황 보드 (Deep Indigo + V2 Glassmorphism) */}
       <div className="w-full bg-indigo-950 p-8 rounded-[2.5rem] min-h-[140px] flex flex-col justify-center text-white shadow-xl relative overflow-hidden group">
@@ -555,18 +659,14 @@ export default function ClientSearchModule() {
                 const allDepts = getNormalizedSortedDepts(client.departments);
                 const visibleDepts = allDepts.filter(d => showHiddenDepts || !d.is_hidden);
                 
-                const thisYearDists = client.distributions?.filter((d: any) =>
-                  distMatchesKstYearMonth(d.createdAt, kstYear)
-                ) || [];
-                const thisMonthDists = thisYearDists.filter((d: any) =>
-                  distMatchesKstYearMonth(d.createdAt, kstYear, kstMonth)
-                );
-                
-                const lastDist = [...(client.distributions||[])].sort((a,b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
+                const lastDist = client.lastDist || null;
                 const lastDistDate = lastDist ? getKSTDateString(lastDist.createdAt) : '-';
                 const archivedAt = client.archived_at ? getKSTDateString(client.archived_at) : '-';
                 const archiverName = client.archived_by_name || '-';
                 const archiverDept = client.archived_by_dept || '-';
+                const monthTotal = Number(client.monthTotal ?? 0);
+                const yearTotal = Number(client.yearTotal ?? 0);
+                const deptStats = client.deptStats || {};
      
                 return (
                   <React.Fragment key={client.id}>
@@ -602,10 +702,10 @@ export default function ClientSearchModule() {
                       <td className="px-3 text-center text-slate-500 text-[11px] truncate" title={client.location}>{client.location || '-'}</td>
                       
                       <td className="px-4 border-l border-slate-100 text-right font-mono text-[13px] text-slate-800">
-                        {calculateTotalAmount(thisMonthDists).toLocaleString()} <span className="text-[10px] text-slate-400 font-bold">원</span>
+                        {monthTotal.toLocaleString()} <span className="text-[10px] text-slate-400 font-bold">원</span>
                       </td>
                       <td className="px-4 border-l border-slate-100 text-right font-mono text-[13px] text-slate-800">
-                        {calculateTotalAmount(thisYearDists).toLocaleString()} <span className="text-[10px] text-slate-400 font-bold">원</span>
+                        {yearTotal.toLocaleString()} <span className="text-[10px] text-slate-400 font-bold">원</span>
                       </td>
                       
                       {/* 🚀 최근 지급일: 클릭 시 팝업 오픈 */}
@@ -674,13 +774,12 @@ export default function ClientSearchModule() {
      
                     {isExpanded && visibleDepts.map((dept: any) => {
                       const originalIndex = allDepts.findIndex(ad => ad.name === dept.name);
-                      const deptMonthDists = thisMonthDists.filter((d:any)=>d.client_dept === dept.name);
-                      const deptYearDists = thisYearDists.filter((d:any)=>d.client_dept === dept.name);
+                      const stats = deptStats[dept.name] || {};
                       return (
                         <tr key={`${client.id}-${dept.name}`} className={`bg-slate-50/50 border-t border-dashed border-slate-200 h-12 ${dept.is_hidden ? 'opacity-50 grayscale' : ''}`}>
                           <td colSpan={2} className="text-center border-r border-slate-100"></td>
                           <td colSpan={2} className="pl-6 text-slate-600 text-[11px] font-bold border-r border-slate-100">
-                            <div className="flex items-center gap-2 group cursor-pointer" onClick={() => openHistory(client.name, dept.name, client.distributions || [])}>
+                            <div className="flex items-center gap-2 group cursor-pointer" onClick={() => openHistory(client.id, client.name, dept.name)}>
                                 <span className="text-slate-300">└</span> 
                                 <span className={`${dept.is_hidden ? 'line-through text-slate-400' : 'group-hover:text-indigo-600'} truncate max-w-[150px] flex items-center`}>
                                   {dept.name} 
@@ -703,8 +802,8 @@ export default function ClientSearchModule() {
                               <span className="text-slate-300 text-[9px]">조작 불가</span>
                             )}
                           </td>
-                          <td className="px-4 border-r border-slate-100">{renderAggregatedItems(deptMonthDists)}</td>
-                          <td className="px-4 border-r border-slate-100">{renderAggregatedItems(deptYearDists)}</td>
+                          <td className="px-4 border-r border-slate-100">{renderAggregatedItems(stats.monthItems)}</td>
+                          <td className="px-4 border-r border-slate-100">{renderAggregatedItems(stats.yearItems)}</td>
                           <td colSpan={activeTab === 'ARCHIVED' ? 4 : 2}></td>
                         </tr>
                       );
@@ -786,48 +885,153 @@ export default function ClientSearchModule() {
         </div>
       )}
 
-      {/* 과거 연도별 상세 이력 조회 모달 */}
+      {/* 부서별 상세 이력 조회 모달 */}
       {historyModal.isOpen && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[400] flex items-center justify-center p-6" onClick={() => setHistoryModal({...historyModal, isOpen: false})}>
-          <div className="bg-white w-full max-w-4xl p-8 rounded-[2.5rem] shadow-2xl flex flex-col max-h-[80vh]" onClick={e=>e.stopPropagation()}>
-            <div className="flex justify-between items-center border-b border-slate-100 pb-5 mb-6">
-              <div>
-                <h3 className="text-xl font-black text-slate-900">{historyModal.clientName} - <span className="text-indigo-600">{historyModal.deptName}</span></h3>
-                <p className="text-xs font-bold text-slate-400 mt-1 uppercase tracking-widest">{kstYear} YEAR CUMULATIVE HISTORY</p>
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[400] flex items-center justify-center p-6" onClick={closeHistoryModal}>
+          <div className="bg-white w-full max-w-4xl p-8 rounded-[2.5rem] shadow-2xl flex flex-col max-h-[85vh]" onClick={e=>e.stopPropagation()}>
+            <div className="flex justify-between items-start border-b border-slate-100 pb-5 mb-4 gap-4">
+              <div className="min-w-0">
+                <h3 className="text-xl font-black text-slate-900 truncate">{historyModal.clientName} - <span className="text-indigo-600">{historyModal.deptName}</span></h3>
+                <p className="text-xs font-bold text-slate-400 mt-1 uppercase tracking-widest">DEPARTMENT DISTRIBUTION HISTORY</p>
               </div>
-              <button onClick={() => setHistoryModal({...historyModal, isOpen: false})} className="w-10 h-10 flex items-center justify-center bg-slate-100 text-slate-400 rounded-full hover:bg-slate-900 hover:text-white transition-all text-xl">✕</button>
+              <button type="button" onClick={closeHistoryModal} className="w-10 h-10 shrink-0 flex items-center justify-center bg-slate-100 text-slate-400 rounded-full hover:bg-slate-900 hover:text-white transition-all text-xl">✕</button>
             </div>
+
+            {/* 연·월 필터 + 집계 */}
+            <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+              <div className="flex flex-wrap items-center gap-2">
+                <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">년도</label>
+                <select
+                  value={historyYear}
+                  onChange={(e) => {
+                    setHistoryYear(Number(e.target.value));
+                    setHistoryMonth(0);
+                    setHistoryPage(1);
+                  }}
+                  disabled={historyModal.loading}
+                  className="text-xs font-bold bg-white border border-slate-300 rounded-lg px-2.5 py-1.5 outline-none focus:ring-1 focus:ring-indigo-400 text-slate-700"
+                >
+                  {historyYearOptions.map((y) => (
+                    <option key={y} value={y}>{y}년</option>
+                  ))}
+                </select>
+                <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-2">월</label>
+                <select
+                  value={historyMonth}
+                  onChange={(e) => {
+                    setHistoryMonth(Number(e.target.value));
+                    setHistoryPage(1);
+                  }}
+                  disabled={historyModal.loading}
+                  className="text-xs font-bold bg-white border border-slate-300 rounded-lg px-2.5 py-1.5 outline-none focus:ring-1 focus:ring-indigo-400 text-slate-700"
+                >
+                  <option value={0}>전체</option>
+                  {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => (
+                    <option key={m} value={m}>{m}월</option>
+                  ))}
+                </select>
+              </div>
+              {!historyModal.loading && (
+                <div className="flex flex-wrap items-center gap-3 text-[11px] font-bold text-slate-600">
+                  <span className="bg-slate-100 border border-slate-200 px-2.5 py-1 rounded-lg">
+                    {historyAgg.count}건
+                  </span>
+                  <span className="bg-slate-100 border border-slate-200 px-2.5 py-1 rounded-lg">
+                    수량 {historyAgg.totalQty.toLocaleString()}
+                  </span>
+                  <span className="bg-indigo-50 border border-indigo-100 text-indigo-700 px-2.5 py-1 rounded-lg font-mono">
+                    합계 {historyAgg.totalAmount.toLocaleString()}원
+                  </span>
+                </div>
+              )}
+            </div>
+
+            {!historyModal.loading && historyAgg.items.length > 0 && (
+              <div className="flex flex-wrap gap-1 mb-4">
+                {historyAgg.items.map(({ name, qty }) => (
+                  <span key={name} className="bg-slate-50 border border-slate-200 text-slate-500 text-[9px] px-1.5 py-0.5 rounded-md font-bold">
+                    {name} <strong className="text-indigo-600">{qty}</strong>
+                  </span>
+                ))}
+              </div>
+            )}
      
-            <div className="flex-1 overflow-y-auto pr-2 custom-scrollbar">
-              {historyModal.list.length === 0 ? (
-                <div className="py-20 text-center text-slate-300 font-bold">올해 지급된 이력이 없습니다.</div>
+            <div className="flex-1 overflow-y-auto pr-2 custom-scrollbar min-h-0">
+              {historyModal.loading ? (
+                <div className="py-20 text-center text-indigo-400 font-bold animate-pulse">이력 불러오는 중...</div>
+              ) : filteredHistoryList.length === 0 ? (
+                <div className="py-20 text-center text-slate-300 font-bold">
+                  {historyMonth === 0
+                    ? `${historyYear}년 지급 이력이 없습니다.`
+                    : `${historyYear}년 ${historyMonth}월 지급 이력이 없습니다.`}
+                </div>
               ) : (
                 <table className="w-full text-left border-collapse">
                   <thead className="bg-slate-50 text-[10px] text-slate-400 font-black uppercase sticky top-0 border-b border-slate-200">
                     <tr>
-                      <th className="py-3 pl-5">물품 신청일</th>
+                      <th className="py-3 pl-3 w-12 text-center">NO</th>
+                      <th className="py-3">물품 신청일</th>
                       <th className="py-3 text-indigo-600">물품명</th>
                       <th className="py-3 text-center">수량</th>
                       <th className="py-3">지급 목적</th>
                       <th className="py-3 text-center">신청자</th>
-                      <th className="py-3 text-center">지원부서</th>
+                      <th className="py-3 text-center">신청부서</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 text-[11px] font-bold text-slate-700">
-                    {historyModal.list.map((d, idx) => (
-                      <tr key={idx} className="hover:bg-indigo-50/30 transition-colors h-12">
-                        <td className="py-3 pl-5 font-mono text-slate-400">{getKSTDateString(d.createdAt)}</td>
-                        <td className="py-3 text-indigo-700">{d.item?.name || '(삭제됨)'}</td>
-                        <td className="py-3 text-center bg-slate-50/50">{d.qty} EA</td>
-                        <td className="py-3 text-slate-500 truncate max-w-[200px]" title={d.purpose}>{d.purpose}</td>
-                        <td className="py-3 text-center">{d.sender_name}</td>
-                        <td className="py-3 text-center text-[10px] text-slate-400">{d.sender_dept}</td>
-                      </tr>
-                    ))}
+                    {paginatedHistory.map((d, idx) => {
+                      const no = filteredHistoryList.length - ((historyPage - 1) * historyPerPage + idx);
+                      return (
+                        <tr key={d.id || idx} className="hover:bg-indigo-50/30 transition-colors h-12">
+                          <td className="py-3 pl-3 text-center text-slate-400 font-black">{no}</td>
+                          <td className="py-3 font-mono text-slate-400">{getKSTDateString(d.createdAt)}</td>
+                          <td className="py-3 text-indigo-700">{d.item?.name || '(삭제됨)'}</td>
+                          <td className="py-3 text-center bg-slate-50/50">{d.qty} EA</td>
+                          <td className="py-3 text-slate-500 truncate max-w-[200px]" title={d.purpose}>{d.purpose}</td>
+                          <td className="py-3 text-center">{d.sender_name}</td>
+                          <td className="py-3 text-center text-[10px] text-slate-400">{d.sender_dept}</td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               )}
             </div>
+
+            {!historyModal.loading && filteredHistoryList.length > 0 && historyTotalPages > 1 && (
+              <div className="flex justify-center items-center gap-1.5 pt-4 mt-2 border-t border-slate-100">
+                <button
+                  type="button"
+                  disabled={historyPage === 1}
+                  onClick={() => setHistoryPage((p) => p - 1)}
+                  className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors"
+                >
+                  이전
+                </button>
+                {Array.from({ length: historyTotalPages }).map((_, i) => (
+                  <button
+                    key={i}
+                    type="button"
+                    onClick={() => setHistoryPage(i + 1)}
+                    className={`w-8 h-8 rounded-xl font-black text-xs transition-all ${
+                      historyPage === i + 1
+                        ? 'bg-slate-800 text-white shadow-sm scale-105'
+                        : 'bg-white border border-slate-200 text-slate-500 hover:bg-slate-50'
+                    }`}
+                  >
+                    {i + 1}
+                  </button>
+                ))}
+                <button
+                  type="button"
+                  disabled={historyPage === historyTotalPages}
+                  onClick={() => setHistoryPage((p) => p + 1)}
+                  className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors"
+                >
+                  다음
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}

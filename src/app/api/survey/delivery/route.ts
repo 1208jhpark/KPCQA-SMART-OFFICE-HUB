@@ -5,7 +5,7 @@ import bcrypt from 'bcrypt';
 import prisma from '@/lib/prisma';
 import { parseKSTDeadline } from '@/utils/dateUtils';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'kpcqa_secret_key';
+import { JWT_SECRET } from '@/lib/jwt';
 
 // 🚀 [보안 가드] 토큰 기반 신원/권한 확인
 async function getAuth() {

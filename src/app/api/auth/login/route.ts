@@ -3,14 +3,22 @@ import prisma from '@/lib/prisma'; // ✅ 기존에 만들어둔 공용 인스�
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'kpcqa_secret_key';
+import { JWT_SECRET } from '@/lib/jwt';
+import { resolveCompanyEmail } from '@/utils/companyEmail';
 
 export async function POST(req: Request) {
   try {
     const { email, password } = await req.json();
+    const normalizedEmail = resolveCompanyEmail(email);
 
-    // 1. 사용자 찾기
-    const user = await prisma.user.findUnique({ where: { email } });
+    if (!normalizedEmail || !password) {
+      return NextResponse.json({ message: "정보가 일치하지 않습니다." }, { status: 401 });
+    }
+
+    // 1. 사용자 찾기 (사내 도메인 정규화)
+    const user = await prisma.user.findFirst({
+      where: { email: { equals: normalizedEmail, mode: 'insensitive' } },
+    });
 
     // 2. 사용자 존재 여부 및 비밀번호 검증 (여기서 null 체크가 끝납니다)
     if (!user || !(await bcrypt.compare(password, user.password))) {
@@ -30,10 +38,12 @@ export async function POST(req: Request) {
     );
 
     // 5. 응답 생성 (user가 확실히 존재함을 TypeScript에게 알려줍니다)
+    const mustReset = !!user.must_reset_password;
     const response = NextResponse.json({ 
       message: "성공",
       user: { name: user.name, email: user.email },
-      roles: user.roles 
+      roles: user.roles,
+      mustReset,
     });
     
     // 쿠키를 더 단순하고 확실하게 설정

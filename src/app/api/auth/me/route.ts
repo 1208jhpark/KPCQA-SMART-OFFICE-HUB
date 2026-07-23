@@ -3,7 +3,7 @@ import prisma from '@/lib/prisma';
 import { cookies } from 'next/headers';
 import jwt from 'jsonwebtoken';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'kpcqa_secret_key';
+import { JWT_SECRET } from '@/lib/jwt';
 
 export async function GET() {
   try {
@@ -48,7 +48,8 @@ export async function GET() {
       email: user.email,
       roles: safeParseRoles(user.roles), // 🚀 에러가 나던 부분을 안전한 함수로 교체 완료
       dept_id: user.unit_id,
-      unit: user.unit 
+      unit: user.unit,
+      must_reset_password: !!user.must_reset_password,
     });
   } catch (error) {
     console.error("Auth Me Error:", error);

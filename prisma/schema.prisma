@@ -22,9 +22,9 @@ model SystemConfig {
   client_category_group   String   @default("") 
   supply_category_group   String   @default("") 
   unit_category_group     String   @default("") 
-  it_category_group       String   @default("") // IT 자산관리 > 범주 분류
-  it_rental_group         String   @default("") // IT 자산관리 > 조달 유형
-  it_master_group         String   @default("") // 🚀 추가: IT 자산관리 > 분류 마스터 데이터 전용 필드
+  it_category_group       String   @default("") // IT·업무자산 > 대범주 (HW/SW 등)
+  it_rental_group         String   @default("") // IT·업무자산 > 조달 유형
+  it_master_group         String   @default("") // IT·업무자산 > 품목
   job_duty_group          String   @default("")
   job_grade_group         String   @default("")
   updatedAt               DateTime @updatedAt
@@ -52,6 +52,13 @@ model User {
   // 💡 [개념 분리] 직급(자격) 마스터 연동 필드
   grade        String   @default("") // 국문 직급 (예: 수석전문위원)
   grade_en     String   @default("") // 영문 직급 (예: Chief Expert Advisor)
+
+  // 관리자 초기화 후 다음 로그인 시 비밀번호 변경 강제
+  must_reset_password Boolean @default(false)
+
+  // 로그인 화면에서 비밀번호 초기화 요청 (관리자 필터용)
+  password_reset_requested    Boolean   @default(false)
+  password_reset_requested_at DateTime?
   
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
@@ -75,6 +82,8 @@ model OrgUnit {
   users        User[]
   is_active    Boolean   @default(true)
   is_deleted   Boolean   @default(false)
+  /// 부서 소모품 보관 위치 안내 (부서 대장 페이지에서 편집)
+  supply_storage_note String @default("") @db.Text
 }
  
 // -----------------------------------------------------------------
@@ -210,6 +219,19 @@ model Equipment {
   cert_url          String?  
   etc_url           String?  
   etc_memo          String?  
+
+  // 감사 — 등록/수정/폐기 (UI: 상세 팝업 하단, 목록·썸네일 미표시)
+  creator_name       String?
+  creator_dept       String?
+  creator_email      String?
+  updated_by_name    String?
+  updated_by_dept    String?
+  updated_by_email   String?
+  archived_at        DateTime?
+  archived_by_name   String?
+  archived_by_dept   String?
+  archived_by_email  String?
+
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
   histories         CalibrationHistory[]
@@ -229,7 +251,13 @@ model CalibrationHistory {
   cert_file_url   String?  
   receipt_url     String?  
   next_calib_date DateTime? 
-  memo            String?   
+  memo            String?
+
+  // 검교정 이력 등록자
+  creator_name  String?
+  creator_dept  String?
+  creator_email String?
+
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 }
@@ -381,6 +409,8 @@ model SupplyRequest {
   admin_opinion  String?  
   admin_name     String?  
   admin_dept     String?  
+  /// 지급완료·반려 등 처리 확정 시각 (철회로 대기 복귀 시 null)
+  processedAt    DateTime?
   updatedAt      DateTime @updatedAt 
 }
      

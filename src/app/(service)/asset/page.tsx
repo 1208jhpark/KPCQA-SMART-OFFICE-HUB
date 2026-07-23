@@ -2,6 +2,7 @@
   
 import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
+import { isPendingSupplyRequest } from '@/utils/supplyRequestStatus';
   
 // 로딩 스켈레톤 (와이드 레이아웃 맞춤형 디자인)
 const LoadingSkeleton = () => (
@@ -67,12 +68,12 @@ export default function AssetIntegratedDashboard() {
           const supRequests = await getSafeArray(supReqRes);
           
           const mySupPending = supRequests.filter((r: any) => 
-            (r.userEmail === userEmail || r.email === userEmail) && 
-            (r.status === '대기중' || r.status === 'PENDING')
+            (r.userEmail === userEmail || r.email === userEmail || r.user_email === userEmail) && 
+            isPendingSupplyRequest(r.status)
           ).length;
 
           const totalSupPending = supRequests.filter((r: any) => 
-            r.status === '대기중' || r.status === 'PENDING'
+            isPendingSupplyRequest(r.status)
           ).length;
      
           // -------------------------------------------------------------

@@ -5,7 +5,7 @@ import jwt from "jsonwebtoken";
 import Link from "next/link";
 import prisma from "@/lib/prisma";
 
-const JWT_SECRET = process.env.JWT_SECRET || 'kpcqa_secret_key';
+import { JWT_SECRET } from '@/lib/jwt';
 
 export default async function AdminLayout({ children }: { children: ReactNode }) {
   // 1. 쿠키에서 토큰 가져오기 (Next.js 15 규격)

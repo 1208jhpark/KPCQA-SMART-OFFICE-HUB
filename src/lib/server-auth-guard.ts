@@ -5,7 +5,7 @@ import prisma from '@/lib/prisma';
 import { checkMenuPermission } from './permission-utils';
 import { resolveTopOrgName, canEditTopOrgMarketingAsset } from '@/utils/orgUnits';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'kpcqa_secret_key';
+import { JWT_SECRET } from '@/lib/jwt';
 
 /** 마케팅 코너 interface 경로 (하위 카드 중 하나라도 통과하면 API 허용) */
 export const MARKETING_MENU_PATHS = [
@@ -44,7 +44,16 @@ function scopeRank(scope: string) {
   return 0;
 }
 
-export async function authorizeApi(menuPath: string) {
+/**
+ * 단일 interface 메뉴 경로 권한 검사.
+ * - 로그인 필수 (설문/IT QR 공개 링크 예외)
+ * - hasAccess 없으면 FORBIDDEN
+ * - requireEditor: true 이면 isEditor 없으면 FORBIDDEN_EDIT
+ */
+export async function authorizeApi(
+  menuPath: string,
+  options?: { requireEditor?: boolean }
+) {
   const cleanPath = normalizePath(menuPath);
 
   const isSurveyOpenLink =
@@ -155,6 +164,9 @@ export async function authorizeApi(menuPath: string) {
     allMenus,
     unitsList
   );
+
+  if (!permission.hasAccess) throw new Error('FORBIDDEN');
+  if (options?.requireEditor && !permission.isEditor) throw new Error('FORBIDDEN_EDIT');
 
   return { user, permission, unitsList, systemConfig, allMenus };
 }
@@ -289,6 +301,40 @@ export async function authorizeAnyMenuPaths(
 
 export async function authorizeMarketingApi(options?: { requireEditor?: boolean }) {
   return authorizeAnyMenuPaths(MARKETING_MENU_PATHS, options);
+}
+
+/** 장비 코너 interface 경로 (DB에 등록된 /equipment* 전부) */
+export async function authorizeEquipmentApi(options?: { requireEditor?: boolean }) {
+  const menus = await prisma.interfaceConfig.findMany({ select: { path: true } });
+  const paths = menus
+    .map((m) => m.path)
+    .filter((p): p is string => !!p && normalizePath(p).startsWith('/equipment'));
+  const fallback = ['/equipment', '/equipment/main'];
+  return authorizeAnyMenuPaths(paths.length > 0 ? paths : fallback, options);
+}
+
+/**
+ * 장비 department 기준 편집 스코프 (EquipmentClient FE와 동일)
+ * - TOTAL / Master / LV_1 → 전체
+ * - DEPT → 내 unit_name 과 자산 department 일치
+ * - OWN → 장비에 소유자 필드 없음 → 편집 불가
+ */
+export function assertCanEditEquipmentDepartment(
+  auth: Awaited<ReturnType<typeof authorizeEquipmentApi>>,
+  department: string | null | undefined
+) {
+  const { user, permission } = auth;
+  if (permission.isMaster || permission.myRole === 'LV_1') return;
+  if (!permission.isEditor) throw new Error('FORBIDDEN_EDIT');
+
+  const scope = String(permission.editScope || 'NONE').toUpperCase();
+  if (scope === 'TOTAL') return;
+  if (scope === 'DEPT') {
+    const myDept = user.unit?.unit_name || '';
+    if (myDept && department === myDept) return;
+    throw new Error('FORBIDDEN_EDIT');
+  }
+  throw new Error('FORBIDDEN_EDIT');
 }
 
 /**
@@ -426,4 +472,9 @@ export async function requireLv1SessionUser() {
   const user = await requireSessionUser();
   if (roleLevel(user.roles) !== 'LV_1') throw new Error('FORBIDDEN_ADMIN');
   return user;
+}
+
+/** admin/* API 공통 — LV_1 세션 필수 */
+export async function authorizeAdminApi() {
+  return requireLv1SessionUser();
 }

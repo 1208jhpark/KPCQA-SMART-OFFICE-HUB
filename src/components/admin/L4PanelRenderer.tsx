@@ -62,6 +62,9 @@ const AdminDeliveryHistory = dynamic(() => import('../survey/delivery/AdminDeliv
 const DeliveryDashboardContent = dynamic(() => import('../survey/delivery/DeliveryDashboardContent').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
 const DeliveryMySubmissions = dynamic(() => import('../survey/delivery/DeliveryMySubmissions').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
   
+// --- [장비 관리] ---
+const EquipmentDashboardModule = dynamic(() => import('../equipment/EquipmentDashboardClient').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
+
 export const ModuleRegistry: Record<string, React.ComponentType<any>> = {
   // [IT 자산 관리]
   '/asset/it/dept': ITDeptModule,
@@ -113,6 +116,10 @@ export const ModuleRegistry: Record<string, React.ComponentType<any>> = {
   '/survey/delivery/admin/active-surveys': AdminDeliveryActive, 
   '/survey/delivery/admin/survey-builder': AdminDeliveryBuilder,
   '/survey/delivery/admin/history': AdminDeliveryHistory,
+
+  // [장비 관리]
+  '/equipment/main': EquipmentDashboardModule,
+  
 };
      
 export default function L4PanelRenderer() {

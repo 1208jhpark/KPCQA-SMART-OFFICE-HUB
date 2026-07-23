@@ -42,9 +42,18 @@ function MasterArchiveContent() {
       ]);
       
       if (userRes.ok) setCurrentUser(await userRes.json());
-      if (archiveRes.ok) setItems(await archiveRes.json() || []);
+      if (archiveRes.ok) {
+        setItems(await archiveRes.json() || []);
+      } else if (archiveRes.status === 401 || archiveRes.status === 403) {
+        const err = await archiveRes.json().catch(() => ({}));
+        alert(err.error || '아카이브 권한이 없습니다.');
+      } else {
+        const err = await archiveRes.json().catch(() => ({}));
+        alert(err.error || '아카이브 데이터를 불러오지 못했습니다.');
+      }
     } catch (e) {
       console.error("Archive Sync Error", e);
+      alert('서버와 통신할 수 없습니다.');
     } finally {
       setLoading(false);
     }
@@ -120,13 +129,16 @@ function MasterArchiveContent() {
   const handleRestore = async (id: string) => {
     if (!confirm('해당 품목을 대시보드 운영 리스트로 복구하시겠습니까?')) return;
     try {
-      const res = await fetch('/api/asset/supplies/master/dashboard', {
+      const res = await fetch('/api/asset/supplies/master/archive', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id, is_active: true })
       });
       if (res.ok) { alert('✅ 대시보드로 복구되었습니다.'); fetchData(); } 
-      else { alert('🚨 복구 실패'); }
+      else {
+        const err = await res.json().catch(() => ({}));
+        alert(`🚨 복구 실패: ${err.error || '권한을 확인하세요.'}`);
+      }
     } catch (e) { alert("서버 통신 오류"); }
   };
      
@@ -138,10 +150,13 @@ function MasterArchiveContent() {
     try {
       const deletePromises = ids.map(id => fetch(`/api/asset/supplies/master/archive?id=${id}`, { method: 'DELETE' }));
       const results = await Promise.all(deletePromises);
-      const allSuccess = results.every(res => res.ok);
+      const failed = results.filter(res => !res.ok);
      
-      if (allSuccess) alert('✅ 영구 삭제되었습니다.');
-      else alert('⚠️ 일부 항목의 삭제를 실패했습니다.');
+      if (failed.length === 0) alert('✅ 영구 삭제되었습니다.');
+      else {
+        const err = await failed[0].json().catch(() => ({}));
+        alert(`⚠️ 일부 항목 삭제 실패: ${err.error || '권한을 확인하세요.'}`);
+      }
       
       setSelectedIds(new Set()); 
       fetchData();

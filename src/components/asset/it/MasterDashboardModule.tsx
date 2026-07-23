@@ -4,6 +4,8 @@ import React, { useState, useMemo, useEffect, useRef, Suspense } from 'react';
 import * as XLSX from 'xlsx';
 import { useRouter } from 'next/navigation'; // 🚀 Next.js App Router 필수 임포트
 import { getKSTDateString } from '@/utils/dateUtils';
+import LocalQrImage from '@/components/common/LocalQrImage';
+import { getItAssetVerifyUrl } from '@/utils/equipmentQr';
      
 interface DashboardProps {
   moduleTitle?: string;
@@ -1087,27 +1089,55 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
         </div>
       )}
   
-      {/* 🚀 모달 2: 진보된 단일 QR 코드 모달 */}
+      {/* 🚀 모달 2: 진보된 단일 QR 코드 모달 (실제 인쇄 라벨과 동일한 미리보기) */}
       {showQrModal && (
         <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-sm z-[500] flex items-center justify-center p-4" onClick={() => setShowQrModal(null)}>
-          <div className="bg-white p-8 rounded-[2.5rem] flex flex-col items-center shadow-2xl animate-in zoom-in-95 duration-200 w-80" onClick={e => e.stopPropagation()}>
-            <div className="w-full flex justify-between items-center mb-6">
-              <span className="bg-slate-800 text-white px-3 py-1.5 rounded-lg text-[10px] font-black tracking-widest">{showQrModal.category}</span>
-              <span className="bg-purple-100 text-purple-700 px-3 py-1.5 rounded-lg text-[10px] font-black">{showQrModal.it_type}</span>
+          <div className="bg-white p-8 rounded-[2rem] flex flex-col items-center shadow-2xl animate-in zoom-in-95 duration-200" onClick={e => e.stopPropagation()}>
+            <div className="w-full flex justify-between items-center mb-4">
+              <h3 className="font-black text-lg text-slate-800 tracking-tight">IT 자산 QR 라벨</h3>
+              <span className="bg-indigo-100 text-indigo-700 px-2 py-1 rounded text-[10px] font-black">실제 출력 미리보기</span>
             </div>
-            
-            <div className="bg-white p-2 border border-slate-200 rounded-2xl shadow-sm mb-6">
-              <img src={`https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(`https://kpc-asset.vercel.app/m/verify?id=${showQrModal.code}`)}`} alt="QR" className="w-48 h-48" />
+
+            {/* 실제 인쇄되는 40mm 정사각 라벨과 동일한 형태 (화면용 확대) */}
+            <div
+              className="flex flex-col justify-between bg-white border-2 border-dashed border-slate-300 rounded-lg text-center mb-4"
+              style={{ width: '260px', height: '260px', padding: '14px 12px 12px 12px', boxSizing: 'border-box' }}
+            >
+              <div className="w-full space-y-1">
+                <div className="flex justify-center items-center gap-1.5">
+                  <span className="text-[11px] font-black bg-slate-900 text-white px-2 py-0.5 rounded-full leading-none">{showQrModal.category}</span>
+                  <span className="text-[12px] font-black text-slate-700 truncate max-w-[170px]">{showQrModal.it_type}</span>
+                </div>
+                <p className="text-[13px] font-black text-slate-900 truncate tracking-tight">{showQrModal.model || '모델명 미상'}</p>
+              </div>
+              <div className="w-full flex justify-center items-center my-1">
+                <LocalQrImage
+                  payload={getItAssetVerifyUrl(showQrModal.code)}
+                  size={150}
+                  alt="QR"
+                  className="w-[130px] h-[130px] object-contain"
+                />
+              </div>
+              <div className="w-full">
+                <p className="text-[15px] font-black font-mono tracking-tighter text-indigo-700 leading-none">{showQrModal.code}</p>
+                <p className="text-[10px] font-bold text-slate-400 truncate mt-1">{showQrModal.dept || '공용'} · <span className="text-amber-700 font-black">사내 Wi-Fi 스캔</span></p>
+              </div>
             </div>
-            
-            <div className="text-center w-full bg-slate-50 rounded-xl p-4 border border-slate-100">
-               <p className="text-slate-400 text-[10px] font-black mb-1">ASSET CODE (자산 식별번호)</p>
-               <p className="text-slate-900 font-black text-2xl font-mono tracking-tighter mb-4">{showQrModal.code}</p>
-               <p className="text-slate-400 text-[10px] font-black mb-1">MODEL NAME (기기 모델명)</p>
-               <p className="text-slate-700 text-xs font-bold truncate px-2">{showQrModal.model || '모델명 미상'}</p>
+
+            <div className="w-full bg-amber-50 border border-amber-200 rounded-xl p-3 mb-4 text-center">
+              <p className="text-[11px] font-black text-amber-800">📡 QR 스캔 안내</p>
+              <p className="text-[10px] font-bold text-amber-700 mt-0.5 leading-relaxed">
+                스캔 시 <span className="underline decoration-2">로그인(이메일·비밀번호)</span> 후 자산 실사·인증이 가능합니다.
+                <br />
+                <span className="font-black">⚠ 반드시 사내 Wi-Fi 연결 후 스캔하세요.</span>
+                <br />
+                (외부망·LTE에서는 조회되지 않습니다)
+              </p>
             </div>
-            
-            <button onClick={() => setShowQrModal(null)} className="w-full py-3.5 bg-slate-100 text-slate-600 font-black tracking-wider rounded-xl mt-6 hover:bg-slate-200 transition-colors">닫기 (Close)</button>
+
+            <div className="flex gap-2 w-full">
+              <button type="button" onClick={() => setShowQrModal(null)} className="flex-1 py-3 bg-slate-100 text-slate-600 font-bold rounded-xl hover:bg-slate-200 transition-colors">닫기</button>
+            </div>
           </div>
         </div>
       )}
@@ -1166,17 +1196,22 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                     >
                       <div className="w-full space-y-0.5">
                         <div className="flex justify-center items-center gap-1">
-                          <span className="text-[6px] font-black bg-slate-900 text-white px-0.8 py-0.2 rounded scale-90">{a.category}</span>
-                          <span className="text-[7px] font-black text-slate-700 truncate max-w-[28mm]">{a.it_type}</span>
+                          <span className="text-[7px] font-black bg-slate-900 text-white px-1.5 py-0.5 rounded-full leading-none">{a.category}</span>
+                          <span className="text-[7px] font-black text-slate-700 truncate max-w-[26mm]">{a.it_type}</span>
                         </div>
                         <p className="text-[8px] font-black text-slate-900 truncate tracking-tight">{a.model || '모델명 미상'}</p>
                       </div>
                       <div className="w-full flex justify-center items-center my-0.5">
-                        <img src={`https://api.qrserver.com/v1/create-qr-code/?size=100x100&data=${encodeURIComponent(`https://kpc-asset.vercel.app/m/verify?id=${a.code}`)}`} alt="QR" className="w-[21mm] h-[21mm] object-contain" />
+                        <LocalQrImage
+                          payload={getItAssetVerifyUrl(a.code)}
+                          size={100}
+                          alt="QR"
+                          className="w-[20mm] h-[20mm] object-contain"
+                        />
                       </div>
                       <div className="w-full">
                         <p className="text-[9px] font-black font-mono tracking-tighter text-indigo-700 leading-none">{a.code}</p>
-                        <p className="text-[6.5px] font-bold text-slate-400 truncate mt-0.5 scale-90">{a.dept}</p>
+                        <p className="text-[6.5px] font-bold text-slate-400 truncate mt-0.5 scale-90">{a.dept} · <span className="text-amber-700 font-black">사내 Wi-Fi 스캔</span></p>
                       </div>
                     </div>
                   );

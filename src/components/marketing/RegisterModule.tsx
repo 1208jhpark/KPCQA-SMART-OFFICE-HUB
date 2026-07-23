@@ -98,7 +98,7 @@ function RegisterContent() {
         const [uRes, iRes, cRes, unitsRes] = await Promise.all([
           fetch('/api/auth/me?t=' + ts),
           fetch('/api/marketing/items?t=' + ts),
-          fetch('/api/marketing/clients?t=' + ts),
+          fetch('/api/marketing/clients?lite=1&t=' + ts),
           fetch('/api/admin/units?active=true&t=' + ts),
         ]);
 

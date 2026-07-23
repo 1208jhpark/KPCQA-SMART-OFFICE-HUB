@@ -6,7 +6,7 @@ import EquipmentClient from "@/components/equipment/EquipmentClient";
 // 🚀 1. 통합 메뉴 권한 엔진 로드
 import { checkMenuPermission } from "@/lib/permission-utils"; 
 
-const JWT_SECRET = process.env.JWT_SECRET || 'kpcqa_secret_key';
+import { JWT_SECRET } from '@/lib/jwt';
 
 export default async function EquipmentDynamicRoutePage({
   params,

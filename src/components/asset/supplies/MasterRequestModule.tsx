@@ -2,15 +2,31 @@
 import React, { useState, useEffect, useMemo, Suspense } from 'react';
 import { usePathname } from 'next/navigation';
 import Link from 'next/link';
+import { getKSTDateString, getKSTNowYearMonth, getKSTYearMonth } from '@/utils/dateUtils';
+import {
+  isCompletedSupplyRequest,
+  isPendingSupplyRequest,
+  isRejectedSupplyRequest,
+  normalizeSupplyRequestStatus,
+  supplyRequestStatusLabel,
+} from '@/utils/supplyRequestStatus';
+
+/** KST 기준 연·월 문자열 (year: '2026', month: '07') — 파싱 실패 시 null */
+function getKSTYearMonthParts(dateInput: Date | string | number | null | undefined) {
+  if (dateInput === null || dateInput === undefined || dateInput === '') return null;
+  const ym = getKSTYearMonth(dateInput);
+  if (!ym) return null;
+  return {
+    year: String(ym.year),
+    month: String(ym.month).padStart(2, '0'),
+  };
+}
      
 function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) {
   const pathname = usePathname();
   
   // 데이터 상태 관리
   const [requests, setRequests] = useState<any[]>([]);
-  const [items, setItems] = useState<any[]>([]);
-  const [masterData, setMasterData] = useState<any[]>([]);
-  const [config, setConfig] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [currentUser, setCurrentUser] = useState<any>(propUser || null);
   
@@ -25,6 +41,7 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 20;
   const [processOpinion, setProcessOpinion] = useState<{ [key: string]: string }>({});
+  const [processingId, setProcessingId] = useState<string | null>(null);
 
   // 🚀 상단 통계 전용 필터 상태
   const [statYear, setStatYear] = useState('ALL');
@@ -46,21 +63,21 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
     setLoading(true);
     try { 
       const ts = Date.now();
-      const [reqRes, dashRes, confRes, mastRes, userRes] = await Promise.all([
+      const [reqRes, userRes] = await Promise.all([
         fetch(`/api/asset/supplies/master/requests?t=${ts}`, { cache: 'no-store' }),
-        fetch(`/api/asset/supplies/master/dashboard?t=${ts}`, { cache: 'no-store' }),
-        fetch(`/api/admin/config?t=${ts}`, { cache: 'no-store' }),
-        fetch(`/api/admin/master-data?t=${ts}`, { cache: 'no-store' }),
         !propUser ? fetch(`/api/auth/me?t=${ts}`, { cache: 'no-store' }) : Promise.resolve(null)
       ]);
       
-      if (reqRes.ok) setRequests(await reqRes.json()); 
-      if (dashRes.ok) setItems((await dashRes.json()).items || []);
-      if (confRes.ok) setConfig(await confRes.json());
-      if (mastRes.ok) setMasterData(await mastRes.json());
+      if (reqRes.ok) {
+        setRequests(await reqRes.json());
+      } else if (reqRes.status === 401 || reqRes.status === 403) {
+        const err = await reqRes.json().catch(() => ({}));
+        alert(err.error || '신청현황 관리 권한이 없습니다.');
+      }
       if (!propUser && userRes?.ok) setCurrentUser(await userRes.json());
     } catch(e) {
       console.error("Requests Sync Error", e);
+      alert('서버와 통신할 수 없습니다.');
     } finally {
       setLoading(false);
     }
@@ -72,11 +89,13 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
     return roles?.includes('LV_1');
   }, [currentUser]);
      
-  // 장부 필터용 옵션
+  // 장부 필터용 옵션 (Asia/Seoul)
   const availableYears = useMemo(() => {
-    const years = requests.map(r => (r.createdAt || '').substring(0, 4)).filter(Boolean);
+    const years = requests
+      .map((r) => getKSTYearMonthParts(r.createdAt)?.year)
+      .filter(Boolean) as string[];
     const unique = Array.from(new Set(years)).sort((a, b) => b.localeCompare(a));
-    const curr = new Date().getFullYear().toString();
+    const curr = String(getKSTNowYearMonth().year);
     if (!unique.includes(curr)) unique.push(curr);
     return unique;
   }, [requests]);
@@ -86,69 +105,71 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
     return Array.from(new Set(depts)).sort();
   }, [requests]);
 
-  // 부서 마스터 옵션 (통계용)
-  const deptOptions = useMemo(() => {
-    if (!config?.dept_category_group && !config?.unit_category_group) return [];
-    const groupTarget = config.dept_category_group || config.unit_category_group;
-    const group = masterData.find(g => g.id === groupTarget);
-    return group?.codes?.filter((c: any) => c.is_active && !c.is_archived) || [];
-  }, [config, masterData]);
+  // 부서별 소모품 지급 통계 — 지급완료 신청 내역의 물품명 기준 (dashboard items 비의존)
+  const processedStatsTable = useMemo(() => {
+    const baseApprovedRequests = requests.filter(r => {
+      if (!isCompletedSupplyRequest(r.status)) return false;
+      const ym = getKSTYearMonthParts(r.createdAt);
+      if (!ym) return false;
+      if (statYear !== 'ALL' && ym.year !== statYear) return false;
+      if (statMonth !== 'ALL' && ym.month !== statMonth) return false;
+      return true;
+    });
 
-// 🚀 [수정 완료] 부서별 소모품 지급 통계 (비용 정산 폐기 -> 전사 대비 부서 점유율 비율로 전환)
-const processedStatsTable = useMemo(() => {
-  const baseApprovedRequests = requests.filter(r => {
-    const isComplete = r.status === 'COMPLETED' || r.status === '지급완료';
-    if (!isComplete) return false;
-    if (!r.createdAt) return false;
+    const byItem = new Map<string, {
+      id: string;
+      name: string;
+      rUnit: string;
+      totalAccumQty: number;
+      deptQty: number;
+    }>();
 
-    const d = new Date(r.createdAt);
-    const y = d.getFullYear().toString();
-    const m = (d.getMonth() + 1).toString().padStart(2, '0');
+    baseApprovedRequests.forEach((r) => {
+      const name = r.item_name || r.item?.name || '(삭제된 물품)';
+      const key = r.item_id || `name:${name}`;
+      let ext: any = {};
+      try {
+        ext = r.item?.description ? JSON.parse(r.item.description) : {};
+      } catch {
+        ext = {};
+      }
+      const rUnit = r.unit || ext.s_unit || ext.r_unit || 'EA';
+      const qty = Number(r.qty) || 0;
+      const deptMatch = statDept === 'ALL' || r.dept_name === statDept;
 
-    if (statYear !== 'ALL' && y !== statYear) return false;
-    if (statMonth !== 'ALL' && m !== statMonth) return false;
-    return true;
-  });
+      const row = byItem.get(key) || {
+        id: key,
+        name,
+        rUnit,
+        totalAccumQty: 0,
+        deptQty: 0,
+      };
+      row.totalAccumQty += qty;
+      if (deptMatch) row.deptQty += qty;
+      byItem.set(key, row);
+    });
 
-  return items.map((item) => {
-    const ext = item.description ? JSON.parse(item.description) : {};
-    const rUnit = ext.s_unit || ext.r_unit || 'EA';
-
-    // 1. 해당 기간 내 이 품목의 '전사 총 지급 수량' 계산
-    const itemRequests = baseApprovedRequests.filter(r => r.item_id === item.id || r.item_name === item.name);
-    const totalAccumQty = itemRequests.reduce((sum, r) => sum + (Number(r.qty) || 0), 0);
-
-    // 2. 선택된 부서의 '지급 수량' 계산
-    const targetDeptRequests = statDept === 'ALL'
-      ? itemRequests
-      : itemRequests.filter(r => r.dept_name === statDept || r.user?.unit?.unit_name === statDept);
-
-    const deptQty = targetDeptRequests.reduce((sum, r) => sum + (Number(r.qty) || 0), 0);
-    
-    // 3. 🚀 전사 총 지급량 대비 해당 부서의 소모 점유율(%) 연산
-    const ratio = totalAccumQty > 0 ? ((deptQty / totalAccumQty) * 100).toFixed(1) : "0.0";
-
-    return { 
-      id: item.id, 
-      name: item.name, 
-      rUnit, 
-      totalAccumQty, 
-      deptQty, 
-      ratio // ₩ 금액 대신 % 비율 데이터 전달
-    };
-  }).filter(row => row.totalAccumQty > 0);
-}, [items, requests, statYear, statMonth, statDept]);
+    return Array.from(byItem.values())
+      .filter((row) => row.totalAccumQty > 0)
+      .sort((a, b) => a.name.localeCompare(b.name, 'ko'))
+      .map((row) => ({
+        ...row,
+        ratio: row.totalAccumQty > 0
+          ? ((row.deptQty / row.totalAccumQty) * 100).toFixed(1)
+          : '0.0',
+      }));
+  }, [requests, statYear, statMonth, statDept]);
      
   const filteredRequests = useMemo(() => {
     return requests.filter(r => {
-      const dateStr = r.createdAt || '';
-      const yearMatch = selectedYear === 'ALL' || dateStr.substring(0, 4) === selectedYear;
-      const monthMatch = selectedMonth === 'ALL' || dateStr.substring(5, 7) === selectedMonth;
+      const ym = getKSTYearMonthParts(r.createdAt);
+      const yearMatch = selectedYear === 'ALL' || ym?.year === selectedYear;
+      const monthMatch = selectedMonth === 'ALL' || ym?.month === selectedMonth;
       const deptMatch = selectedDept === 'ALL' || r.dept_name === selectedDept;
       
-      const isPending = r.status === 'PENDING' || r.status === '대기중';
-      const isCompleted = r.status === 'COMPLETED' || r.status === '지급완료';
-      const isRejected = r.status === 'REJECTED' || r.status === '반려';
+      const isPending = isPendingSupplyRequest(r.status);
+      const isCompleted = isCompletedSupplyRequest(r.status);
+      const isRejected = isRejectedSupplyRequest(r.status);
       
       const statusMatch = selectedStatus === 'ALL' || 
                          (selectedStatus === 'PENDING' && isPending) ||
@@ -177,77 +198,92 @@ const processedStatsTable = useMemo(() => {
     setSelectedIds(next);
   };
      
-  // 🚀 기존 액션 로직 완벽 복구
+  // 상태 변경 — 재고 복구/재차감은 서버가 이전 status 기준으로 처리
   const handleProcessRequest = async (req: any, status: 'COMPLETED' | 'REJECTED') => {
     const reqId = req.id;
+    if (processingId) return;
     const opinion = processOpinion[reqId] || '';
     if (!confirm(status === 'COMPLETED' ? '지급 처리하시겠습니까?' : '요청을 반려하시겠습니까?\n(선차감된 재고가 다시 창고로 복구됩니다.)')) return;
     
+    setProcessingId(reqId);
     try {
       const res = await fetch('/api/asset/supplies/master/requests', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          id: reqId, status, admin_opinion: opinion, 
-          admin_name: currentUser?.name || '관리자', admin_dept: currentUser?.dept_name || currentUser?.unit?.unit_name || '운영팀',
-          is_rejected_restore: status === 'REJECTED',
-          item_id: req.item_id,
-          qty: req.qty
-        })
+        body: JSON.stringify({ id: reqId, status, admin_opinion: opinion })
       });
      
       if (res.ok) { 
         alert(status === 'COMPLETED' ? '✅ 지급 확정 완료' : '🚨 반려 및 재고 복구 완료'); 
         fetchRequestsData(); 
         setProcessOpinion({...processOpinion, [reqId]: ''}); 
+      } else {
+        const err = await res.json().catch(() => ({}));
+        alert(`🚨 처리 실패: ${err.error || '알 수 없는 오류'}`);
       }
     } catch (e) { alert("처리 중 오류가 발생했습니다."); }
+    finally { setProcessingId(null); }
   };
      
   const handleCancelDispense = async (req: any) => {
-    if (!confirm(`[경고] 지급을 철회하시겠습니까?\n서버 DB의 재고가 복구되며 신청 상태가 다시 '대기'로 변경됩니다.`)) return;
+    if (processingId) return;
+    if (!confirm(`[경고] 지급철회 하시겠습니까?\n상태가 다시 '대기'로 변경됩니다.\n(선차감 재고는 대기 중에도 유지됩니다.)`)) return;
     
+    setProcessingId(req.id);
     try {
       const res = await fetch('/api/asset/supplies/master/requests', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
-          id: req.id, status: 'PENDING', admin_opinion: '지급 철회(대기 상태로 원복)', 
-          admin_name: currentUser?.name || '관리자', admin_dept: currentUser?.dept_name || currentUser?.unit?.unit_name || '운영팀',
-          is_rejected_restore: true, // 대기 상태로 원복 시 재고 원복
-          item_id: req.item_id,
-          qty: req.qty
+          id: req.id, status: 'PENDING', admin_opinion: '지급철회(대기 상태로 원복)'
         })
       });
      
       if (res.ok) { 
-        alert('✅ 지급 철회가 완료되어 서버 재고가 복구되었습니다.'); 
+        alert('✅ 지급철회가 완료되었습니다. (대기 상태로 원복)'); 
         fetchRequestsData(); 
+      } else {
+        const err = await res.json().catch(() => ({}));
+        alert(`🚨 지급철회 실패: ${err.error || '알 수 없는 오류'}`);
       }
     } catch (e) { alert("처리 중 오류가 발생했습니다."); }
+    finally { setProcessingId(null); }
   };
      
   const handleDeleteRequest = async (req: any) => {
-    if (!isLV1) return alert("삭제 권한이 없습니다.");
-    if (!confirm("경고: 해당 신청 내역을 영구 삭제하시겠습니까?\n지급 완료된 건을 삭제하면 DB 재고가 자동으로 원상 복구됩니다.")) return;
+    if (processingId) return;
+
+    const status = normalizeSupplyRequestStatus(req.status);
+    const isCompleted = status === 'COMPLETED';
+
+    if (isCompleted && !isLV1) {
+      return alert('지급완료 건 삭제는 LV_1만 가능합니다.');
+    }
+
+    const confirmMsg = isCompleted
+      ? '경고: 지급완료 건을 영구 삭제하시겠습니까? (LV_1)\n삭제 시 선차감 재고가 창고로 복구됩니다.'
+      : '경고: 해당 신청 내역을 영구 삭제하시겠습니까?\n대기 건은 선차감 재고가 창고로 복구됩니다.';
+    if (!confirm(confirmMsg)) return;
     
+    setProcessingId(req.id);
     try {
       const res = await fetch(`/api/asset/supplies/master/requests?id=${req.id}`, { method: 'DELETE' });
       if (res.ok) {
-        alert('🗑️ 성공적으로 삭제 (및 필요시 재고 복구)가 완료되었습니다.');
+        alert('🗑️ 삭제되었습니다.');
         fetchRequestsData();
       } else {
-        const err = await res.json();
+        const err = await res.json().catch(() => ({}));
         alert(`🚨 삭제 실패: ${err.error || '알 수 없는 오류'}`);
       }
     } catch (e) { alert("서버 통신 오류가 발생했습니다."); }
+    finally { setProcessingId(null); }
   };
      
   if (loading) return <div className="p-20 text-center font-black animate-pulse text-indigo-400 uppercase tracking-widest">Loading Requests...</div>;
      
-  const countPending = requests.filter(r => r.status === 'PENDING' || r.status === '대기중').length;
-  const countCompleted = requests.filter(r => r.status === 'COMPLETED' || r.status === '지급완료').length;
-  const countRejected = requests.filter(r => r.status === 'REJECTED' || r.status === '반려').length;
+  const countPending = requests.filter(r => isPendingSupplyRequest(r.status)).length;
+  const countCompleted = requests.filter(r => isCompletedSupplyRequest(r.status)).length;
+  const countRejected = requests.filter(r => isRejectedSupplyRequest(r.status)).length;
   
   const formatNum = (num: any) => Number(num || 0).toLocaleString();
      
@@ -317,7 +353,7 @@ const processedStatsTable = useMemo(() => {
         <div className="p-5 bg-slate-100/80 border-b border-slate-200 flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div className="flex items-center gap-2">
             <div className="w-2.5 h-2.5 rounded-full bg-emerald-500"></div>
-            <h2 className="text-[13px] font-black text-slate-800 tracking-tight">📊 부서별 소모품 지급 통계 <span className="text-xs font-normal text-slate-500 ml-1">(지급완료 기준 비용 정산)</span></h2>
+            <h2 className="text-[13px] font-black text-slate-800 tracking-tight">📊 부서별 소모품 지급 통계 <span className="text-xs font-normal text-slate-500 ml-1">(지급완료 신청 내역 기준 · 수량/점유율)</span></h2>
           </div>
           
           <div className="flex flex-wrap items-center gap-2">
@@ -420,10 +456,11 @@ const processedStatsTable = useMemo(() => {
      
           <div className="overflow-x-auto">
             <table className="w-full text-left text-[11px] min-w-[1300px] border-collapse table-fixed">
-            <colgroup><col className="w-[40px]"/><col className="w-[90px]"/><col className="w-[120px]"/><col className="w-[180px]"/><col className="w-[100px]"/><col className="w-[240px]"/><col className="w-[100px]"/><col className="w-auto"/><col className="w-[90px]"/><col className="w-[180px]"/></colgroup>
+            <colgroup><col className="w-[40px]"/><col className="w-[48px]"/><col className="w-[90px]"/><col className="w-[120px]"/><col className="w-[180px]"/><col className="w-[100px]"/><col className="w-[240px]"/><col className="w-[100px]"/><col className="w-auto"/><col className="w-[90px]"/><col className="w-[180px]"/></colgroup>
               <thead className="bg-slate-50 text-slate-400 font-black border-b border-slate-200 uppercase tracking-widest">
                 <tr>
                   <th className="h-12 pl-4 text-center"><input type="checkbox" checked={paginatedRequests.length > 0 && paginatedRequests.every(r => selectedIds.has(r.id))} onChange={toggleSelectAll} className="accent-indigo-600 cursor-pointer" /></th>
+                  <th className="h-12 px-2 text-center">NO</th>
                   <th className="h-12 px-3 text-center border-l-4 border-white">신청일시</th>
                   <th className="h-12 px-4 bg-slate-50">부서 / 신청자</th>
                   <th className="h-12 px-4 text-indigo-600 bg-indigo-50/10">물품명</th>
@@ -437,25 +474,31 @@ const processedStatsTable = useMemo(() => {
               </thead>
               <tbody className="divide-y divide-slate-100 font-medium bg-white">
                 {paginatedRequests.length === 0 ? (
-                  <tr><td colSpan={10} className="h-32 text-center text-slate-400 italic font-bold">조건에 맞는 내역이 없습니다.</td></tr>
+                  <tr><td colSpan={11} className="h-32 text-center text-slate-400 italic font-bold">조건에 맞는 내역이 없습니다.</td></tr>
                 ) : paginatedRequests.map((req, i) => {
-                  const isPending = req.status === 'PENDING' || req.status === '대기중';
+                  const isPending = isPendingSupplyRequest(req.status);
+                  const isRejected = isRejectedSupplyRequest(req.status);
+                  const isCompleted = isCompletedSupplyRequest(req.status);
+                  const statusLabel = supplyRequestStatusLabel(req.status);
                   const itemName = req.item_name || req.item?.name || '(삭제된 물품)';
                   const itemExt = req.item?.description ? JSON.parse(req.item.description) : {};
                   const sUnit = req.unit || itemExt.r_unit || itemExt.s_unit || 'EA';
-                  const processDate = req.updatedAt ? req.updatedAt.substring(0, 10) : (req.createdAt ? req.createdAt.substring(0, 10) : '-');
+                  const processDate = getKSTDateString(req.processedAt) || '-';
+                  const createdDate = getKSTDateString(req.createdAt) || '-';
+                  const rowNo = filteredRequests.length - ((currentPage - 1) * itemsPerPage + i);
      
                   return (
                     <tr key={req.id} className={`hover:bg-slate-50 h-14 transition-colors ${selectedIds.has(req.id) ? 'bg-indigo-50/30' : ''}`}>
                       <td className="pl-4 text-center"><input type="checkbox" checked={selectedIds.has(req.id)} onChange={() => { const next = new Set(selectedIds); selectedIds.has(req.id) ? next.delete(req.id) : next.add(req.id); setSelectedIds(next); }} className="accent-indigo-600 cursor-pointer" /></td>
-                      <td className="px-3 text-center font-mono text-slate-500 text-[10px] border-l-4 border-white">{req.createdAt?.substring(0, 10) || '-'}</td>
+                      <td className="px-2 text-center text-slate-400 font-mono text-[10px]">{rowNo}</td>
+                      <td className="px-3 text-center font-mono text-slate-500 text-[10px] border-l-4 border-white">{createdDate}</td>
                       <td className="px-4 truncate"><span className="text-[9px] text-slate-400 block mb-0.5 truncate">{req.dept_name || '-'}</span><span className="text-slate-800 font-black text-[11px] truncate">{req.user_name || '-'}</span></td>
                       <td className="px-4 font-black text-slate-800 text-[12px] bg-indigo-50/5 truncate" title={itemName}>{itemName}</td>
                       <td className="px-3 text-center font-black text-indigo-600 text-[12px] bg-indigo-50/5">{req.qty} <span className="text-[9px] text-indigo-400 font-bold ml-0.5">{sUnit}</span></td>
                       <td className="px-4 text-slate-500 font-medium truncate border-l-4 border-white" title={req.note}>{req.note ? `"${req.note}"` : '-'}</td>
                       <td className="px-3 text-center border-l-4 border-white">
-                        <span className={`px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-widest ${isPending ? 'bg-orange-50 text-orange-600 border border-orange-200' : req.status === 'REJECTED' || req.status === '반려' ? 'bg-red-50 text-red-600 border border-red-200' : 'bg-emerald-50 text-emerald-600 border border-emerald-200'}`}>
-                          {isPending ? '대기' : (req.status === 'REJECTED' || req.status === '반려' ? '반려' : '지급완료')}
+                        <span className={`px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-widest ${isPending ? 'bg-orange-50 text-orange-600 border border-orange-200' : isRejected ? 'bg-red-50 text-red-600 border border-red-200' : 'bg-emerald-50 text-emerald-600 border border-emerald-200'}`}>
+                          {statusLabel === '대기중' ? '대기' : statusLabel}
                         </span>
                       </td>
                       
@@ -490,16 +533,20 @@ const processedStatsTable = useMemo(() => {
                           <div className="flex items-center justify-center gap-1 w-full">
                             <button onClick={()=>handleProcessRequest(req, 'REJECTED')} className="px-2 py-1.5 bg-white text-red-500 border border-red-200 rounded-md font-black text-[10px] hover:bg-red-50 shadow-sm">반려</button>
                             <button onClick={()=>handleProcessRequest(req, 'COMPLETED')} className="px-2 py-1.5 bg-indigo-600 text-white border border-indigo-700 rounded-md font-black text-[10px] shadow-sm hover:bg-indigo-700">지급</button>
-                            {isLV1 && <button onClick={()=>handleDeleteRequest(req)} title="영구 삭제" className="px-2 py-1.5 bg-slate-100 text-slate-400 border border-slate-200 rounded-md font-black text-[10px] hover:text-red-500 hover:bg-red-50">삭제</button>}
+                            <button onClick={()=>handleDeleteRequest(req)} title="대기 건 영구 삭제 (재고 복구)" className="px-2 py-1.5 bg-slate-100 text-slate-400 border border-slate-200 rounded-md font-black text-[10px] hover:text-red-500 hover:bg-red-50">삭제</button>
                           </div>
                         ) : (
                           <div className="flex items-center justify-center gap-1 w-full">
-                            {(req.status === 'COMPLETED' || req.status === '지급완료') && (
-                              <button onClick={()=>handleCancelDispense(req)} title="지급 철회 및 재고 원상복구" className="px-2 py-1.5 bg-orange-50 text-orange-600 border border-orange-200 rounded-md font-black text-[10px] hover:bg-orange-100 shadow-sm">철회</button>
+                            {isCompleted && (
+                              <button onClick={()=>handleCancelDispense(req)} title="지급철회(대기 상태로 원복 · 선차감 재고 유지)" className="px-2 py-1.5 bg-orange-50 text-orange-600 border border-orange-200 rounded-md font-black text-[10px] hover:bg-orange-100 shadow-sm">지급철회</button>
                             )}
-                            {isLV1 ? (
-                              <button onClick={()=>handleDeleteRequest(req)} title="영구 삭제" className="px-2 py-1.5 bg-slate-100 text-slate-400 border border-slate-200 rounded-md font-black text-[10px] hover:text-red-500 hover:bg-red-50">삭제</button>
-                            ) : <span className="text-slate-300 text-[10px]">-</span>}
+                            {isCompleted ? (
+                              isLV1 ? (
+                                <button onClick={()=>handleDeleteRequest(req)} title="지급완료 건 영구 삭제 — LV_1 전용" className="px-2 py-1.5 bg-slate-100 text-slate-500 border border-slate-200 rounded-md font-black text-[10px] hover:text-red-500 hover:bg-red-50">삭제(LV_1)</button>
+                              ) : null
+                            ) : (
+                              <button onClick={()=>handleDeleteRequest(req)} title="반려 건 영구 삭제" className="px-2 py-1.5 bg-slate-100 text-slate-400 border border-slate-200 rounded-md font-black text-[10px] hover:text-red-500 hover:bg-red-50">삭제</button>
+                            )}
                           </div>
                         )}
                       </td>

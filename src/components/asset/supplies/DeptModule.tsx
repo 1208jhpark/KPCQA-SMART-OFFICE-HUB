@@ -1,11 +1,21 @@
 'use client';
      
-import React, { useState, useEffect, useMemo, Suspense, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, Suspense } from 'react';
 import * as XLSX from 'xlsx';
-     
+import {
+  isCompletedSupplyRequest,
+  isPendingSupplyRequest,
+  isRejectedSupplyRequest,
+  normalizeSupplyRequestStatus,
+  supplyRequestStatusLabel,
+} from '@/utils/supplyRequestStatus';
+import { getKSTDateString } from '@/utils/dateUtils';
+
 function DeptContent() {
   const [requests, setRequests] = useState<any[]>([]);
-  const [unitsList, setUnitsList] = useState<any[]>([]); // 🚀 [추가] 조직도 상태 추가
+  const [scopeDepts, setScopeDepts] = useState<string[]>([]);
+  const [storageNotes, setStorageNotes] = useState<Record<string, string>>({});
+  const [myDeptNameFromApi, setMyDeptNameFromApi] = useState<string>('');
   const [loading, setLoading] = useState(true);
   const [currentUser, setCurrentUser] = useState<any>(null);
 
@@ -15,14 +25,19 @@ function DeptContent() {
   const [searchItemQuery, setSearchItemQuery] = useState('');
   const [searchUserQuery, setSearchUserQuery] = useState('');
 
+  const [selectedDept, setSelectedDept] = useState<string>('ALL');
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear().toString());
   const [selectedMonth, setSelectedMonth] = useState(String(new Date().getMonth() + 1).padStart(2, '0'));
 
   const [selectedStatus, setSelectedStatus] = useState<'ALL' | 'COMPLETED' | 'PENDING' | 'REJECTED'>('ALL');
   const [selectedItemFilter, setSelectedItemFilter] = useState<string | null>(null);
 
+  const [memoEditing, setMemoEditing] = useState(false);
+  const [memoDraft, setMemoDraft] = useState('');
+  const [memoSaving, setMemoSaving] = useState(false);
+
   const [currentPage, setCurrentPage] = useState(1);
-  const itemsPerPage = 20;
+  const itemsPerPage = 10;
 
   useEffect(() => { 
     fetchData(); 
@@ -32,63 +47,64 @@ function DeptContent() {
     setLoading(true);
     try {
       const ts = Date.now();
-      const [userRes, reqRes, unitRes] = await Promise.all([
+      const [userRes, reqRes] = await Promise.all([
         fetch(`/api/auth/me?t=${ts}`, { cache: 'no-store' }),
-        // 💡 하위 데이터를 모두 보려면 백엔드 API가 넓은 범위의 데이터를 주어야 합니다. 
-        // 안 나온다면 주소를 '/api/asset/supplies/requests' 등으로 변경해 보세요.
+        // 부서 범위는 서버(세션)에서만 결정 — 클라에서 재필터하지 않음
         fetch(`/api/asset/supplies/dept?t=${ts}`, { cache: 'no-store' }),
-        fetch('/api/admin/units?active=true').catch(() => null) // 🚀 [추가] 조직도 로드
       ]);
 
       if (userRes.ok) setCurrentUser(await userRes.json());
-      if (reqRes.ok) setRequests(await reqRes.json());
-      if (unitRes?.ok) setUnitsList(await unitRes.json());
 
+      if (reqRes.ok) {
+        const data = await reqRes.json();
+        // 신형: { requests, scopeDepts, storageNotes } / 구형 배열 호환
+        if (Array.isArray(data)) {
+          setRequests(data);
+          setScopeDepts([]);
+          setStorageNotes({});
+          setMyDeptNameFromApi('');
+        } else {
+          setRequests(Array.isArray(data.requests) ? data.requests : []);
+          setScopeDepts(Array.isArray(data.scopeDepts) ? data.scopeDepts : []);
+          setStorageNotes(
+            data.storageNotes && typeof data.storageNotes === 'object' ? data.storageNotes : {}
+          );
+          setMyDeptNameFromApi(String(data.myDeptName || ''));
+        }
+        setMemoEditing(false);
+      } else if (reqRes.status === 401 || reqRes.status === 403) {
+        const err = await reqRes.json().catch(() => ({}));
+        alert(err.error || '부서 소모품 내역을 볼 권한이 없습니다.');
+        setRequests([]);
+        setScopeDepts([]);
+        setStorageNotes({});
+      } else {
+        const err = await reqRes.json().catch(() => ({}));
+        alert(err.error || '부서 소모품 내역을 불러오지 못했습니다.');
+        setRequests([]);
+        setScopeDepts([]);
+        setStorageNotes({});
+      }
     } catch(e) { 
-      console.error("Data fetch error", e); 
+      console.error("Data fetch error", e);
+      alert('서버와 통신할 수 없습니다.');
     } finally {
       setLoading(false);
     }
   };
 
-  // 🚀 [신규 로직] 1. 본부 하위의 조직(센터/파트)을 모두 찾아내는 재귀 함수
-  const getDescendantDepts = useCallback((targetDeptName: string) => {
-    if (!unitsList.length) return [targetDeptName];
-    const targetUnit = unitsList.find(u => u.unit_name === targetDeptName);
-    if (!targetUnit) return [targetDeptName];
+  // API가 이미 스코프(본인+하위+직속상위)만 반환 — 그대로 사용
+  const deptRequests = requests;
 
-    const results = new Set<string>();
-    results.add(targetUnit.unit_name); // 본부 추가
+  /** 드롭다운 옵션: 서버 scopeDepts 우선, 없으면 데이터에 나온 dept_name */
+  const deptOptions = useMemo(() => {
+    if (scopeDepts.length > 0) return scopeDepts;
+    const fromData = Array.from(
+      new Set(deptRequests.map((r) => r.dept_name).filter(Boolean))
+    ).sort((a, b) => String(a).localeCompare(String(b), 'ko'));
+    return fromData as string[];
+  }, [scopeDepts, deptRequests]);
 
-    const findChildren = (parentId: string) => {
-      unitsList.filter(u => u.parent_id === parentId).forEach(child => {
-        results.add(child.unit_name);
-        findChildren(child.id);
-      });
-    };
-
-    findChildren(targetUnit.id);
-    return Array.from(results);
-  }, [unitsList]);
-
-  // 🚀 [신규 로직] 2. 로그인 사용자의 본부 + 하위 센터 목록 도출
-  const allowedDepts = useMemo(() => {
-    const myDept = currentUser?.unit?.unit_name || currentUser?.dept_name;
-    if (!myDept || !unitsList.length) return [myDept || ''];
-    return getDescendantDepts(myDept);
-  }, [currentUser, unitsList, getDescendantDepts]);
-
-  // 🚀 [신규 로직] 3. 전체 데이터에서 본부 및 하위 센터 데이터만 걸러낸 최종 타겟 리스트
-  const deptRequests = useMemo(() => {
-    if (!allowedDepts.length) return requests;
-    return requests.filter(r => {
-      const rDept = r.dept || r.user_dept || r.unit_name; // API 응답 필드명에 맞춰 확인
-      if (!rDept) return true; 
-      return allowedDepts.includes(rDept);
-    });
-  }, [requests, allowedDepts]);
-
-  // 🚀 [수정] 아래부터는 기존 requests 대신 deptRequests를 사용합니다.
   const availableYears = useMemo(() => {
     const years = deptRequests.map(r => (r.createdAt || '').substring(0, 4)).filter(Boolean);
     const unique = Array.from(new Set(years)).sort((a, b) => b.localeCompare(a));
@@ -111,6 +127,7 @@ function DeptContent() {
         }
       }
       
+      const deptMatch = selectedDept === 'ALL' || r.dept_name === selectedDept;
       const yearMatch = selectedYear === 'ALL' || reqYear === selectedYear;
       const monthMatch = selectedMonth === 'ALL' || reqMonth === selectedMonth;
       
@@ -119,15 +136,15 @@ function DeptContent() {
       const userMatch = !searchUserQuery || (r.user_name || '').toLowerCase().includes(searchUserQuery.toLowerCase());
       
       const statusMatch = selectedStatus === 'ALL' ||
-        (selectedStatus === 'COMPLETED' && (r.status === 'COMPLETED' || r.status === '지급완료')) ||
-        (selectedStatus === 'PENDING' && (r.status === 'PENDING' || r.status === '대기중')) ||
-        (selectedStatus === 'REJECTED' && (r.status === 'REJECTED' || r.status === '반려'));
+        (selectedStatus === 'COMPLETED' && isCompletedSupplyRequest(r.status)) ||
+        (selectedStatus === 'PENDING' && isPendingSupplyRequest(r.status)) ||
+        (selectedStatus === 'REJECTED' && isRejectedSupplyRequest(r.status));
       
       const itemFilterMatch = !selectedItemFilter || itemName === selectedItemFilter;
       
-      return yearMatch && monthMatch && itemMatch && userMatch && statusMatch && itemFilterMatch;
+      return deptMatch && yearMatch && monthMatch && itemMatch && userMatch && statusMatch && itemFilterMatch;
     }).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-  }, [deptRequests, selectedYear, selectedMonth, searchItemQuery, searchUserQuery, selectedStatus, selectedItemFilter]);
+  }, [deptRequests, selectedDept, selectedYear, selectedMonth, searchItemQuery, searchUserQuery, selectedStatus, selectedItemFilter]);
 
   const totalPages = Math.max(1, Math.ceil(filteredRequests.length / itemsPerPage));
   const paginatedRequests = filteredRequests.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
@@ -135,7 +152,7 @@ function DeptContent() {
   useEffect(() => {
     setCurrentPage(1);
     setSelectedIds(new Set());
-  }, [selectedYear, selectedMonth, searchItemQuery, searchUserQuery, selectedStatus, selectedItemFilter]);
+  }, [selectedDept, selectedYear, selectedMonth, searchItemQuery, searchUserQuery, selectedStatus, selectedItemFilter]);
 
   const toggleSelectAll = () => {
     const currentPageIds = paginatedRequests.map(r => r.id);
@@ -175,8 +192,8 @@ function DeptContent() {
         '사용자 의견': r.note || '', 
         '관리자 답변': r.admin_opinion || '',
         '처리자': r.admin_name || '', 
-        '처리일시': r.completedAt ? formatDateTime(r.completedAt) : '',
-        '상태': r.status === 'COMPLETED' ? '지급완료' : r.status === 'REJECTED' ? '반려' : '대기중'
+        '처리일시': r.processedAt ? formatDateTime(r.processedAt) : '',
+        '상태': supplyRequestStatusLabel(r.status)
       };
     });
     const ws = XLSX.utils.json_to_sheet(exportData);
@@ -184,14 +201,15 @@ function DeptContent() {
     XLSX.utils.book_append_sheet(wb, ws, "부서소모품신청내역");
     
     const monthStr = selectedMonth !== 'ALL' ? `_${selectedMonth}월` : '';
+    const deptStr = selectedDept !== 'ALL' ? `_${selectedDept}` : '';
     const statusStr = selectedStatus !== 'ALL' ? `_${selectedStatus}` : '';
     const itemStr = selectedItemFilter ? `_${selectedItemFilter}` : '';
-    XLSX.writeFile(wb, `부서_소모품신청현황_${selectedYear === 'ALL' ? '전체' : selectedYear}년${monthStr}${statusStr}${itemStr}.xlsx`);
+    XLSX.writeFile(wb, `부서_소모품신청현황_${selectedYear === 'ALL' ? '전체' : selectedYear}년${monthStr}${deptStr}${statusStr}${itemStr}.xlsx`);
   };
 
   const statsData = useMemo(() => {
-    // 🚀 [수정] requests 대신 deptRequests 사용
     const periodReqs = deptRequests.filter(r => {
+      if (selectedDept !== 'ALL' && r.dept_name !== selectedDept) return false;
       let reqYear = '';
       let reqMonth = '';
       if (r.createdAt) {
@@ -207,23 +225,31 @@ function DeptContent() {
     });
       
     const totalQty = periodReqs.reduce((sum, cur) => sum + (Number(cur.qty) || 0), 0);
-   
-    const itemMap = periodReqs.reduce((acc: Record<string, number>, cur) => {
+
+    type ItemAgg = { qty: number; lastAt: string };
+    const itemMap = periodReqs.reduce((acc: Record<string, ItemAgg>, cur) => {
       const name = cur.item_name || cur.item?.name;
-      if (name) acc[name] = (acc[name] || 0) + (Number(cur.qty) || 0);
+      if (!name) return acc;
+      if (!acc[name]) acc[name] = { qty: 0, lastAt: '' };
+      acc[name].qty += Number(cur.qty) || 0;
+      const created = String(cur.createdAt || '');
+      if (created && (!acc[name].lastAt || new Date(created).getTime() > new Date(acc[name].lastAt).getTime())) {
+        acc[name].lastAt = created;
+      }
       return acc;
     }, {});
-   
-    const allItems = (Object.entries(itemMap) as [string, number][])
-      .sort((a, b) => a[0].localeCompare(b[0], 'ko'))
-      .map(([name, qty]) => ({ name, qty }));
+
+    const allItems = (Object.entries(itemMap) as [string, ItemAgg][])
+      .map(([name, agg]) => ({ name, ...agg }))
+      .sort((a, b) => b.qty - a.qty || a.name.localeCompare(b.name, 'ko'));
 
     const totalReqCount = periodReqs.length;
     const statusMap = { COMPLETED: 0, PENDING: 0, REJECTED: 0 };
    
     periodReqs.forEach(r => {
-      if (r.status === 'COMPLETED' || r.status === '지급완료') statusMap.COMPLETED++;
-      else if (r.status === 'REJECTED' || r.status === '반려') statusMap.REJECTED++;
+      const s = normalizeSupplyRequestStatus(r.status);
+      if (s === 'COMPLETED') statusMap.COMPLETED++;
+      else if (s === 'REJECTED') statusMap.REJECTED++;
       else statusMap.PENDING++;
     });
 
@@ -237,10 +263,56 @@ function DeptContent() {
     }));
 
     return { totalQty, totalReqCount, allItems, statusStats };
-  }, [deptRequests, selectedYear, selectedMonth]);
+  }, [deptRequests, selectedDept, selectedYear, selectedMonth]);
      
-  const myDeptName = currentUser?.unit?.unit_name || currentUser?.dept_name;
-     
+  const myDeptName =
+    myDeptNameFromApi || currentUser?.unit?.unit_name || currentUser?.dept_name || '';
+
+  /** 보관 메모 대상 조직: 필터 ALL이면 내 소속, 아니면 선택한 조직 */
+  const memoDeptName = selectedDept === 'ALL' ? myDeptName : selectedDept;
+  const currentMemo = (memoDeptName && storageNotes[memoDeptName]) || '';
+
+  useEffect(() => {
+    setMemoEditing(false);
+    setMemoDraft(currentMemo);
+  }, [memoDeptName, currentMemo]);
+
+  const startMemoEdit = () => {
+    setMemoDraft(currentMemo);
+    setMemoEditing(true);
+  };
+
+  const cancelMemoEdit = () => {
+    setMemoDraft(currentMemo);
+    setMemoEditing(false);
+  };
+
+  const saveMemo = async () => {
+    if (!memoDeptName) return alert('대상 조직을 확인할 수 없습니다.');
+    setMemoSaving(true);
+    try {
+      const res = await fetch('/api/asset/supplies/dept', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dept_name: memoDeptName, note: memoDraft }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(data.error || '보관 안내 저장에 실패했습니다.');
+        return;
+      }
+      setStorageNotes((prev) => ({
+        ...prev,
+        [memoDeptName]: String(data.note ?? memoDraft),
+      }));
+      setMemoEditing(false);
+    } catch {
+      alert('서버와 통신할 수 없습니다.');
+    } finally {
+      setMemoSaving(false);
+    }
+  };
+
   if (loading) return <div className="p-20 text-center font-black animate-pulse text-indigo-400 uppercase tracking-widest">Loading Dept Data...</div>;
   
   const statsTitle = `${selectedYear === 'ALL' ? '전체 기간' : `${selectedYear}년`} ${selectedMonth === 'ALL' ? '' : `${selectedMonth}월`}`;
@@ -278,12 +350,6 @@ function DeptContent() {
     </div>
 
     {/* 우측 액션 버튼 */}
-    <button 
-      onClick={() => setIsTableOpen(!isTableOpen)} 
-      className="bg-white/10 hover:bg-white/20 px-5 py-2 rounded-xl text-[11px] font-black text-white transition-colors uppercase whitespace-nowrap shadow-sm border border-white/10"
-    >
-      {isTableOpen ? '목록 닫기 ▲' : '목록 열기 ▼'}
-    </button>
   </div>
 
   <div className="absolute right-10 top-1/2 -translate-y-1/2 text-8xl opacity-10 select-none pointer-events-none">
@@ -292,12 +358,12 @@ function DeptContent() {
 </div>
 
       
-      {/* 🚀 통계 카드 영역 */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+      {/* 🚀 통계 카드 영역 — 좌/우 동일 높이 */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6 md:items-stretch">
         
-        {/* 🚀 [좌측 카드 완전 변경]: 2열 격자 그리드 구조 표기 및 무제한 가나다 정렬 수량 표출 */}
-        <div className="bg-white rounded-[2.5rem] border border-slate-200 shadow-sm p-8 flex flex-col min-h-[300px]">
-          <div className="flex justify-between items-end mb-4">
+{/* 좌측: 품목별 집계 — 물품명 | 비중막대 | 최근신청일 | 수량 */}
+<div className="bg-white rounded-[2.5rem] border border-slate-200 shadow-sm p-6 flex flex-col min-h-[280px] h-full">
+          <div className="flex justify-between items-end mb-3 shrink-0">
             <h3 className="text-[11px] font-black text-slate-400 uppercase tracking-widest">📦 {statsTitle} 품목별 실시간 신청 집계</h3>
             <div className="flex gap-2 items-center">
               {selectedItemFilter && (
@@ -310,77 +376,205 @@ function DeptContent() {
           {statsData.allItems.length === 0 ? (
             <div className="flex-1 flex items-center justify-center text-[11px] font-bold text-slate-300 italic">신청 내역 없음</div>
           ) : (
-            // 🚀 grid-cols-2 구조로 설정하여 좌측 5개, 우측 5개 형태로 유연하게 정렬 배치
-            <div className="grid grid-cols-2 gap-x-4 gap-y-2 flex-1 overflow-y-auto max-h-[220px] pr-1 scrollbar-thin">
-              {statsData.allItems.map((item) => {
-                const isSelected = selectedItemFilter === item.name;
-                return (
-                  <button
-                    key={item.name}
-                    onClick={() => setSelectedItemFilter(isSelected ? null : item.name)}
-                    className={`w-full flex justify-between items-center px-4 py-2.5 rounded-xl border transition-all text-left group ${
-                      isSelected 
-                        ? 'bg-indigo-600 border-indigo-700 text-white shadow-sm font-black' 
-                        : 'bg-slate-50 border-slate-100 text-slate-700 hover:bg-slate-100 hover:border-slate-200'
-                    }`}
-                  >
-                    <span className={`text-[11px] truncate max-w-[150px] ${isSelected ? 'text-white' : 'text-slate-800 font-bold group-hover:text-indigo-600'}`}>
-                      {item.name}
-                    </span>
-                    <span className={`text-[11px] font-mono font-black shrink-0 ${isSelected ? 'text-white' : 'text-indigo-600 bg-white border px-1.5 py-0.5 rounded-md shadow-sm'}`}>
-                      {item.qty.toLocaleString()}개
-                    </span>
-                  </button>
-                );
-              })}
+            <div className="flex-1 min-h-0 overflow-y-auto border border-slate-100 rounded-xl">
+              {/* 🚀 Grid 비율 조정: 비중을 1.8fr로 대폭 늘리고, 날짜 넓이를 4.5rem으로 타이트하게 잡아 우측으로 밈 */}
+              <div className="sticky top-0 z-10 grid grid-cols-[minmax(0,1.1fr)_minmax(0,1.8fr)_4.5rem_3.5rem] gap-x-5 gap-y-0 px-4 py-2 bg-slate-50 border-b border-slate-100">
+                <span className="text-[9px] font-black text-slate-400 tracking-widest uppercase text-left">물품명</span>
+                <span className="text-[9px] font-black text-slate-400 tracking-widest text-left">비중</span>
+                {/* 🚀 text-center ➔ text-right 로 변경 */}
+                <span className="text-[9px] font-black text-slate-400 tracking-widest text-right">최근 신청일</span>
+                <span className="text-[9px] font-black text-slate-400 tracking-widest text-right">수량</span>
+              </div>
+              <div className="divide-y divide-slate-100">
+                {statsData.allItems.map((item) => {
+                  const isSelected = selectedItemFilter === item.name;
+                  const sharePct =
+                    statsData.totalQty > 0
+                      ? Math.min(100, Math.round((item.qty / statsData.totalQty) * 1000) / 10)
+                      : 0;
+                  return (
+                    <button
+                      key={item.name}
+                      type="button"
+                      title={`${item.name} · 총수량 대비 ${sharePct}%`}
+                      onClick={() => setSelectedItemFilter(isSelected ? null : item.name)}
+                      className={`w-full grid grid-cols-[minmax(0,1.1fr)_minmax(0,1.8fr)_4.5rem_3.5rem] gap-x-5 gap-y-0 items-center px-4 py-2 text-left transition-colors ${
+                        isSelected
+                          ? 'bg-indigo-600 text-white'
+                          : 'bg-white hover:bg-slate-50 text-slate-800'
+                      }`}
+                    >
+                      <span className={`min-w-0 text-[11px] font-bold truncate ${isSelected ? 'text-white' : ''}`}>
+                        {item.name}
+                      </span>
+                      <span className="min-w-0 flex items-center gap-2" aria-hidden>
+                        <span
+                          className={`flex-1 h-1.5 rounded-full overflow-hidden ${
+                            isSelected ? 'bg-indigo-400/40' : 'bg-slate-100'
+                          }`}
+                        >
+                          <span
+                            className={`block h-full rounded-full transition-all duration-500 ${
+                              isSelected
+                                ? 'bg-white'
+                                : 'bg-gradient-to-r from-indigo-400 to-sky-400'
+                            }`}
+                            style={{ width: `${sharePct}%` }}
+                          />
+                        </span>
+                        <span
+                          className={`shrink-0 text-[9px] font-black tabular-nums w-7 text-right ${
+                            isSelected ? 'text-indigo-100' : 'text-slate-400'
+                          }`}
+                        >
+                          {sharePct}%
+                        </span>
+                      </span>
+                      {/* 🚀 text-center ➔ text-right 로 변경하여 수량 쪽으로 바짝 붙임 */}
+                      <span
+                        className={`text-[10px] font-mono font-bold tabular-nums text-right ${
+                          isSelected ? 'text-indigo-100' : 'text-slate-500'
+                        }`}
+                      >
+                        {item.lastAt ? getKSTDateString(item.lastAt) : '-'}
+                      </span>
+                      <span className={`font-mono text-[11px] font-black tabular-nums text-right ${isSelected ? 'text-indigo-100' : 'text-indigo-600'}`}>
+                        {item.qty.toLocaleString()}
+                        <span className={`ml-0.5 text-[9px] font-bold ${isSelected ? 'text-indigo-200' : 'text-slate-400'}`}>개</span>
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
           )}
         </div>
      
-        {/* 오른쪽: 상태별 버튼 필터 영역 */}
-        <div className="bg-white rounded-[2.5rem] border border-slate-200 shadow-sm p-8 flex flex-col min-h-[300px]">
-          <div className="flex justify-between items-end mb-4">
-            <h3 className="text-[11px] font-black text-slate-400 uppercase tracking-widest">📋 {statsTitle} 결재/지급 처리 현황 (클릭 시 정렬)</h3>
+{/* 오른쪽: 상태 필터(타이트) + 보관 메모 */}
+<div className="bg-white rounded-[2.5rem] border border-slate-200 shadow-sm p-6 flex flex-col gap-3 min-h-[280px] h-full">
+          <div className="flex justify-between items-end shrink-0">
+            <h3 className="text-[11px] font-black text-slate-400 uppercase tracking-widest">📋 {statsTitle} 결재/지급 처리 현황</h3>
             <div className="flex gap-2 items-center">
               {selectedStatus !== 'ALL' && (
                 <button onClick={() => setSelectedStatus('ALL')} className="text-[10px] text-indigo-500 hover:underline font-bold">필터 해제 ✕</button>
               )}
-              <span className="text-[10px] font-bold text-slate-600 bg-slate-100 px-2 py-0.5 rounded-md">총 {statsData.totalReqCount}건 신청</span>
+              <span className="text-[10px] font-bold text-slate-600 bg-slate-100 px-2 py-0.5 rounded-md">총 {statsData.totalReqCount}건</span>
             </div>
           </div>
           
           {statsData.totalReqCount === 0 ? (
-            <div className="flex-1 flex items-center justify-center text-[11px] font-bold text-slate-300 italic">신청 내역 없음</div>
+            <div className="py-4 text-center text-[11px] font-bold text-slate-300 italic">신청 내역 없음</div>
           ) : (
-            <div className="space-y-2.5 flex-1 flex flex-col justify-center">
+            <div className="grid grid-cols-3 gap-1.5 shrink-0">
               {statsData.statusStats.map((status) => {
                 const isSelected = selectedStatus === status.id;
-                const bgClass = status.color === 'emerald' ? 'bg-emerald-50' : status.color === 'orange' ? 'bg-orange-50' : 'bg-red-50';
-                const borderClass = status.color === 'emerald' ? 'border-emerald-200' : status.color === 'orange' ? 'border-orange-200' : 'border-red-200';
-                const textClass = status.color === 'emerald' ? 'text-emerald-700' : status.color === 'orange' ? 'text-orange-600' : 'text-red-600';
-                const fillClass = status.color === 'emerald' ? 'bg-emerald-500' : status.color === 'orange' ? 'bg-orange-400' : 'bg-red-500';
+                const tone =
+                  status.color === 'emerald'
+                    ? {
+                        idle: 'bg-emerald-50/80 border-emerald-100 hover:bg-emerald-50',
+                        selected: 'bg-emerald-100 border-emerald-300 ring-2 ring-emerald-200/80',
+                        label: 'text-emerald-700',
+                        count: 'text-emerald-800',
+                        pct: 'text-emerald-600/70',
+                      }
+                    : status.color === 'orange'
+                    ? {
+                        idle: 'bg-amber-50/80 border-amber-100 hover:bg-amber-50',
+                        selected: 'bg-amber-100 border-amber-300 ring-2 ring-amber-200/80',
+                        label: 'text-amber-700',
+                        count: 'text-amber-800',
+                        pct: 'text-amber-600/70',
+                      }
+                    : {
+                        idle: 'bg-rose-50/80 border-rose-100 hover:bg-rose-50',
+                        selected: 'bg-rose-100 border-rose-300 ring-2 ring-rose-200/80',
+                        label: 'text-rose-700',
+                        count: 'text-rose-800',
+                        pct: 'text-rose-600/70',
+                      };
+                const shortLabel =
+                  status.id === 'COMPLETED' ? '지급완료' :
+                  status.id === 'PENDING' ? '승인대기' : '반려/취소';
 
                 return (
                   <button
                     key={status.id}
+                    type="button"
                     onClick={() => setSelectedStatus(isSelected ? 'ALL' : status.id as any)}
-                    className={`w-full flex items-center justify-between p-2.5 rounded-2xl border transition-all hover:-translate-y-0.5 hover:shadow-md ${isSelected ? `${bgClass} ${borderClass} ring-2 ring-indigo-200` : 'bg-white border-slate-200 hover:border-slate-300'}`}
+                    className={`flex flex-col items-center justify-center gap-0.5 px-1.5 py-2 rounded-xl border transition-all ${
+                      isSelected ? tone.selected : tone.idle
+                    }`}
                   >
-                    <div className="flex items-center gap-3 flex-1">
-                      <span className={`w-24 text-left text-[11px] font-black ${textClass}`}>{status.label}</span>
-                      <div className="flex-1 h-2 bg-slate-100 rounded-full overflow-hidden mr-4">
-                        <div className={`h-full ${fillClass} rounded-full transition-all duration-500`} style={{ width: `${status.percent}%` }} />
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2 shrink-0">
-                      <span className={`text-[12px] font-black ${textClass}`}>{status.count}건</span>
-                      <span className="text-[10px] font-bold text-slate-400 w-10 text-right">({status.percent}%)</span>
-                    </div>
+                    <span className={`text-[10px] font-black leading-none ${tone.label}`}>{shortLabel}</span>
+                    <span className={`text-[13px] font-black leading-none tabular-nums ${tone.count}`}>
+                      {status.count}<span className="text-[9px] ml-0.5 font-bold opacity-80">건</span>
+                    </span>
+                    <span className={`text-[9px] font-bold leading-none ${tone.pct}`}>{status.percent}%</span>
                   </button>
                 )
               })}
             </div>
           )}
+
+          {/* 부서 전용 메모판 — 페이지 접근자면 누구나 수정 (DB: OrgUnit.supply_storage_note) */}
+          <div className="bg-slate-50 border border-slate-100 rounded-2xl p-3 shadow-inner flex-1 min-h-0 flex flex-col">
+            <div className="flex items-center justify-between mb-2 border-b border-slate-200/70 pb-1.5 gap-2">
+              <h4 className="text-[11px] font-black text-slate-700 flex items-center gap-1.5 min-w-0">
+                <span>📌</span>
+                <span className="truncate">부서 소모품 보관 위치 안내 메모판</span>
+                {memoDeptName && (
+                  <span className="text-[9px] font-bold text-indigo-500 bg-indigo-50 border border-indigo-100 px-1.5 py-0.5 rounded-md shrink-0">
+                    {memoDeptName}
+                  </span>
+                )}
+              </h4>
+              {!memoEditing ? (
+                <button
+                  type="button"
+                  onClick={startMemoEdit}
+                  className="text-[9px] font-bold text-slate-400 hover:text-indigo-600 transition-colors shrink-0"
+                >
+                  수정
+                </button>
+              ) : (
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <button
+                    type="button"
+                    disabled={memoSaving}
+                    onClick={cancelMemoEdit}
+                    className="text-[9px] font-bold text-slate-400 hover:text-slate-600 disabled:opacity-50"
+                  >
+                    취소
+                  </button>
+                  <button
+                    type="button"
+                    disabled={memoSaving}
+                    onClick={saveMemo}
+                    className="text-[9px] font-black text-indigo-600 hover:text-indigo-800 disabled:opacity-50"
+                  >
+                    {memoSaving ? '저장 중…' : '저장'}
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {memoEditing ? (
+              <textarea
+                value={memoDraft}
+                onChange={(e) => setMemoDraft(e.target.value)}
+                rows={5}
+                maxLength={4000}
+                placeholder={'예)\n• A4 용지/토너: 복합기 옆 2단 공용 캐비닛\n• 일반 사무용품: 부서 입구 우측 수납장'}
+                className="w-full p-2.5 rounded-xl border border-slate-200 bg-white text-[10px] font-bold text-slate-700 leading-relaxed outline-none focus:border-indigo-400 resize-y min-h-[88px]"
+              />
+            ) : (
+              <div className="text-[10px] font-bold text-slate-600 leading-relaxed whitespace-pre-wrap min-h-[48px]">
+                {currentMemo.trim()
+                  ? currentMemo
+                  : '등록된 보관 위치 안내가 없습니다. [수정]을 눌러 작성해 주세요.'}
+              </div>
+            )}
+          </div>
         </div>
       </div>
      
@@ -401,13 +595,27 @@ function DeptContent() {
               )}
               {selectedStatus !== 'ALL' && (
                 <span className="text-[10px] font-black text-slate-600 bg-slate-100 border border-slate-200 px-2 py-0.5 rounded-md ml-1">
-                  🎯 {selectedStatus === 'COMPLETED' ? '지급완료' : selectedStatus === 'PENDING' ? '대기중' : '반려'} 상태
+                  🎯 {supplyRequestStatusLabel(selectedStatus)} 상태
                 </span>
               )}
             </div>
             
             <div className="flex items-center gap-2 flex-wrap">
               <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm">
+                <span className="text-[10px] font-black text-slate-400 uppercase">조직</span>
+                <select
+                  value={selectedDept}
+                  onChange={(e) => setSelectedDept(e.target.value)}
+                  className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent max-w-[160px]"
+                >
+                  <option value="ALL">전체 (연계 조직)</option>
+                  {deptOptions.map((dept) => (
+                    <option key={dept} value={dept}>{dept}</option>
+                  ))}
+                </select>
+
+                <div className="w-px h-3.5 bg-slate-300 mx-0.5"></div>
+
                 <span className="text-[10px] font-black text-slate-400 uppercase">연도</span>
                 <select value={selectedYear} onChange={(e) => setSelectedYear(e.target.value)} className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent">
                   <option value="ALL">전체</option>
@@ -444,25 +652,26 @@ function DeptContent() {
             <table className="w-full text-left border-collapse min-w-[1400px]">
               <thead className="bg-slate-100 text-slate-700 text-[10px] font-black uppercase tracking-widest border-b border-slate-200">
                 <tr>
-                  <th className="h-12 w-12 text-center pl-4"><input type="checkbox" checked={paginatedRequests.length > 0 && paginatedRequests.every(r => selectedIds.has(r.id))} onChange={toggleSelectAll} className="accent-indigo-600 cursor-pointer w-3.5 h-3.5" /></th>
-                  <th className="h-12 px-3 w-16 text-center">NO</th>
-                  <th className="h-12 px-3 w-36 text-center">신청일시</th>
-                  <th className="h-12 px-3 w-32 text-center">소속 조직</th>
-                  <th className="h-12 px-3 w-28 text-center text-indigo-600">신청자</th>
-                  <th className="h-12 px-4 w-48 text-indigo-600">물품명</th>
-                  <th className="h-12 px-3 w-24 text-center text-indigo-600">신청수량</th>
-                  <th className="h-12 px-4 min-w-[180px]">신청자 의견</th>
-                  <th className="h-12 px-4 min-w-[180px]">관리자 답변</th>
-                  <th className="h-12 px-3 w-36 text-center">처리정보</th>
-                  <th className="h-12 pr-6 w-24 text-center">상태</th>
+                  <th className="h-9 w-12 text-center pl-4"><input type="checkbox" checked={paginatedRequests.length > 0 && paginatedRequests.every(r => selectedIds.has(r.id))} onChange={toggleSelectAll} className="accent-indigo-600 cursor-pointer w-3.5 h-3.5" /></th>
+                  <th className="h-9 px-3 w-16 text-center">NO</th>
+                  <th className="h-9 px-3 w-36 text-center">신청일시</th>
+                  <th className="h-9 px-3 w-32 text-center">소속 조직</th>
+                  <th className="h-9 px-3 w-28 text-center text-indigo-600">신청자</th>
+                  <th className="h-9 px-4 w-48 text-indigo-600">물품명</th>
+                  <th className="h-9 px-3 w-24 text-center text-indigo-600">신청수량</th>
+                  <th className="h-9 px-4 min-w-[180px]">신청자 의견</th>
+                  <th className="h-9 px-4 min-w-[180px]">관리자 답변</th>
+                  <th className="h-9 px-3 w-36 text-center">처리정보</th>
+                  <th className="h-9 pr-6 w-24 text-center">상태</th>
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-slate-100 text-xs font-bold text-slate-700">
                 {paginatedRequests.length === 0 ? (
-                  <tr><td colSpan={10} className="h-32 text-center text-slate-400 italic">조건에 맞는 신청 내역이 없습니다.</td></tr>
+                  <tr><td colSpan={11} className="h-24 text-center text-slate-400 italic">조건에 맞는 신청 내역이 없습니다.</td></tr>
                 ) : (
                   paginatedRequests.map((req, i) => {
-                    const isPending = req.status === 'PENDING' || req.status === '대기중';
+                    const isPending = isPendingSupplyRequest(req.status);
+                    const statusLabel = supplyRequestStatusLabel(req.status);
                     let sUnit = '';
                     try {
                       const itemExt = req.item?.description ? JSON.parse(req.item.description) : {};
@@ -472,7 +681,7 @@ function DeptContent() {
                     const itemName = req.item_name || req.item?.name || '';
      
                     return (
-                      <tr key={req.id} className="h-16 hover:bg-slate-50/50 transition-colors">
+                      <tr key={req.id} className="h-10 hover:bg-slate-50/50 transition-colors">
                         <td className="pl-4 text-center"><input type="checkbox" checked={selectedIds.has(req.id)} onChange={() => { const next = new Set(selectedIds); selectedIds.has(req.id) ? next.delete(req.id) : next.add(req.id); setSelectedIds(next); }} className="accent-indigo-600 cursor-pointer w-3.5 h-3.5" /></td>
                         <td className="px-3 text-center text-slate-400 font-mono text-[10px]">{filteredRequests.length - ((currentPage - 1) * itemsPerPage + i)}</td>
                         <td className="px-3 text-center font-mono text-slate-500 text-[10px]">{formatDateTime(req.createdAt)}</td>
@@ -486,19 +695,19 @@ function DeptContent() {
                         <td className="px-4 text-slate-800 font-medium truncate max-w-[180px]" title={req.admin_opinion}>{req.admin_opinion}</td>
                         <td className="px-3 text-center">
                           {!isPending && (
-                            <div className="flex flex-col items-center justify-center">
-                              <span className="text-slate-700 font-bold leading-tight">{req.admin_name}</span>
-                              <span className="text-slate-400 font-mono text-[9px] mt-0.5">{req.completedAt ? formatDateTime(req.completedAt) : formatDateTime(req.updatedAt)}</span>
+                            <div className="flex flex-col items-center justify-center leading-tight">
+                              <span className="text-slate-700 font-bold text-[11px]">{req.admin_name}</span>
+                              <span className="text-slate-400 font-mono text-[9px]">{req.processedAt ? formatDateTime(req.processedAt) : '-'}</span>
                             </div>
                           )}
                         </td>
                         <td className="pr-6 text-center">
-                          <span className={`px-2.5 py-1 rounded-md text-[9px] font-black uppercase tracking-widest ${
+                          <span className={`inline-block px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-widest ${
                             isPending ? 'bg-orange-50 text-orange-500 border border-orange-100' 
-                            : req.status === 'REJECTED' || req.status === '반려' ? 'bg-red-50 text-red-500 border border-red-100'
+                            : isRejectedSupplyRequest(req.status) ? 'bg-red-50 text-red-500 border border-red-100'
                             : 'bg-emerald-50 text-emerald-600 border border-emerald-100'
                           }`}>
-                            {isPending ? '대기중' : (req.status === 'REJECTED' || req.status === '반려' ? '반려' : '지급완료')}
+                            {statusLabel}
                           </span>
                         </td>
                       </tr>
@@ -509,13 +718,13 @@ function DeptContent() {
             </table>
           </div>
      
-          {totalPages > 1 && (
-            <div className="flex justify-center items-center gap-1.5 pt-6 pb-6 border-t border-slate-100 mt-4 bg-white">
+          {filteredRequests.length > 0 && (
+            <div className="flex justify-center items-center gap-1.5 py-3 border-t border-slate-100 bg-white">
               <button disabled={currentPage === 1} onClick={() => setCurrentPage(p => p - 1)} className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors">이전</button>
               {Array.from({ length: totalPages }).map((_, i) => (
                 <button key={i} onClick={() => setCurrentPage(i + 1)} className={`w-8 h-8 rounded-xl font-black text-xs transition-all ${currentPage === i + 1 ? 'bg-slate-800 text-white shadow-sm scale-105' : 'bg-white border border-slate-200 text-slate-500 hover:bg-slate-50'}`}>{i + 1}</button>
               ))}
-              <button disabled={currentPage === totalPages} onClick={() => setCurrentPage(p => p - 1)} className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors">다음</button>
+              <button disabled={currentPage === totalPages} onClick={() => setCurrentPage(p => p + 1)} className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors">다음</button>
             </div>
           )}
         </div>

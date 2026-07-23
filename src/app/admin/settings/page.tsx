@@ -91,9 +91,9 @@ export default function AdminSettingsPage() {
       theme: "blue",
       fields: ["it_category_group", "it_master_group", "it_rental_group"],
       items: [
-        { label: "IT 자산관리 > 범주 (HW/SW 등)", path: "/asset/it/master/dashboard", field: "it_category_group", tag: "it_category_group" },
-        { label: "IT 자산관리 > 분류 마스터 데이터", path: "/asset/it/master/dashboard", field: "it_master_group", tag: "it_master_group" },
-        { label: "IT 자산관리 > 조달 유형 (구매/렌탈)", path: "/asset/it/master/dashboard", field: "it_rental_group", tag: "it_rental_group" }
+        { label: "IT·업무자산 > 대범주 (HW/SW 등)", path: "/asset/it/master/dashboard", field: "it_category_group", tag: "it_category_group" },
+        { label: "IT·업무자산 > 품목", path: "/asset/it/master/dashboard", field: "it_master_group", tag: "it_master_group" },
+        { label: "IT·업무자산 > 조달 유형 (구매/렌탈)", path: "/asset/it/master/dashboard", field: "it_rental_group", tag: "it_rental_group" }
       ]
     },
     {

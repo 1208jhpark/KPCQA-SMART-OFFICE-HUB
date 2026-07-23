@@ -41,9 +41,18 @@ function MasterPurchaseContent() {
       ]);
       
       if (userRes.ok) setCurrentUser(await userRes.json());
-      if (purchaseRes.ok) setPurchases(await purchaseRes.json());
+      if (purchaseRes.ok) {
+        setPurchases(await purchaseRes.json());
+      } else if (purchaseRes.status === 401 || purchaseRes.status === 403) {
+        const err = await purchaseRes.json().catch(() => ({}));
+        alert(err.error || '입고 대장 권한이 없습니다.');
+      } else {
+        const err = await purchaseRes.json().catch(() => ({}));
+        alert(err.error || '입고 내역을 불러오지 못했습니다.');
+      }
     } catch (e) {
       console.error("Purchase Sync Error", e);
+      alert('서버와 통신할 수 없습니다.');
     } finally {
       setLoading(false);
     }

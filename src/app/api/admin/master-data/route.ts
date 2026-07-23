@@ -1,13 +1,18 @@
 import { NextResponse } from 'next/server';
 import prisma from '@/lib/prisma';
+import { authorizeAdminApi, authErrorToResponse, requireSessionUser } from '@/lib/server-auth-guard';
 
 export const dynamic = 'force-dynamic';
 
-// ==========================================
-// [GET] 마스터 데이터 불러오기
-// ==========================================
+/**
+ * [GET] 마스터 데이터 불러오기
+ * - 서비스 드롭다운(소모품 단위 등)에서 사용 → 로그인만 필수 (LV_1 잠금 금지)
+ * - 비로그인 공개 차단
+ */
 export async function GET(req: Request) {
   try {
+    await requireSessionUser();
+
     const { searchParams } = new URL(req.url);
     const type = searchParams.get('type');
     const groupId = searchParams.get('groupId');
@@ -37,16 +42,19 @@ export async function GET(req: Request) {
 
     return NextResponse.json(masterData || []);
   } catch (error) {
+    const authRes = authErrorToResponse(error);
+    if (authRes.status !== 500) return authRes;
     console.error("GET Master Data Error:", error);
-    return NextResponse.json([]);
+    return NextResponse.json({ message: '마스터 데이터 로드 실패' }, { status: 500 });
   }
 }
 
 // ==========================================
-// [DELETE] 마스터 그룹 삭제
+// [DELETE] 마스터 그룹 삭제 — LV_1만
 // ==========================================
 export async function DELETE(req: Request) {
   try {
+    await authorizeAdminApi();
     const { searchParams } = new URL(req.url);
     const groupId = searchParams.get('groupId');
     
@@ -59,9 +67,9 @@ export async function DELETE(req: Request) {
       if (config.client_category_group === groupId) inUseFields.push("고객사 업무범주");
       if (config.supply_category_group === groupId) inUseFields.push("일반 소모품 마스터 규격");
       if (config.unit_category_group === groupId) inUseFields.push("구입 단위");
-      if (config.it_category_group === groupId) inUseFields.push("IT 자산 분류");
+      if (config.it_category_group === groupId) inUseFields.push("IT·업무자산 대범주");
       if (config.it_rental_group === groupId) inUseFields.push("조달 유형");
-      if (config.it_master_group === groupId) inUseFields.push("분류 마스터 데이터");
+      if (config.it_master_group === groupId) inUseFields.push("IT·업무자산 품목");
 
       if (inUseFields.length > 0) {
         return NextResponse.json({
@@ -77,15 +85,20 @@ export async function DELETE(req: Request) {
 
     return NextResponse.json({ success: true });
   } catch (e) {
+    if (e instanceof Error) {
+      const res = authErrorToResponse(e);
+      if (res.status !== 500) return res;
+    }
     return NextResponse.json({ error: "서버 오류로 삭제에 실패했습니다." }, { status: 500 });
   }
 }
 
 // ==========================================
-// [POST] 마스터 데이터 전체 저장 (강력한 예외 처리 및 충돌 우회 적용)
+// [POST] 마스터 데이터 전체 저장 — LV_1만
 // ==========================================
 export async function POST(req: Request) {
   try {
+    await authorizeAdminApi();
     const groups = await req.json();
     if (!Array.isArray(groups)) {
       return NextResponse.json({ message: "데이터 형식이 잘못되었습니다." }, { status: 400 });
@@ -227,6 +240,10 @@ export async function POST(req: Request) {
 
     return NextResponse.json({ message: "성공적으로 저장되었습니다." });
   } catch (error: any) {
+    if (error instanceof Error) {
+      const res = authErrorToResponse(error);
+      if (res.status !== 500) return res;
+    }
     console.error("POST Transaction Crash Recovery:", error);
     return NextResponse.json({ message: error.message || "서버 내부 로직 처리 실패" }, { status: 500 });
   }

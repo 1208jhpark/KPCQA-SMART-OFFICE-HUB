@@ -1,10 +1,17 @@
-// src/app/api/asset/supplies/inventory/route.ts
 import { NextResponse } from 'next/server';
 import prisma from '@/lib/prisma';
-  
-// [GET] 사용자 앱에서 물품 목록 조회 (초고속 인덱싱 스캔 스타일)
+import { requireSessionUser, authErrorToResponse } from '@/lib/server-auth-guard';
+
+/**
+ * 소모품 조회·신청 — 로그인만 있으면 가능 (메뉴 편집 권한 불필요)
+ * GET/POST 동일: Active 세션 사용자
+ */
+
+/** [GET] 게시된 소모품 카탈로그 */
 export async function GET() {
   try {
+    await requireSessionUser();
+
     const items = await prisma.supplyItem.findMany({
       where: { is_active: true, is_published: true },
       select: {
@@ -15,82 +22,99 @@ export async function GET() {
         image_url: true,
         description: true,
         is_active: true,
-        is_published: true
+        is_published: true,
       },
-      orderBy: { name: 'asc' } // 애초에 DB에서 가나다순 정렬로 가져와 메모리 연산 절약
+      orderBy: { name: 'asc' },
     });
     return NextResponse.json({ items });
   } catch (error) {
-    return NextResponse.json({ items: [] });
+    const authRes = authErrorToResponse(error);
+    if (authRes.status !== 500) return authRes;
+    console.error('[supplies/inventory GET]', error);
+    return NextResponse.json({ error: '데이터 로드 실패' }, { status: 500 });
   }
 }
-  
-// [POST] 사용자가 팝업창에서 '신청 완료'를 눌렀을 때 호출 (🚀 선차감 적용)
+
+/**
+ * [POST] 소모품 신청 (선차감)
+ * - 신청자는 세션 유저만 사용 (바디 user_id 무시)
+ * - 존재하지 않는 품목 생성 금지
+ * - qty > 0, 재고 충분할 때만 차감
+ */
 export async function POST(req: Request) {
   try {
+    const sessionUser = await requireSessionUser();
+
     const body = await req.json();
-    const itemId = body.item_id || body.itemId;
-    const qty = Number(body.qty) || 1;
-    const note = body.note || '';
-    const itemName = body.item_name || '소모품';
-    const unit = body.unit || 'EA';
-    const userId = body.user_id;
-  
-    if (!userId) {
-      return NextResponse.json({ error: "로그인 세션 정보가 누락되었습니다." }, { status: 401 });
+    const itemId = String(body.item_id || body.itemId || '').trim();
+    const qty = Number(body.qty);
+    const note = String(body.note || '').trim();
+
+    if (!itemId) {
+      return NextResponse.json({ error: '품목 ID가 필요합니다.' }, { status: 400 });
     }
-  
-    const user = await prisma.user.findUnique({
-      where: { id: userId },
-      include: { unit: true }
-    });
-  
-    if (!user) {
-      return NextResponse.json({ error: "시스템에 등록되지 않은 유효하지 않은 사용자입니다." }, { status: 400 });
+    if (!Number.isFinite(qty) || qty <= 0 || !Number.isInteger(qty)) {
+      return NextResponse.json({ error: '신청 수량은 1 이상의 정수여야 합니다.' }, { status: 400 });
     }
-  
-    const actualDeptName = user.unit?.unit_name || '소속 부서 없음';
-  
+
     const existingItem = await prisma.supplyItem.findUnique({
-      where: { id: String(itemId) }
+      where: { id: itemId },
     });
-  
-    if (!existingItem) {
-      await prisma.supplyItem.create({
-        data: {
-          id: String(itemId), name: String(itemName), category: '소모품',
-          owner_dept: actualDeptName, current_stock: 1000, alert_qty: 5,
-          description: JSON.stringify({ r_unit: unit, s_unit: 'BOX' }),
-          is_active: true, is_published: true
-        }
-      });
+    if (!existingItem || !existingItem.is_active || !existingItem.is_published) {
+      return NextResponse.json(
+        { error: '신청할 수 없는 품목입니다. (미게시·폐기 또는 존재하지 않음)' },
+        { status: 400 }
+      );
     }
-  
-    const result = await prisma.$transaction(async (tx) => {
-      const updatedItem = await tx.supplyItem.update({
-        where: { id: String(itemId), current_stock: { gte: qty } },
-        data: { current_stock: { decrement: qty } }
-      });
-     
-      if (!updatedItem) throw new Error("재고가 부족하여 신청할 수 없습니다.");
-     
-      return await tx.supplyRequest.create({
-        data: {
-          item_id: String(itemId),
-          qty: qty,
-          user_email: user.email,
-          user_name: user.name,
-          dept_name: actualDeptName,
-          status: 'PENDING',
-          note: note
+    if (existingItem.current_stock < qty) {
+      return NextResponse.json(
+        { error: `재고가 부족합니다. (현재고 ${existingItem.current_stock})` },
+        { status: 400 }
+      );
+    }
+
+    const actualDeptName = sessionUser.unit?.unit_name || '소속 부서 없음';
+
+    try {
+      const result = await prisma.$transaction(async (tx) => {
+        const updated = await tx.supplyItem.updateMany({
+          where: { id: itemId, current_stock: { gte: qty }, is_active: true, is_published: true },
+          data: { current_stock: { decrement: qty } },
+        });
+        if (updated.count === 0) {
+          throw new Error('STOCK_INSUFFICIENT');
         }
+
+        return tx.supplyRequest.create({
+          data: {
+            item_id: itemId,
+            qty,
+            user_email: sessionUser.email,
+            user_name: sessionUser.name,
+            dept_name: actualDeptName,
+            status: 'PENDING',
+            note,
+          },
+        });
       });
-    });
-  
-    return NextResponse.json({ success: true, data: result }, { status: 200 });
-  
+
+      return NextResponse.json({ success: true, data: result }, { status: 200 });
+    } catch (e: any) {
+      if (e?.message === 'STOCK_INSUFFICIENT') {
+        return NextResponse.json({ error: '재고가 부족하여 신청할 수 없습니다.' }, { status: 409 });
+      }
+      if (e?.code === 'P2025') {
+        return NextResponse.json({ error: '재고가 부족하여 신청할 수 없습니다.' }, { status: 409 });
+      }
+      throw e;
+    }
   } catch (error: any) {
-    console.error("❌ 백엔드 처리 에러:", error);
-    return NextResponse.json({ error: error.message || "서버 처리 중 오류가 발생했습니다." }, { status: 500 });
+    const authRes = authErrorToResponse(error);
+    if (authRes.status !== 500) return authRes;
+    console.error('[supplies/inventory POST]', error);
+    return NextResponse.json(
+      { error: error?.message || '서버 처리 중 오류가 발생했습니다.' },
+      { status: 500 }
+    );
   }
 }

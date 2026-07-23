@@ -5,6 +5,7 @@ import React, { useState, useEffect, useMemo, Suspense, useRef } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { getKSTDateString } from '@/utils/dateUtils';
+import { isPendingSupplyRequest } from '@/utils/supplyRequestStatus';
      
 function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser?: any }) {
   const pathname = usePathname();
@@ -46,7 +47,11 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
       if (dashRes.ok) {
         const data = await dashRes.json();
         setItems(data.items || []);
+      } else if (dashRes.status === 401 || dashRes.status === 403) {
+        const err = await dashRes.json().catch(() => ({}));
+        alert(err.error || '마스터 대시보드 권한이 없습니다.');
       }
+
       if (reqRes.ok) setRequests(await reqRes.json());
       if (confRes.ok) setConfig(await confRes.json());
       if (mastRes.ok) setMasterData(await mastRes.json());
@@ -56,6 +61,7 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
       }
     } catch (e) {
       console.error("Master Dashboard Sync Error", e);
+      alert('서버와 통신할 수 없습니다.');
     } finally {
       setLoading(false);
     }
@@ -72,7 +78,7 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
     const warningCount = activeItems.filter(item => Number(item.current_stock) <= Number(item.alert_qty || 5) && Number(item.current_stock) > 0).length;
     const outOfStockCount = activeItems.filter(item => Number(item.current_stock) === 0).length;
     
-    const pendingReqs = requests.filter(r => r.status === 'PENDING' || r.status === '대기중').length;
+    const pendingReqs = requests.filter(r => isPendingSupplyRequest(r.status)).length;
     return { totalItems, warningCount, outOfStockCount, pendingReqs };
   }, [items, requests]);
      
@@ -84,7 +90,7 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
     } else if (statFilter === 'OUT') {
       list = list.filter(i => Number(i.current_stock) === 0);
     } else if (statFilter === 'PENDING') {
-      const pendingItemIds = new Set(requests.filter(r => r.status === 'PENDING' || r.status === '대기중').map(r => r.item_id));
+      const pendingItemIds = new Set(requests.filter(r => isPendingSupplyRequest(r.status)).map(r => r.item_id));
       list = list.filter(i => pendingItemIds.has(i.id));
     }
     
@@ -177,8 +183,8 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
         setEditModal(null);
         fetchDashboardData();
       } else {
-        const errorMsg = await res.text();
-        alert(`🚨 저장 실패: ${errorMsg}`);
+        const err = await res.json().catch(() => ({}));
+        alert(`🚨 저장 실패: ${err.error || '알 수 없는 오류'}`);
       }
     } catch (e) {
       alert('서버와 통신할 수 없습니다.');
@@ -199,14 +205,12 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
      
     const payload = {
       item_id: stockInModal.id,
-      qty: qty,                        // 입고 수량 정방향 매핑
-      unit_price: basePrice,           // 순수 개당 단가를 명확히 전송
-      total_price: calculatedTotal,    // 결산 총비용 자동 계산 결과 매핑
-      extra_cost: extraCost,           // 부대비용 독립 분리 전송
+      qty: qty,
+      unit_price: basePrice,
+      total_price: calculatedTotal,
+      extra_cost: extraCost,
       purchase_date: stockInModal.stock_in_date,
-      vendor: stockInModal.vendor,     // 유저 입력 거래처명
-      admin_name: currentUser?.name || '관리자',
-      admin_dept: currentUser?.unit?.unit_name || '운영팀',
+      vendor: stockInModal.vendor,
       note: stockInModal.note || '대시보드 직접 입고'
     };
      
@@ -264,8 +268,6 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
         is_active: false,
         disposal_date: new Date().toISOString(),
         disposal_reason: reason.trim(),
-        disposer_name: currentUser?.name || '관리자',
-        disposer_dept: currentUser?.unit?.unit_name || '운영팀'
       };
      
       const res = await fetch('/api/asset/supplies/master/dashboard', {
@@ -278,12 +280,15 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
         alert('보관함으로 성공적으로 이동되었습니다.');
         fetchDashboardData();
       } else {
-        alert(await res.text());
+        const err = await res.json().catch(() => ({}));
+        alert(err.error || '아카이브 처리 실패');
       }
     } catch (e) { alert("아카이브 처리 실패"); }
   };
      
   const handleDeleteItem = async (id: string) => {
+    const isLv1 = currentUser?.roles?.includes('LV_1') || currentUser?.role === 'LV_1';
+    if (!isLv1) return alert('영구 삭제 권한이 없습니다. (LV_1 전용)');
     if (!confirm('경고: 이 품목을 대장에서 영구 삭제하시겠습니까?\n삭제된 데이터는 복구할 수 없습니다.')) return;
     
     try {
@@ -292,7 +297,7 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
         alert('서버에서 완전히 삭제되었습니다.');
         fetchDashboardData();
       } else {
-        const err = await res.json();
+        const err = await res.json().catch(() => ({}));
         alert(`삭제 불가: ${err.error || '권한을 확인하세요.'}`);
       }
     } catch (e) { alert('삭제 통신 실패'); }
