@@ -4,6 +4,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import Link from 'next/navigation';
 import { usePathname } from 'next/navigation';
 import { getKSTDateString } from '@/utils/dateUtils';
+import LoadingState from '@/components/common/LoadingState';
 
 // 🚀 [신청 페이지 CATEGORIES와 1:1 싱크 통일 + 전체내역 탭 추가]
 const HISTORY_CATEGORIES = [
@@ -280,9 +281,7 @@ export default function ProductionApplyHistory() {
 
         <div className="overflow-x-auto min-h-[400px]">
           {loading ? (
-            <div className="p-20 text-center text-blue-500 font-black animate-pulse uppercase tracking-widest">
-              Syncing Ledger Data Matrix...
-            </div>
+            <LoadingState />
           ) : (
             <table className="w-full text-left border-collapse">
               <thead className="bg-slate-100 text-slate-700 text-[10px] font-black uppercase tracking-widest border-b border-slate-200">

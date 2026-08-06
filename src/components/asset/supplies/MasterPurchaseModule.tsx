@@ -4,12 +4,25 @@ import * as XLSX from 'xlsx';
 import { usePathname } from 'next/navigation';
 import Link from 'next/link';
 import { getKSTDateString } from '@/utils/dateUtils';
+import LoadingState from '@/components/common/LoadingState';
+import { isPendingSupplyRequest } from '@/utils/supplyRequestStatus';
+
+const MENU_PATH = '/asset/supplies/master/purchase';
      
 function MasterPurchaseContent() {
   const pathname = usePathname();
   const [purchases, setPurchases] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [currentUser, setCurrentUser] = useState<any>(null);
+  const [pendingReqCount, setPendingReqCount] = useState(0);
+  const [permissionSummary, setPermissionSummary] = useState<{
+    masterName: string;
+    accessDesignate: string;
+    accessOrg: string;
+    accessLevel: string;
+    editDesignate: string;
+    editLevel: string;
+  } | null>(null);
   
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [searchQuery, setSearchQuery] = useState('');
@@ -35,9 +48,13 @@ function MasterPurchaseContent() {
     setLoading(true);
     try {
       const ts = Date.now();
-      const [userRes, purchaseRes] = await Promise.all([
+      const [userRes, purchaseRes, summaryRes, reqRes] = await Promise.all([
         fetch(`/api/auth/me?t=${ts}`, { cache: 'no-store' }),
-        fetch(`/api/asset/supplies/master/purchase?t=${ts}`, { cache: 'no-store' })
+        fetch(`/api/asset/supplies/master/purchase?t=${ts}`, { cache: 'no-store' }),
+        fetch(`/api/admin/interface/summary?path=${encodeURIComponent(MENU_PATH)}&t=${ts}`, {
+          cache: 'no-store',
+        }).catch(() => null),
+        fetch(`/api/asset/supplies/master/requests?t=${ts}`, { cache: 'no-store' }).catch(() => null),
       ]);
       
       if (userRes.ok) setCurrentUser(await userRes.json());
@@ -49,6 +66,14 @@ function MasterPurchaseContent() {
       } else {
         const err = await purchaseRes.json().catch(() => ({}));
         alert(err.error || '입고 내역을 불러오지 못했습니다.');
+      }
+      if (summaryRes && summaryRes.ok) setPermissionSummary(await summaryRes.json());
+      else setPermissionSummary(null);
+      if (reqRes && reqRes.ok) {
+        const reqs = await reqRes.json();
+        setPendingReqCount(Array.isArray(reqs) ? reqs.filter((r: any) => isPendingSupplyRequest(r.status)).length : 0);
+      } else {
+        setPendingReqCount(0);
       }
     } catch (e) {
       console.error("Purchase Sync Error", e);
@@ -176,50 +201,85 @@ function MasterPurchaseContent() {
     XLSX.writeFile(wb, `소모품_입고매입대장_${selectedYear}년${selectedMonth !== 'ALL' ? `_${selectedMonth}월` : ''}.xlsx`);
   };
      
-  if (loading) return <div className="p-20 text-center font-black animate-pulse text-indigo-400 uppercase tracking-widest">Loading Inbound Logs...</div>;
+  if (loading) return <LoadingState />;
      
   const isLv1 = currentUser?.roles?.includes('LV_1') || currentUser?.role === 'LV_1';
      
   return (
     <div className="w-full max-w-[1700px] mx-auto space-y-6 p-8 font-sans text-slate-900 pb-24 animate-fade-in">
       
-{/* 🚀 소모품 마스터 관리 통제실 (명함 배너와 100% 스타일 싱크로율 매칭) */}
-<div className="w-full bg-gradient-to-r from-emerald-900 to-teal-900 p-6 rounded-[2.5rem] text-white shadow-xl relative overflow-hidden flex flex-col justify-center min-h-[140px]">
-  
-  <div className="relative z-10 flex justify-between items-end w-full">
-    <div>
-      {/* 1. 상단 라벨 (mb-3 여백 및 명함과 동일한 텍스트 톤) */}
-      <h3 className="text-[10px] font-black uppercase tracking-widest text-emerald-400 mb-3">
-        CENTRAL SUPPLIES CONTROL TOWER
-      </h3>
-      
-      {/* 2. 메인 타이틀 (leading-none으로 라인 꼬임 방지) */}
-      <h1 className="text-2xl font-black tracking-tight text-white leading-none">
-        소모품 마스터 관리 통제실
-      </h1>
-      
-      {/* 3. 하단 설명 (mt-4 표준 간격 적용) */}
-      <p className="text-emerald-100/90 text-xs font-semibold mt-4 opacity-90">
-        신규 소모품 내역의 입고 내역을 관리합니다.
-      </p>
-    </div>
-  </div>
-
-  {/* 우측 관제실 느낌의 은은한 엠블럼 배치 (공백 완벽 메꿈) */}
-  <div className="absolute right-10 top-1/2 -translate-y-1/2 text-8xl opacity-10 select-none pointer-events-none">
-    📊
+{/* client-search 배너 규격: emerald→teal · orbs · label 10px / title 2xl / desc xs */}
+<div className="w-full bg-gradient-to-r from-emerald-900 to-teal-900 rounded-3xl text-white shadow-lg relative overflow-hidden px-6 md:px-8 py-6">
+  <div className="absolute right-0 top-0 w-64 h-64 bg-emerald-400/15 rounded-full blur-3xl -translate-y-1/3 translate-x-1/4 pointer-events-none" />
+  <div className="absolute left-1/4 bottom-0 w-48 h-48 bg-teal-800/20 rounded-full blur-3xl translate-y-1/2 pointer-events-none" />
+  <div className="relative z-10">
+    <h3 className="text-[10px] font-black uppercase tracking-widest text-emerald-400 mb-2.5">
+      CENTRAL SUPPLIES CONTROL TOWER
+    </h3>
+    <h1 className="text-2xl font-extrabold tracking-tight text-white leading-none">
+      소모품 마스터 관리 통제실
+    </h1>
+    <p className="text-emerald-100/90 text-xs mt-3 leading-relaxed">
+      신규 소모품 내역의 입고 내역을 관리합니다.
+    </p>
+    {permissionSummary && (
+      <div className="flex flex-wrap items-center gap-2 mt-4 pt-3 border-t border-white/15">
+        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-white/10 border-white/25 text-emerald-50 shadow-sm">
+          <span>👑 Master 책임자:</span>
+          <span>{permissionSummary.masterName}</span>
+        </div>
+        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-purple-500/20 border-purple-300/40 text-purple-100 shadow-sm">
+          <span>👁️ Access:</span>
+          <span>{permissionSummary.accessDesignate}</span>
+          <span className="opacity-50">|</span>
+          <span className="truncate max-w-[160px]">Org: {permissionSummary.accessOrg}</span>
+          <span className="opacity-50">|</span>
+          <span>Level: {permissionSummary.accessLevel}</span>
+        </div>
+        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-emerald-400/20 border-emerald-300/40 text-emerald-100 shadow-sm">
+          <span>✍️ Edit:</span>
+          <span>{permissionSummary.editDesignate}</span>
+          <span className="opacity-50">|</span>
+          <span>Level: {permissionSummary.editLevel}</span>
+        </div>
+      </div>
+    )}
   </div>
 </div>
      
-      <div className="flex gap-1.5 bg-slate-200/60 p-1.5 rounded-2xl border border-slate-200 shadow-inner w-full max-w-4xl">
-        {tabItems.map((tab) => {
-          const isActive = pathname.startsWith(tab.path);
-          return (
-            <Link key={tab.id} href={tab.path} className={`flex-1 py-3 text-center text-[11px] font-black rounded-xl transition-all uppercase ${isActive ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}>
-              {tab.name}
-            </Link>
-          );
-        })}
+      {/* 탭 네비게이션 — client-search / distribution 스위처 규격 */}
+      <div className="flex items-center justify-between bg-white p-2 rounded-xl border border-slate-200 shadow-sm">
+        <div className="flex items-center gap-1.5 bg-slate-100/80 p-1 rounded-lg flex-wrap">
+          {tabItems.map((tab) => {
+            const isActive = pathname.startsWith(tab.path);
+            const activeColor =
+              tab.id === 'purchase' ? 'text-emerald-600' :
+              tab.id === 'archive' ? 'text-slate-800' :
+              'text-indigo-600';
+            const showPendingBadge = tab.id === 'requests' && pendingReqCount > 0;
+            return (
+              <Link
+                key={tab.id}
+                href={tab.path}
+                className={`px-5 py-2 rounded-md text-xs font-black transition-all flex items-center gap-2 ${
+                  isActive
+                    ? `bg-white ${activeColor} shadow-sm border border-slate-200/80`
+                    : 'text-slate-500 hover:text-slate-800'
+                } ${showPendingBadge && !isActive ? 'ring-1 ring-red-300/80' : ''}`}
+              >
+                <span>{tab.name}</span>
+                {showPendingBadge && (
+                  <span className="inline-flex items-center justify-center min-w-[1.35rem] h-5 px-1.5 rounded-full bg-red-600 text-white text-[10px] font-black font-mono shadow-sm animate-pulse">
+                    {pendingReqCount}
+                  </span>
+                )}
+              </Link>
+            );
+          })}
+        </div>
+        <p className="text-[10px] text-slate-400 font-bold px-3 hidden lg:block">
+          ※ 탭을 클릭하여 대시보드·신청·입고·아카이브를 전환합니다.
+        </p>
       </div>
   
       <section className="bg-white rounded-[2.5rem] border border-slate-200 shadow-sm overflow-hidden mt-6">
@@ -400,5 +460,5 @@ function MasterPurchaseContent() {
 }
      
 export default function MasterPurchaseModule() {
-  return <Suspense fallback={<div className="p-20 text-center font-black animate-pulse text-indigo-400">Loading...</div>}><MasterPurchaseContent /></Suspense>;
+  return <Suspense fallback={<LoadingState />}><MasterPurchaseContent /></Suspense>;
 }

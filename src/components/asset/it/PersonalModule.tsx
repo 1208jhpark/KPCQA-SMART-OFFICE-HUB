@@ -3,6 +3,7 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import * as XLSX from 'xlsx'; 
 import { getKSTDateString } from '@/utils/dateUtils';
+import LoadingState from '@/components/common/LoadingState';
      
 export default function PersonalModule() {
   const [currentUser, setCurrentUser] = useState<{name: string, dept: string, email: string} | null>(null);
@@ -329,7 +330,7 @@ const handleCancelRequest = async (id: string) => {
     return opinion || '아직 수신된 관리자 의견/답변이 없습니다.';
   }, [unifiedCommModal, requests]);
      
-  if (loading) return <div className="p-10 font-bold text-slate-400 animate-pulse text-center">Loading Workspace...</div>;
+  if (loading) return <LoadingState />;
   if (!currentUser) return <div className="p-20 text-center font-black text-red-500">인증 정보가 없습니다. 다시 로그인해주세요.</div>;
   
   return (

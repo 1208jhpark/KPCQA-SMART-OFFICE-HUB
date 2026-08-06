@@ -5,12 +5,13 @@ import Link from 'next/link';
 import { saveAs } from 'file-saver';
 import { getKSTDateString, getKSTTimeString, isPastKSTDeadline, getKSTDaysUntil, formatKSTCalendarLabel } from '@/utils/dateUtils';
 import { getVisibleQuestionsByBranch } from '@/utils/surveyBranching';
+import LoadingState from '@/components/common/LoadingState';
 
 export default function DeliveryDashboardContent() {
   const [surveys, setSurveys] = useState<any[]>([]);
   const [myResponses, setMyResponses] = useState<Record<string, any>>({}); 
   const [allResponses, setAllResponses] = useState<Record<string, any>>({});
-  const [allUsers, setAllUsers] = useState<any[]>([]);
+  const [targetCounts, setTargetCounts] = useState<Record<string, number>>({});
   const [unitsList, setUnitsList] = useState<any[]>([]); 
   const [loading, setLoading] = useState(true);
   const [currentUser, setCurrentUser] = useState<any>(null);
@@ -52,10 +53,9 @@ export default function DeliveryDashboardContent() {
       setLoading(true);
       try {
         const ts = new Date().getTime();
-        const [uRes, unitsRes, usersRes] = await Promise.all([
+        const [uRes, unitsRes] = await Promise.all([
           fetch('/api/auth/me?t=' + ts, { cache: 'no-store' }),
           fetch('/api/admin/units?active=true&t=' + ts, { cache: 'no-store' }),
-          fetch('/api/admin/users?t=' + ts, { cache: 'no-store' }).catch(()=>null)
         ]);
         
         const userData = uRes.ok ? await uRes.json() : null;
@@ -67,15 +67,6 @@ export default function DeliveryDashboardContent() {
           userData.unit = myUnit || { unit_name: '소속없음' };
           setCurrentUser(userData);
           setCurrentUserEmail(userData.email || 'user@kpcqa.or.kr');
-        }
-     
-        if (usersRes && usersRes.ok) {
-          const usersData = await usersRes.json();
-          const mappedUsers = (usersData.users || []).map((u:any) => ({
-            ...u,
-            dept: unitsData.find((un:any) => un.id === u.unit_id)?.unit_name || '소속없음'
-          }));
-          setAllUsers(mappedUsers);
         }
      
         // 🚀 1. 내 제출 내역 전용 호출
@@ -108,7 +99,8 @@ export default function DeliveryDashboardContent() {
         if (statsRes && statsRes.ok) {
           const statsData = await statsRes.json();
           setStockUsage(statsData.stockUsage || {}); 
-          setAllResponses(statsData.participation || {}); // { [surveyId]: number (제출 건수) }
+          setAllResponses(statsData.participation || {});
+          setTargetCounts(statsData.targetCounts || {});
         } else {
           alert('⚠️ 전사 참여율 및 재고 정보를 동기화하지 못했습니다.');
         }
@@ -335,7 +327,6 @@ const handleSaveDraft = () => {
           surveyId: activeFullScreenSurvey.id,
           userEmail: currentUserEmail,
           answers: formData,
-          isAnonymous: activeFullScreenSurvey.isAnonymous === true || activeFullScreenSurvey.isAnonymous === 'true'
         })
       });
       
@@ -375,6 +366,7 @@ const handleSaveDraft = () => {
           if (statsData) {
             if (statsData.stockUsage) setStockUsage(statsData.stockUsage);
             if (statsData.participation) setAllResponses(statsData.participation);
+            if (statsData.targetCounts) setTargetCounts(statsData.targetCounts);
           }
         })
         .catch(e => console.error("통계 동기화 실패", e));
@@ -389,7 +381,7 @@ const handleSaveDraft = () => {
     }
   }; // 👈 썰려 나갔던 꼬리표 복구 완료!
   
-  if (loading) return <div className="p-20 text-center font-black text-blue-600 animate-pulse text-xl uppercase tracking-widest">Delivery Dashboard Syncing...</div>;
+  if (loading) return <LoadingState />;
      
   return (
     <div className="w-full max-w-[1600px] mx-auto space-y-6 p-8 font-sans text-slate-900 pb-24 animate-fade-in relative">
@@ -397,15 +389,14 @@ const handleSaveDraft = () => {
       {/* 🌟 상단 대시보드 배너 레이아웃 재구성 */}
       <div className="flex flex-col xl:flex-row gap-4 w-full">
         
-{/* 배경 줄 */}
-<div className="xl:w-2/5 bg-gradient-to-r from-slate-700 to-slate-900 p-6 rounded-[2.5rem] min-h-[120px] flex flex-col justify-center text-white shadow-xl relative overflow-hidden group">
+{/* 배경 줄 — survey/delivery 초록(emerald·teal) 테마 */}
+<div className="xl:w-2/5 bg-gradient-to-r from-emerald-900 to-teal-900 p-6 rounded-[2.5rem] min-h-[120px] flex flex-col justify-center text-white shadow-xl relative overflow-hidden group">
   
-{/* 빛 번짐 줄 (은은한 화이트) */}
+{/* 빛 번짐 줄 */}
   <div className="absolute right-[-10px] top-[-10px] w-24 h-24 bg-white/10 rounded-full blur-2xl group-hover:scale-150 transition-transform duration-700"></div>
   
   <div>
-    {/* 1. 상단 라벨 (바이올렛 테마에 맞춘 text-violet-200) */}
-    <p className="text-[10px] font-black uppercase tracking-widest opacity-80 mb-1 text-violet-200">
+    <p className="text-[10px] font-black uppercase tracking-widest opacity-80 mb-1 text-emerald-200">
       My Delivery Mission
     </p>
     <div className="flex items-end gap-2 mt-1">
@@ -415,7 +406,6 @@ const handleSaveDraft = () => {
   </div>
   
   <div className="absolute right-6 top-1/2 -translate-y-1/2">
-    {/* 🚀 우측 액션 버튼 (활성화 시 텍스트를 text-violet-800으로 매칭) */}
     <button 
       onClick={() => {
         if (stats.myPendingCount === 0) return alert('현재 신청 대기 중인 배송 공고가 없습니다.');
@@ -424,7 +414,7 @@ const handleSaveDraft = () => {
       }} 
       className={`shrink-0 text-[10px] font-black px-4 py-2 rounded-xl transition-all border shadow-sm ${
         filterPending 
-          ? 'bg-white text-violet-800 border-white' 
+          ? 'bg-white text-emerald-800 border-white' 
           : 'bg-white/20 hover:bg-white/30 text-white border-white/20'
       }`}
     >
@@ -523,14 +513,11 @@ const handleSaveDraft = () => {
               {paginatedSurveys.length === 0 ? (
                 <tr><td colSpan={11} className="py-24 text-center text-slate-400 font-bold bg-slate-50/30">조건에 맞는 배달/조사 내역이 없습니다.</td></tr>
               ) : paginatedSurveys.map((s, idx) => {
-                // 🚀 프론트 대상자 + 서버 제출자 결합
-                let total = 0;
-                if (allUsers.length > 0) {
-                  const targetUsers = allUsers.filter(u => checkHierarchyTarget(s.target, u.dept));
-                  total = targetUsers.length;
-                }
+                // 🚀 서버 GET_STATS: 대상인원 + 참여자수
+                const total = targetCounts[s.id] || 0;
                 const done = allResponses[s.id] || 0;
                 const rate = total > 0 ? Math.round((done / total) * 100) : 0;
+                const notDone = Math.max(0, total - done);
      
                 const isSubmitted = Boolean(myResponses[s.id]);
                 // 🚀 관리자(LV_1)는 묻지도 따지지도 않고 접근 가능하게 우회
@@ -623,7 +610,7 @@ const handleSaveDraft = () => {
                     
                     <td className="text-center font-black text-slate-700 px-2 py-4">{rate}%</td>
                     <td className="text-center font-black text-blue-600 px-2 py-4">{done}명</td>
-                    <td className="text-center font-black text-red-500 px-2 py-4">{total - done}명</td>
+                    <td className="text-center font-black text-red-500 px-2 py-4">{notDone}명</td>
      
                     <td className="text-center pr-8 py-4">
                     {!isTargeted ? (

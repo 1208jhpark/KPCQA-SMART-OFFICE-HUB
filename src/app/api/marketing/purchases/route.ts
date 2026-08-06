@@ -2,17 +2,37 @@ import { NextResponse } from 'next/server';
 import prisma from '@/lib/prisma';
 import { parseKSTDateOnly } from '@/utils/dateUtils';
 import {
-  authorizeMarketingApi,
+  authorizeMarketingPurchasesRead,
+  authorizeMarketingPurchasesWrite,
   assertCanEditOwnerDept,
   authErrorToResponse,
 } from '@/lib/server-auth-guard';
 
 export const dynamic = 'force-dynamic';
 
-function shapePurchase<T extends { old_vendor?: string | null }>(purchase: T) {
+function parsePurchaseNote(note: unknown): { text: string; extra_cost: number } {
+  if (!note || typeof note !== 'string') return { text: '', extra_cost: 0 };
+  try {
+    const parsed = JSON.parse(note);
+    if (parsed && typeof parsed === 'object') {
+      return {
+        text: String((parsed as { text?: unknown }).text || ''),
+        extra_cost: Number((parsed as { extra_cost?: unknown }).extra_cost) || 0,
+      };
+    }
+  } catch {
+    /* legacy plain-text note */
+  }
+  return { text: note, extra_cost: 0 };
+}
+
+function shapePurchase<T extends { old_vendor?: string | null; note?: string | null }>(purchase: T) {
+  const parsedNote = parsePurchaseNote(purchase.note);
   return {
     ...purchase,
     vendor: purchase.old_vendor ?? '',
+    note: parsedNote.text,
+    extra_cost: parsedNote.extra_cost,
   };
 }
 
@@ -24,7 +44,7 @@ function parsePurchaseDate(raw: unknown) {
 
 export async function GET() {
   try {
-    await authorizeMarketingApi();
+    await authorizeMarketingPurchasesRead();
   } catch (e) {
     return authErrorToResponse(e);
   }
@@ -43,7 +63,7 @@ export async function GET() {
 export async function POST(req: Request) {
   let auth;
   try {
-    auth = await authorizeMarketingApi({ requireEditor: true });
+    auth = await authorizeMarketingPurchasesWrite();
   } catch (e) {
     return authErrorToResponse(e);
   }
@@ -51,12 +71,16 @@ export async function POST(req: Request) {
   try {
     const body = await req.json();
     const itemId = body.item_id;
-    const qty = Number(body.qty) || 0;
-    const unitPrice = Number(body.unit_price) || 0;
+    const qty = Math.floor(Number(body.qty) || 0);
+    const unitPrice = Math.floor(Number(body.unit_price) || 0);
+    const extraCost = Math.floor(Number(body.extra_cost ?? body.extraCost ?? 0));
     const vendorText = body.vendor ?? body.old_vendor ?? '';
 
     if (!itemId) return NextResponse.json({ error: '물품 ID가 필요합니다.' }, { status: 400 });
     if (qty <= 0) return NextResponse.json({ error: '입고 수량은 1 이상이어야 합니다.' }, { status: 400 });
+    if (unitPrice < 0 || extraCost < 0) {
+      return NextResponse.json({ error: '단가/부대비용은 0 이상이어야 합니다.' }, { status: 400 });
+    }
 
     const newPurchase = await prisma.$transaction(async (tx) => {
       const item = await tx.marketingItem.findUnique({ where: { id: itemId } });
@@ -65,11 +89,19 @@ export async function POST(req: Request) {
 
       assertCanEditOwnerDept(auth, item.owner_dept);
 
+      // 카탈로그 단가와 동일할 때만 입고 — 단가 변경은 신규 물품 등록
+      if (unitPrice !== Number(item.unit_price || 0)) {
+        throw new Error('PRICE_MISMATCH');
+      }
+
+      const totalPrice = Math.floor(
+        Number(body.total_price ?? body.totalPrice) || unitPrice * qty + extraCost
+      );
+
       await tx.marketingItem.update({
         where: { id: itemId },
         data: {
           current_stock: { increment: qty },
-          unit_price: unitPrice,
         },
       });
 
@@ -78,9 +110,12 @@ export async function POST(req: Request) {
           item_id: itemId,
           qty,
           unit_price: unitPrice,
-          total_price: qty * unitPrice,
+          total_price: totalPrice,
           old_vendor: vendorText,
-          note: body.note || '',
+          note: JSON.stringify({
+            text: body.note || '',
+            extra_cost: extraCost,
+          }),
           // 신원은 서버 세션 기준으로 고정 (동명이인·spoof 방지)
           purchaser_name: auth.user.name || '관리자',
           purchaser_dept: auth.user.unit?.unit_name || '미소속',
@@ -98,6 +133,15 @@ export async function POST(req: Request) {
     if (error?.message === 'ITEM_ARCHIVED') {
       return NextResponse.json({ error: '종료된 물품에는 입고할 수 없습니다.' }, { status: 400 });
     }
+    if (error?.message === 'PRICE_MISMATCH') {
+      return NextResponse.json(
+        {
+          error:
+            '입고 단가는 등록된 물품 단가와 같아야 합니다. 단가가 변경된 경우 신규 기념품으로 등록해 주세요.',
+        },
+        { status: 400 }
+      );
+    }
     if (error?.message === 'FORBIDDEN_EDIT') {
       return authErrorToResponse(error);
     }
@@ -109,7 +153,7 @@ export async function POST(req: Request) {
 export async function DELETE(req: Request) {
   let auth;
   try {
-    auth = await authorizeMarketingApi({ requireEditor: true });
+    auth = await authorizeMarketingPurchasesWrite();
   } catch (e) {
     return authErrorToResponse(e);
   }

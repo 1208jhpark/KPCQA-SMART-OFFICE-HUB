@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation';
 import { ModuleRegistry } from './Registry';
 // 🚀 통합 권한 엔진 임포트 (경로를 본인 환경에 맞게 확인하세요)
 import { checkMenuPermission } from '@/lib/permission-utils';
+import LoadingState from '@/components/common/LoadingState';
 
 export default function SubMenuGrid({ path }: { path: string }) {
   const router = useRouter(); 
@@ -94,7 +95,7 @@ export default function SubMenuGrid({ path }: { path: string }) {
     );
   };
   
-  if (loading) return <div className="p-20 text-center font-black text-teal-500 animate-pulse uppercase tracking-widest">Verifying Node Mesh...</div>;
+  if (loading) return <LoadingState />;
   
   if (!hasParentAccess) {
     return (

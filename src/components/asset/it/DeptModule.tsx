@@ -3,6 +3,7 @@
 import { useState, useMemo, useEffect, useCallback } from 'react';
 import * as XLSX from 'xlsx'; 
 import { getKSTDateString } from '@/utils/dateUtils';
+import LoadingState from '@/components/common/LoadingState';
   
 export default function DeptModule() {
   // 🚀 클릭 상태 관리 (어떤 카드를 클릭했는지 저장)
@@ -378,7 +379,7 @@ export default function DeptModule() {
     return opinionText || '수신된 관리자 의견이 없습니다.';
   }, [unifiedCommModal, requests]);
   
-  if (loading) return <div className="p-10 font-bold text-slate-400 animate-pulse text-center">Loading Workspace...</div>;
+  if (loading) return <LoadingState />;
   
   return (
     <div className="w-full max-w-[1600px] mx-auto space-y-6 p-8 font-sans text-slate-900 pb-24 animate-fade-in">

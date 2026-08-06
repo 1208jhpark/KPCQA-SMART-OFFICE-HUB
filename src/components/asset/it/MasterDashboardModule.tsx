@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation'; // 🚀 Next.js App Router 필수 �
 import { getKSTDateString } from '@/utils/dateUtils';
 import LocalQrImage from '@/components/common/LocalQrImage';
 import { getItAssetVerifyUrl } from '@/utils/equipmentQr';
+import LoadingState from '@/components/common/LoadingState';
      
 interface DashboardProps {
   moduleTitle?: string;
@@ -1305,7 +1306,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
   
 export default function MasterDashboardModule(props: DashboardProps) {
   return (
-    <Suspense fallback={<div className="p-20 text-center font-black animate-pulse text-indigo-400 uppercase tracking-widest">LOADING MASTER WORKSPACE...</div>}>
+    <Suspense fallback={<LoadingState />}>
       <MasterDashboardContent {...props} />
     </Suspense>
   );

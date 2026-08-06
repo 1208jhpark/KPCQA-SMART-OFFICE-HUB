@@ -2,8 +2,10 @@
   
 import React, { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
+import { usePathname } from 'next/navigation';
 import { saveAs } from 'file-saver';
 import { getKSTDateString, formatKSTCalendarLabel } from '@/utils/dateUtils';
+import LoadingState from '@/components/common/LoadingState';
   
 type QuestionType = 'CHOICE_SINGLE' | 'CHOICE_MULTI' | 'TEXT_SHORT' | 'TEXT_LONG' | 'SCALE' | 'FILE' | 'SEARCH_ADDRESS' | 'CALENDAR' | 'SECTION';
   
@@ -33,14 +35,49 @@ interface Question {
   referenceLink?: string;
   goToSectionId?: string;
 }
+
+const stripTitleOrderPrefix = (title: string) => String(title || '').replace(/^\d+\.\s*/, '');
+
+const applyTitleOrderPrefixes = (list: Question[]) => {
+  let n = 1;
+  return list.map((q) => {
+    if (q.type === 'SECTION') return q;
+    return { ...q, title: `${n++}. ${stripTitleOrderPrefix(q.title)}` };
+  });
+};
+
+const clearTitleOrderPrefixes = (list: Question[]) =>
+  list.map((q) => (q.type === 'SECTION' ? q : { ...q, title: stripTitleOrderPrefix(q.title) }));
   
 export default function SurveyBuilderPage() {
+  const pathname = usePathname();
   const [surveyId, setSurveyId] = useState<string | null>(null);
   const [questions, setQuestions] = useState<Question[]>([]);
-  const [loading, setLoading] = useState(true); // 🚀 로딩 상태 추가
+  const [loading, setLoading] = useState(true);
+  const [orderApplied, setOrderApplied] = useState(false);
+  const [canEdit, setCanEdit] = useState(false);
+  const [permReady, setPermReady] = useState(false);
+  const [permissionSummary, setPermissionSummary] = useState<{
+    masterName: string;
+    accessDesignate: string;
+    accessOrg: string;
+    accessLevel: string;
+    editDesignate: string;
+    editLevel: string;
+  } | null>(null);
   
   const dragItem = useRef<number | null>(null);
   const dragOverItem = useRef<number | null>(null);
+
+  const BUILDER_MENU_PATH = '/survey/general/admin/survey-builder';
+  /** 권한 조회 전에는 편집 불가로 잠금 */
+  const editAllowed = permReady && canEdit;
+
+  const requireEdit = () => {
+    if (editAllowed) return true;
+    alert('권한이 없습니다.');
+    return false;
+  };
   
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -57,8 +94,30 @@ export default function SurveyBuilderPage() {
     const params = new URLSearchParams(window.location.search);
     const id = params.get('id');
     setSurveyId(id);
+
+    // 빌더 메뉴 path만 사용 (active-surveys 등과 OR 합산·폴백 금지)
+    fetch(`/api/survey/general?t=${Date.now()}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'GET_ADMIN_CONTEXT', menuPath: BUILDER_MENU_PATH }),
+      cache: 'no-store',
+    })
+      .then(async (res) => {
+        if (!res.ok) {
+          setCanEdit(false);
+          setPermissionSummary(null);
+          return;
+        }
+        const ctx = await res.json();
+        setCanEdit(ctx?.canEdit === true);
+        setPermissionSummary(ctx?.permissionSummary || null);
+      })
+      .catch(() => {
+        setCanEdit(false);
+        setPermissionSummary(null);
+      })
+      .finally(() => setPermReady(true));
   
-    // 💡 1. ID 없이 진입 시 로딩 해제 후 즉시 차단
     if (!id) {
       setLoading(false);
       alert('잘못된 접근입니다. 현황판에서 설문을 선택해 주세요.');
@@ -76,7 +135,6 @@ export default function SurveyBuilderPage() {
         if (Array.isArray(data)) {
           const targetSurvey = data.find((s: any) => s.id === id);
           
-          // 💡 2. ID는 있는데 DB에 설문이 존재하지 않을 때 차단 (빈 캔버스 방지)
           if (!targetSurvey) {
             alert('존재하지 않거나 삭제된 설문입니다.');
             window.location.href = '/survey/general/admin/active-surveys';
@@ -100,7 +158,6 @@ export default function SurveyBuilderPage() {
               setQuestions(migratedData);
             } catch (e) {
               console.error("문항 구조 역직렬화 실패:", e);
-              // 💡 3. 문항 파싱 실패 시 조용히 넘어가지 않고 명확한 알림
               alert('문항 데이터를 불러오는 중 구조 오류가 발생했습니다. (데이터 손상 의심)');
             }
           }
@@ -111,7 +168,7 @@ export default function SurveyBuilderPage() {
         alert('설문 데이터를 불러오는데 실패했습니다. 권한이나 네트워크 상태를 확인해 주세요.');
       })
       .finally(() => setLoading(false));
-  }, []);
+  }, [pathname]);
 
   const handleSort = () => {
     if (dragItem.current === null || dragOverItem.current === null) return;
@@ -120,7 +177,18 @@ export default function SurveyBuilderPage() {
     _questions.splice(dragOverItem.current, 0, draggedItemContent);
     dragItem.current = null;
     dragOverItem.current = null;
-    setQuestions(_questions);
+    setQuestions(orderApplied ? applyTitleOrderPrefixes(_questions) : _questions);
+  };
+
+  const toggleOrderBatch = () => {
+    if (!requireEdit()) return;
+    if (orderApplied) {
+      setQuestions((prev) => clearTitleOrderPrefixes(prev));
+      setOrderApplied(false);
+    } else {
+      setQuestions((prev) => applyTitleOrderPrefixes(prev));
+      setOrderApplied(true);
+    }
   };
   
   const openPostcodeEngine = (qId: string) => {
@@ -141,6 +209,7 @@ export default function SurveyBuilderPage() {
   };
   
   const handleSaveSurvey = async () => {
+    if (!requireEdit()) return;
     if (questions.length === 0) return alert('최소 1개 이상의 문항을 추가해주세요.');
     if (!surveyId) return alert('설문 ID가 유효하지 않습니다. 현황판에서 다시 진입해주세요.');
     
@@ -167,7 +236,7 @@ export default function SurveyBuilderPage() {
         options: q.options ? q.options.map(opt => ({ ...opt })) : undefined
       }));
      
-      const payload = { ...currentSurvey, questions: sanitizedQuestions };
+      const payload = { ...currentSurvey, questions: sanitizedQuestions, menuPath: '/survey/general/admin/survey-builder' };
      
       const res = await fetch('/api/survey/general', {
         method: 'POST',
@@ -275,29 +344,105 @@ export default function SurveyBuilderPage() {
      
   const availableSections = questions.filter(q => q.type === 'SECTION');
   
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-slate-100 flex items-center justify-center font-sans">
-        <div className="text-xl font-black text-indigo-500 animate-pulse tracking-widest uppercase">Builder Engine Loading...</div>
-      </div>
-    );
+  if (loading) return <LoadingState />;
+
+  const questionNoById: Record<string, number> = {};
+  {
+    let n = 1;
+    questions.forEach((q) => {
+      if (q.type !== 'SECTION') questionNoById[q.id] = n++;
+    });
   }
 
   return (
     <div className="min-h-screen bg-slate-100 font-sans text-slate-900 pb-32 animate-fade-in relative text-[11px]">
-      <div className="sticky top-0 z-50 bg-white border-b border-slate-200 px-8 py-4 flex justify-between items-center shadow-sm">
-        <div className="flex items-center gap-4">
-          <Link href="/survey/general/admin/active-surveys" className="px-3 py-2 bg-slate-100 rounded-lg hover:bg-slate-200 transition-colors font-black text-[11px] text-slate-600">⬅️ 현황판으로 돌아가기</Link>
-          <div className="h-6 w-px bg-slate-200 mx-2"></div>
-          <div>
-            <h1 className="text-lg font-black text-slate-800">🛠️ 설문지 생성기 (Builder Engine)</h1>
-            <p className="text-[10px] text-slate-400 font-bold mt-0.5">문항을 마우스로 드래그하여 배치 순서를 바꿀 수 있습니다.</p>
+      <div className="sticky top-0 z-50 bg-white border-b border-slate-200 px-8 py-4 shadow-sm">
+        <div className="flex justify-between items-center gap-4">
+          <div className="flex items-center gap-4 min-w-0">
+            <Link href="/survey/general/admin/active-surveys" className="px-3 py-2 bg-slate-100 rounded-lg hover:bg-slate-200 transition-colors font-black text-[11px] text-slate-600 shrink-0">⬅️ 현황판으로 돌아가기</Link>
+            <div className="h-6 w-px bg-slate-200 mx-2 shrink-0"></div>
+            <div className="min-w-0">
+              <h1 className="text-lg font-black text-slate-800">🛠️ 설문지 생성기 (Builder Engine)</h1>
+              <p className="text-[10px] text-slate-400 font-bold mt-0.5">문항을 마우스로 드래그하여 배치 순서를 바꿀 수 있습니다.</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            {permReady && !editAllowed && (
+              <span className="px-3 py-1.5 bg-amber-50 border border-amber-200 text-amber-700 rounded-lg text-[10px] font-black whitespace-nowrap">
+                🔒 편집 제한
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={toggleOrderBatch}
+              className={`px-4 py-2.5 rounded-xl text-xs font-black transition-all ${
+                !editAllowed
+                  ? 'bg-slate-200 text-slate-400 cursor-not-allowed opacity-60'
+                  : orderApplied
+                  ? 'bg-amber-500 text-white hover:bg-amber-600 shadow-sm'
+                  : 'bg-white border border-slate-300 text-slate-700 hover:bg-slate-50'
+              }`}
+              title={orderApplied ? '제목에 부여된 순번(1. 2. …)을 제거합니다' : '보이는 순번을 제목 앞자리에 고정 문구로 넣습니다'}
+            >
+              {orderApplied ? '순서부여 취소' : '순서일괄부여'}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                if (!requireEdit()) return;
+                if (confirm('모든 문항을 지우시겠습니까?')) {
+                  setQuestions([]);
+                  setOrderApplied(false);
+                }
+              }}
+              className={`px-4 py-2.5 rounded-xl text-xs font-black transition-all ${
+                editAllowed
+                  ? 'bg-slate-100 text-slate-500 hover:bg-slate-200'
+                  : 'bg-slate-200 text-slate-400 cursor-not-allowed opacity-60'
+              }`}
+            >
+              초기화
+            </button>
+            <button
+              type="button"
+              onClick={handleSaveSurvey}
+              className={`px-6 py-2.5 rounded-xl text-[11px] font-black shadow-lg transition-all ${
+                editAllowed
+                  ? 'bg-indigo-600 text-white hover:bg-indigo-700'
+                  : 'bg-slate-300 text-slate-500 cursor-not-allowed opacity-60'
+              }`}
+            >
+              💾 설문 문항 저장
+            </button>
           </div>
         </div>
-        <div className="flex items-center gap-2">
-          <button onClick={() => { if(confirm('모든 문항을 지우시겠습니까?')) setQuestions([]); }} className="px-4 py-2.5 bg-slate-100 rounded-xl text-xs font-black text-slate-500 hover:bg-slate-200 transition-all mr-2">초기화</button>
-          <button onClick={handleSaveSurvey} className="px-6 py-2.5 bg-indigo-600 rounded-xl text-[11px] font-black text-white shadow-lg hover:bg-indigo-700 transition-all">💾 설문 문항 저장</button>
-        </div>
+        {permissionSummary && (
+          <div className="flex flex-wrap items-center gap-2 mt-3 pt-3 border-t border-slate-100">
+            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-blue-50 border-blue-200 text-blue-700 shadow-sm">
+              <span>👑 Master 책임자:</span>
+              <span>{permissionSummary.masterName}</span>
+            </div>
+            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-purple-50 border-purple-200 text-purple-700 shadow-sm">
+              <span>👁️ Access:</span>
+              <span>{permissionSummary.accessDesignate}</span>
+              <span className="opacity-50">|</span>
+              <span className="truncate max-w-[160px]">Org: {permissionSummary.accessOrg}</span>
+              <span className="opacity-50">|</span>
+              <span>Level: {permissionSummary.accessLevel}</span>
+            </div>
+            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-emerald-50 border-emerald-200 text-emerald-700 shadow-sm">
+              <span>✍️ Edit:</span>
+              <span>{permissionSummary.editDesignate}</span>
+              <span className="opacity-50">|</span>
+              <span>Level: {permissionSummary.editLevel}</span>
+            </div>
+            {!editAllowed && (
+              <span className="text-[10px] font-black text-amber-700 bg-amber-50 border border-amber-200 px-2.5 py-1 rounded-md">
+                현재 계정: 조회만 가능 (편집 권한 없음)
+              </span>
+            )}
+          </div>
+        )}
       </div>
   
       <div className="max-w-[800px] mx-auto mt-8 space-y-4">
@@ -313,7 +458,7 @@ export default function SurveyBuilderPage() {
             <div className="flex flex-wrap md:flex-nowrap justify-between items-start gap-4 mb-4 mt-2">
               <div className="flex-1 flex gap-3 w-full">
                 <span className={`text-lg font-black mt-1 ${q.type === 'SECTION' ? 'text-indigo-600' : 'text-slate-300'}`}>
-                  {q.type === 'SECTION' ? '🔖' : `${index + 1}.`}
+                  {q.type === 'SECTION' ? '🔖' : `${questionNoById[q.id]}.`}
                 </span>
                 <div className="w-full flex flex-col gap-1">
                   <input 

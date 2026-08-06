@@ -231,9 +231,9 @@ export default function SignupPage() {
 
 <section className="mt-6">
   <h4 className="font-black text-slate-900 mb-2">제 2 조 (회원 가입 및 승인)</h4>
-  <p className="text-slate-600">1. 모든 가입자는 시스템 이용을 위해 필수 입력 사항을 정확히 기재해야 합니다.</p>
-  <p className="text-slate-600">2. 계정은 운영 관리자의 최종 승인이 완료된 후 정상적으로 로그인 및 이용이 가능합니다. </p>
-  <p className="text-slate-600">3. 가입시 입력된 사항은 시스템 운영에 활용됩니다. </p>
+  <p className="text-slate-600">1. 모든 가입자는 가입시 인증원으로부터 부여 받은 이메일 및 필수 입력 사항을 정확히 기재해야 합니다.</p>
+  <p className="text-slate-600">2. 가입시 입력된 사항은 시스템 운영에 활용됩니다. </p>
+  <p className="text-slate-600">3. 모든 계정은 운영 관리자의 최종 승인이 완료된 후 정상적으로 로그인 및 이용이 가능합니다. </p>
 </section>
 
 <section className="mt-6">

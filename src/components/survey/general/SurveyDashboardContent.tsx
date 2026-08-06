@@ -5,13 +5,15 @@ import Link from 'next/link';
 import { saveAs } from 'file-saver';
 import { getKSTDateString, getKSTTimeString, formatKSTDateTime, isPastKSTDeadline, getKSTDaysUntil } from '@/utils/dateUtils';
 import { getVisibleQuestionsByBranch } from '@/utils/surveyBranching';
+import { normalizeGeneralResponsesPayload } from '@/utils/surveyGeneralResponses';
+import LoadingState from '@/components/common/LoadingState';
 
 export default function SurveyDashboardContent() {
   const [stockUsage, setStockUsage] = useState<Record<string, Record<string, number>>>({}); // 🚀 재고 상태
   const [surveys, setSurveys] = useState<any[]>([]);
   const [myResponses, setMyResponses] = useState<Record<string, any>>({}); 
   const [allResponses, setAllResponses] = useState<Record<string, any>>({});
-  const [allUsers, setAllUsers] = useState<any[]>([]);
+  const [targetCounts, setTargetCounts] = useState<Record<string, number>>({});
   const [unitsList, setUnitsList] = useState<any[]>([]); 
   const [loading, setLoading] = useState(true);
   const [currentUser, setCurrentUser] = useState<any>(null);
@@ -44,10 +46,9 @@ export default function SurveyDashboardContent() {
     const fetchData = async () => {
       try {
         const ts = Date.now();
-        const [uRes, unitsRes, usersRes, surveyRes] = await Promise.all([
+        const [uRes, unitsRes, surveyRes] = await Promise.all([
           fetch(`/api/auth/me?t=${ts}`, { cache: 'no-store' }),
           fetch(`/api/admin/units?active=true&t=${ts}`, { cache: 'no-store' }),
-          fetch(`/api/admin/users?t=${ts}`, { cache: 'no-store' }).catch(()=>null),
           fetch(`/api/survey/general?t=${ts}`, { cache: 'no-store' })
         ]);
         
@@ -60,15 +61,6 @@ export default function SurveyDashboardContent() {
           userData.unit = myUnit || { unit_name: '소속없음' };
           setCurrentUser(userData);
           setCurrentUserEmail(userData.email || 'user@kpcqa.or.kr');
-        }
-     
-        if (usersRes && usersRes.ok) {
-          const usersData = await usersRes.json();
-          const mappedUsers = (usersData.users || []).map((u:any) => ({
-            ...u,
-            dept: unitsData.find((un:any) => un.id === u.unit_id)?.unit_name || '소속없음'
-          }));
-          setAllUsers(mappedUsers);
         }
      
        // 🚀 1. 내 제출 내역 전용 호출 (보안 격리됨)
@@ -89,7 +81,8 @@ export default function SurveyDashboardContent() {
 
       // 내 데이터 처리
       if (myRespRes && myRespRes.ok) {
-        const myDbResponses = await myRespRes.json();
+        const myPayload = await myRespRes.json();
+        const { responses: myDbResponses } = normalizeGeneralResponsesPayload(myPayload);
         const nextMyRes: Record<string, any> = {};
         
         myDbResponses.forEach((r: any) => {
@@ -112,6 +105,7 @@ export default function SurveyDashboardContent() {
         const statsData = await statsRes.json();
         setStockUsage(statsData.stockUsage || {}); 
         setAllResponses(statsData.participation || {}); // { [surveyId]: number (제출자 수) }
+        setTargetCounts(statsData.targetCounts || {}); // { [surveyId]: number (대상 인원) }
       } else {
         alert('⚠️ 전사 참여율 및 재고 정보를 동기화하지 못했습니다.');
       }
@@ -311,7 +305,10 @@ export default function SurveyDashboardContent() {
         return alert(`✏️ [${q.title}] 문항은 필수 응답 사항입니다. 답변을 채워주세요.`);
       }
     }
-    if (!confirm('설문 응답을 최종 제출하시겠습니까?\n제출 후에는 게시 마감전까지 나의 참여 이력에서 수정할 수 있습니다.')) return;
+    const submitConfirm = activeFullScreenSurvey.isAnonymous
+      ? '설문 응답을 최종 제출하시겠습니까?\n\n🔒 익명 게시의 경우 제출 후 답변 수정·열람이 불가능합니다.'
+      : '설문 응답을 최종 제출하시겠습니까?\n제출 후에는 게시 마감전까지 나의 참여 이력에서 수정할 수 있습니다.';
+    if (!confirm(submitConfirm)) return;
      
     try {
       const res = await fetch('/api/survey/general', {
@@ -331,8 +328,15 @@ export default function SurveyDashboardContent() {
         // 이 설문에 이미 제출했었는지 여부 확인 (수정 제출 시 중복 카운팅 방지)
         const isAlreadySubmitted = Boolean(myResponses[activeFullScreenSurvey.id]);
         
-        // 1. 내 응답 상태 갱신
-        const nextResponses = { ...myResponses, [activeFullScreenSurvey.id]: { submittedAt: submittedDate, answers: formData } };
+        // 1. 내 응답 상태 갱신 (익명: 답변 본문 미보관)
+        const nextResponses = {
+          ...myResponses,
+          [activeFullScreenSurvey.id]: {
+            submittedAt: submittedDate,
+            answers: activeFullScreenSurvey.isAnonymous ? {} : formData,
+            isApproved: false,
+          },
+        };
         setMyResponses(nextResponses);
         
         // 2. 낙관적 업데이트 (참여 인원 카운트 즉시 1 증가, 수정 제출인 경우 유지)
@@ -357,7 +361,8 @@ export default function SurveyDashboardContent() {
         .then(statsData => {
           if (statsData) {
             if (statsData.stockUsage) setStockUsage(statsData.stockUsage);
-            if (statsData.participation) setAllResponses(statsData.participation); // participation(건수)도 함께 갱신!
+            if (statsData.participation) setAllResponses(statsData.participation);
+            if (statsData.targetCounts) setTargetCounts(statsData.targetCounts);
           }
         })
         .catch(e => console.error("통계 동기화 실패", e));
@@ -386,7 +391,7 @@ export default function SurveyDashboardContent() {
     return (lastSection ? lastSection.id : null) === currentSectionId;
   });
      
-  if (loading) return <div className="p-20 text-center font-black text-blue-600 animate-pulse text-xl uppercase tracking-widest">Survey Dashboard Syncing...</div>;
+  if (loading) return <LoadingState />;
      
   return (
     <div className="w-full max-w-[1600px] mx-auto space-y-6 p-8 font-sans text-slate-900 pb-24 animate-fade-in">
@@ -440,14 +445,11 @@ export default function SurveyDashboardContent() {
                 <tr><td colSpan={11} className="py-24 text-center text-slate-400 font-bold bg-slate-50/30">조건에 맞는 설문이 없습니다.</td></tr>
               ) : filteredSurveys.map((s, idx) => {
                 
-               // 🚀 [여기로 교체] 프론트엔드의 대상자 계산(total) + 서버의 안전한 참여자 수(done) 결합
-               let total = 0;
-               if (allUsers.length > 0) {
-                 const targetUsers = allUsers.filter(u => checkHierarchyTarget(s.target, u.dept));
-                 total = targetUsers.length;
-               }
-               const done = allResponses[s.id] || 0; // 서버에서 안전하게 받아온 숫자
+               // 🚀 서버 GET_STATS: 대상인원(targetCounts) + 참여자수(participation)
+               const total = targetCounts[s.id] || 0;
+               const done = allResponses[s.id] || 0;
                const rate = total > 0 ? Math.round((done / total) * 100) : 0;
+               const notDone = Math.max(0, total - done);
 
                 const isSubmitted = Boolean(myResponses[s.id]);
                 const isTargeted = currentUser?.roles?.includes('LV_1') || checkHierarchyTarget(s.target, currentUser?.unit?.unit_name);
@@ -523,7 +525,7 @@ export default function SurveyDashboardContent() {
                     
                     <td className="text-center font-black text-slate-700 px-2 py-4">{rate}%</td>
                     <td className="text-center font-black text-blue-600 px-2 py-4">{done}명</td>
-                    <td className="text-center font-black text-red-500 px-2 py-4">{total - done}명</td>
+                    <td className="text-center font-black text-red-500 px-2 py-4">{notDone}명</td>
                     
                     <td className="text-center pr-8 py-4">
                       {!isTargeted ? (
@@ -556,9 +558,20 @@ export default function SurveyDashboardContent() {
           <div className="bg-white w-[500px] rounded-[2rem] overflow-hidden shadow-2xl flex flex-col p-8 items-center text-center animate-in zoom-in duration-300">
             <div className="w-16 h-16 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center text-3xl mb-6">📋</div>
             <h3 className="text-xl font-black text-slate-800 mb-4">{introModalSurvey.title}</h3>
-            <p className="text-sm font-bold text-slate-500 bg-slate-50 p-4 rounded-xl w-full leading-relaxed mb-8 border border-slate-100 whitespace-pre-wrap text-left">
+            <p className="text-sm font-bold text-slate-500 bg-slate-50 p-4 rounded-xl w-full leading-relaxed mb-4 border border-slate-100 whitespace-pre-wrap text-left">
               {introModalSurvey.description || '본 설문조사에 참여하여 의견을 남겨주세요.'}
             </p>
+            {introModalSurvey.isAnonymous && (
+              <div className="w-full mb-6 px-4 py-3 rounded-xl border border-slate-300 bg-slate-100 text-left">
+                <p className="text-[12px] font-black text-slate-700 flex items-center gap-2">
+                  <span className="text-base">🔒</span>
+                  익명 게시의 경우 답변 수정이 불가능합니다.
+                </p>
+                <p className="text-[10px] font-bold text-slate-500 mt-1.5 leading-relaxed">
+                  제출 완료 후 본인에게도 답변 내용을 다시 열람·수정할 수 없습니다.
+                </p>
+              </div>
+            )}
             <div className="flex gap-3 w-full">
               <button onClick={() => setIntroModalSurvey(null)} className="flex-1 py-3.5 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-xl font-black transition-colors">닫기</button>
               <button onClick={handleStartSurvey} className="flex-[2] py-3.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-black shadow-lg transition-colors text-[13px]">🚀 설문 응답 제출하기</button>

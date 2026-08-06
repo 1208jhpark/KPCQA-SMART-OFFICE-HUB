@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
+import LoadingState from '@/components/common/LoadingState';
 
 export default function SettingsModule() {
   const [config, setConfig] = useState<any>({ unit_category_group: '' });
@@ -46,7 +47,7 @@ export default function SettingsModule() {
     }
   };
 
-  if (loading) return <div className="p-10 font-black animate-pulse">Loading Settings...</div>;
+  if (loading) return <LoadingState />;
 
   return (
     <div className="max-w-4xl mx-auto p-8 space-y-8 font-sans">

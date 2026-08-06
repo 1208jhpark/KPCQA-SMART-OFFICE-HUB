@@ -2,22 +2,34 @@
 'use client';
      
 import React, { useState, useEffect, useMemo, Suspense, useRef } from 'react';
-import { usePathname, useRouter } from 'next/navigation';
+import { usePathname } from 'next/navigation';
 import Link from 'next/link';
 import { getKSTDateString } from '@/utils/dateUtils';
 import { isPendingSupplyRequest } from '@/utils/supplyRequestStatus';
+import LoadingState from '@/components/common/LoadingState';
+import { resolveInterfaceEditState } from '@/lib/permission-utils';
+
+const MENU_PATH = '/asset/supplies/master/dashboard';
      
 function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser?: any }) {
   const pathname = usePathname();
-  const router = useRouter();
   
   const [items, setItems] = useState<any[]>([]);
   const [requests, setRequests] = useState<any[]>([]);
   const [currentUser, setCurrentUser] = useState<any>(propUser || null);
+  const [interfaceConfig, setInterfaceConfig] = useState<any>(null);
   
   const [config, setConfig] = useState<any>(null);
   const [masterData, setMasterData] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [permissionSummary, setPermissionSummary] = useState<{
+    masterName: string;
+    accessDesignate: string;
+    accessOrg: string;
+    accessLevel: string;
+    editDesignate: string;
+    editLevel: string;
+  } | null>(null);
      
   const [editModal, setEditModal] = useState<any | null>(null);
   const [stockInModal, setStockInModal] = useState<any | null>(null);
@@ -36,12 +48,16 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
     setLoading(true);
     try {
       const ts = Date.now();
-      const [dashRes, reqRes, confRes, mastRes, userRes] = await Promise.all([
+      const [dashRes, reqRes, confRes, mastRes, userRes, summaryRes, ifRes] = await Promise.all([
         fetch(`/api/asset/supplies/master/dashboard?t=${ts}`, { cache: 'no-store' }),
         fetch(`/api/asset/supplies/master/requests?t=${ts}`, { cache: 'no-store' }),
         fetch(`/api/admin/config?t=${ts}`, { cache: 'no-store' }),
         fetch(`/api/admin/master-data?t=${ts}`, { cache: 'no-store' }),
-        !propUser ? fetch(`/api/auth/me?t=${ts}`, { cache: 'no-store' }) : Promise.resolve(null)
+        !propUser ? fetch(`/api/auth/me?t=${ts}`, { cache: 'no-store' }) : Promise.resolve(null),
+        fetch(`/api/admin/interface/summary?path=${encodeURIComponent(MENU_PATH)}&t=${ts}`, {
+          cache: 'no-store',
+        }).catch(() => null),
+        fetch(`/api/admin/interface?t=${ts}`, { cache: 'no-store' }).catch(() => null),
       ]);
      
       if (dashRes.ok) {
@@ -58,6 +74,19 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
       
       if (!propUser && userRes?.ok) {
         setCurrentUser(await userRes.json());
+      }
+
+      if (summaryRes && summaryRes.ok) setPermissionSummary(await summaryRes.json());
+      else setPermissionSummary(null);
+
+      if (ifRes && ifRes.ok) {
+        const interfaces = await ifRes.json();
+        const menu = Array.isArray(interfaces)
+          ? interfaces.find((m: any) => m.path === MENU_PATH || m.path?.includes('/supplies/master/dashboard'))
+          : null;
+        setInterfaceConfig(menu || null);
+      } else {
+        setInterfaceConfig(null);
       }
     } catch (e) {
       console.error("Master Dashboard Sync Error", e);
@@ -114,7 +143,7 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
   const handleAddNewClick = () => {
     setEditModal({
       isNew: true, 
-      id: `SUP-${Date.now().toString().slice(-4)}`, 
+      id: '', 
       name: supplyOptions[0]?.label || '', 
       current_stock: 0, 
       alert_qty: 5, 
@@ -153,10 +182,10 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
   const handleSaveSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editModal.name.trim()) return alert('품목명을 선택/입력해주세요.');
-    if (!editModal.id.trim()) return alert('품목코드를 입력해주세요.');
+    if (!editModal.isNew && !editModal.id.trim()) return alert('품목 정보가 올바르지 않습니다.');
      
     const payload = {
-      id: editModal.id.trim(), 
+      ...(editModal.isNew ? {} : { id: editModal.id.trim() }),
       name: editModal.name,
       current_stock: Number(editModal.current_stock) || 0,
       alert_qty: Number(editModal.alert_qty) || 0,
@@ -286,244 +315,331 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
     } catch (e) { alert("아카이브 처리 실패"); }
   };
      
-  const handleDeleteItem = async (id: string) => {
-    const isLv1 = currentUser?.roles?.includes('LV_1') || currentUser?.role === 'LV_1';
-    if (!isLv1) return alert('영구 삭제 권한이 없습니다. (LV_1 전용)');
-    if (!confirm('경고: 이 품목을 대장에서 영구 삭제하시겠습니까?\n삭제된 데이터는 복구할 수 없습니다.')) return;
-    
+  const canEdit = useMemo(
+    () => resolveInterfaceEditState(currentUser, interfaceConfig).isEditor,
+    [currentUser, interfaceConfig]
+  );
+
+  /** 삭제: Edit 권한 + 신청·입고 이력 0건일 때만 (잘못 등록한 데이터 정리용) */
+  const handleDeleteItem = async (item: any) => {
+    if (!canEdit) return alert('삭제 권한이 없습니다.');
+
+    const usageCount = Number(item?._count?.requests || 0) + Number(item?._count?.purchases || 0);
+    if (usageCount > 0) {
+      return alert('신청·입고 이력이 있어 삭제할 수 없습니다. 보관 처리만 가능합니다.');
+    }
+
+    if (!confirm('정말 삭제하시겠습니까?\n이 작업은 되돌릴 수 없으며, 마스터에서 완전히 영구 삭제됩니다.')) return;
+
     try {
-      const res = await fetch(`/api/asset/supplies/master/dashboard?id=${id}`, { method: 'DELETE' });
+      const res = await fetch(`/api/asset/supplies/master/dashboard?id=${item.id}`, { method: 'DELETE' });
       if (res.ok) {
-        alert('서버에서 완전히 삭제되었습니다.');
+        alert('완전히 삭제되었습니다.');
         fetchDashboardData();
       } else {
         const err = await res.json().catch(() => ({}));
         alert(`삭제 불가: ${err.error || '권한을 확인하세요.'}`);
       }
-    } catch (e) { alert('삭제 통신 실패'); }
+    } catch (e) {
+      alert('삭제 통신 실패');
+    }
   };
      
-  if (loading) return <div className="p-20 text-center font-black animate-pulse text-indigo-400 uppercase tracking-widest text-xl">Loading Master Workspace...</div>;
+  if (loading) return <LoadingState />;
      
   return (
     <div className="w-full max-w-[1750px] mx-auto space-y-6 p-8 font-sans text-slate-900 pb-24 animate-fade-in">
       
-{/* 🚀 소모품 마스터 관리 통제실 (명함 배너와 100% 스타일 싱크로율 매칭) */}
-<div className="w-full bg-gradient-to-r from-emerald-900 to-teal-900 p-6 rounded-[2.5rem] text-white shadow-xl relative overflow-hidden flex flex-col justify-center min-h-[140px]">
-  
-  <div className="relative z-10 flex justify-between items-end w-full">
-    <div>
-      {/* 1. 상단 라벨 (mb-3 여백 및 명함과 동일한 텍스트 톤) */}
-      <h3 className="text-[10px] font-black uppercase tracking-widest text-emerald-400 mb-3">
-        CENTRAL SUPPLIES CONTROL TOWER
-      </h3>
-      
-      {/* 2. 메인 타이틀 (leading-none으로 라인 꼬임 방지) */}
-      <h1 className="text-2xl font-black tracking-tight text-white leading-none">
-        소모품 마스터 관리 통제실
-      </h1>
-      
-      {/* 3. 하단 설명 (mt-4 표준 간격 적용) */}
-      <p className="text-emerald-100/90 text-xs font-semibold mt-4 opacity-90">
-        전사 소모품의 전체 관리 및 실시간 재고 현황을 모니터링하고 관리합니다.
-      </p>
-    </div>
-  </div>
-
-  {/* 우측 관제실 느낌의 은은한 엠블럼 배치 (공백 완벽 메꿈) */}
-  <div className="absolute right-10 top-1/2 -translate-y-1/2 text-8xl opacity-10 select-none pointer-events-none">
-    📊
+{/* client-search 배너 규격: emerald→teal · orbs · label 10px / title 2xl / desc xs */}
+<div className="w-full bg-gradient-to-r from-emerald-900 to-teal-900 rounded-3xl text-white shadow-lg relative overflow-hidden px-6 md:px-8 py-6">
+  <div className="absolute right-0 top-0 w-64 h-64 bg-emerald-400/15 rounded-full blur-3xl -translate-y-1/3 translate-x-1/4 pointer-events-none" />
+  <div className="absolute left-1/4 bottom-0 w-48 h-48 bg-teal-800/20 rounded-full blur-3xl translate-y-1/2 pointer-events-none" />
+  <div className="relative z-10">
+    <h3 className="text-[10px] font-black uppercase tracking-widest text-emerald-400 mb-2.5">
+      CENTRAL SUPPLIES CONTROL TOWER
+    </h3>
+    <h1 className="text-2xl font-extrabold tracking-tight text-white leading-none">
+      소모품 마스터 관리 통제실
+    </h1>
+    <p className="text-emerald-100/90 text-xs mt-3 leading-relaxed">
+      전사 소모품의 전체 관리 및 실시간 재고 현황을 모니터링하고 관리합니다.
+    </p>
+    {permissionSummary && (
+      <div className="flex flex-wrap items-center gap-2 mt-4 pt-3 border-t border-white/15">
+        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-white/10 border-white/25 text-emerald-50 shadow-sm">
+          <span>👑 Master 책임자:</span>
+          <span>{permissionSummary.masterName}</span>
+        </div>
+        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-purple-500/20 border-purple-300/40 text-purple-100 shadow-sm">
+          <span>👁️ Access:</span>
+          <span>{permissionSummary.accessDesignate}</span>
+          <span className="opacity-50">|</span>
+          <span className="truncate max-w-[160px]">Org: {permissionSummary.accessOrg}</span>
+          <span className="opacity-50">|</span>
+          <span>Level: {permissionSummary.accessLevel}</span>
+        </div>
+        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-emerald-400/20 border-emerald-300/40 text-emerald-100 shadow-sm">
+          <span>✍️ Edit:</span>
+          <span>{permissionSummary.editDesignate}</span>
+          <span className="opacity-50">|</span>
+          <span>Level: {permissionSummary.editLevel}</span>
+        </div>
+      </div>
+    )}
   </div>
 </div>
       
-      {/* 탭 메뉴 */}
-      <div className="flex gap-1.5 bg-slate-200/60 p-1.5 rounded-2xl border border-slate-200 shadow-inner w-full max-w-4xl">
-        {tabItems.map((tab) => {
-          const isActive = pathname.startsWith(tab.path);
-          return (
-            <Link key={tab.id} href={tab.path} className={`flex-1 py-3 text-center text-[11px] font-black rounded-xl transition-all uppercase tracking-tight ${isActive ? 'bg-white text-blue-600 shadow-sm border border-slate-300/50 scale-[1.01]' : 'text-slate-500 hover:text-slate-800 hover:bg-white/40'}`}>
-              {tab.name}
-            </Link>
-          );
-        })}
-      </div>
-
-     
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-6 pt-4">
-        <div onClick={() => setStatFilter('ALL')} className={`cursor-pointer border p-6 shadow-sm rounded-[2rem] flex flex-col justify-center transition-all hover:shadow-md ${statFilter === 'ALL' ? 'bg-slate-800 border-slate-900 text-white scale-105' : 'bg-white border-slate-200 hover:bg-slate-50'}`}>
-          <p className={`text-[11px] font-black uppercase tracking-widest mb-1 ${statFilter === 'ALL' ? 'text-slate-300' : 'text-slate-400'}`}>총 운용 품목</p>
-          <p className="text-3xl font-black tracking-tighter">{stats.totalItems} <span className="text-xs font-bold ml-1 opacity-50">EA</span></p>
+      {/* 탭 네비게이션 — client-search / distribution 스위처 규격 */}
+      <div className="flex items-center justify-between bg-white p-2 rounded-xl border border-slate-200 shadow-sm">
+        <div className="flex items-center gap-1.5 bg-slate-100/80 p-1 rounded-lg flex-wrap">
+          {tabItems.map((tab) => {
+            const isActive = pathname.startsWith(tab.path);
+            const activeColor =
+              tab.id === 'purchase' ? 'text-emerald-600' :
+              tab.id === 'archive' ? 'text-slate-800' :
+              'text-indigo-600';
+            const showPendingBadge = tab.id === 'requests' && stats.pendingReqs > 0;
+            return (
+              <Link
+                key={tab.id}
+                href={tab.path}
+                className={`px-5 py-2 rounded-md text-xs font-black transition-all flex items-center gap-2 ${
+                  isActive
+                    ? `bg-white ${activeColor} shadow-sm border border-slate-200/80`
+                    : 'text-slate-500 hover:text-slate-800'
+                } ${showPendingBadge && !isActive ? 'ring-1 ring-red-300/80' : ''}`}
+              >
+                <span>{tab.name}</span>
+                {showPendingBadge && (
+                  <span className="inline-flex items-center justify-center min-w-[1.35rem] h-5 px-1.5 rounded-full bg-red-600 text-white text-[10px] font-black font-mono shadow-sm animate-pulse">
+                    {stats.pendingReqs}
+                  </span>
+                )}
+              </Link>
+            );
+          })}
         </div>
-        <div onClick={() => router.push('/asset/supplies/master/requests')} className="cursor-pointer border p-6 shadow-sm rounded-[2rem] flex flex-col justify-center transition-all hover:shadow-md bg-blue-50 border-blue-100 hover:bg-blue-100">
-          <p className="text-[11px] font-black uppercase tracking-widest mb-1 flex justify-between text-blue-500">
-            <span>대기중인 신청 바로가기</span>
-            {stats.pendingReqs > 0 && <span className="animate-pulse">🔔</span>}
-          </p>
-          <p className="text-3xl font-black tracking-tighter text-blue-600">
-            {stats.pendingReqs} <span className="text-xs font-bold ml-1 opacity-50">건</span>
-          </p>
-        </div>
-        <div onClick={() => setStatFilter('WARNING')} className={`cursor-pointer border p-6 shadow-sm rounded-[2rem] flex flex-col justify-center transition-all hover:shadow-md ${statFilter === 'WARNING' ? 'bg-orange-500 border-orange-600 text-white scale-105' : 'bg-orange-50 border-orange-100 hover:bg-orange-100'}`}>
-          <p className={`text-[11px] font-black uppercase tracking-widest mb-1 ${statFilter === 'WARNING' ? 'text-orange-100' : 'text-orange-500'}`}>재고 경고 (발주요망)</p>
-          <p className={`text-3xl font-black tracking-tighter ${statFilter === 'WARNING' ? 'text-white' : 'text-orange-600'}`}>{stats.warningCount} <span className="text-xs font-bold ml-1 opacity-50">품목</span></p>
-        </div>
-        <div onClick={() => setStatFilter('OUT')} className={`cursor-pointer border p-6 shadow-sm rounded-[2rem] flex flex-col justify-center transition-all hover:shadow-md ${statFilter === 'OUT' ? 'bg-red-600 border-red-700 text-white scale-105' : 'bg-red-50 border-red-100 hover:bg-red-100'}`}>
-          <p className={`text-[11px] font-black uppercase tracking-widest mb-1 ${statFilter === 'OUT' ? 'text-red-200' : 'text-red-500'}`}>재고 품절</p>
-          <p className={`text-3xl font-black tracking-tighter ${statFilter === 'OUT' ? 'text-white' : 'text-red-600'}`}>{stats.outOfStockCount} <span className="text-xs font-bold ml-1 opacity-50">품목</span></p>
-        </div>
+        <p className="text-[10px] text-slate-400 font-bold px-3 hidden lg:block">
+          ※ 탭을 클릭하여 대시보드·신청·입고·아카이브를 전환합니다.
+        </p>
       </div>
      
-      <div className="bg-white border border-slate-200 rounded-[2.5rem] shadow-sm overflow-hidden mt-6 animate-in fade-in slide-in-from-top-4 duration-300">
-        <div className="p-4 px-6 bg-slate-200/70 border-b border-slate-300 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className="w-2.5 h-2.5 rounded-full bg-blue-600"></div>
+      <div className="bg-white border border-slate-200 rounded-[2.5rem] shadow-sm overflow-hidden animate-in fade-in slide-in-from-top-4 duration-300">
+        <div className="p-3 px-5 bg-slate-200/70 border-b border-slate-300 flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2 flex-wrap min-w-0">
+            <div className="w-2.5 h-2.5 rounded-full bg-blue-600 shrink-0"></div>
             <h2 className="text-[13px] font-black text-slate-800 tracking-tight">
               {statFilter === 'ALL' ? '실시간 창고 재고 현황 보드' : 
                statFilter === 'PENDING' ? '신청 대기중인 물품 리스트' : 
                statFilter === 'WARNING' ? '재고 경고(부족) 물품 리스트' : '품절된 물품 리스트'}
             </h2>
             <span className="text-[11px] font-bold bg-slate-300/80 text-slate-700 px-2 py-0.5 rounded-md">{filteredItems.length}개 품목</span>
-            {statFilter !== 'ALL' && (
-              <button onClick={() => setStatFilter('ALL')} className="ml-2 text-[10px] text-indigo-600 hover:underline font-bold">필터 초기화 ✕</button>
-            )}
+            <div className="flex items-center gap-1 ml-1">
+              <button
+                type="button"
+                onClick={() => setStatFilter('ALL')}
+                className={`px-2.5 py-1 rounded-md text-[10px] font-black transition-colors ${
+                  statFilter === 'ALL'
+                    ? 'bg-slate-800 text-white'
+                    : 'bg-white text-slate-500 border border-slate-200 hover:bg-slate-50'
+                }`}
+              >
+                전체 {stats.totalItems}
+              </button>
+              <button
+                type="button"
+                onClick={() => setStatFilter((prev) => (prev === 'WARNING' ? 'ALL' : 'WARNING'))}
+                className={`px-2.5 py-1 rounded-md text-[10px] font-black transition-colors ${
+                  statFilter === 'WARNING'
+                    ? 'bg-orange-500 text-white'
+                    : 'bg-orange-50 text-orange-600 border border-orange-100 hover:bg-orange-100'
+                }`}
+              >
+                재고 경고 {stats.warningCount}
+              </button>
+              <button
+                type="button"
+                onClick={() => setStatFilter((prev) => (prev === 'OUT' ? 'ALL' : 'OUT'))}
+                className={`px-2.5 py-1 rounded-md text-[10px] font-black transition-colors ${
+                  statFilter === 'OUT'
+                    ? 'bg-red-600 text-white'
+                    : 'bg-red-50 text-red-600 border border-red-100 hover:bg-red-100'
+                }`}
+              >
+                품절 {stats.outOfStockCount}
+              </button>
+            </div>
           </div>
-          <div className="flex items-center gap-2">
-            <button onClick={handleAddNewClick} className="px-5 py-2 bg-blue-600 text-white rounded-lg text-[11px] font-black hover:bg-blue-700 transition-all shadow-sm flex items-center gap-1.5">
-              + 신규 물품 추가
-            </button>
-          </div>
+          <button onClick={handleAddNewClick} className="px-5 py-2 bg-blue-600 text-white rounded-lg text-[11px] font-black hover:bg-blue-700 transition-all shadow-sm flex items-center gap-1.5 shrink-0">
+            + 신규 물품 추가
+          </button>
         </div>
      
-        <div className="overflow-x-auto pb-4">
-          <table className="w-full text-left border-collapse min-w-[2100px]">
-          <thead>
-              <tr className="text-[11px] font-black tracking-widest uppercase text-center border-b border-slate-200">
-                <th colSpan={3} className="bg-slate-100 text-slate-600 py-3">품목 기본 정보</th>
-                <th colSpan={7} className="bg-emerald-100 text-emerald-800 border-l-4 border-white py-3">💰 최근 입고 (결산) 이력 정보</th>
-                <th colSpan={4} className="bg-blue-100 text-blue-800 border-l-4 border-white py-3">📦 창고 재고 현황</th>
-                <th colSpan={2} className="bg-amber-100 text-amber-800 border-l-4 border-white py-3">🌐 사용자 앱 게시 설정</th>
-                <th colSpan={1} className="bg-slate-800 text-white border-l-4 border-white py-3">액션 제어</th>
-              </tr>
-              <tr className="bg-slate-50 text-slate-700 text-[11px] font-bold border-b border-slate-200">
-                <th className="h-10 px-4 w-12 text-center">NO</th>
-                <th className="h-10 px-4 w-[220px]">품목명 (이미지)</th>
-                <th className="h-10 px-4 w-32 text-center text-slate-500">품목코드</th>
-                <th className="h-10 px-4 w-28 text-center border-l-4 border-white bg-emerald-50/50 text-slate-600">최근 입고일</th>
-                <th className="h-10 px-4 w-32 text-center bg-emerald-50/50 text-emerald-700">구매처(벤더)</th>
-                <th className="h-10 px-4 w-24 text-center bg-emerald-50/50 text-emerald-700">구매단위</th>
-                <th className="h-10 px-4 w-24 text-center bg-emerald-50/50 text-emerald-700">입고수량</th>
-                <th className="h-10 px-4 w-28 text-right bg-emerald-50/50 text-emerald-700">순수 단가(원)</th>
-                <th className="h-10 px-4 w-28 text-right bg-emerald-50/50 text-orange-600">부대비용(원)</th>
-                <th className="h-10 px-4 w-32 text-right bg-emerald-50/50 text-emerald-800 font-black">결산 총비용</th>
-                <th className="h-10 px-4 w-24 text-center border-l-4 border-white bg-blue-50/30 text-blue-700">현재 재고</th>
-                <th className="h-10 px-4 w-14 text-center bg-blue-50/30 text-slate-500">경고</th>
-                <th className="h-10 px-4 w-36 text-center bg-blue-50/30 text-slate-600">재고 상태</th>
-                <th className="h-10 px-4 w-40 bg-blue-50/30 text-slate-500">관리 비고(Note)</th>
-                <th className="h-10 px-4 w-20 text-center border-l-4 border-white bg-amber-50/30 text-amber-700">신청단위</th>
-                <th className="h-10 px-4 w-28 text-center bg-amber-50/30 text-amber-700">앱 노출 상태</th>
-                <th className="h-10 px-4 w-[280px] text-center border-l-4 border-white bg-slate-100 text-slate-600">마스터 액션</th>
+        <div className="overflow-x-auto">
+          <table className="w-full text-left border-collapse table-fixed">
+            <colgroup>
+              <col className="w-12" />
+              <col className="w-[296px]" />
+              <col className="w-[70px]" />
+              <col className="w-[96px]" />
+              <col className="w-[92px]" />
+              <col className="w-[280px]" />
+              <col className="w-[88px]" />
+              <col className="w-[108px]" />
+              <col className="w-[200px]" />
+            </colgroup>
+            <thead className="bg-slate-100 text-slate-700 text-[10px] font-black uppercase tracking-widest border-b border-slate-200">
+              <tr>
+                <th className="h-12 pl-3 text-center">NO</th>
+                <th className="h-12 px-3 text-left">품목명</th>
+                <th className="h-12 px-2 text-center whitespace-nowrap text-blue-700 border-l border-slate-300 bg-blue-50/60">현재고</th>
+                <th className="h-12 px-2 text-center whitespace-nowrap bg-blue-50/60">재고알람기준</th>
+                <th className="h-12 px-2 text-center whitespace-nowrap bg-blue-50/60">재고 상태</th>
+                <th className="h-12 px-2 text-left bg-blue-50/60">관리 비고</th>
+                <th className="h-12 px-2 text-center whitespace-nowrap text-amber-700 border-l border-slate-300 bg-amber-50/60">신청단위</th>
+                <th className="h-12 px-2 text-center whitespace-nowrap text-amber-700 bg-amber-50/60">게시 제어</th>
+                <th className="h-12 pr-3 text-center whitespace-nowrap border-l border-slate-300">마스터 액션</th>
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-slate-100 text-[11px] font-bold text-slate-700">
               {filteredItems.length === 0 ? (
-                <tr><td colSpan={17} className="h-32 text-center text-slate-400 italic">조건에 맞는 데이터가 없습니다.</td></tr>
+                <tr>
+                  <td colSpan={9} className="p-16 text-center text-slate-400 text-xs">
+                    조건에 맞는 데이터가 없습니다.
+                  </td>
+                </tr>
               ) : (
                 filteredItems.map((item, idx) => {
                   const ext = item.description ? JSON.parse(item.description) : {};
                   const pUnit = ext.p_unit || 'BOX';
                   const rUnit = ext.s_unit || ext.r_unit || 'EA';
-                  const note = ext.note || '-'; 
-                  const safeStock = Number(item.alert_qty || 5); 
+                  const note = ext.note || '-';
+                  const safeStock = Number(item.alert_qty || 5);
                   const currentStock = Number(item.current_stock || 0);
                   const isDanger = currentStock <= safeStock && currentStock > 0;
                   const isOut = currentStock === 0;
-                  const isPublished = item.is_published !== false; 
-                  
+                  const isPublished = item.is_published !== false;
+
                   const lastPurchase = item.purchases?.[0] || {};
-                  
-                  // 🚀 [해결] note 문자열 포장지에 은닉된 부대비용을 역직렬화(Parse)하여 올바르게 분리 독립 표출
-                  let extraCost = 0;
-                  try { 
-                    if (lastPurchase.note) {
-                      // 만약 JSON 구조가 아니라면 catch문으로 우회하여 0원 방어
-                      const parsed = JSON.parse(lastPurchase.note);
-                      extraCost = Number(parsed.extra_cost) || 0; 
-                    }
-                  } catch(e){}
-                  
-                  const isLv1 = currentUser?.roles?.includes('LV_1') || currentUser?.role === 'LV_1';
-                  const isRequested = (item.requests?.length || 0) > 0 || (item.purchases?.length || 0) > 0;
-                  const disableDelete = isRequested && !isLv1;
-     
+                  const usageCount =
+                    Number(item?._count?.requests || 0) + Number(item?._count?.purchases || 0);
+                  const hasUsageHistory = usageCount > 0;
+
                   return (
-                    <tr key={item.id} className={`h-16 transition-colors ${isOut ? 'bg-red-50/30 hover:bg-red-50' : isDanger ? 'bg-orange-50/30 hover:bg-orange-50' : 'hover:bg-slate-50'}`}>
-                      <td className="px-4 text-center text-slate-400 font-mono">{idx + 1}</td>
-                      <td className="px-4 flex items-center gap-3 h-16">
-                        <div className="w-9 h-9 rounded-lg border border-slate-200 overflow-hidden flex-shrink-0 bg-slate-100 flex justify-center items-center">
-                          {item.image_url ? <img src={item.image_url} alt="img" className="w-full h-full object-cover" /> : <span className="text-[11px] opacity-40">📦</span>}
+                    <tr
+                      key={item.id}
+                      className={`transition-colors h-12 ${
+                        isOut
+                          ? 'bg-red-50/30 hover:bg-red-50'
+                          : isDanger
+                            ? 'bg-orange-50/30 hover:bg-orange-50'
+                            : 'hover:bg-slate-50/50'
+                      }`}
+                    >
+                      <td className="pl-3 text-center font-mono text-slate-500 tabular-nums">
+                        {idx + 1}
+                      </td>
+                      <td className="px-3 min-w-0">
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <div className="w-8 h-8 rounded-lg border border-slate-200 overflow-hidden flex-shrink-0 bg-slate-100 flex justify-center items-center">
+                            {item.image_url ? (
+                              <img src={item.image_url} alt="" className="w-full h-full object-cover" />
+                            ) : (
+                              <span className="text-[10px] opacity-40">📦</span>
+                            )}
+                          </div>
+                          <span className="text-slate-900 truncate" title={item.name}>
+                            {item.name}
+                          </span>
                         </div>
-                        <div className="font-black text-slate-900 text-xs truncate max-w-[150px]">{item.name}</div>
                       </td>
-                      <td className="px-4 text-center font-mono text-slate-500">{item.id}</td>
-                      
-                      <td className="px-4 text-center border-l-4 border-slate-50 bg-emerald-50/10 font-mono text-slate-500">
-                        {lastPurchase.purchase_date ? getKSTDateString(lastPurchase.purchase_date) : '-'}
-                      </td>
-                      
-                      {/* 🚀 [해결] vendor 가 아닌 DB 실제 컬럼 매핑 규격인 old_vendor 를 추적하도록 바인딩 패치 */}
-                      <td className="px-4 text-center bg-emerald-50/10 text-slate-600 truncate max-w-[120px]" title={lastPurchase.old_vendor}>{lastPurchase.old_vendor || '-'}</td>
-                      
-                      <td className="px-4 text-center bg-emerald-50/10 text-slate-500">{pUnit}</td>
-                      <td className="px-4 text-center bg-emerald-50/10 text-emerald-600 font-black font-mono">{formatNum(lastPurchase.qty)}</td>
-                      <td className="px-4 text-right bg-emerald-50/10 font-mono text-slate-600">{formatNum(lastPurchase.unit_price)}</td>
-                      <td className="px-4 text-right bg-emerald-50/10 font-mono text-orange-600">{formatNum(extraCost)}</td>
-                      <td className="px-4 text-right bg-emerald-50/10 font-black text-emerald-700 font-mono">{formatNum(lastPurchase.total_price)}</td>
-     
-                      <td className={`px-4 text-center border-l-4 border-slate-50 bg-blue-50/10 font-black text-xs ${isOut ? 'text-red-500' : isDanger ? 'text-orange-500' : 'text-blue-600'}`}>
+                      <td
+                        className={`px-2 text-center font-mono whitespace-nowrap tabular-nums border-l border-slate-200 bg-blue-50/20 ${
+                          isOut ? 'text-red-500' : isDanger ? 'text-orange-500' : 'text-blue-600'
+                        }`}
+                      >
                         {formatNum(currentStock)}
                       </td>
-                      <td className="px-4 text-center bg-blue-50/10 text-slate-400 font-mono">{safeStock}</td>
-                      <td className="px-4 text-center bg-blue-50/10">
-                        <span className={`px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-widest ${isOut ? 'bg-red-100 text-red-600 border border-red-200' : isDanger ? 'bg-orange-100 text-orange-600 border border-orange-200 animate-pulse' : 'bg-emerald-50 text-emerald-600'}`}>
+                      <td className="px-2 text-center font-mono text-slate-500 tabular-nums whitespace-nowrap bg-blue-50/20">
+                        {safeStock}
+                      </td>
+                      <td className="px-2 text-center bg-blue-50/20">
+                        <span
+                          className={`inline-block border px-1.5 py-0.5 rounded text-[10px] font-bold whitespace-nowrap ${
+                            isOut
+                              ? 'bg-red-50 text-red-600 border-red-200'
+                              : isDanger
+                                ? 'bg-orange-50 text-orange-600 border-orange-200'
+                                : 'bg-emerald-50 text-emerald-600 border-emerald-100'
+                          }`}
+                        >
                           {isOut ? '품절' : isDanger ? '재고부족' : '정상운용'}
                         </span>
                       </td>
-                      <td className="px-4 bg-blue-50/10 text-indigo-700 font-bold truncate max-w-[250px]" title={note}>{note}</td>
-                      
-                      <td className="px-4 text-center border-l-4 border-slate-50 bg-amber-50/10 font-black text-amber-600">{rUnit}</td>
-                      <td className="px-4 text-center bg-amber-50/10">
-                        <button 
-                          onClick={() => handleTogglePublish(item.id, isPublished)} 
-                          className={`w-full py-1.5 rounded-md text-[10px] font-black shadow-sm transition-all border ${isPublished ? 'bg-slate-100 border-slate-200 text-slate-500 hover:bg-slate-200' : 'bg-indigo-50 border-indigo-200 text-indigo-700 hover:bg-indigo-100'}`}
+                      <td className="px-2 truncate text-slate-700 bg-blue-50/20" title={note}>
+                        {note}
+                      </td>
+                      <td className="px-2 text-center text-amber-600 whitespace-nowrap border-l border-slate-200 bg-amber-50/20">
+                        {rUnit}
+                      </td>
+                      <td className="px-2 text-center bg-amber-50/20">
+                        <button
+                          type="button"
+                          onClick={() => handleTogglePublish(item.id, isPublished)}
+                          className={`w-full py-1 rounded-md text-[10px] font-black shadow-sm transition-all border ${
+                            isPublished
+                              ? 'bg-slate-100 border-slate-200 text-slate-500 hover:bg-slate-200'
+                              : 'bg-indigo-50 border-indigo-200 text-indigo-700 hover:bg-indigo-100'
+                          }`}
                         >
-                          {isPublished ? '⚫ 게시내리기' : '🟢 게시올리기'}
+                          {isPublished ? '게시내리기' : '게시올리기'}
                         </button>
                       </td>
-     
-                      <td className="px-4 border-l-4 border-slate-50 bg-slate-50/30">
-                      <div className="flex items-center justify-center gap-1.5 whitespace-nowrap">
-                          {/* 🚀 [해결] 입고 클릭 시 전달 인자도 vendor 가 아닌 old_vendor 백그라운드 매핑 연동 */}
-                          <button onClick={() => setStockInModal({ 
-                            id: item.id, name: item.name, vendor: lastPurchase.old_vendor || '', base_price: item.unit_price || 0, extra_cost: 0, qty: '', p_unit: pUnit,
-                            purchase_date: getKSTDateString(),
-                            stock_in_date: getKSTDateString()
-                          })} className="px-2 py-1.5 rounded text-[10px] font-black bg-emerald-600 text-white shadow-sm hover:bg-emerald-700 transition-colors">
-                            📦입고
+                      <td className="pr-3 px-2 border-l border-slate-200">
+                        <div className="flex items-center justify-center gap-1 whitespace-nowrap">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setStockInModal({
+                                id: item.id,
+                                name: item.name,
+                                vendor: lastPurchase.old_vendor || '',
+                                base_price: item.unit_price || 0,
+                                extra_cost: 0,
+                                qty: '',
+                                p_unit: pUnit,
+                                purchase_date: getKSTDateString(),
+                                stock_in_date: getKSTDateString(),
+                              })
+                            }
+                            className="px-2 py-1 rounded text-[10px] font-black bg-emerald-600 text-white shadow-sm hover:bg-emerald-700 transition-colors"
+                          >
+                            입고
                           </button>
-                          <button onClick={() => handleEditClick(item)} className="px-2 py-1.5 rounded text-[10px] font-black bg-white text-blue-600 border border-blue-200 shadow-sm hover:bg-blue-50 transition-colors">
-                            ✏️수정
+                          <button
+                            type="button"
+                            onClick={() => handleEditClick(item)}
+                            className="px-2 py-1 rounded text-[10px] font-black bg-white text-blue-600 border border-blue-200 shadow-sm hover:bg-blue-50 transition-colors"
+                          >
+                            수정
                           </button>
-                          <button onClick={() => handleArchive(item.id)} className="px-2 py-1.5 rounded text-[10px] font-black bg-white text-slate-500 border border-slate-200 shadow-sm hover:bg-slate-100 transition-colors">
+                          <button
+                            type="button"
+                            onClick={() => handleArchive(item.id)}
+                            className="px-2 py-1 rounded text-[10px] font-black bg-white text-slate-500 border border-slate-200 shadow-sm hover:bg-slate-100 transition-colors"
+                          >
                             보관함
                           </button>
-                          <button 
-                            onClick={() => !disableDelete && handleDeleteItem(item.id)}
-                            disabled={disableDelete}
-                            title={disableDelete ? "신청 이력 존재. 일반 삭제 불가" : ""}
-                            className={`px-2 py-1.5 rounded text-[10px] font-black shadow-sm transition-colors border ${disableDelete ? 'bg-slate-100 text-slate-300 border-slate-200 cursor-not-allowed' : 'bg-white text-red-500 border-red-200 hover:bg-red-50'}`}
-                          >
-                            삭제
-                          </button>
+                          {canEdit && !hasUsageHistory && (
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteItem(item)}
+                              className="px-2 py-1 rounded text-[10px] font-black bg-red-50 border border-red-200 text-red-500 shadow-sm hover:bg-red-500 hover:text-white transition-colors"
+                              title="신청·입고 이력이 없는 품목만 삭제 가능"
+                            >
+                              삭제
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -575,25 +691,16 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
               </div>
      
               <div className="w-2/3 space-y-4">
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-1.5">품목코드 (고유ID)</label>
-                    <input 
-                      type="text" required disabled={!editModal.isNew} value={editModal.id} onChange={(e) => setEditModal({...editModal, id: e.target.value})}
-                      className="w-full p-2.5 bg-white border border-slate-200 rounded-xl text-xs font-black text-slate-900 outline-none focus:border-indigo-500 shadow-sm disabled:bg-slate-100 disabled:text-slate-400"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-1.5">품목명 (Master)</label>
-                    {supplyOptions.length > 0 ? (
-                      <select required value={editModal.name} onChange={(e) => setEditModal({...editModal, name: e.target.value})} className="w-full p-2.5 bg-white border border-slate-200 rounded-xl text-xs font-black text-indigo-700 outline-none focus:border-indigo-500 shadow-sm">
-                        <option value="">품목 선택</option>
-                        {supplyOptions.map((opt:any) => <option key={opt.id} value={opt.label}>{opt.label}</option>)}
-                      </select>
-                    ) : (
-                      <input type="text" required value={editModal.name} onChange={(e) => setEditModal({...editModal, name: e.target.value})} className="w-full p-2.5 bg-white border border-slate-200 rounded-xl text-xs font-black text-slate-900 outline-none shadow-sm" placeholder="직접 입력" />
-                    )}
-                  </div>
+                <div>
+                  <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-1.5">품목명 (Master)</label>
+                  {supplyOptions.length > 0 ? (
+                    <select required value={editModal.name} onChange={(e) => setEditModal({...editModal, name: e.target.value})} className="w-full p-2.5 bg-white border border-slate-200 rounded-xl text-xs font-black text-indigo-700 outline-none focus:border-indigo-500 shadow-sm">
+                      <option value="">품목 선택</option>
+                      {supplyOptions.map((opt:any) => <option key={opt.id} value={opt.label}>{opt.label}</option>)}
+                    </select>
+                  ) : (
+                    <input type="text" required value={editModal.name} onChange={(e) => setEditModal({...editModal, name: e.target.value})} className="w-full p-2.5 bg-white border border-slate-200 rounded-xl text-xs font-black text-slate-900 outline-none shadow-sm" placeholder="직접 입력" />
+                  )}
                 </div>
      
                 <div className="bg-slate-100 p-3 rounded-xl border border-slate-200 grid grid-cols-2 gap-4">
@@ -628,7 +735,7 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
                     />
                   </div>
                   <div>
-                    <label className="text-[10px] font-black text-orange-500 uppercase tracking-widest block mb-1.5">위험 경고 알림 수량</label>
+                    <label className="text-[10px] font-black text-orange-500 uppercase tracking-widest block mb-1.5">재고 알람 기준 수량</label>
                     <input 
                       type="number" min="0" required value={editModal.alert_qty} onChange={(e) => setEditModal({...editModal, alert_qty: e.target.value})}
                       className="w-full p-2.5 bg-white border border-orange-200 rounded-xl text-xs font-black text-orange-600 outline-none focus:border-orange-400 shadow-sm text-right"
@@ -752,7 +859,7 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
      
 export default function MasterDashboardModule(props: any) {
   return (
-    <Suspense fallback={<div className="p-20 text-center font-black animate-pulse text-indigo-400 uppercase tracking-widest text-xl">LOADING SERVER WORKSPACE...</div>}>
+    <Suspense fallback={<LoadingState />}>
       <SuppliesMasterDashboardContent {...props} />
     </Suspense>
   );

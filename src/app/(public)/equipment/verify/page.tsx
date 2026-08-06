@@ -1,6 +1,5 @@
 import prisma from "@/lib/prisma";
 import { notFound } from "next/navigation";
-import Link from "next/link";
 import type { ReactNode } from "react";
 import { getKSTDateString, getKSTDaysUntil, parseKSTDateOnly } from "@/utils/dateUtils";
 import {
@@ -8,6 +7,7 @@ import {
   getLatestCalibBaseYmd,
   toCalibYmd,
 } from "@/utils/equipmentCalib";
+import { parseEquipmentArchiveMemo } from "@/utils/equipmentMemo";
 
 export const dynamic = "force-dynamic";
 
@@ -47,6 +47,55 @@ function InfoCell({
   );
 }
 
+/** 원본 + 부분폐기(_ARC_) 조각을 묶어 정상/폐기 수량 합산 */
+async function resolveQtyBreakdown(equipment: {
+  id: string;
+  asset_no: string;
+  qty: number;
+  status: string;
+  etc_memo: string | null;
+}) {
+  const baseAssetNo = String(equipment.asset_no || "").split("_ARC_")[0] || "";
+  const memo = parseEquipmentArchiveMemo(equipment.etc_memo);
+  const sourceId =
+    memo.sourceEquipmentId ||
+    (String(equipment.asset_no || "").includes("_ARC_") ? null : equipment.id);
+
+  const related = await prisma.equipment.findMany({
+    where: {
+      OR: [
+        { id: equipment.id },
+        ...(sourceId ? [{ id: sourceId }] : []),
+        ...(baseAssetNo
+          ? [
+              { asset_no: baseAssetNo },
+              { asset_no: { startsWith: `${baseAssetNo}_ARC_` } },
+            ]
+          : []),
+      ],
+    },
+    select: { id: true, qty: true, status: true, asset_no: true },
+  });
+
+  const byId = new Map(related.map((r) => [r.id, r]));
+  let normalQty = 0;
+  let archivedQty = 0;
+  for (const row of byId.values()) {
+    const q = Number(row.qty) || 0;
+    if (row.status === "정상") normalQty += q;
+    else archivedQty += q;
+  }
+
+  if (byId.size === 0) {
+    const q = Number(equipment.qty) || 0;
+    if (equipment.status === "정상") normalQty = q;
+    else archivedQty = q;
+  }
+
+  const totalQty = normalQty + archivedQty;
+  return { normalQty, archivedQty, totalQty };
+}
+
 export default async function PublicEquipmentVerifyPage({
   searchParams,
 }: {
@@ -76,7 +125,20 @@ export default async function PublicEquipmentVerifyPage({
     );
   }
 
+  const categoryPath = equipment.category
+    ? `/equipment/main/${equipment.category}`
+    : null;
+  const categoryMenu = categoryPath
+    ? await prisma.interfaceConfig.findUnique({
+        where: { path: categoryPath },
+        select: { name: true },
+      })
+    : null;
+  const categoryLabel = categoryMenu?.name || equipment.category || "-";
+
   const assetNo = equipment.asset_no?.split("_ARC_")[0] || "-";
+  const { normalQty, archivedQty, totalQty } = await resolveQtyBreakdown(equipment);
+
   const baseCalib = getLatestCalibBaseYmd(equipment.histories);
   const nextCalibDate =
     addMonthsToCalibYmd(baseCalib, equipment.calib_cycle_mo) ||
@@ -91,7 +153,6 @@ export default async function PublicEquipmentVerifyPage({
   );
 
   const lastReplaceYmd = toCalibYmd(equipment.last_replace_date);
-  // 🚀 자동산정 교체예정일은 장비 구매/교체일(purchase_date) 기준으로 산정
   const purchaseYmd = toCalibYmd(equipment.purchase_date);
   let nextReplaceDate = "-";
   if (purchaseYmd && equipment.replace_cycle_mo) {
@@ -127,7 +188,6 @@ export default async function PublicEquipmentVerifyPage({
   return (
     <div className="min-h-screen bg-slate-100 p-4 font-sans flex flex-col items-center justify-start pb-12">
       <div className="w-full max-w-md bg-white rounded-3xl shadow-xl overflow-hidden border border-slate-200/80">
-        {/* 상단: 로그인 없이 보는 공개 요약 */}
         <div className="bg-slate-900 p-6 text-white text-center">
           <div className="flex items-center justify-center gap-2 flex-wrap">
             <span className="bg-indigo-600 text-white px-3 py-1 rounded-full text-[10px] font-black tracking-wider">
@@ -150,12 +210,24 @@ export default async function PublicEquipmentVerifyPage({
               기본 정보
             </h2>
             <div className="grid grid-cols-2 gap-2 text-xs">
-              <InfoCell label="관리 부서" value={equipment.department || "공용"} />
-              <InfoCell label="보유 수량" value={`${equipment.qty ?? "-"} EA`} />
+              <InfoCell label="장비 종류 범주" value={categoryLabel} />
+              <InfoCell label="장비관리소속" value={equipment.department || "공용"} />
               <InfoCell label="제조사" value={equipment.brand || "-"} />
-              <InfoCell label="모델명 / S.N" value={equipment.model_name || "-"} />
+              <InfoCell label="모델번호" value={equipment.model_name || "-"} />
+              <InfoCell label="시리얼번호" value={equipment.serial_no || "-"} />
               <InfoCell
-                label="제품 사양"
+                label="보유개수"
+                value={
+                  <span>
+                    {totalQty} EA
+                    <span className="text-[10px] font-bold text-slate-500 ml-1.5">
+                      (정상 {normalQty} / 폐기 {archivedQty})
+                    </span>
+                  </span>
+                }
+              />
+              <InfoCell
+                label="제품사양 요약"
                 span
                 value={equipment.spec_summary || "등록된 사양 정보가 없습니다."}
               />
@@ -191,8 +263,8 @@ export default async function PublicEquipmentVerifyPage({
                   </span>
                 }
               />
-              <InfoCell label="최근 장비 구매/교체일" value={formatDate(equipment.purchase_date)} />
-              <InfoCell label="최근 소모품 교체일" value={lastReplaceYmd || "-"} />
+              <InfoCell label="구매일" value={formatDate(equipment.purchase_date)} />
+              <InfoCell label="최근 소모품교체/수리일" value={lastReplaceYmd || "-"} />
               <InfoCell
                 label="자동산정 교체예정일"
                 span
@@ -224,13 +296,17 @@ export default async function PublicEquipmentVerifyPage({
                       }`}
                     />
                     {equipment.status || "-"}
+                    {!isArchived && archivedQty > 0 ? (
+                      <span className="text-[10px] font-bold text-amber-700 ml-1">
+                        (일부 폐기 {archivedQty}EA)
+                      </span>
+                    ) : null}
                   </span>
                 }
               />
             </div>
           </div>
 
-          {/* 상세는 로그인 후 */}
           <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4 text-center space-y-2">
             <p className="text-[11px] font-black text-slate-700">더 자세한 정보가 필요하신가요?</p>
             <p className="text-[10px] font-bold text-slate-500 leading-relaxed">
@@ -238,7 +314,6 @@ export default async function PublicEquipmentVerifyPage({
               <br />
               장비 코너에서 확인할 수 있습니다.
             </p>
-          
           </div>
         </div>
 

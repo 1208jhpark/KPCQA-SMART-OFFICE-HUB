@@ -2,6 +2,7 @@
   
 import React, { useState, useEffect, useRef } from 'react';
 import Link from 'next/link'; 
+import { usePathname } from 'next/navigation';
 import { saveAs } from 'file-saver';
 import { getKSTDateString, formatKSTCalendarLabel } from '@/utils/dateUtils';
   
@@ -33,13 +34,48 @@ interface Question {
   referenceLink?: string;
   goToSectionId?: string;
 }
+
+const stripTitleOrderPrefix = (title: string) => String(title || '').replace(/^\d+\.\s*/, '');
+
+const applyTitleOrderPrefixes = (list: Question[]) => {
+  let n = 1;
+  return list.map((q) => {
+    if (q.type === 'SECTION') return q;
+    return { ...q, title: `${n++}. ${stripTitleOrderPrefix(q.title)}` };
+  });
+};
+
+const clearTitleOrderPrefixes = (list: Question[]) =>
+  list.map((q) => (q.type === 'SECTION' ? q : { ...q, title: stripTitleOrderPrefix(q.title) }));
   
 export default function AdminDeliveryBuilderModule() {
+  const pathname = usePathname();
   const [surveyId, setSurveyId] = useState<string | null>(null);
   const [questions, setQuestions] = useState<Question[]>([]);
+  const [orderApplied, setOrderApplied] = useState(false);
+  /** false = 편집 제한 → 상단 3버튼(순서일괄부여/초기화/저장)만 비활성 */
+  const [canEdit, setCanEdit] = useState(false);
+  const [permReady, setPermReady] = useState(false);
+  const [permissionSummary, setPermissionSummary] = useState<{
+    masterName: string;
+    accessDesignate: string;
+    accessOrg: string;
+    accessLevel: string;
+    editDesignate: string;
+    editLevel: string;
+  } | null>(null);
   
   const dragItem = useRef<number | null>(null);
   const dragOverItem = useRef<number | null>(null);
+
+  const BUILDER_MENU_PATH = '/survey/delivery/admin/survey-builder';
+  const editAllowed = permReady && canEdit;
+
+  const requireEdit = () => {
+    if (editAllowed) return true;
+    alert('권한이 없습니다.');
+    return false;
+  };
   
   useEffect(() => {
     // 🔥 카카오 주소 API 동적 인젝션
@@ -56,6 +92,31 @@ export default function AdminDeliveryBuilderModule() {
       const params = new URLSearchParams(window.location.search);
       const id = params.get('id');
       setSurveyId(id);
+
+      // 편집 권한: 빌더 메뉴 path만 (active Master와 분리)
+      fetch('/api/survey/delivery?t=' + Date.now(), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'GET_ADMIN_CONTEXT', menuPath: BUILDER_MENU_PATH }),
+        cache: 'no-store',
+      })
+        .then(async (r) => {
+          if (!r.ok) {
+            setCanEdit(false);
+            setPermissionSummary(null);
+            setPermReady(true);
+            return;
+          }
+          const ctx = await r.json();
+          setCanEdit(ctx?.canEdit === true);
+          setPermissionSummary(ctx?.permissionSummary || null);
+          setPermReady(true);
+        })
+        .catch(() => {
+          setCanEdit(false);
+          setPermissionSummary(null);
+          setPermReady(true);
+        });
   
       // 🚀 [DB 연동] DB에서 해당 공고의 questions 컬럼을 즉시 읽어옵니다.
       if (id) {
@@ -89,7 +150,7 @@ export default function AdminDeliveryBuilderModule() {
           });
       }
     }
-  }, []);
+  }, [pathname]);
   
   const handleSort = () => {
     if (dragItem.current === null || dragOverItem.current === null) return;
@@ -98,7 +159,18 @@ export default function AdminDeliveryBuilderModule() {
     _questions.splice(dragOverItem.current, 0, draggedItemContent);
     dragItem.current = null;
     dragOverItem.current = null;
-    setQuestions(_questions);
+    setQuestions(orderApplied ? applyTitleOrderPrefixes(_questions) : _questions);
+  };
+
+  const toggleOrderBatch = () => {
+    if (!requireEdit()) return;
+    if (orderApplied) {
+      setQuestions((prev) => clearTitleOrderPrefixes(prev));
+      setOrderApplied(false);
+    } else {
+      setQuestions((prev) => applyTitleOrderPrefixes(prev));
+      setOrderApplied(true);
+    }
   };
   
   const openPostcodeEngine = (qId: string) => {
@@ -119,6 +191,7 @@ export default function AdminDeliveryBuilderModule() {
   
   // 🚀 [DB 연동 완료]: QuotaExceededError 완전 해방! PostgreSQL 직접 저장 로직
   const handleSaveSurvey = async () => {
+    if (!requireEdit()) return;
     if (questions.length === 0) return alert('최소 1개 이상의 문항을 추가해주세요.');
     if (!surveyId) return alert('공고 ID가 유효하지 않습니다. 현황판에서 다시 진입해주세요.');
      
@@ -141,7 +214,7 @@ export default function AdminDeliveryBuilderModule() {
       if (!currentSurvey) return alert('해당 공고를 찾을 수 없습니다.');
        
       // 2. 기존 공고 정보에 생성된 questions 배열을 병합하여 API로 전송 (대용량 허용)
-      const payload = { ...currentSurvey, questions: questions };
+      const payload = { ...currentSurvey, questions: questions, menuPath: '/survey/delivery/admin/survey-builder' };
        
       const res = await fetch('/api/survey/delivery', {
         method: 'POST',
@@ -152,7 +225,8 @@ export default function AdminDeliveryBuilderModule() {
       if (res.ok) {
         alert('✅ 배달 신청 양식 문항이 DB에 성공적으로 저장되었습니다!');
       } else {
-        alert('❌ 서버 인프라 저장에 실패했습니다.');
+        const err = await res.json().catch(() => ({}));
+        alert(`❌ 저장 실패: ${err.error || '편집 권한이 없거나 서버 오류입니다.'}`);
       }
     } catch (error) {
       alert('❌ 네트워크 오류가 발생했습니다.');
@@ -278,28 +352,108 @@ export default function AdminDeliveryBuilderModule() {
     formatKSTCalendarLabel(dateStr, '날짜를 지정해 주세요.');
      
   const availableSections = questions.filter(q => q.type === 'SECTION');
+
+  const questionNoById: Record<string, number> = {};
+  {
+    let n = 1;
+    questions.forEach((q) => {
+      if (q.type !== 'SECTION') questionNoById[q.id] = n++;
+    });
+  }
   
   return (
     <div className="min-h-screen bg-slate-100 font-sans text-slate-900 pb-32 animate-fade-in relative text-[11px]">
-      <div className="sticky top-0 z-50 bg-white border-b border-slate-200 px-8 py-4 flex justify-between items-center shadow-sm">
-        <div className="flex items-center gap-4">
-          <Link href="/survey/delivery/admin/active-surveys" className="px-3 py-2 bg-slate-100 rounded-lg hover:bg-slate-200 transition-colors font-black text-[11px] text-slate-600">
-            ⬅️ 통합 공고 현황판으로 돌아가기
-          </Link>
-          <div className="h-6 w-px bg-slate-200 mx-2"></div>
-          <div>
-            <h1 className="text-lg font-black text-slate-800">🛠️ 배달 신청 문항 생성기 (Delivery Builder)</h1>
-            <p className="text-[10px] text-slate-400 font-bold mt-0.5">물품 배송에 특화된 서식 인프라 필드 및 사은품 옵션을 캔버스에 결합합니다.</p>
+      <div className="sticky top-0 z-50 bg-white border-b border-slate-200 px-8 py-4 shadow-sm">
+        <div className="flex justify-between items-center gap-4">
+          <div className="flex items-center gap-4 min-w-0">
+            <Link href="/survey/delivery/admin/active-surveys" className="px-3 py-2 bg-slate-100 rounded-lg hover:bg-slate-200 transition-colors font-black text-[11px] text-slate-600 shrink-0">
+              ⬅️ 통합 공고 현황판으로 돌아가기
+            </Link>
+            <div className="h-6 w-px bg-slate-200 mx-2 shrink-0"></div>
+            <div className="min-w-0">
+              <h1 className="text-lg font-black text-slate-800">🛠️ 배달 신청 문항 생성기 (Delivery Builder)</h1>
+              <p className="text-[10px] text-slate-400 font-bold mt-0.5">물품 배송에 특화된 서식 인프라 필드 및 사은품 옵션을 캔버스에 결합합니다.</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            {permReady && !editAllowed && (
+              <span className="px-3 py-1.5 bg-amber-50 border border-amber-200 text-amber-700 rounded-lg text-[10px] font-black whitespace-nowrap">
+                🔒 편집 제한
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={toggleOrderBatch}
+              className={`px-4 py-2.5 rounded-xl text-xs font-black transition-all ${
+                !editAllowed
+                  ? 'bg-slate-200 text-slate-400 cursor-not-allowed opacity-60'
+                  : orderApplied
+                  ? 'bg-amber-500 text-white hover:bg-amber-600 shadow-sm'
+                  : 'bg-white border border-slate-300 text-slate-700 hover:bg-slate-50'
+              }`}
+              title={orderApplied ? '제목에 부여된 순번(1. 2. …)을 제거합니다' : '보이는 순번을 제목 앞자리에 고정 문구로 넣습니다'}
+            >
+              {orderApplied ? '순서부여 취소' : '순서일괄부여'}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                if (!requireEdit()) return;
+                if (confirm('모든 문항을 지우시겠습니까?')) {
+                  setQuestions([]);
+                  setOrderApplied(false);
+                }
+              }}
+              className={`px-4 py-2.5 rounded-xl text-xs font-black transition-all ${
+                editAllowed
+                  ? 'bg-slate-100 text-slate-500 hover:bg-slate-200'
+                  : 'bg-slate-200 text-slate-400 cursor-not-allowed opacity-60'
+              }`}
+            >
+              초기화
+            </button>
+            <button
+              type="button"
+              onClick={handleSaveSurvey}
+              className={`px-6 py-2.5 rounded-xl text-[11px] font-black shadow-lg transition-all ${
+                editAllowed
+                  ? 'bg-teal-600 text-white hover:bg-teal-700'
+                  : 'bg-slate-300 text-slate-500 cursor-not-allowed opacity-60'
+              }`}
+            >
+              💾 배달 양식 문항 저장
+            </button>
           </div>
         </div>
-        <div className="flex items-center gap-2">
-          <button onClick={() => { if(confirm('모든 문항을 지우시겠습니까?')) setQuestions([]); }} className="px-4 py-2.5 bg-slate-100 rounded-xl text-xs font-black text-slate-500 hover:bg-slate-200 transition-all mr-2">초기화</button>
-          <button onClick={handleSaveSurvey} className="px-6 py-2.5 bg-teal-600 rounded-xl text-[11px] font-black text-white shadow-lg hover:bg-teal-700 transition-all">
-            💾 배달 양식 문항 저장
-          </button>
-        </div>
+        {permissionSummary && (
+          <div className="flex flex-wrap items-center gap-2 mt-3 pt-3 border-t border-slate-100">
+            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-blue-50 border-blue-200 text-blue-700 shadow-sm">
+              <span>👑 Master 책임자:</span>
+              <span>{permissionSummary.masterName}</span>
+            </div>
+            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-purple-50 border-purple-200 text-purple-700 shadow-sm">
+              <span>👁️ Access:</span>
+              <span>{permissionSummary.accessDesignate}</span>
+              <span className="opacity-50">|</span>
+              <span className="truncate max-w-[160px]">Org: {permissionSummary.accessOrg}</span>
+              <span className="opacity-50">|</span>
+              <span>Level: {permissionSummary.accessLevel}</span>
+            </div>
+            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-emerald-50 border-emerald-200 text-emerald-700 shadow-sm">
+              <span>✍️ Edit:</span>
+              <span>{permissionSummary.editDesignate}</span>
+              <span className="opacity-50">|</span>
+              <span>Level: {permissionSummary.editLevel}</span>
+            </div>
+            {!editAllowed && (
+              <span className="text-[10px] font-black text-amber-700 bg-amber-50 border border-amber-200 px-2.5 py-1 rounded-md">
+                현재 계정: 조회만 가능 (편집 권한 없음)
+              </span>
+            )}
+          </div>
+        )}
       </div>
-  
+
       <div className="max-w-[800px] mx-auto mt-8 space-y-6">
         {questions.map((q, index) => (
           <div key={q.id} draggable onDragStart={() => (dragItem.current = index)} onDragEnter={() => (dragOverItem.current = index)} onDragEnd={handleSort} onDragOver={(e) => e.preventDefault()}
@@ -313,7 +467,7 @@ export default function AdminDeliveryBuilderModule() {
             <div className="flex flex-wrap md:flex-nowrap justify-between items-start gap-4 mb-4 mt-2">
               <div className="flex-1 flex gap-3 w-full">
                 <span className={`text-lg font-black mt-1 ${q.type === 'SECTION' ? 'text-teal-600' : 'text-slate-300'}`}>
-                  {q.type === 'SECTION' ? '🔖' : `${index + 1}.`}
+                  {q.type === 'SECTION' ? '🔖' : `${questionNoById[q.id]}.`}
                 </span>
                 <div className="w-full flex flex-col gap-1">
                   <input 

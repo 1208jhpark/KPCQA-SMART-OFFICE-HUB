@@ -2,20 +2,28 @@
   
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
+import { resolveEntryHref } from '@/lib/resolve-entry-href';
   
 export default function ServiceHomePage() {
   const [menus, setMenus] = useState<any[]>([]);
   const [config, setConfig] = useState<any>(null);
+  const [user, setUser] = useState<any>(null);
+  const [unitsList, setUnitsList] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   
   const fetchData = async () => {
     try {
-      const [menuRes, configRes] = await Promise.all([
-        fetch('/api/admin/interface', { cache: 'no-store' }),
-        fetch('/api/admin/config', { cache: 'no-store' })
+      const ts = Date.now();
+      const [menuRes, configRes, meRes, unitsRes] = await Promise.all([
+        fetch('/api/admin/interface?t=' + ts, { cache: 'no-store' }),
+        fetch('/api/admin/config?t=' + ts, { cache: 'no-store' }),
+        fetch('/api/auth/me?t=' + ts, { cache: 'no-store' }).catch(() => null),
+        fetch('/api/admin/units?active=true&t=' + ts, { cache: 'no-store' }).catch(() => null),
       ]);
       if (menuRes.ok) setMenus(await menuRes.json());
       if (configRes.ok) setConfig(await configRes.json());
+      if (unitsRes && unitsRes.ok) setUnitsList(await unitsRes.json());
+      if (meRes && meRes.ok) setUser(await meRes.json());
     } catch (error) {
       console.error("Home Data Fetch Error:", error);
     } finally {
@@ -29,6 +37,12 @@ export default function ServiceHomePage() {
     e.preventDefault();
     alert(`🚀 [${name}] 서비스는 현재 고도화 준비 중입니다.`);
   };
+
+  const hrefForStep1 = (menu: any) => {
+    if (!menu.is_active) return '#';
+    // admin/interface Step 1 Entry Mode 반영 (화면 UI는 그대로, 클릭 목적지만)
+    return resolveEntryHref(menu, menus, user, unitsList);
+  };
   
   if (loading || !config) return (
     <div className="w-full h-[calc(100vh-64px)] bg-white flex items-center justify-center">
@@ -36,7 +50,6 @@ export default function ServiceHomePage() {
         <div className="w-12 h-0.5 bg-gray-100 overflow-hidden relative border rounded-full">
           <div className="absolute inset-0 bg-indigo-600 animate-progress origin-left" />
         </div>
-        <span className="text-[10px] font-bold text-gray-400 tracking-[0.3em] uppercase">Booting Hub...</span>
       </div>
     </div>
   );
@@ -62,7 +75,7 @@ export default function ServiceHomePage() {
   
   return (
     // 💡 중복 차단용 fixed 가림막을 해제하고 레이아웃 내부 안착 스케일로 정돈
-    <div className="w-full min-h-[calc(100vh-64px)] bg-[#f8fafc] text-slate-900 flex flex-col items-center relative overflow-x-hidden font-sans pb-12 selection:bg-indigo-500 selection:text-white">
+    <div className="w-full min-h-[calc(100vh-64px)] bg-[#f8fafc] text-slate-900 flex flex-col items-center relative overflow-x-hidden font-sans selection:bg-indigo-500 selection:text-white">
       
       {/* ❌ 껍데기 하드코딩 헤더 nav 태그 전면 제거 완료 -> 부모 layout.tsx의 헤더를 깨끗하게 투과하여 사용합니다. */}
   
@@ -81,14 +94,18 @@ export default function ServiceHomePage() {
           <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full animate-pulse" />
           <span>Integrated Smart Governance Hub</span>
         </div>
-        
-        <h1 className={`font-black tracking-tighter text-slate-900 leading-[0.95] mb-5 transition-all ${isVertical ? 'text-6xl md:text-7xl' : 'text-5xl md:text-6xl'}`}>
+
+        <h1 className={`font-black tracking-tight text-slate-900 leading-[0.95] transition-all ${isVertical ? 'text-6xl md:text-7xl' : 'text-5xl md:text-6xl'}`}>
           {config.main_headline}
         </h1>
-        
-        <p className={`text-sm md:text-base text-slate-500 font-medium tracking-tight max-w-xl ${!isVertical && 'mx-auto'}`}>
-          {config.sub_headline}
-        </p>
+
+        {config.sub_headline ? (
+          <p className={`mt-5 text-sm md:text-[15px] font-semibold text-slate-900 leading-relaxed max-w-2xl ${!isVertical && 'mx-auto'}`}>
+            {config.sub_headline}
+          </p>
+        ) : null}
+
+        <div className={`mt-7 h-px w-10 bg-indigo-400/60 ${!isVertical && 'mx-auto'}`} />
       </header>
   
       {/* Service Grid */}
@@ -103,26 +120,31 @@ export default function ServiceHomePage() {
           {Array.isArray(menus) && menus.filter(m => m.level === 1 && m.is_visible).map((menu) => (
             <Link 
               key={menu.id} 
-              href={menu.is_active ? menu.path : '#'}
+              href={hrefForStep1(menu)}
               onClick={(e) => !menu.is_active && handleInactiveClick(e, menu.name)}
               className={`group flex flex-row items-center gap-5 bg-white/80 backdrop-blur-md rounded-[1.5rem] border border-slate-200/80 shadow-sm transition-all duration-300 relative overflow-hidden
                 p-5 h-28
+                ${menu.icon ? '' : 'justify-center'}
                 ${!menu.is_active 
                   ? 'opacity-30 grayscale cursor-not-allowed border-dashed bg-transparent' 
-                  : 'hover:bg-white hover:border-indigo-400 hover:shadow-[0_15px_30px_rgba(99,102,241,0.12)] hover:-translate-y-1'
+                  : 'hover:bg-gradient-to-br hover:from-indigo-50 hover:via-white hover:to-sky-50/80 hover:border-indigo-300 hover:shadow-[0_15px_30px_rgba(99,102,241,0.12)] hover:-translate-y-1'
                 }`}
             >
-              <div className="transition-all duration-500 group-hover:scale-110 shrink-0 text-4xl">
-                {menu.icon || '📦'}
-              </div>
+              {menu.icon ? (
+                <div className="transition-all duration-500 group-hover:scale-110 shrink-0 text-4xl">
+                  {menu.icon}
+                </div>
+              ) : null}
               
-              <div className="text-left">
-                <h3 className="font-black text-slate-800 tracking-tight mb-1 flex items-center text-lg">
+              <div className={menu.icon ? 'text-left' : 'text-center'}>
+                <h3 className={`font-black text-slate-800 tracking-tight mb-1 flex items-center text-lg ${menu.icon ? '' : 'justify-center'}`}>
                   {menu.name}
                   {menu.is_active && (
-                    <svg className="w-3.5 h-3.5 ml-2 opacity-0 group-hover:opacity-100 transition-all text-indigo-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M14 5l7 7m0 0l-7 7m7-7H3" />
-                    </svg>
+                    <span className="ml-2 inline-flex items-center justify-center opacity-0 -translate-x-1.5 group-hover:opacity-100 group-hover:translate-x-0 transition-all duration-300 ease-out">
+                      <svg className="w-4 h-4 text-indigo-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.75} aria-hidden>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M5 12h12.5m0 0L13 7.5M17.5 12 13 16.5" />
+                      </svg>
+                    </span>
                   )}
                 </h3>
                 <p className="text-slate-400 font-medium leading-snug line-clamp-2 text-[12px]">
@@ -138,42 +160,32 @@ export default function ServiceHomePage() {
         </div>
       </main>
   
-      {/* Bottom Banner */}
-      <footer className="relative z-10 shrink-0 w-full max-w-[1600px] px-8 md:px-16 pb-6 pt-2">
-        <div className="flex flex-col md:flex-row items-center justify-between border-t border-slate-200/60 pt-6 gap-6">
-          <div className="flex items-center space-x-3">
-            <span className="text-[10px] font-black text-slate-300 uppercase tracking-[0.4em] whitespace-nowrap">External Assets</span>
-            <div className="h-px w-8 bg-slate-200/60 hidden md:block" />
+      {/* Linked sites — 라인 아래는 상단 헤더와 동일 slate-900 */}
+      <footer className="relative z-10 shrink-0 w-full mt-auto pt-16">
+        <div className="w-full bg-slate-900 py-8">
+          <div className="w-full max-w-[1600px] mx-auto px-8 md:px-16">
+            <div className="px-2">
+              {dynamicSites.length > 0 ? (
+                <div className="flex flex-wrap items-center justify-center gap-x-2 gap-y-2">
+                  {dynamicSites.map((site: any, idx: number) => (
+                    <a
+                      key={idx}
+                      href={site.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="px-4 py-2 text-[15px] font-semibold tracking-tight text-slate-300 rounded-lg border border-transparent bg-transparent transition-all duration-200 hover:text-white hover:bg-white/10 hover:border-white/15"
+                    >
+                      {site.name}
+                    </a>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-center text-sm text-slate-500 font-medium">
+                  연동 사이트를 등록해 주세요.
+                </p>
+              )}
+            </div>
           </div>
-          
-          {/* 🚀 수정 후: gap-3(간격넓힘), text-xs(글씨키움), text-slate-900(검정색), px-5 py-2.5(버튼크기키움), font-black(글씨더굵게) */}
-          <div className="flex flex-wrap items-center justify-center gap-3">
-          {dynamicSites.map((site: any, idx: number) => (
-              <a 
-                key={idx} 
-                href={site.url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-xs font-black tracking-widest text-slate-900 bg-white/60 backdrop-blur-sm border border-slate-300 px-5 py-2.5 rounded-xl transition-all hover:bg-white hover:text-indigo-600 hover:border-indigo-400 hover:shadow-md hover:-translate-y-0.5 shadow-sm active:scale-95 font-sans"
-              >
-                {site.name}
-              </a>
-            ))}
-            {dynamicSites.length === 0 && (
-              <span className="text-xs text-slate-400 italic py-2">연동 사이트를 등록해 주세요.</span>
-            )}
-          </div>
-  
-          <div className="flex items-center space-x-6">
-            <Link href="/admin/interface" className="group flex items-center gap-2 opacity-40 hover:opacity-100 transition-opacity">
-              <span className="text-[10px] font-black text-slate-500 group-hover:text-indigo-600 uppercase tracking-widest">Setup</span>
-              <div className="w-5 h-5 rounded-full bg-white border border-slate-200 flex items-center justify-center text-[10px] shadow-sm">⚙️</div>
-            </Link>
-          </div>
-        </div>
-        
-        <div className="mt-6 text-center text-[9px] font-bold text-slate-300 tracking-[0.6em] uppercase">
-          / KPCQA SMART OFFICE HUB /
         </div>
       </footer>
     </div>

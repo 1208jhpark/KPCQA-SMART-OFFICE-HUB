@@ -3,8 +3,9 @@
 import React, { useState, useEffect } from 'react';
 import { useParams } from 'next/navigation';
 import { saveAs } from 'file-saver';
-import { isPastKSTDeadline } from '@/utils/dateUtils';
+import { isPastKSTDeadline, getKSTDateString } from '@/utils/dateUtils';
 import { getVisibleQuestionsByBranch } from '@/utils/surveyBranching';
+import { normalizeGeneralResponsesPayload } from '@/utils/surveyGeneralResponses';
   
 interface SurveyOption {
   label: string;
@@ -44,15 +45,19 @@ export default function PublicSurveyResponsePage() {
   const [loading, setLoading] = useState(true);
   const [unavailableReason, setUnavailableReason] = useState<string | null>(null);
   
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [isAuthLoading, setIsAuthLoading] = useState(false);
-  const [isEmailVerified, setIsEmailVerified] = useState(false);
+  const [sessionUser, setSessionUser] = useState<{ email: string; name: string } | null>(null);
   const [isIntroConfirmed, setIsIntroConfirmed] = useState(false);
-  const [isSubmitCompleted, setIsSubmitCompleted] = useState(false); 
+  const [isSubmitCompleted, setIsSubmitCompleted] = useState(false);
+  const [existingSubmittedAt, setExistingSubmittedAt] = useState<string | null>(null);
+  const [showAlreadySubmitted, setShowAlreadySubmitted] = useState(false);
   
   const [answers, setAnswers] = useState<Record<string, any>>({});
   const [currentSectionId, setCurrentSectionId] = useState<string | null>(null);
+
+  const formatSubmittedLabel = (raw: string | Date | null | undefined) => {
+    const ymd = raw ? getKSTDateString(raw) : '';
+    return ymd ? ymd.replace(/-/g, '.') : '';
+  };
      
   useEffect(() => {
     if (!id) return;
@@ -71,10 +76,17 @@ export default function PublicSurveyResponsePage() {
     const init = async () => {
       try {
         const ts = Date.now();
-        const [generalRes, deliveryRes] = await Promise.all([
+        const [meRes, generalRes, deliveryRes] = await Promise.all([
+          fetch('/api/auth/me', { cache: 'no-store' }).then((r) => (r.ok ? r.json() : null)).catch(() => null),
           fetch(`/api/survey/general?t=${ts}`, { cache: 'no-store' }).then(r => r.ok ? r.json() : []).catch(() => []),
           fetch(`/api/survey/delivery?t=${ts}`, { cache: 'no-store' }).then(r => r.ok ? r.json() : []).catch(() => [])
         ]);
+
+        if (!meRes?.email) {
+          setUnavailableReason('로그인 정보가 없습니다. Smart Office Hub에 다시 로그인해 주세요.');
+          return;
+        }
+        setSessionUser({ email: meRes.email, name: meRes.name || meRes.email });
         
         const generalMatch = generalRes.find((s: any) => s.id === id);
         const deliveryMatch = deliveryRes.find((s: any) => s.id === id);
@@ -101,6 +113,40 @@ export default function PublicSurveyResponsePage() {
         if (isPastKSTDeadline(activeMeta.endDate, activeMeta.endTime)) {
           setUnavailableReason('제출 기한이 만료되어 더 이상 응답할 수 없습니다.');
           return;
+        }
+
+        // 본인 기존 제출 여부 확인 (배포 링크에서 중복 진입 방지)
+        const respEndpoint =
+          activeMeta._domain === 'DELIVERY' ? '/api/survey/delivery' : '/api/survey/general';
+        try {
+          const respRes = await fetch(respEndpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'GET_RESPONSES' }),
+          });
+          if (respRes.ok) {
+            const payload = await respRes.json();
+            const rows =
+              activeMeta._domain === 'DELIVERY'
+                ? Array.isArray(payload)
+                  ? payload
+                  : []
+                : normalizeGeneralResponsesPayload(payload).responses;
+            const mine = rows.find(
+              (r: any) =>
+                r?.surveyId === id &&
+                String(r.userEmail || '').toLowerCase() === String(meRes.email).toLowerCase()
+            );
+            if (mine?.submittedAt) {
+              setExistingSubmittedAt(
+                typeof mine.submittedAt === 'string'
+                  ? mine.submittedAt
+                  : new Date(mine.submittedAt).toISOString()
+              );
+            }
+          }
+        } catch (e) {
+          console.error('기존 제출 조회 실패:', e);
         }
 
         setSurveyMeta(activeMeta);
@@ -130,6 +176,8 @@ export default function PublicSurveyResponsePage() {
   }, [id]);
      
   const isDelivery = surveyMeta?._domain === 'DELIVERY';
+  const email = sessionUser?.email || '';
+  const displayName = sessionUser?.name || email;
 
   const isAddressComplete = (q: Question, ans: Record<string, any>) => {
     if (isDelivery) {
@@ -152,41 +200,6 @@ export default function PublicSurveyResponsePage() {
       }).open();
     } else {
       alert('주소 검색 엔진 로드 중입니다. 잠시 후 시도해 주세요.');
-    }
-  };
-     
-  const handleAuthSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!surveyMeta || !isSurveyOpen(surveyMeta)) {
-      return alert('참여할 수 없는 설문입니다. 기한·상태를 확인해 주세요.');
-    }
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(email)) return alert('올바른 이메일 형식을 입력해 주세요.');
-    if (!password.trim()) return alert('비밀번호를 입력해 주세요.');
-    
-    setIsAuthLoading(true);
-    try {
-      const endpoint = isDelivery ? '/api/survey/delivery' : '/api/survey/general';
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          action: 'VERIFY_PASSWORD',
-          userEmail: email,
-          password: password
-        })
-      });
-
-      if (res.ok) {
-        setIsEmailVerified(true);
-      } else {
-        const errData = await res.json().catch(() => ({}));
-        alert(errData.error || '인증에 실패했습니다. 이메일과 비밀번호를 다시 확인해 주세요.');
-      }
-    } catch (err) {
-      alert('네트워크 통신 오류가 발생했습니다.');
-    } finally {
-      setIsAuthLoading(false);
     }
   };
      
@@ -214,6 +227,9 @@ export default function PublicSurveyResponsePage() {
   const handleSubmitSurvey = async () => {
     if (!surveyMeta || !isSurveyOpen(surveyMeta)) {
       return alert('❌ 기한이 만료되었거나 마감 처리되어 제출할 수 없습니다.');
+    }
+    if (!sessionUser?.email) {
+      return alert('로그인 정보가 없습니다. 다시 로그인해 주세요.');
     }
 
     // 🚀 분기 경로상 노출된 문항만 필수 검증 (단일/다중·주소 분기 포함)
@@ -249,7 +265,6 @@ export default function PublicSurveyResponsePage() {
         body: JSON.stringify({
           action: 'SUBMIT_RESPONSE',
           surveyId: id,
-          userEmail: email,
           answers: answers
         })
       });
@@ -284,7 +299,8 @@ export default function PublicSurveyResponsePage() {
             {isDelivery ? '배송 명세 접수 완료' : '설문 응답 제출 완료'}
           </h1>
           <p className="text-[11px] text-slate-400 font-bold mt-3 mb-6 leading-relaxed">
-            임직원 계정(<span className="text-indigo-600 font-black">{email}</span>)으로 <br />
+            임직원 계정(<span className="text-indigo-600 font-black">{displayName}</span>
+            {email ? <span className="text-slate-500"> · {email}</span> : null})으로 <br />
             정상적인 원장 등록 처리가 완료되었습니다. <br />
             보안을 위해 본 브라우저 창을 닫아주셔도 좋습니다.
           </p>
@@ -295,43 +311,46 @@ export default function PublicSurveyResponsePage() {
       </div>
     );
   }
-     
-  if (!isEmailVerified) {
+
+  if (showAlreadySubmitted) {
+    const submittedLabel = formatSubmittedLabel(existingSubmittedAt);
     return (
-      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4 font-sans text-xs">
-        <div className="bg-white p-8 rounded-[2.5rem] border border-slate-200 shadow-xl max-w-md w-full text-center space-y-6">
-          <div className="text-4xl">{isDelivery ? '📦' : '🔒'}</div>
-          <div>
-            <h2 className="text-base font-black text-slate-800 tracking-tight">{surveyMeta.title}</h2>
-            <p className="text-[10px] text-slate-400 font-bold mt-1.5 leading-relaxed">사내 계정정보를 입력하여 본인 인증 후 <br/> {isDelivery ? '배송 정보 입력을 시작합니다.' : '설문에 참여하실 수 있습니다.'}</p>
-          </div>
-          <form onSubmit={handleAuthSubmit} className="space-y-4 text-left">
-            <div>
-              <label className="text-[10px] font-black text-slate-500 mb-1 block">회사 공식 이메일 주소</label>
-              <input 
-                type="email" required placeholder="username@kpcqa.or.kr" 
-                value={email} onChange={e => setEmail(e.target.value)}
-                className="w-full p-3.5 border border-slate-200 rounded-xl font-bold text-xs outline-none focus:border-indigo-500 bg-slate-50 focus:bg-white transition-all text-center"
-              />
-            </div>
-            {/* 🚀 비밀번호 입력 구역 신설 */}
-            <div>
-              <label className="text-[10px] font-black text-slate-500 mb-1 block">비밀번호</label>
-              <input 
-                type="password" required placeholder="••••••••" 
-                value={password} onChange={e => setPassword(e.target.value)}
-                className="w-full p-3.5 border border-slate-200 rounded-xl font-bold text-xs outline-none focus:border-indigo-500 bg-slate-50 focus:bg-white transition-all text-center"
-              />
-            </div>
-            <button type="submit" disabled={isAuthLoading} className={`w-full py-3.5 text-white font-black rounded-xl text-xs transition-all shadow-md ${isAuthLoading ? 'bg-slate-400 cursor-not-allowed' : isDelivery ? 'bg-teal-600 hover:bg-teal-700' : 'bg-indigo-600 hover:bg-indigo-700'}`}>
-              {isAuthLoading ? '보안 서식 검증 중...' : '인증하고 시작하기 ➔'}
-            </button>
-          </form>
+      <div className="min-h-screen bg-slate-100 flex items-center justify-center p-4 font-sans w-full max-w-md mx-auto shadow-2xl border-x text-center">
+        <div className="bg-white p-8 rounded-[2.5rem] border border-slate-200 shadow-xl w-full">
+          <div className="text-5xl mb-4">✅</div>
+          <h1 className="text-base font-black text-slate-800 tracking-tight">이미 제출되었습니다.</h1>
+          <p className="text-[12px] text-slate-500 font-bold mt-3 mb-2 leading-relaxed">
+            {submittedLabel ? (
+              <>
+                (제출일자 <span className={isDelivery ? 'text-teal-600' : 'text-indigo-600'}>{submittedLabel}</span>)
+              </>
+            ) : (
+              '(제출일자 확인 불가)'
+            )}
+          </p>
+          <p className="text-[11px] text-slate-400 font-bold mb-6 leading-relaxed">
+            계정 <span className="text-slate-700 font-black">{displayName}</span>
+            {email ? <span className="text-slate-500"> · {email}</span> : null}
+            으로 이미 응답이 등록되어 있습니다.
+            <br />
+            {!isDelivery && (surveyMeta.isAnonymous === true || surveyMeta.isAnonymous === 'true')
+              ? '익명 게시이므로 본인에게도 답변 열람·수정이 불가합니다.'
+              : '수정이 필요하면 Hub의 「나의 제출」 메뉴를 이용해 주세요.'}
+          </p>
+          <button
+            type="button"
+            onClick={() => {
+              if (typeof window !== 'undefined') window.close();
+            }}
+            className="w-full py-3.5 bg-slate-900 text-white rounded-xl font-black text-xs transition-all active:scale-95"
+          >
+            확인 (창 닫기)
+          </button>
         </div>
       </div>
     );
   }
-  
+     
   if (!isIntroConfirmed) {
     return (
       <div className="min-h-screen bg-slate-100 flex items-center justify-center p-4 font-sans text-xs max-w-md mx-auto">
@@ -342,12 +361,33 @@ export default function PublicSurveyResponsePage() {
           <h1 className="text-xl font-black text-slate-900 tracking-tight mb-6 leading-snug">{surveyMeta.title}</h1>
           
           <div className="space-y-4 mb-8">
+            <div className={`p-4 rounded-xl border ${isDelivery ? 'bg-teal-50 border-teal-100' : 'bg-indigo-50 border-indigo-100'}`}>
+              <span className="text-[9px] font-black text-slate-400 uppercase">참여 계정</span>
+              <p className={`text-xs font-black mt-1.5 ${isDelivery ? 'text-teal-800' : 'text-indigo-800'}`}>
+                {displayName}
+                <span className="block text-[10px] font-bold text-slate-500 mt-0.5">{email}</span>
+              </p>
+              <p className="text-[10px] font-bold text-slate-500 mt-2 leading-relaxed">
+                Smart Office Hub에 로그인한 계정으로 응답이 기록됩니다.
+              </p>
+            </div>
             <div className="bg-slate-50 p-4 rounded-xl border border-slate-100">
               <span className="text-[9px] font-black text-slate-400 uppercase">상세 설명</span>
               <p className="text-xs font-bold text-slate-700 mt-1.5 leading-relaxed whitespace-pre-wrap">
                 {surveyMeta.description || '등록된 상세 설명이 없습니다.'}
               </p>
             </div>
+            {!isDelivery && (surveyMeta.isAnonymous === true || surveyMeta.isAnonymous === 'true') && (
+              <div className="w-full px-4 py-3 rounded-xl border border-slate-300 bg-slate-100 text-left">
+                <p className="text-[12px] font-black text-slate-700 flex items-center gap-2">
+                  <span className="text-base">🔒</span>
+                  익명 게시의 경우 답변 수정이 불가능합니다.
+                </p>
+                <p className="text-[10px] font-bold text-slate-500 mt-1.5 leading-relaxed">
+                  제출 완료 후 본인에게도 답변 내용을 다시 열람·수정할 수 없습니다.
+                </p>
+              </div>
+            )}
             <div className="grid grid-cols-2 gap-3">
               <div className="bg-slate-50 p-3 rounded-xl border border-slate-100">
                 <span className="text-[9px] font-black text-slate-400 uppercase">대상 범위</span>
@@ -360,7 +400,19 @@ export default function PublicSurveyResponsePage() {
             </div>
           </div>
           
-          <button onClick={() => setIsIntroConfirmed(true)} className={`w-full py-4 text-white rounded-xl font-black text-xs shadow-lg transition-colors ${isDelivery ? 'bg-teal-600 hover:bg-teal-700 shadow-teal-200' : 'bg-indigo-600 hover:bg-indigo-700 shadow-indigo-200'}`}>응답 시작하기 →</button>
+          <button
+            type="button"
+            onClick={() => {
+              if (existingSubmittedAt) {
+                setShowAlreadySubmitted(true);
+                return;
+              }
+              setIsIntroConfirmed(true);
+            }}
+            className={`w-full py-4 text-white rounded-xl font-black text-xs shadow-lg transition-colors ${isDelivery ? 'bg-teal-600 hover:bg-teal-700 shadow-teal-200' : 'bg-indigo-600 hover:bg-indigo-700 shadow-indigo-200'}`}
+          >
+            응답 시작하기 →
+          </button>
         </div>
       </div>
     );
@@ -386,13 +438,13 @@ export default function PublicSurveyResponsePage() {
       <div className="max-w-[640px] mx-auto pt-12 space-y-4 px-4">
         
         <div className={`text-white p-6 rounded-3xl shadow-lg border ${isDelivery ? 'bg-slate-900 border-teal-900' : 'bg-slate-900 border-slate-800'}`}>
-          <span className={`px-2 py-0.5 text-white rounded text-[9px] font-black uppercase tracking-wider ${isDelivery ? 'bg-teal-600' : 'bg-indigo-50'}`}>
+          <span className={`px-2 py-0.5 text-white rounded text-[9px] font-black uppercase tracking-wider ${isDelivery ? 'bg-teal-600' : 'bg-indigo-600'}`}>
             Public {isDelivery ? 'Delivery' : 'Form'}
           </span>
           <h1 className="text-base font-black mt-2">{surveyMeta.title}</h1>
           <p className="text-[10px] text-slate-400 mt-1 font-medium whitespace-pre-wrap">{surveyMeta.description || '안내 사항을 숙지하신 후 응답해 주시기 바랍니다.'}</p>
           <div className="mt-4 pt-3 border-t border-slate-700/50 flex justify-between items-center text-[9px] text-slate-400 font-bold">
-            <span>응답 계정: <span className={isDelivery ? 'text-teal-400' : 'text-indigo-400'}>{email}</span></span>
+            <span>응답 계정: <span className={isDelivery ? 'text-teal-400' : 'text-indigo-400'}>{displayName} ({email})</span></span>
             <span>마감일: {surveyMeta.endDate}</span>
           </div>
         </div>

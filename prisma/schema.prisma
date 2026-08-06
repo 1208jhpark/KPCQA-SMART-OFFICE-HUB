@@ -198,6 +198,7 @@ model Equipment {
   category          String   
   name              String   
   model_name        String   
+  serial_no         String?  // 시리얼번호 — model_name(모델번호)과 분리
   brand             String?  
   asset_no          String   @unique 
   purpose           String?  
@@ -219,6 +220,7 @@ model Equipment {
   cert_url          String?  
   etc_url           String?  
   etc_memo          String?  
+  
 
   // 감사 — 등록/수정/폐기 (UI: 상세 팝업 하단, 목록·썸네일 미표시)
   creator_name       String?
@@ -235,8 +237,32 @@ model Equipment {
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
   histories         CalibrationHistory[]
+  maintenance_histories MaintenanceHistory[] // 🚀 추가: 구매/유지보수 이력 관계
 }
-     
+
+
+model MaintenanceHistory {
+  id           String    @id @default(cuid())
+  equipment_id String
+  equipment    Equipment @relation(fields: [equipment_id], references: [id], onDelete: Cascade)
+
+  type        String // 구분: 구매, 수리, 소모품교체 등
+  date        DateTime // 처리 일자
+  vendor      String? // 처리 업체
+  content     String? // 상세 내용
+  cost        Float?  @default(0) // 비용
+  receipt_url String? // 영수증/증빙 파일
+  memo        String?
+
+  creator_name  String?
+  creator_dept  String?
+  creator_email String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+
 model CalibrationHistory {
   id              String   @id @default(cuid())
   equipment_id    String
@@ -283,6 +309,11 @@ id            String   @id @default(cuid())
   creator_dept  String?  // 등록자 부서
   creator_email String?  // 동명이인 방지 — 등록자 매칭 키
 
+  // GLOBAL_MGMT(+직속 하위)만 설정 — 미지정=타부서 숨김, 지정 시 해당 LV만 타부서 카드 노출
+  view_role_ids Json?    @default("[]")
+  // 열람 LV로 지정된 타부서 인원에게 지급 신청도 허용할지
+  view_allow_apply Boolean @default(false)
+
   // 종료(아카이브) 처리자 — 부서지급대장 종료 탭 표시용
   archived_by_name  String?
   archived_by_dept  String?
@@ -307,8 +338,20 @@ model MarketingDistribution {
   sender_name     String
   sender_dept     String
   sender_email    String?  // 동명이인 방지 — 본인 매칭 키
+  /** PENDING=승인요청 / CONFIRMED=지급확정 / REJECTED=반려(이력만, 수량집계 제외) */
+  status          String   @default("CONFIRMED")
+  /** 승인 처리 시각 — 최근 승인 건 하이라이트용 (바로신청은 null) */
+  approved_at     DateTime?
+  /** 반려 사유 · 반려 시각 */
+  reject_reason   String?
+  rejected_at     DateTime?
   dist_date       DateTime @default(now())
   createdAt       DateTime @default(now())
+
+  @@index([status])
+  @@index([client_id])
+  @@index([client_id, dist_date])
+  @@index([status, dist_date])
 }
      
 model MarketingClient {
@@ -477,6 +520,25 @@ model DeliveryResponse {
   revisionCount Int            @default(0)      
 
   @@unique([surveyId, userEmail]) 
+}
+
+// -----------------------------------------------------------------
+// 📝 배달 신청 주고·관리자 의견 타임라인 (전 이력)
+// type: USER_SUBMIT | ADMIN_FEEDBACK | ADMIN_APPROVE | ADMIN_CANCEL
+// -----------------------------------------------------------------
+model DeliveryResponseEvent {
+  id         String   @id @default(cuid())
+  surveyId   String
+  userEmail  String
+  type       String
+  revisionNo Int?
+  message    String?  @db.Text
+  answers    Json?
+  actorEmail String?
+  actorName  String?
+  createdAt  DateTime @default(now())
+
+  @@index([surveyId, userEmail, createdAt])
 }
 
 // -----------------------------------------------------------------

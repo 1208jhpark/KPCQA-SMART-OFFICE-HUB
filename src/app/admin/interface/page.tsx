@@ -77,12 +77,43 @@ export default function AdminInterfacePage() {
   };
   
   const handleUpdate = async (id: string, payload: any) => {
-    setMenus(prev => prev.map(m => m.id === id ? { ...m, ...payload } : m));
+    if ('org_ids' in payload) {
+      const orgIds = Array.isArray(payload.org_ids) ? payload.org_ids.filter(Boolean) : [];
+      if (orgIds.length === 0) {
+        alert('Org Guard는 최소 1개 부서를 선택해야 합니다.');
+        return false;
+      }
+    }
+    if ('view_scopes' in payload) {
+      const raw = Array.isArray(payload.view_scopes) ? payload.view_scopes : [];
+      const coded = raw.map(String).includes('CODED');
+      const scopes = raw.filter((s: string) => ['OWN', 'DEPT', 'TOTAL'].includes(s));
+      if (!coded && scopes.length === 0) {
+        alert('View Scope는 본인/부서/전사 중 최소 1개를 선택해야 합니다. (코드화 시 제외)');
+        return false;
+      }
+    }
+    const prev = menus.find((m) => m.id === id);
+    setMenus((prevMenus) => prevMenus.map((m) => (m.id === id ? { ...m, ...payload } : m)));
     try {
-      const res = await fetch('/api/admin/interface', { method: 'PATCH', body: JSON.stringify({ id, ...payload }) });
-      if (!res.ok) throw new Error('서버 업데이트 실패');
-      fetchData(); 
-    } catch (error) { alert("데이터 저장 중 오류 발생"); }
+      const res = await fetch('/api/admin/interface', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, ...payload }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        if (prev) setMenus((prevMenus) => prevMenus.map((m) => (m.id === id ? prev : m)));
+        alert(err.message || '데이터 저장 중 오류 발생');
+        return false;
+      }
+      fetchData();
+      return true;
+    } catch (error) {
+      if (prev) setMenus((prevMenus) => prevMenus.map((m) => (m.id === id ? prev : m)));
+      alert('데이터 저장 중 오류 발생');
+      return false;
+    }
   };
   
   const handleSyncChildPaths = async (parentMenu: any) => {
@@ -178,13 +209,14 @@ export default function AdminInterfacePage() {
     return lineage;
   };
   
+  /** 상세설정의 Org 체크박스 제한용 — 본인 제외, 상위만 */
   const getEffectiveAllowedOrgs = (menu: any) => {
     let curr = menu;
     while (curr && curr.parent_id) {
       const parent = menus.find((m: any) => m.id === curr.parent_id);
-      if (parent && parent.org_ids && parent.org_ids.length > 0) {
-        return parent.org_ids;
-      }
+      if (!parent) break;
+      const ids = Array.isArray(parent.org_ids) ? parent.org_ids.filter(Boolean) : [];
+      if (ids.length > 0) return ids.map(String);
       curr = parent;
     }
     return [];
@@ -278,48 +310,111 @@ export default function AdminInterfacePage() {
           const parentKey = parent.id || 'root';
           const isCollapsed = collapsedParents[parentKey] !== false; 
           
+          const isEmpty = children.length === 0;
+
           return (
-            <div key={parentKey} className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden transition-all hover:shadow-md">
-              <div className="bg-slate-50 px-5 py-4 border-b flex justify-between items-center cursor-pointer hover:bg-slate-100" onClick={() => toggleCollapse(parent.id)}>
+            <div
+              key={parentKey}
+              className={`rounded-2xl border overflow-hidden transition-all ${
+                isEmpty
+                  ? 'bg-slate-100 border-slate-200/80 shadow-none opacity-80'
+                  : 'bg-white border-gray-100 shadow-sm hover:shadow-md'
+              }`}
+            >
+              <div
+                className={`px-5 py-4 border-b flex justify-between items-center cursor-pointer ${
+                  isEmpty
+                    ? 'bg-slate-200/60 border-slate-200 hover:bg-slate-200/80'
+                    : 'bg-slate-50 border-gray-100 hover:bg-slate-100'
+                }`}
+                onClick={() => toggleCollapse(parent.id)}
+              >
                 <div className="flex items-center gap-3">
-                  <span className="text-[11px] font-black text-blue-500 uppercase tracking-widest shrink-0">PARENT NODE:</span>
-                  <span className="text-sm font-black text-slate-800 truncate max-w-2xl">{getBreadcrumbPath(parent.id)}</span>
-                  <span className="text-[10px] font-bold text-blue-500 bg-white px-2 py-0.5 rounded-md border shadow-sm ml-2">{children.length} CARDS</span>
+                  <span className={`text-[11px] font-black uppercase tracking-widest shrink-0 ${isEmpty ? 'text-slate-400' : 'text-blue-500'}`}>PARENT NODE:</span>
+                  <span className={`text-sm font-black truncate max-w-2xl ${isEmpty ? 'text-slate-500' : 'text-slate-800'}`}>{getBreadcrumbPath(parent.id)}</span>
+                  <span
+                    className={`text-[10px] font-bold px-2 py-0.5 rounded-md border shadow-sm ml-2 ${
+                      isEmpty
+                        ? 'text-slate-400 bg-slate-50 border-slate-200'
+                        : 'text-blue-500 bg-white border-gray-100'
+                    }`}
+                  >
+                    {children.length} CARDS
+                  </span>
+                  {isEmpty && (
+                    <span className="text-[9px] font-black text-slate-400 bg-slate-50 border border-slate-200 px-2 py-0.5 rounded-md">
+                      하위 없음
+                    </span>
+                  )}
                 </div>
                 <div className="flex items-center gap-2">
                   {parent.id && children.length > 0 && <button onClick={(e) => { e.stopPropagation(); handleSyncChildPaths(parent); }} className="px-3 py-1.5 bg-amber-500 text-white rounded text-[10px] font-black shadow-sm hover:bg-amber-600 transition-colors">🔗 하위 경로 동기화</button>}
                   {children.length > 0 && <button onClick={(e) => { e.stopPropagation(); handleResetOrder(children); }} className="px-3 py-1.5 bg-slate-800 rounded text-[10px] font-black text-white shadow-sm hover:bg-slate-700 transition-colors">🔄 번호 리셋</button>}
-                  {activeTab <= 4 && parent.id && <button onClick={(e) => { e.stopPropagation(); handleAddSub(parent.id, parent.path, activeTab); }} className="px-3 py-1.5 bg-white border border-blue-200 rounded text-[10px] font-black text-blue-600 shadow-sm hover:bg-blue-50 transition-colors">+ 하위 생성</button>}
-                  <div className="text-slate-400 text-[10px] w-6 text-center ml-2">{isCollapsed ? '▼' : '▲'}</div>
+                  {activeTab <= 4 && parent.id && <button onClick={(e) => { e.stopPropagation(); handleAddSub(parent.id, parent.path, activeTab); }} className={`px-3 py-1.5 rounded text-[10px] font-black shadow-sm transition-colors ${isEmpty ? 'bg-slate-50 border border-slate-300 text-slate-500 hover:bg-white' : 'bg-white border border-blue-200 text-blue-600 hover:bg-blue-50'}`}>+ 하위 생성</button>}
+                  <div className={`text-[10px] w-6 text-center ml-2 ${isEmpty ? 'text-slate-400' : 'text-slate-400'}`}>{isCollapsed ? '▼' : '▲'}</div>
                 </div>
               </div>
               {!isCollapsed && (
-                <table className="w-full text-left text-[11px]">
+                <table className={`w-full text-left text-[11px] ${isEmpty ? 'bg-slate-50/80' : 'bg-white'}`}>
                   <tbody className="divide-y divide-gray-50">
                     {children.length === 0 ? (
-                      <tr><td className="p-8 text-center text-slate-400">등록된 하위 카드가 없습니다.</td></tr>
+                      <tr><td className="p-6 text-center text-slate-400 font-bold">등록된 하위 카드가 없습니다.</td></tr>
                     ) : children.map((m) => {
                       
                       const masterName = users.find(u => u.id === m.master_editor_id)?.name || '-';
                       
                       // 🚀 Access 데이터 처리
-                      const taCount = m.task_accesses?.length || 0;
-                      const selectedOrgNames = m.org_ids?.map((id: any) => orgs.find((o: any) => o.id === id)?.unit_name).filter(Boolean);
-                      const orgDisplay = selectedOrgNames?.length > 0 ? selectedOrgNames.join(', ') : '-';
+                      const taskAccessList = Array.isArray(m.task_accesses) ? m.task_accesses : [];
+                      const accessDesignateStr = taskAccessList.length > 0
+                        ? taskAccessList
+                            .map((ta: any) => {
+                              const name = users.find((u) => u.email === ta.email)?.name || ta.email || '?';
+                              return name;
+                            })
+                            .join(', ')
+                        : '미지정';
+                      const ownOrgIds = Array.isArray(m.org_ids) ? m.org_ids.filter(Boolean) : [];
+                      const orgNames = ownOrgIds
+                        .map((id: string) => orgs.find((o: any) => o.id === id)?.unit_name)
+                        .filter(Boolean);
+                      const orgDisplay = orgNames.length > 0 ? orgNames.join(', ') : '미지정(필수)';
+                      const selectedOrgNames = orgNames; // Access 배지 활성색 판정용
                       const viewRolesStr = m.view_role_ids?.length ? m.view_role_ids.join(', ') : '제한';
                       const safeVScopes = Array.isArray(m.view_scopes) ? m.view_scopes : [];
+                      const accessScopeCoded = safeVScopes.map(String).includes('CODED');
                       const validScopes = safeVScopes.filter((s:string) => ['OWN', 'DEPT', 'TOTAL'].includes(s));
-                      const viewScopesStr = validScopes.length > 0 ? validScopes.map((s:string) => s==='OWN'?'본인':s==='DEPT'?'부서':'전체').join(', ') : '제한';
+                      const viewScopesStr = accessScopeCoded
+                        ? '코드화'
+                        : validScopes.length > 0
+                          ? validScopes.map((s:string) => s==='OWN'?'본인':s==='DEPT'?'부서':'전체').join(', ')
+                          : '제한';
                       
                       // 🚀 Edit 데이터 처리 (Access와 형태 통일)
-                      const globalCount = m.task_masters?.filter((t: any) => t.scope === 'GLOBAL').length || 0;
-                      const deptCount = m.task_masters?.filter((t:any)=>t.scope==='DEPT').length || 0;
-                      const tmCount = globalCount + deptCount;
+                      const taskMasterList = Array.isArray(m.task_masters) ? m.task_masters : [];
                       const editRoles = m.edit_role_ids?.length ? m.edit_role_ids.join(', ') : '제한';
                       
                       const safeEScopes = Array.isArray(m.edit_scopes) ? m.edit_scopes : [];
-                      const validEScopes = safeEScopes.filter((s:string) => ['OWN', 'DEPT', 'TOTAL'].includes(s));
-                      const editScopeStr = validEScopes.length > 0 ? validEScopes.map((s:string) => s==='OWN'?'본인':s==='DEPT'?'부서':'전체').join(', ') : '전체';
+                      const editScopeCoded = safeEScopes.map(String).includes('CODED');
+                      const validEScopes = safeEScopes.filter((s: string) => ['OWN', 'DEPT', 'TOTAL'].includes(s));
+                      // 규칙 Scope 미체크 = 제한 (빈배열을 '전체'로 표기하던 오류 수정)
+                      const editScopeStr = editScopeCoded
+                        ? '코드화'
+                        : validEScopes.length > 0
+                          ? validEScopes.map((s: string) => (s === 'OWN' ? '본인' : s === 'DEPT' ? '부서' : '전체')).join(', ')
+                          : '제한';
+
+                      // Task Editor 지정: 이름(부서|전사) 나열
+                      const editDesignateStr = taskMasterList.length > 0
+                        ? taskMasterList
+                            .map((tm: any) => {
+                              const name = users.find((u) => u.email === tm.email)?.name || tm.email || '?';
+                              const sc = String(tm.scope || '').toUpperCase();
+                              const scopeKo =
+                                sc === 'GLOBAL' || sc === 'TOTAL' ? '전사' : sc === 'DEPT' ? '부서' : sc === 'OWN' ? '본인' : '-';
+                              return `${name}(${scopeKo})`;
+                            })
+                            .join(', ')
+                        : '미지정';
   
                       return (
                         <tr key={m.id} className="hover:bg-blue-50/10 group transition-colors">
@@ -333,6 +428,44 @@ export default function AdminInterfacePage() {
                               <span className="italic truncate max-w-[300px]">{m.description || '...'}</span>
                             </div>
                             
+                            {(m.level === 1 || m.level === 2) && (
+                              <div className="flex items-center gap-1 mt-3 bg-slate-50 p-1.5 rounded-lg inline-flex border border-slate-100 shadow-inner">
+                                <span className="text-[9px] font-black text-slate-400 px-2 uppercase">Step {m.level} Entry Mode:</span>
+                                <button
+                                  type="button"
+                                  title={`${m.path} 직접 로드`}
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    handleUpdate(m.id, { l2_entry_mode: 'CUSTOM_UI' });
+                                  }}
+                                  className={`px-2 py-1 rounded text-[9px] font-black transition-all ${
+                                    m.l2_entry_mode === 'CUSTOM_UI' || !m.l2_entry_mode
+                                      ? 'bg-white text-blue-600 shadow-sm border border-blue-200'
+                                      : 'text-slate-400 hover:bg-slate-200'
+                                  }`}
+                                >
+                                  🖥️ 고유 기획화면
+                                </button>
+                                <button
+                                  type="button"
+                                  title="하위 첫번째 주소로 자동 점프"
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    handleUpdate(m.id, { l2_entry_mode: 'L3_DEFAULT' });
+                                  }}
+                                  className={`px-2 py-1 rounded text-[9px] font-black transition-all ${
+                                    m.l2_entry_mode === 'L3_DEFAULT'
+                                      ? 'bg-white text-blue-600 shadow-sm border border-blue-200'
+                                      : 'text-slate-400 hover:bg-slate-200'
+                                  }`}
+                                >
+                                  ➡️ Step{m.level + 1} 즉시실행
+                                </button>
+                              </div>
+                            )}
+
                             {m.level === 3 && (
                               <div className="flex items-center gap-1 mt-3 bg-slate-50 p-1.5 rounded-lg inline-flex border border-slate-100 shadow-inner">
                                 <span className="text-[9px] font-black text-slate-400 px-2 uppercase">Step 4 View Mode:</span>
@@ -347,20 +480,20 @@ export default function AdminInterfacePage() {
                               </div>
                               
                               {/* 🚀 Access: 지정 | Org | Level | Scope */}
-                              <div className={`flex items-center gap-1.5 px-2 py-1 rounded-md text-[10px] font-black border tracking-tight shadow-sm ${validScopes.length > 0 || taCount > 0 || selectedOrgNames?.length > 0 ? 'bg-purple-50 border-purple-200 text-purple-700' : 'bg-slate-50 border-slate-200 text-slate-400'}`}>
+                              <div className={`flex items-center gap-1.5 px-2 py-1 rounded-md text-[10px] font-black border tracking-tight shadow-sm ${validScopes.length > 0 || taskAccessList.length > 0 || ownOrgIds.length > 0 ? 'bg-purple-50 border-purple-200 text-purple-700' : 'bg-slate-50 border-slate-200 text-slate-400'}`}>
                                 <span>👁️ Access:</span>
-                                <span>지정: {taCount}명</span><span className="opacity-60">|</span>
-                                <span className="truncate max-w-[120px]">Org: {orgDisplay}</span><span className="opacity-60">|</span>
-                                <span>Level: {viewRolesStr}</span><span className="opacity-60">|</span>
-                                <span className={validScopes.length === 0 ? 'text-red-500' : ''}>Scope: {viewScopesStr}</span>
+                                <span className="truncate max-w-[220px]" title={accessDesignateStr}>지정: {accessDesignateStr}</span><span className="opacity-60">|</span>
+                                <span className={`truncate max-w-[180px] ${ownOrgIds.length === 0 ? 'text-red-500' : ''}`} title={orgDisplay}>Org: {orgDisplay}</span><span className="opacity-60">|</span>
+                                <span className={viewRolesStr === '제한' ? 'text-red-500' : ''}>Level: {viewRolesStr}</span><span className="opacity-60">|</span>
+                                <span className={accessScopeCoded ? 'text-amber-600' : validScopes.length === 0 ? 'text-red-500' : ''}>Scope: {viewScopesStr}</span>
                               </div>
 
-                              {/* 🚀 Edit: 지정 | Level | Scope (Access와 동일 순서) */}
+                              {/* 🚀 Edit: 지정(이름·범위) | Level | Scope */}
                               <div className="flex items-center gap-1.5 px-2 py-1 rounded-md text-[10px] font-black bg-emerald-50 border border-emerald-200 text-emerald-700 tracking-tight shadow-sm">
                                 <span>✍️ Edit:</span>
-                                <span>지정: {tmCount}명</span><span className="text-emerald-300 opacity-60">|</span>
-                                <span>Level: {editRoles}</span><span className="text-emerald-300 opacity-60">|</span>
-                                <span>Scope: {editScopeStr}</span>
+                                <span className="truncate max-w-[240px]" title={editDesignateStr}>지정: {editDesignateStr}</span><span className="text-emerald-300 opacity-60">|</span>
+                                <span className={editRoles === '제한' ? 'text-red-500' : ''}>Level: {editRoles}</span><span className="text-emerald-300 opacity-60">|</span>
+                                <span className={editScopeCoded ? 'text-amber-600' : validEScopes.length === 0 ? 'text-red-500' : ''}>Scope: {editScopeStr}</span>
                               </div>
                             </div>
                           </td>
@@ -407,11 +540,12 @@ export default function AdminInterfacePage() {
               </div>
             </div>
   
+            {selectedMenu.level === 3 && (
             <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm space-y-4">
               <div className="flex items-center justify-between border-b border-slate-100 pb-2">
                 <div>
-                  <h4 className="text-[11px] font-black text-slate-800 flex items-center gap-1">📄 화면 상단 헤더 설정</h4>
-                  <p className="text-[9px] text-slate-500 mt-0.5">실제 진입한 화면 상단에 노출될 제목과 설명을 개별 관리합니다.</p>
+                  <h4 className="text-[11px] font-black text-slate-800 flex items-center gap-1">📄 인덱스 모드: 화면 상단 헤더 설정</h4>
+                  <p className="text-[9px] text-slate-500 mt-0.5">Step 3 인덱스 모드(하위 카드 목록) 상단에 노출될 제목·설명을 관리합니다.</p>
                 </div>
               </div>
               <div className="flex items-start gap-3">
@@ -440,7 +574,8 @@ export default function AdminInterfacePage() {
                     </label>
                 </div>
               </div>
-            </div>           
+            </div>
+            )}
   
             {(selectedMenu.level === 1 || selectedMenu.level === 2) && (
               <div className="bg-blue-50/50 p-4 rounded-2xl border border-blue-100 shadow-sm space-y-3 mt-4">
@@ -474,7 +609,7 @@ export default function AdminInterfacePage() {
             )}
   
             <div className="bg-slate-800 p-5 rounded-2xl border border-slate-700 shadow-md">
-              <h4 className="text-white font-black text-[11px] mb-1 uppercase flex items-center gap-1">👑 편집/접근권한 MASTER 지정</h4>
+              <h4 className="text-white font-black text-[11px] mb-1 uppercase flex items-center gap-1">👑 편집/접근권한 MASTER 지정 (1명만 가능)</h4>
               <p className="text-[9px] text-slate-400 mb-3 font-bold">이 카드의 생성, 수정, 삭제(CRUD) 및 접근 권한을 모두 갖는 총괄 책임자</p>
               <div className="space-y-2">
                 <div className="relative">
@@ -503,14 +638,14 @@ export default function AdminInterfacePage() {
               </h4>
               
               <div className="bg-purple-50 p-3 rounded-lg text-[9px] font-bold text-purple-700 leading-relaxed shadow-inner border border-purple-100">
-                💡 <b>[예외]</b> 특정 지정인(Task Access)은 무조건 통과합니다.<br/>
-                📌 <b>[규칙]</b> 그 외에는 부서(AND) + 레벨(AND) 조건을 모두 충족해야 통과합니다.<br/>
-                🎯 <b>[결과]</b> 통과된 자에게만 데이터 범위(Data Scope) 권한이 부여됩니다.
+                📌 <b>[규칙 1·2]</b> Org Guard AND Access Level을 모두 충족해야 페이지에 진입합니다.<br/>
+                💡 <b>[예외]</b> Task Access는 규칙 1·2만 우회합니다. (전부 프리패스 아님)<br/>
+                🎯 <b>[결과]</b> View Scope: 본인/부서/전사 선택 또는 <b>코드화</b>(이 페이지는 Scope 미사용 표시).
               </div>
   
               {/* 1️⃣ [예외] Task Access */}
               <div className="space-y-2">
-                <span className="text-[10px] font-black text-slate-800 tracking-tighter">1️⃣ [예외] Task Access (특정 권한자 다수 지정)</span>
+                <span className="text-[10px] font-black text-slate-800 tracking-tighter">1️⃣ [예외] Task Access — 규칙 1·2만 우회</span>
                 <div className="relative">
                   <input type="text" value={taSearch} onChange={(e) => setTaSearch(e.target.value)} className="w-full p-2 bg-gray-50 border border-gray-200 rounded-lg text-[10px] font-bold focus:border-purple-500 outline-none" placeholder="이름으로 조회 권한자 추가..." />
                   {taSearch && (
@@ -543,18 +678,52 @@ export default function AdminInterfacePage() {
   
               {/* 2️⃣ [규칙 1] Org Guard */}
               <div className="space-y-2 pt-3 border-t border-dashed border-purple-200">
-                <span className="text-[10px] font-black text-slate-800 tracking-tighter">2️⃣ [규칙 1] Org Guard (지정 부서만 접근허용)</span>
+                <div className="flex justify-between items-center mb-1">
+                  <span className="text-[10px] font-black text-slate-800 tracking-tighter">2️⃣ [접근규칙 1] Org Guard (지정 부서만 접근허용) *</span>
+                  {(() => {
+                    const effectiveParentOrgs = getEffectiveAllowedOrgs(selectedMenu);
+                    const pickable = orgs.filter((org) => isOrgAllowedByParent(org.id, effectiveParentOrgs));
+                    const cur = Array.isArray(selectedMenu.org_ids) ? selectedMenu.org_ids.filter(Boolean) : [];
+                    const allSelected =
+                      pickable.length > 0 && pickable.every((org) => cur.includes(org.id));
+                    return (
+                      <label className="flex items-center gap-1 cursor-pointer bg-slate-100 hover:bg-purple-100 px-2 py-1 rounded text-[8px] font-black transition-colors">
+                        <input
+                          type="checkbox"
+                          checked={allSelected}
+                          onChange={async (e) => {
+                            if (!e.target.checked) {
+                              alert('Org Guard는 최소 1개 부서를 선택해야 합니다. 개별 체크를 해제해 주세요.');
+                              return;
+                            }
+                            const next = pickable.map((o) => o.id);
+                            if (next.length === 0) {
+                              alert('선택 가능한 부서가 없습니다.');
+                              return;
+                            }
+                            const ok = await handleUpdate(selectedMenu.id, { org_ids: next });
+                            if (ok) setSelectedMenu({ ...selectedMenu, org_ids: next });
+                          }}
+                          className="w-2.5 h-2.5 accent-purple-600 rounded"
+                        />
+                        <span className="text-purple-700">전체 선택</span>
+                      </label>
+                    );
+                  })()}
+                </div>
                 
                 {(() => {
                   const effectiveParentOrgs = getEffectiveAllowedOrgs(selectedMenu);
                   const isRestrictedByParent = effectiveParentOrgs.length > 0;
+                  const curOrgIds = Array.isArray(selectedMenu.org_ids) ? selectedMenu.org_ids.filter(Boolean) : [];
+                  const orgMissing = curOrgIds.length === 0;
    
                   return (
                     <div className="relative">
-                      <div className="grid grid-cols-2 gap-1 max-h-40 overflow-y-auto border border-purple-100 rounded-lg p-2 bg-white scrollbar-thin shadow-inner">
+                      <div className={`grid grid-cols-2 gap-1 max-h-40 overflow-y-auto border rounded-lg p-2 bg-white scrollbar-thin shadow-inner ${orgMissing ? 'border-red-300' : 'border-purple-100'}`}>
                         {orgs.map(org => {
                           const isAllowedByParent = isOrgAllowedByParent(org.id, effectiveParentOrgs);
-                          const isChecked = selectedMenu.org_ids?.includes(org.id) || false;
+                          const isChecked = curOrgIds.includes(org.id);
                           
                           return (
                             <label 
@@ -568,10 +737,16 @@ export default function AdminInterfacePage() {
                                 type="checkbox" 
                                 disabled={!isAllowedByParent}
                                 checked={isChecked && isAllowedByParent} 
-                                onChange={(e) => {
-                                  const cur = Array.isArray(selectedMenu.org_ids) ? selectedMenu.org_ids : [];
-                                  const next = e.target.checked ? [...cur, org.id] : cur.filter((id:any) => id !== org.id);
-                                  handleUpdate(selectedMenu.id, { org_ids: next }); setSelectedMenu({...selectedMenu, org_ids: next});
+                                onChange={async (e) => {
+                                  const next = e.target.checked
+                                    ? [...curOrgIds, org.id]
+                                    : curOrgIds.filter((id: any) => id !== org.id);
+                                  if (next.length === 0) {
+                                    alert('Org Guard는 최소 1개 부서를 선택해야 합니다.');
+                                    return;
+                                  }
+                                  const ok = await handleUpdate(selectedMenu.id, { org_ids: next });
+                                  if (ok) setSelectedMenu({ ...selectedMenu, org_ids: next });
                                 }} 
                                 className="w-3 h-3 accent-purple-600 rounded disabled:opacity-50" 
                               />
@@ -580,6 +755,11 @@ export default function AdminInterfacePage() {
                           );
                         })}
                       </div>
+                      {orgMissing && (
+                        <div className="text-[9px] font-bold text-red-500 mt-1.5 px-1">
+                          ※ Org Guard는 필수입니다. 최소 1개 부서를 선택하세요. 미지정 메뉴는 접근이 차단됩니다.
+                        </div>
+                      )}
                       {isRestrictedByParent && (
                         <div className="text-[9px] font-bold text-red-500 mt-1.5 px-1">
                           ※ 상위 모듈에서 접근을 제한한 부서는 비활성화됩니다.
@@ -593,7 +773,7 @@ export default function AdminInterfacePage() {
               {/* 3️⃣ [규칙 2] Access Level */}
               <div className="space-y-2 pt-3 border-t border-dashed border-purple-200">
                 <div className="flex justify-between items-center mb-1">
-                  <span className="text-[10px] font-black text-slate-800 tracking-tighter">3️⃣ [규칙 2] 접근 권한 레벨 (Access Level)</span>
+                  <span className="text-[10px] font-black text-slate-800 tracking-tighter">3️⃣ [접근규칙 2] 접근 권한 레벨 (Access Level)</span>
                   <label className="flex items-center gap-1 cursor-pointer bg-slate-100 hover:bg-purple-100 px-2 py-1 rounded text-[8px] font-black transition-colors">
                     <input type="checkbox" checked={['LV_1', 'LV_2', 'LV_3'].every(lv => selectedMenu.view_role_ids?.includes(lv))} onChange={(e) => {
                       const next = e.target.checked ? ['LV_1', 'LV_2', 'LV_3'] : [];
@@ -614,26 +794,91 @@ export default function AdminInterfacePage() {
                     </label>
                   ))}
                 </div>
+                {(!Array.isArray(selectedMenu.view_role_ids) || selectedMenu.view_role_ids.length === 0) && (
+                  <div className="text-[9px] font-bold text-red-500 px-1">
+                    ※ Level 미지정(제한) 시 Org를 통과해도 접근 불가합니다. Task Access만 예외입니다.
+                  </div>
+                )}
               </div>
   
-              {/* 4️⃣ [결과] Data Scope */}
+              {/* 4️⃣ [결과] View Scope */}
               <div className="space-y-2 pt-3 border-t border-dashed border-purple-200">
-                <span className="text-[10px] font-black text-slate-800 tracking-tighter">4️⃣ [결과] 보이는 화면 (Data Scope)</span>
-                <div className="flex gap-1.5">
-                  {['OWN', 'DEPT', 'TOTAL'].map(s => {
-                    const isChecked = selectedMenu.view_scopes?.includes(s);
-                    return (
-                      <label key={s} className={`flex-1 flex items-center justify-center py-2 rounded-lg border text-[10px] font-black cursor-pointer transition-all ${isChecked ? 'bg-indigo-600 border-indigo-600 text-white shadow-md' : 'border-gray-200 bg-white text-slate-500 hover:bg-indigo-50'}`}>
-                        {s === 'OWN' ? '본인 자료' : s === 'DEPT' ? '부서 자료' : '전사 자료'}
-                        <input type="checkbox" checked={isChecked || false} onChange={(e) => {
-                          const cur = Array.isArray(selectedMenu.view_scopes) ? selectedMenu.view_scopes : [];
-                          const next = e.target.checked ? [...cur, s] : cur.filter((k:any) => k !== s);
-                          handleUpdate(selectedMenu.id, { view_scopes: next }); setSelectedMenu({...selectedMenu, view_scopes: next});
-                        }} className="hidden" />
-                      </label>
-                    );
-                  })}
-                </div>
+                <span className="text-[10px] font-black text-slate-800 tracking-tighter">4️⃣ [결과] 보이는 화면 (View Scope)</span>
+                {(() => {
+                  const curScopes = Array.isArray(selectedMenu.view_scopes) ? selectedMenu.view_scopes.map(String) : [];
+                  const coded = curScopes.includes('CODED');
+                  const viewScopes = curScopes.filter((s: string) => ['OWN', 'DEPT', 'TOTAL'].includes(s));
+                  return (
+                    <>
+                      <div className="flex gap-1.5">
+                        {['OWN', 'DEPT', 'TOTAL'].map((s) => {
+                          const isChecked = !coded && viewScopes.includes(s);
+                          return (
+                            <label
+                              key={s}
+                              className={`flex-1 flex items-center justify-center py-2 rounded-lg border text-[10px] font-black transition-all ${
+                                coded
+                                  ? 'border-slate-100 bg-slate-50 text-slate-300 cursor-not-allowed'
+                                  : isChecked
+                                    ? 'bg-indigo-600 border-indigo-600 text-white shadow-md cursor-pointer'
+                                    : 'border-gray-200 bg-white text-slate-500 hover:bg-indigo-50 cursor-pointer'
+                              }`}
+                            >
+                              {s === 'OWN' ? '본인 자료' : s === 'DEPT' ? '부서 자료' : '전사 자료'}
+                              <input
+                                type="checkbox"
+                                disabled={coded}
+                                checked={isChecked}
+                                onChange={async (e) => {
+                                  if (coded) return;
+                                  const next = e.target.checked
+                                    ? [...viewScopes.filter((k: string) => k !== s), s]
+                                    : viewScopes.filter((k: string) => k !== s);
+                                  if (next.length === 0) {
+                                    alert('View Scope는 본인/부서/전사 중 최소 1개를 선택해야 합니다.');
+                                    return;
+                                  }
+                                  const ok = await handleUpdate(selectedMenu.id, { view_scopes: next });
+                                  if (ok) setSelectedMenu({ ...selectedMenu, view_scopes: next });
+                                }}
+                                className="hidden"
+                              />
+                            </label>
+                          );
+                        })}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          const next = coded
+                            ? viewScopes.length > 0
+                              ? viewScopes
+                              : ['OWN']
+                            : ['CODED', ...viewScopes];
+                          const ok = await handleUpdate(selectedMenu.id, { view_scopes: next });
+                          if (ok) setSelectedMenu({ ...selectedMenu, view_scopes: next });
+                        }}
+                        className={`w-full py-2 rounded-lg border text-[10px] font-black transition-all ${
+                          coded
+                            ? 'bg-amber-500 border-amber-500 text-white shadow-md'
+                            : 'border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100'
+                        }`}
+                      >
+                        코드화 (설정 미적용 · 해당없음)
+                      </button>
+                      <div className="text-[9px] font-bold text-slate-500 px-1">
+                        {coded
+                          ? '※ 코드화 ON: 이 페이지는 Scope 설정을 쓰지 않습니다. (표시용, 런타임 동작 변경 없음)'
+                          : '※ 진입자 전원 적용(Task Access 포함). 본인/부서/전사 중 ≥1 필수.'}
+                      </div>
+                      {!coded && viewScopes.length === 0 && (
+                        <div className="text-[9px] font-bold text-red-500 px-1">
+                          ※ View Scope 미지정: 본인/부서/전사 중 하나 이상 선택하거나, 코드화를 켜 주세요.
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
               </div>
             </div>
 
@@ -642,12 +887,19 @@ export default function AdminInterfacePage() {
               <div className="flex justify-between items-center border-b border-emerald-100 pb-2">
                 <h4 className="text-emerald-700 font-black text-[12px] uppercase flex items-center gap-1"><span>✍️</span> 편집 권한자 및 설정 (Edit)</h4>
               </div>
+
+              <div className="bg-emerald-50 p-3 rounded-lg text-[9px] font-bold text-emerald-700 leading-relaxed shadow-inner border border-emerald-100">
+                📌 Access를 통과한 사람에게만 Edit이 적용됩니다.<br/>
+                💡 <b>[예외]</b> Task Editor는 Editor Level만 우회. 개인(부서/전사)은 결과 Scope와 합집합입니다.<br/>
+                📌 <b>[규칙]</b> Editor Level 미지정(제한) → Task Editor 외 편집 불가.<br/>
+                🎯 <b>[결과]</b> Edit Scope 미지정(제한) → Level 통과자도 편집 범위 없음. Task Editor는 개인 부서/전사로 범위 확보.
+              </div>
   
               <div className="space-y-4">
                 
                 {/* 1️⃣ [예외] Task Editor */}
                 <div className="flex flex-col gap-2">
-                  <label className="text-[10px] font-black text-slate-800 block">1️⃣ [예외] Task Editor (개별 편집자 다수 지정)</label>
+                  <label className="text-[10px] font-black text-slate-800 block">1️⃣ [예외] Task Editor — Editor Level만 우회</label>
                   <div className="relative">
                     <input type="text" value={tmSearch} onChange={(e) => setTmSearch(e.target.value)} className="w-full p-2 bg-gray-50 border border-gray-200 rounded-lg text-[10px] outline-none focus:border-emerald-500 font-bold" placeholder="이름으로 Editor 검색..." />
                     {tmSearch && (
@@ -710,26 +962,83 @@ export default function AdminInterfacePage() {
                       </label>
                     ))}
                   </div>
+                  {(!Array.isArray(selectedMenu.edit_role_ids) || selectedMenu.edit_role_ids.length === 0) && (
+                    <div className="text-[9px] font-bold text-red-500 mt-1.5 px-1">
+                      ※ Level 미지정(제한) 시 Access를 통과해도 편집 불가합니다. Task Editor만 예외입니다.
+                    </div>
+                  )}
                 </div>
   
                 {/* 3️⃣ [결과] Edit Scope (Access와 동일하게 본인,부서,전사 체크박스 형태 적용) */}
                 <div className="space-y-2 mt-4 pt-4 border-t border-dashed border-emerald-200">
                   <span className="text-[10px] font-black text-slate-800 tracking-tighter">3️⃣ [결과] 편집 가능 범위 (Edit Scope) 설정</span>
-                  <div className="flex gap-1.5">
-                    {['OWN', 'DEPT', 'TOTAL'].map(s => {
-                      const isChecked = selectedMenu.edit_scopes?.includes(s);
-                      return (
-                        <label key={s} className={`flex-1 flex items-center justify-center py-2 rounded-lg border text-[10px] font-black cursor-pointer transition-all ${isChecked ? 'bg-emerald-600 border-emerald-600 text-white shadow-md' : 'border-gray-200 bg-white text-slate-500 hover:bg-emerald-50'}`}>
-                          {s === 'OWN' ? '본인 자료' : s === 'DEPT' ? '부서 자료' : '전사 자료'}
-                          <input type="checkbox" checked={isChecked || false} onChange={(e) => {
-                            const cur = Array.isArray(selectedMenu.edit_scopes) ? selectedMenu.edit_scopes : [];
-                            const next = e.target.checked ? [...cur, s] : cur.filter((k:any) => k !== s);
-                            handleUpdate(selectedMenu.id, { edit_scopes: next }); setSelectedMenu({...selectedMenu, edit_scopes: next});
-                          }} className="hidden" />
-                        </label>
-                      );
-                    })}
-                  </div>
+                  {(() => {
+                    const curScopes = Array.isArray(selectedMenu.edit_scopes) ? selectedMenu.edit_scopes.map(String) : [];
+                    const coded = curScopes.includes('CODED');
+                    const dataScopes = curScopes.filter((s: string) => ['OWN', 'DEPT', 'TOTAL'].includes(s));
+                    return (
+                      <>
+                        <div className="flex gap-1.5">
+                          {['OWN', 'DEPT', 'TOTAL'].map((s) => {
+                            const isChecked = !coded && dataScopes.includes(s);
+                            return (
+                              <label
+                                key={s}
+                                className={`flex-1 flex items-center justify-center py-2 rounded-lg border text-[10px] font-black transition-all ${
+                                  coded
+                                    ? 'border-slate-100 bg-slate-50 text-slate-300 cursor-not-allowed'
+                                    : isChecked
+                                      ? 'bg-emerald-600 border-emerald-600 text-white shadow-md cursor-pointer'
+                                      : 'border-gray-200 bg-white text-slate-500 hover:bg-emerald-50 cursor-pointer'
+                                }`}
+                              >
+                                {s === 'OWN' ? '본인 자료' : s === 'DEPT' ? '부서 자료' : '전사 자료'}
+                                <input
+                                  type="checkbox"
+                                  disabled={coded}
+                                  checked={isChecked}
+                                  onChange={(e) => {
+                                    if (coded) return;
+                                    const next = e.target.checked
+                                      ? [...dataScopes.filter((k: string) => k !== s), s]
+                                      : dataScopes.filter((k: string) => k !== s);
+                                    handleUpdate(selectedMenu.id, { edit_scopes: next });
+                                    setSelectedMenu({ ...selectedMenu, edit_scopes: next });
+                                  }}
+                                  className="hidden"
+                                />
+                              </label>
+                            );
+                          })}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const next = coded ? dataScopes : ['CODED', ...dataScopes];
+                            handleUpdate(selectedMenu.id, { edit_scopes: next });
+                            setSelectedMenu({ ...selectedMenu, edit_scopes: next });
+                          }}
+                          className={`w-full py-2 rounded-lg border text-[10px] font-black transition-all ${
+                            coded
+                              ? 'bg-amber-500 border-amber-500 text-white shadow-md'
+                              : 'border-amber-200 bg-amber-50 text-amber-800 hover:bg-amber-100'
+                          }`}
+                        >
+                          코드화 (설정 미적용 · 해당없음)
+                        </button>
+                        <div className="text-[9px] font-bold text-slate-500 px-1">
+                          {coded
+                            ? '※ 코드화 ON: Edit Scope 설정을 이 페이지에 쓰지 않습니다. (표시용)'
+                            : '※ Level 통과자: 이 범위만 편집. 미지정(제한)이면 편집 범위 없음. Task Editor는 개인 부서/전사로 보완.'}
+                        </div>
+                        {!coded && dataScopes.length === 0 && (
+                          <div className="text-[9px] font-bold text-red-500 px-1">
+                            ※ Scope 미지정(제한): Level만으로는 편집 불가. Task Editor 개인(부서/전사)만 범위가 생깁니다.
+                          </div>
+                        )}
+                      </>
+                    );
+                  })()}
                 </div>
               </div>
             </div>

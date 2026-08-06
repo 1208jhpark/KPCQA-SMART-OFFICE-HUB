@@ -8,11 +8,6 @@ const MENU_PATH = '/asset/supplies/master/dashboard';
 
 const cleanNum = (val: any) => Number(String(val ?? '').replace(/,/g, '')) || 0;
 
-function assertLv1(auth: Awaited<ReturnType<typeof authorizeApi>>) {
-  if (auth.permission.isMaster || auth.permission.myRole === 'LV_1') return;
-  throw new Error('FORBIDDEN_ADMIN');
-}
-
 function sessionDeptName(user: any) {
   return user?.unit?.unit_name || '소속 부서 없음';
 }
@@ -36,7 +31,7 @@ export async function GET() {
       where: { is_active: true },
       include: {
         purchases: { orderBy: { purchase_date: 'desc' }, take: 1 },
-        requests: { where: { status: 'PENDING' }, orderBy: { createdAt: 'asc' } },
+        _count: { select: { requests: true, purchases: true } },
       },
       orderBy: { createdAt: 'desc' },
     });
@@ -186,25 +181,33 @@ export async function PATCH(req: Request) {
   }
 }
 
-/** [DELETE] 영구 삭제 — LV_1만 */
+/** [DELETE] Edit 권한 — 신청·입고 이력 0건일 때만 (잘못 등록 데이터 정리) */
 export async function DELETE(req: Request) {
   try {
-    const auth = await authorizeApi(MENU_PATH, { requireEditor: true });
-    assertLv1(auth);
+    await authorizeApi(MENU_PATH, { requireEditor: true });
 
     const id = new URL(req.url).searchParams.get('id');
     if (!id) return NextResponse.json({ error: 'ID 누락' }, { status: 400 });
 
-    const existing = await prisma.supplyItem.findUnique({ where: { id } });
+    const existing = await prisma.supplyItem.findUnique({
+      where: { id },
+      include: { _count: { select: { requests: true, purchases: true } } },
+    });
     if (!existing) return NextResponse.json({ error: '품목을 찾을 수 없습니다.' }, { status: 404 });
 
-    await prisma.$transaction([
-      prisma.supplyPurchase.deleteMany({ where: { item_id: id } }),
-      prisma.supplyRequest.deleteMany({ where: { item_id: id } }),
-      prisma.supplyItem.delete({ where: { id } }),
-    ]);
+    const usageCount = existing._count.requests + existing._count.purchases;
+    if (usageCount > 0) {
+      return NextResponse.json(
+        {
+          error: `신청·입고 이력이 ${usageCount}건 있어 삭제할 수 없습니다. 보관 처리만 가능합니다.`,
+        },
+        { status: 400 }
+      );
+    }
 
-    return NextResponse.json({ message: '완전히 삭제되었습니다.' });
+    await prisma.supplyItem.delete({ where: { id } });
+
+    return NextResponse.json({ message: '삭제 완료' });
   } catch (error) {
     const authRes = authErrorToResponse(error);
     if (authRes.status !== 500) return authRes;

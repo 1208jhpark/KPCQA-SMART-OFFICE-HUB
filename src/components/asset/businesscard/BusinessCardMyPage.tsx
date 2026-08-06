@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import LoadingState from '@/components/common/LoadingState';
 
 interface CurrentUserProps {
   currentUser?: {
@@ -465,62 +466,54 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
   
   const isReadOnly = formMode === 'VIEW';
 
-  if (loading) return <div className="p-20 text-center font-black animate-pulse text-slate-400 tracking-widest text-xs">LOADING PORTAL DATA...</div>;
+  if (loading) return <LoadingState />;
 
   return (
     <div className="w-full max-w-[1600px] mx-auto space-y-6 p-8 font-sans text-slate-900 pb-24 animate-fade-in">
  
-      {/* 최상단 명함신청배너 */}
-  
-      <div className="w-full bg-slate-50 border-2 border-blue-500 p-6 rounded-[2.5rem] shadow-sm relative overflow-hidden flex flex-col justify-center min-h-[140px]">
-  <div className="relative z-10 flex justify-between items-end w-full">
-    <div>
-      {/* 1. 상단 라벨 (표준 mb-3 및 브랜드 컬러 매칭) */}
-      <h3 className="text-[10px] font-black uppercase tracking-widest text-blue-500 mb-3"> 
-        BUSINESS CARD PROCESS CENTER
-      </h3>
-      
-      {/* 2. 메인 타이틀 (부서/이름 독립형 뱃지화 및 한 줄 수평 정렬 보장) */}
-      <h1 className="text-2xl font-black tracking-tight text-slate-800 leading-none flex items-center flex-wrap gap-2">
-
-        {/* 🏢 소속 부서 뱃지 (소모품 대장과 완벽하게 스케일을 맞춘 text-lg 버전) */}
-<span className="bg-blue-50 border border-blue-200 text-blue-600 px-4 py-2 rounded-2xl text-lg font-black tracking-tight shrink-0 shadow-sm">
-  {activeUser?.dept || '조직'}
-</span>
-        
-        {/* 👤 사용자 이름 뱃지 (주체 명시용 투명도 톤 유지) */}
-        <span className="text-slate-700 shrink-0">{activeUser?.name || '임직원'} 님</span>{' '}
-        
-        {/* 🎯 메인 타이틀 텍스트 */}
-        <span className="text-slate-800">명함 발급 신청 허브</span>
-      </h1>
-      
-      {/* 3. 하단 설명 (현재 모드 상태 안내 - mt-4 간격 표준화) */}
-      <p className="text-slate-500 text-xs font-semibold mt-4 opacity-95 flex items-center gap-1">
-        <span>현재 모드:</span>
-        <span className={`font-black ${
-          formMode === 'NEW' ? 'text-blue-600' : 
-          formMode === 'VIEW' ? 'text-slate-600' : 'text-amber-600'
-        }`}>
-          {formMode === 'NEW' && '✨ 신규 발급 신청 입력'}
-          {formMode === 'VIEW' && '🔒 신청 내역 상세 보기 (읽기 전용)'}
-          {formMode === 'EDIT' && '📝 신청 내역 정보 수정 중'}
-        </span>
-      </p>
-    </div>
-
-    {/* 🚀 우측 동적 액션 버튼 (기존 기능 완전 유지) */}
-    {formMode !== 'NEW' && (
-      <button 
-        type="button" 
-        onClick={handleResetToNew} 
-        className="px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-[11px] font-black rounded-xl transition-colors shadow-sm whitespace-nowrap"
-      >
-        + 신규 신청 양식 띄우기
-      </button>
-    )}
-  </div>
-</div>
+      {/* register 배너 규격 · catalog 색상(blue→indigo) */}
+      <div className="w-full bg-gradient-to-r from-blue-700 to-indigo-800 rounded-3xl text-white shadow-lg relative overflow-hidden px-6 md:px-8 py-6">
+        <div className="absolute right-0 top-0 w-64 h-64 bg-sky-400/15 rounded-full blur-3xl -translate-y-1/3 translate-x-1/4 pointer-events-none" />
+        <div className="absolute left-1/4 bottom-0 w-48 h-48 bg-indigo-900/20 rounded-full blur-3xl translate-y-1/2 pointer-events-none" />
+        <div className="relative z-10 flex flex-col md:flex-row md:items-end md:justify-between gap-4">
+          <div className="min-w-0">
+            <h3 className="text-[10px] font-black uppercase tracking-widest text-blue-200 mb-2.5">
+              BUSINESS CARD PROCESS CENTER
+            </h3>
+            <h1 className="text-2xl tracking-tight leading-none">
+              <span className="text-blue-200 font-normal">{activeUser?.name || '임직원'} 님</span>
+              <span className="text-white/30 font-normal mx-2.5">|</span>
+              <span className="text-white font-extrabold">명함 발급 신청 허브</span>
+            </h1>
+            <p className="text-white/70 text-xs mt-3 leading-relaxed">
+              현재 모드:{' '}
+              <span
+                className={`font-black ${
+                  formMode === 'NEW'
+                    ? 'text-sky-200'
+                    : formMode === 'VIEW'
+                      ? 'text-white/90'
+                      : 'text-amber-200'
+                }`}
+              >
+                {formMode === 'NEW' && '신규 발급 신청 입력'}
+                {formMode === 'VIEW' && '신청 내역 상세 보기 (읽기 전용)'}
+                {formMode === 'EDIT' && '신청 내역 정보 수정 중'}
+              </span>
+            </p>
+          </div>
+          {formMode !== 'NEW' && (
+            <button
+              type="button"
+              onClick={handleResetToNew}
+              className="shrink-0 self-start md:self-end inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-[10px] font-black tracking-tight bg-white/15 border border-white/25 text-white shadow-sm hover:bg-white/25 hover:border-white/40 transition-colors"
+            >
+              <span>+</span>
+              <span>신규 신청 양식 띄우기</span>
+            </button>
+          )}
+        </div>
+      </div>
 
 
       <form onSubmit={handleFormSubmit} className="bg-white border border-slate-200 rounded-[2.5rem] p-6 shadow-sm space-y-5">

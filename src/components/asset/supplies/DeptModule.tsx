@@ -10,6 +10,9 @@ import {
   supplyRequestStatusLabel,
 } from '@/utils/supplyRequestStatus';
 import { getKSTDateString } from '@/utils/dateUtils';
+import LoadingState from '@/components/common/LoadingState';
+
+const MENU_PATH = '/asset/supplies/dept';
 
 function DeptContent() {
   const [requests, setRequests] = useState<any[]>([]);
@@ -18,6 +21,14 @@ function DeptContent() {
   const [myDeptNameFromApi, setMyDeptNameFromApi] = useState<string>('');
   const [loading, setLoading] = useState(true);
   const [currentUser, setCurrentUser] = useState<any>(null);
+  const [permissionSummary, setPermissionSummary] = useState<{
+    masterName: string;
+    accessDesignate: string;
+    accessOrg: string;
+    accessLevel: string;
+    editDesignate: string;
+    editLevel: string;
+  } | null>(null);
 
   const [isTableOpen, setIsTableOpen] = useState(true);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -47,13 +58,19 @@ function DeptContent() {
     setLoading(true);
     try {
       const ts = Date.now();
-      const [userRes, reqRes] = await Promise.all([
+      const [userRes, reqRes, summaryRes] = await Promise.all([
         fetch(`/api/auth/me?t=${ts}`, { cache: 'no-store' }),
         // 부서 범위는 서버(세션)에서만 결정 — 클라에서 재필터하지 않음
         fetch(`/api/asset/supplies/dept?t=${ts}`, { cache: 'no-store' }),
+        fetch(`/api/admin/interface/summary?path=${encodeURIComponent(MENU_PATH)}&t=${ts}`, {
+          cache: 'no-store',
+        }).catch(() => null),
       ]);
 
       if (userRes.ok) setCurrentUser(await userRes.json());
+
+      if (summaryRes && summaryRes.ok) setPermissionSummary(await summaryRes.json());
+      else setPermissionSummary(null);
 
       if (reqRes.ok) {
         const data = await reqRes.json();
@@ -313,49 +330,53 @@ function DeptContent() {
     }
   };
 
-  if (loading) return <div className="p-20 text-center font-black animate-pulse text-indigo-400 uppercase tracking-widest">Loading Dept Data...</div>;
+  if (loading) return <LoadingState />;
   
   const statsTitle = `${selectedYear === 'ALL' ? '전체 기간' : `${selectedYear}년`} ${selectedMonth === 'ALL' ? '' : `${selectedMonth}월`}`;
      
   return (
     <div className="w-full max-w-[1600px] mx-auto space-y-6 p-8 font-sans text-slate-900 pb-24 animate-fade-in">
       
-   {/* 🚀 부서 지급 대장 (Slate) - 최상위 140px 표준 규격 통일 */}
-<div className="w-full bg-slate-800 p-6 rounded-[2.5rem] text-white shadow-lg relative overflow-hidden flex flex-col justify-center min-h-[140px]">
-  
-  <div className="relative z-10 flex justify-between items-end">
-    
-    {/* 좌측 텍스트 영역 */}
-    <div>
-      {/* 1. 상단 라벨 (파란색 배너와 동일하게 mb-3 여백 적용) */}
-      <h3 className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-3">
-        SUPPLIES MANAGEMENT SYSTEM
-      </h3>
-      
-   {/* 2. 메인 타이틀 (대괄호 제거 및 통일된 박스 뱃지 스타일 적용) */}
-<h1 className="text-2xl font-black tracking-tight text-white leading-none flex items-center flex-wrap gap-2.5">
-  {/* 🏢 부서명 독립형 박스 뱃지 (대괄호 문자 완전 제거) */}
-  <span className="bg-slate-700/60 border border-slate-600 text-indigo-300 px-4 py-2 rounded-2xl text-lg font-black tracking-tight shrink-0 shadow-inner">
-  {myDeptName || '조직'}
-</span>
-  
-  {/* 🎯 메인 타이틀 텍스트 */}
-  <span className="text-white">부서 소모품 지급 대장</span>
-</h1>
-      
-      {/* 3. 하단 설명 (파란색 배너와 동일하게 mt-4 여백 적용) */}
-      <p className="text-slate-300 text-xs font-semibold mt-4 opacity-90">
-        우리 부서 구성원들의 소모품 신청 내역 및 처리 현황을 조회합니다.
-      </p>
-    </div>
-
-    {/* 우측 액션 버튼 */}
-  </div>
-
-  <div className="absolute right-10 top-1/2 -translate-y-1/2 text-8xl opacity-10 select-none pointer-events-none">
-    🏢
-  </div>
-</div>
+      {/* 마케팅 distribution/dept 배너 규격: gradient · orbs · label 10px / title 2xl / desc xs */}
+      <div className="w-full bg-gradient-to-r from-slate-950 via-slate-900 to-slate-800 rounded-3xl text-white shadow-lg relative overflow-hidden px-6 md:px-8 py-6">
+        <div className="absolute right-0 top-0 w-64 h-64 bg-indigo-500/12 rounded-full blur-3xl -translate-y-1/3 translate-x-1/4 pointer-events-none" />
+        <div className="absolute left-1/4 bottom-0 w-48 h-48 bg-slate-500/10 rounded-full blur-3xl translate-y-1/2 pointer-events-none" />
+        <div className="relative z-10">
+          <h3 className="text-[10px] font-black uppercase tracking-widest text-indigo-400 mb-2.5">
+            SUPPLIES MANAGEMENT SYSTEM
+          </h3>
+          <h1 className="text-2xl tracking-tight leading-none">
+            <span className="text-indigo-400 font-normal">{myDeptName || '소속 부서'}</span>
+            <span className="text-white/30 font-normal mx-2.5">|</span>
+            <span className="text-white font-extrabold">소모품 지급 대장</span>
+          </h1>
+          <p className="text-slate-400 text-xs mt-3 leading-relaxed">
+            우리 부서 구성원들의 소모품 신청 내역 및 처리 현황을 조회합니다.
+          </p>
+          {permissionSummary && (
+            <div className="flex flex-wrap items-center gap-2 mt-4 pt-3 border-t border-white/15">
+              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-white/10 border-white/25 text-slate-50 shadow-sm">
+                <span>👑 Master 책임자:</span>
+                <span>{permissionSummary.masterName}</span>
+              </div>
+              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-purple-500/20 border-purple-300/40 text-purple-100 shadow-sm">
+                <span>👁️ Access:</span>
+                <span>{permissionSummary.accessDesignate}</span>
+                <span className="opacity-50">|</span>
+                <span className="truncate max-w-[160px]">Org: {permissionSummary.accessOrg}</span>
+                <span className="opacity-50">|</span>
+                <span>Level: {permissionSummary.accessLevel}</span>
+              </div>
+              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-emerald-400/20 border-emerald-300/40 text-emerald-100 shadow-sm">
+                <span>✍️ Edit:</span>
+                <span>{permissionSummary.editDesignate}</span>
+                <span className="opacity-50">|</span>
+                <span>Level: {permissionSummary.editLevel}</span>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
 
       
       {/* 🚀 통계 카드 영역 — 좌/우 동일 높이 */}
@@ -377,8 +398,8 @@ function DeptContent() {
             <div className="flex-1 flex items-center justify-center text-[11px] font-bold text-slate-300 italic">신청 내역 없음</div>
           ) : (
             <div className="flex-1 min-h-0 overflow-y-auto border border-slate-100 rounded-xl">
-              {/* 🚀 Grid 비율 조정: 비중을 1.8fr로 대폭 늘리고, 날짜 넓이를 4.5rem으로 타이트하게 잡아 우측으로 밈 */}
-              <div className="sticky top-0 z-10 grid grid-cols-[minmax(0,1.1fr)_minmax(0,1.8fr)_4.5rem_3.5rem] gap-x-5 gap-y-0 px-4 py-2 bg-slate-50 border-b border-slate-100">
+              {/* 물품명 여유 ↑ · 비중 시작만 우측 이동(끝·날짜·수량은 고정) */}
+              <div className="sticky top-0 z-10 grid grid-cols-[minmax(0,1.4fr)_minmax(0,1.5fr)_4.5rem_3.5rem] gap-x-5 gap-y-0 px-4 py-2 bg-slate-50 border-b border-slate-100">
                 <span className="text-[9px] font-black text-slate-400 tracking-widest uppercase text-left">물품명</span>
                 <span className="text-[9px] font-black text-slate-400 tracking-widest text-left">비중</span>
                 {/* 🚀 text-center ➔ text-right 로 변경 */}
@@ -398,7 +419,7 @@ function DeptContent() {
                       type="button"
                       title={`${item.name} · 총수량 대비 ${sharePct}%`}
                       onClick={() => setSelectedItemFilter(isSelected ? null : item.name)}
-                      className={`w-full grid grid-cols-[minmax(0,1.1fr)_minmax(0,1.8fr)_4.5rem_3.5rem] gap-x-5 gap-y-0 items-center px-4 py-2 text-left transition-colors ${
+                      className={`w-full grid grid-cols-[minmax(0,1.4fr)_minmax(0,1.5fr)_4.5rem_3.5rem] gap-x-5 gap-y-0 items-center px-4 py-2 text-left transition-colors ${
                         isSelected
                           ? 'bg-indigo-600 text-white'
                           : 'bg-white hover:bg-slate-50 text-slate-800'
@@ -642,8 +663,14 @@ function DeptContent() {
                 </div>
               </div>
 
-              <button onClick={handleExportExcel} className="px-4 py-1.5 bg-slate-800 text-white rounded-lg text-[10px] font-black hover:bg-slate-900 transition-all shadow-sm flex items-center gap-1.5">
-                <span>📊</span> EXCEL 다운로드
+              <button
+                type="button"
+                onClick={handleExportExcel}
+                className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-[10px] font-black shadow-sm hover:bg-emerald-700 transition-all whitespace-nowrap"
+              >
+                {selectedIds.size > 0
+                  ? `선택 EXCEL 다운로드(${selectedIds.size})`
+                  : '화면 목록 EXCEL 다운로드'}
               </button>
             </div>
           </div>
@@ -735,7 +762,7 @@ function DeptContent() {
      
 export default function DeptModule() {
   return (
-    <Suspense fallback={<div className="p-20 font-black animate-pulse text-indigo-400 text-center uppercase tracking-widest text-xl">Loading Dept Data...</div>}>
+    <Suspense fallback={<LoadingState />}>
       <DeptContent />
     </Suspense>
   );

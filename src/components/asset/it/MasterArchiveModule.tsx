@@ -3,6 +3,7 @@
 import { useState, useEffect, useMemo, Suspense } from 'react';
 import * as XLSX from 'xlsx';
 import { useRouter } from 'next/navigation'; // 🚀 Next.js App Router 필수 임포트
+import LoadingState from '@/components/common/LoadingState';
      
 // 🚀 전사 표준 HeaderLight 컴포넌트
 const HeaderLight = ({ title, count, children }: { title: string, count: number, children?: React.ReactNode }) => (
@@ -182,7 +183,7 @@ function MasterArchiveContent() {
     XLSX.writeFile(wb, `IT_Archive_${selectedYear}_${selectedMonth}.xlsx`);
   };
   
-  if (loading) return <div className="p-20 text-center font-black animate-pulse text-indigo-400 uppercase tracking-widest">Loading...</div>;
+  if (loading) return <LoadingState />;
   
   return (
     <div className="w-full max-w-[1600px] mx-auto space-y-6 p-8 font-sans text-slate-900 pb-24 animate-fade-in">
@@ -402,7 +403,7 @@ function MasterArchiveContent() {
   
 export default function MasterArchiveModule() {
   return (
-    <Suspense fallback={<div className="p-20 text-center font-black animate-pulse text-indigo-400 uppercase tracking-widest">Loading...</div>}>
+    <Suspense fallback={<LoadingState />}>
       <MasterArchiveContent />
     </Suspense>
   );

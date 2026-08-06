@@ -2,13 +2,10 @@
   
 import dynamic from 'next/dynamic';
 import React from 'react';
+import LoadingState from '@/components/common/LoadingState';
   
 // 1. 공통 로딩 컴포넌트
-const ModuleLoader = () => (
-  <div className="p-20 text-center font-black animate-pulse text-slate-300 tracking-widest text-xs">
-    LOADING CENTRAL SYSTEM MODULE...
-  </div>
-);
+const ModuleLoader = () => <LoadingState />;
   
 // 2. 각 도메인 모듈 dynamic 컴포넌트 레이지 로딩 선언
 // --- [IT 업무자산] ---

@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { saveAs } from 'file-saver';
 import { getKSTDateString, getKSTTimeString, formatKSTDateTime, isPastKSTDeadline, getKSTDaysUntil, formatKSTCalendarLabel } from '@/utils/dateUtils';
 import { getVisibleQuestionsByBranch } from '@/utils/surveyBranching';
+import LoadingState from '@/components/common/LoadingState';
      
 // 🚀 [UI 표준] 전사 공통 헤더 컴포넌트
 const HeaderLight = ({ title, count, children }: { title: string, count: number, children?: React.ReactNode }) => (
@@ -23,7 +24,6 @@ export default function DeliveryMySubmissions() {
   
   const [currentUser, setCurrentUser] = useState<any>(null);
   const [loading, setLoading] = useState(true);
-  const [pageConfig, setPageConfig] = useState<any>(null);
   
   const [surveys, setSurveys] = useState<any[]>([]);
   const [myResponses, setMyResponses] = useState<Record<string, any>>({}); 
@@ -39,6 +39,7 @@ export default function DeliveryMySubmissions() {
   const itemsPerPage = 5;
      
   const [isHistoryOpen, setIsHistoryOpen] = useState<boolean>(false);
+  const [showFeedbackModal, setShowFeedbackModal] = useState(false);
   
   // 🚀 [신규 엔진] 이미지 확대(Zoom) 라이트박스 상태
   const [zoomedImage, setZoomedImage] = useState<string | null>(null);
@@ -79,22 +80,15 @@ export default function DeliveryMySubmissions() {
     const initializeUnifiedContext = async () => {
       try {
         const ts = Date.now();
-        const [userRes, unitsRes, configRes, surveyRes] = await Promise.all([
+        const [userRes, unitsRes, surveyRes] = await Promise.all([
           fetch('/api/auth/me?t=' + ts, { cache: 'no-store' }),
           fetch('/api/admin/units?active=true&t=' + ts, { cache: 'no-store' }),
-          fetch('/api/admin/interface?t=' + ts).catch(() => null),
-          fetch(`/api/survey/delivery?t=${ts}`, { cache: 'no-store' }) // 🚀 캐시 원천 차단
+          fetch(`/api/survey/delivery?t=${ts}`, { cache: 'no-store' }),
         ]);
         
         const userData = userRes.ok ? await userRes.json() : null;
         const unitsData = unitsRes.ok ? await unitsRes.json() : [];
         setUnitsList(unitsData);
-     
-        if (configRes && configRes.ok) {
-          const interfaces = await configRes.json();
-          const config = interfaces.find((m: any) => m.path === '/survey/delivery/my-submissions');
-          if (config) setPageConfig(config);
-        }
      
         if (surveyRes.ok) {
           setSurveys(await surveyRes.json());
@@ -131,10 +125,12 @@ export default function DeliveryMySubmissions() {
               if (r.userEmail === userData.email) {
                 nextMyRes[r.surveyId] = {
                   submittedAt: r.submittedAt ? formatKSTDateTime(r.submittedAt) : '-',
+                  submittedAtRaw: r.submittedAt || null,
                   answers: r.answers,
                   isApproved: r.isApproved,
                   isRevoked: r.isRevoked,
                   feedbackMsg: r.feedbackMsg,
+                  feedbackAtFull: r.feedbackAt || null,
                   revisionCount: r.revisionCount
                 };
               }
@@ -190,6 +186,22 @@ export default function DeliveryMySubmissions() {
       return currentUser?.roles?.includes('LV_1') || checkHierarchy(s.target, currentUser?.unit?.unit_name);
     }).sort((a, b) => new Date(b.postDate).getTime() - new Date(a.postDate).getTime());
   }, [surveys, currentUser, unitsList, myResponses]);
+
+  /** 이번 제출 이후 관리자 보완/취소 의견이 남아 수정이 필요한 건 */
+  const needsAdminFeedback = (resp: any) => {
+    if (!resp || resp.isApproved || !resp.feedbackMsg) return false;
+    if (!resp.feedbackAtFull) return true;
+    const submitMs = new Date(resp.submittedAtRaw || 0).getTime();
+    const feedbackMs = new Date(resp.feedbackAtFull).getTime();
+    if (Number.isNaN(feedbackMs)) return true;
+    if (!resp.submittedAtRaw || Number.isNaN(submitMs)) return true;
+    return feedbackMs >= submitMs;
+  };
+
+  const feedbackNeededSurveys = useMemo(
+    () => eligibleSurveys.filter((s) => needsAdminFeedback(myResponses[s.id])),
+    [eligibleSurveys, myResponses]
+  );
   
   const historyList = useMemo(() => {
     return surveys.filter(s => {
@@ -336,12 +348,14 @@ export default function DeliveryMySubmissions() {
           ...myResponses,
           [activeFullScreenSurvey.id]: { 
             ...myResponses[activeFullScreenSurvey.id],
-            submittedAt: submittedDate, 
+            submittedAt: submittedDate,
+            submittedAtRaw: serverRes.submittedAt || new Date().toISOString(),
             answers: formData,
             revisionCount: serverRes.revisionCount || 1,
             isApproved: serverRes.isApproved,
             isRevoked: serverRes.isRevoked,
-            feedbackMsg: serverRes.feedbackMsg
+            feedbackMsg: serverRes.feedbackMsg,
+            feedbackAtFull: serverRes.feedbackAt || myResponses[activeFullScreenSurvey.id]?.feedbackAtFull || null,
           }
         };
         
@@ -392,52 +406,52 @@ export default function DeliveryMySubmissions() {
     return answers[q.id] || '응답 없음';
   };
      
-  if (loading) return <div className="p-20 text-center font-black text-teal-600 animate-pulse text-xl uppercase tracking-widest">배송 제출 제어 모듈 동기화 중...</div>;
+  if (loading) return <LoadingState />;
   
   return (
     <div className="w-full max-w-[1600px] mx-auto space-y-6 p-8 font-sans text-slate-900 pb-24 animate-fade-in text-[11px]">
       
-{/* 🌑 [배송조사 전용 테마] 미드나잇 슬레이트에서 라이트 그레이로 번지는 입체형 그라데이션 */}
-<div className="w-full bg-gradient-to-r from-slate-800 to-slate-600 p-6 rounded-[2.5rem] min-h-[140px] flex flex-col justify-center text-white shadow-xl relative overflow-hidden group">
-  
-  {/* ✨ 우측 라이트 그레이 톤과 자연스럽게 녹아들도록 투명도를 최적화한 은은한 빛 번짐 효과 */}
-  <div className="absolute right-[-10px] top-[-10px] w-24 h-24 bg-white/15 rounded-full blur-2xl group-hover:scale-150 transition-transform duration-700"></div>
-
-  <div className="relative z-10 flex justify-between items-end w-full">
-    <div>
-      {/* 1. 상단 라벨 (미드나잇 슬레이트 테마 전용 text-slate-400 처리 및 mb-3 간격 표준화) */}
-      <h3 className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-3"> 
-        MY PENDING DELIVERY
-      </h3>
-      
-      {/* 2. 메인 타이틀 (명함/일반설문 코너와 1:1 싱크로: 부서 박스 + 이름 님 텍스트) */}
-      <h1 className="text-2xl font-black tracking-tight text-white leading-none flex items-center flex-wrap gap-2">
-        {/* 🏢 소속 부서 뱃지 (미드나잇 테마에 최적화된 프리미엄 반투명 뱃지 박스) */}
-        <span className="bg-white/10 border border-white/20 text-slate-200 px-4 py-2 rounded-2xl text-lg font-black tracking-tight shrink-0 shadow-sm">
-          {currentUser?.unit?.unit_name || '조직'}
-        </span>
-        
-        {/* 👤 사용자 이름 (배경색에 맞춰 자연스럽게 매칭되는 서체 톤) */}
-        <span className="text-slate-200 shrink-0">{currentUser?.name || '임직원'} 님</span>{' '}
-        
-        {/* 🎯 메인 타이틀 텍스트 */}
-        <span className="text-white">나의 배송 신청 내역</span>
-      </h1>
-      
-      {/* 3. 하단 설명 (공통 신청 명세 문법 완벽 이식 및 mt-4 간격 고정) */}
-      <p className="text-slate-400 text-xs font-semibold mt-4 opacity-95 flex items-center gap-1">
-        <span>현재 상태:</span>
-        <span className="font-black text-white">
-          ✨ 접수한 배송내역 확인 및 관리자 출고 승인 대기 목록 조회 중
-        </span>
-      </p>
-    </div>
-  </div>
-</div>
+      {/* 마케팅 배너 공통 규격: label 10px / title 2xl / desc xs · mb-2.5 · mt-3 — general/my-submissions와 동일 */}
+      <div className="w-full bg-gradient-to-r from-slate-950 via-slate-900 to-slate-800 rounded-3xl text-white shadow-lg relative overflow-hidden px-6 md:px-8 py-6">
+        <div className="absolute right-0 top-0 w-64 h-64 bg-indigo-500/12 rounded-full blur-3xl -translate-y-1/3 translate-x-1/4 pointer-events-none" />
+        <div className="absolute left-1/4 bottom-0 w-48 h-48 bg-slate-500/10 rounded-full blur-3xl translate-y-1/2 pointer-events-none" />
+        <div className="relative z-10">
+          <h3 className="text-[10px] font-black uppercase tracking-widest text-indigo-400 mb-2.5">
+            MY DELIVERY SURVEYS & HISTORY
+          </h3>
+          <h1 className="text-2xl tracking-tight leading-none">
+            <span className="text-indigo-400 font-normal">{currentUser?.name || '임직원'} 님</span>
+            <span className="text-white/30 font-normal mx-2.5">|</span>
+            <span className="text-white font-extrabold">나의 참여 이력</span>
+          </h1>
+          <p className="text-slate-400 text-xs mt-3 leading-relaxed">
+            접수한 배송내역 확인 및 관리자 출고 승인 대기 목록을 조회합니다.
+          </p>
+        </div>
+      </div>
 
   
+      {/* 🚀 관리자 보완요청 요약 (관리자 대기함 카드와 동일 톤) */}
+      <button
+        type="button"
+        onClick={() => setShowFeedbackModal(true)}
+        className="mt-6 w-full max-w-md p-5 rounded-[2rem] border border-amber-200 bg-gradient-to-r from-amber-50 to-white shadow-sm hover:border-amber-400 transition-all flex items-center justify-between"
+      >
+        <div className="text-left">
+          <p className="text-[10px] font-black text-amber-600 uppercase mb-1">관리자 보완요청</p>
+          <p className="text-xl font-black text-slate-800">
+            {feedbackNeededSurveys.length}{' '}
+            <span className="text-sm font-bold text-slate-500">건</span>
+          </p>
+          <p className="text-[10px] font-bold text-amber-700/80 mt-1">
+            클릭하면 보완이 필요한 신청만 모아서 볼 수 있습니다
+          </p>
+        </div>
+        <span className="text-2xl">⚠️</span>
+      </button>
+
       {/* 🚀 대장 1: 기간 내 참여 및 정보 수정 가능 대장 */}
-      <div className="mt-6 bg-white border border-slate-200 rounded-[2.5rem] shadow-sm overflow-hidden">
+      <div className="mt-4 bg-white border border-slate-200 rounded-[2.5rem] shadow-sm overflow-hidden">
         <HeaderLight title="출고 대기 중인 신청 리스트" count={eligibleSurveys.length} />
   
         <div className="overflow-x-auto">
@@ -519,10 +533,12 @@ export default function DeliveryMySubmissions() {
      
                     <td className="text-center pr-8">
                       <div className="flex flex-col gap-1.5 w-full justify-center h-16">
-                        {myResponses[survey.id]?.isRevoked ? (
-                          <button onClick={() => alert(`💡 관리자 승인 취소 사유:\n\n${myResponses[survey.id].feedbackMsg}`)} className="w-full py-1 bg-red-50 text-red-600 border border-red-300 rounded text-[9px] font-black hover:bg-red-100 animate-pulse">⚠️ 취소/보완필요</button>
-                        ) : myResponses[survey.id]?.feedbackMsg ? (
-                          <button onClick={() => alert(`💡 관리자 보완 요청 의견:\n\n${myResponses[survey.id].feedbackMsg}`)} className="w-full py-1 bg-amber-50 text-amber-700 border border-amber-300 rounded text-[9px] font-black hover:bg-amber-100 animate-pulse">⚠️ 보완 필요</button>
+                        {needsAdminFeedback(myResponses[survey.id]) ? (
+                          myResponses[survey.id]?.isRevoked ? (
+                            <button onClick={() => alert(`💡 관리자 승인 취소 사유:\n\n${myResponses[survey.id].feedbackMsg}`)} className="w-full py-1 bg-red-50 text-red-600 border border-red-300 rounded text-[9px] font-black hover:bg-red-100 animate-pulse">⚠️ 취소/보완필요</button>
+                          ) : (
+                            <button onClick={() => alert(`💡 관리자 보완 요청 의견:\n\n${myResponses[survey.id].feedbackMsg}`)} className="w-full py-1 bg-amber-50 text-amber-700 border border-amber-300 rounded text-[9px] font-black hover:bg-amber-100 animate-pulse">⚠️ 보완 필요</button>
+                          )
                         ) : (
                           <span className="w-full py-1 bg-slate-50 text-slate-500 border border-slate-200 rounded font-black text-[9px]">승인 대기 중</span>
                         )}
@@ -553,6 +569,115 @@ export default function DeliveryMySubmissions() {
           </div>
         )}
       </div>
+
+{showFeedbackModal && (
+  <div
+    className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[300] flex items-center justify-center p-4"
+    onMouseDown={(e) => {
+      (e.currentTarget as HTMLElement).dataset.backdropDown =
+        e.target === e.currentTarget ? '1' : '0';
+    }}
+    onClick={(e) => {
+      if (
+        e.target === e.currentTarget &&
+        (e.currentTarget as HTMLElement).dataset.backdropDown === '1'
+      ) {
+        setShowFeedbackModal(false);
+      }
+    }}
+  >
+    <div
+      className="bg-white w-[720px] max-w-full rounded-[2rem] overflow-hidden shadow-2xl flex flex-col max-h-[85vh]"
+      onMouseDown={(e) => e.stopPropagation()}
+      onClick={(e) => e.stopPropagation()}
+    >
+      <div className="p-6 bg-amber-500 text-white flex justify-between items-center shrink-0">
+        <div>
+          <h3 className="font-black text-lg flex items-center gap-2">⚠️ 관리자 보완요청</h3>
+          <p className="text-xs text-amber-100 mt-1">
+            총 {feedbackNeededSurveys.length}건의 보완이 필요합니다. 내용을 확인한 뒤 답변을 수정해 주세요.
+          </p>
+        </div>
+        <button type="button" onClick={() => setShowFeedbackModal(false)} className="text-2xl opacity-80 hover:opacity-100">✕</button>
+      </div>
+      <div className="flex-1 overflow-y-auto bg-slate-50 p-6">
+        {feedbackNeededSurveys.length === 0 ? (
+          <div className="py-20 text-center text-slate-400 font-black">현재 보완 요청이 없습니다.</div>
+        ) : (
+          <div className="space-y-4">
+            {feedbackNeededSurveys.map((survey) => {
+              const resp = myResponses[survey.id];
+              const isTimeOver =
+                typeof survey.endDate === 'string' && survey.endDate.includes('-')
+                  ? isPastKSTDeadline(survey.endDate, (survey.endTime || '').trim() || '23:59')
+                  : false;
+              return (
+                <div
+                  key={survey.id}
+                  className="bg-white p-5 border border-amber-100 rounded-2xl shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-4"
+                >
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 mb-2 flex-wrap">
+                      <span className={`px-2 py-0.5 rounded text-[9px] font-black ${
+                        resp?.isRevoked
+                          ? 'bg-red-100 text-red-600'
+                          : 'bg-amber-100 text-amber-700'
+                      }`}>
+                        {resp?.isRevoked ? '승인취소 · 보완필요' : '보완요청'}
+                      </span>
+                      <span className={`px-2 py-0.5 rounded text-[9px] font-black ${
+                        survey.deliveryType === 'ALWAYS'
+                          ? 'bg-pink-100 text-pink-700'
+                          : 'bg-amber-50 text-amber-700 border border-amber-200'
+                      }`}>
+                        {survey.deliveryType === 'ALWAYS' ? '상시' : '기간'}
+                      </span>
+                    </div>
+                    <p className="font-bold text-slate-800 text-[13px] truncate">
+                      [{survey.code}] {survey.title}
+                    </p>
+                    <p className="text-[10px] font-mono text-slate-400 mt-1">
+                      접수: {resp?.submittedAt || '-'}
+                    </p>
+                    {resp?.feedbackMsg && (
+                      <p className="text-[11px] font-bold text-amber-800 mt-2 bg-amber-50 border border-amber-100 rounded-xl px-3 py-2 leading-relaxed">
+                        {resp.feedbackMsg}
+                      </p>
+                    )}
+                  </div>
+                  <div className="flex gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => alert(`💡 관리자 ${resp?.isRevoked ? '승인 취소' : '보완 요청'} 사유:\n\n${resp?.feedbackMsg || '-'}`)}
+                      className="px-4 py-2 bg-white border border-amber-200 text-amber-700 rounded-xl text-[10px] font-black hover:bg-amber-50 shadow-sm"
+                    >
+                      의견 보기
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isTimeOver}
+                      onClick={() => {
+                        setShowFeedbackModal(false);
+                        handleOpenSurvey(survey, true);
+                      }}
+                      className={`px-4 py-2 rounded-xl text-[10px] font-black shadow-sm ${
+                        isTimeOver
+                          ? 'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed'
+                          : 'bg-slate-800 text-white hover:bg-black'
+                      }`}
+                    >
+                      {isTimeOver ? '기간 종료' : '답변 수정'}
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  </div>
+)}
      
 {/* 📁 슬림 규격으로 압축한 참여 이력 보관함 토글 바 (다크 그레이 시인성 확보 버전) */}
 <div 

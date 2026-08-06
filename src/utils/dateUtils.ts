@@ -32,6 +32,26 @@ export const getKSTNowYearMonth = () => {
 };
 
 /**
+ * 지급 업무일: dist_date(지급일자) 우선, 없으면 createdAt(신청일).
+ * Dashboard / Dept / ClientSearch 집계 공통.
+ */
+export function getDistBusinessDate(d: {
+  dist_date?: string | Date | null;
+  createdAt?: string | Date | null;
+}): string | Date | null {
+  return d?.dist_date || d?.createdAt || null;
+}
+
+/**
+ * KST 기준 특정 연도의 절대 시각 범위 [start, end) — DB 쿼리 필터용.
+ * 예: 2026 → 2025-12-31T15:00Z 이상 ~ 2026-12-31T15:00Z 미만
+ */
+export const getKSTYearRange = (year: number) => ({
+  start: new Date(`${year}-01-01T00:00:00+09:00`),
+  end: new Date(`${year + 1}-01-01T00:00:00+09:00`),
+});
+
+/**
  * date input(YYYY-MM-DD)을 KST 정오(+09:00) Date로 파싱.
  * `new Date('YYYY-MM-DD')` UTC 자정 파싱으로 하루가 밀리는 문제를 막습니다.
  */

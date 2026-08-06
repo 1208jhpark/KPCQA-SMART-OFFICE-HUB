@@ -4,6 +4,7 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { getKSTDateString } from '@/utils/dateUtils';
+import LoadingState from '@/components/common/LoadingState';
 
 // 카테고리 마스터 탭 설정
 const CATEGORIES = [
@@ -432,11 +433,7 @@ if (activeTab === 'SIGN') {
 
 // 🚀 안전한 위치로 정착된 세션 로딩 가드
 if (typeof isSessionLoading !== 'undefined' && isSessionLoading) {
-  return (
-    <div className="p-20 font-black text-blue-500 animate-pulse text-center text-xs tracking-widest mt-20">
-      인프라 코어로부터 실시간 유저 세션 인증 연동 중...
-    </div>
-  );
+  return <LoadingState />;
 }
 
 // 🚀 메인 UI 렌더링 리턴 시작

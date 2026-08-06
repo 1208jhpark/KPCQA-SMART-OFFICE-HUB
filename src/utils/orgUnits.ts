@@ -24,6 +24,7 @@ export function resolveTopOrgName(
 }
 
 type OrgUnitLike = {
+  id?: string | null;
   unit_name?: string | null;
   parent_id?: string | null;
   parent?: { unit_name?: string | null } | null;
@@ -91,8 +92,10 @@ export function canDistributeMarketingOwnerDept(
 }
 
 /**
- * Organization(최상위) 물품 편집/입고/종료 가능 여부 — global_mgmt_dept만
+ * Organization(최상위) 자산 편집/입고/종료 가능 여부 — global_mgmt_dept만
  * (본인 소속이 topOrg여도 mgmt가 아니면 불가)
+ * - 총괄 부서 본인
+ * - 총괄이 HQ일 때: 상위 HQ가 총괄인 센터, 또는 총괄의 직속 하위 조직
  */
 export function canEditTopOrgMarketingAsset(opts: {
   ownerDept?: string | null;
@@ -100,6 +103,7 @@ export function canEditTopOrgMarketingAsset(opts: {
   myUnitName?: string | null;
   myHqName?: string | null;
   globalMgmtDept?: string | null;
+  units?: OrgUnitLike[] | null;
 }): boolean {
   const top = (opts.topOrgName || '').trim();
   const owner = (opts.ownerDept || '').trim();
@@ -107,6 +111,66 @@ export function canEditTopOrgMarketingAsset(opts: {
   const mgmt = (opts.globalMgmtDept || '').trim();
   if (!mgmt) return false;
   const me = (opts.myUnitName || '').trim();
+  if (!me) return false;
   const hq = (opts.myHqName || '').trim();
-  return me === mgmt || hq === mgmt;
+  if (me === mgmt || hq === mgmt) return true;
+
+  // GLOBAL_MGMT(HQ 등)의 직속 하위 소속도 허용
+  if (opts.units?.length) {
+    const mgmtUnit = opts.units.find((u) => String(u.unit_name || '').trim() === mgmt);
+    const children = getChildUnitNames(mgmt, mgmtUnit?.id ?? null, opts.units);
+    if (children.includes(me)) return true;
+  }
+  return false;
+}
+
+/**
+ * admin/settings GLOBAL_MGMT 지정 부서 본인 또는 그 직속 하위 조직 소속인지
+ * (마케팅 물품 열람 LV 설정 권한)
+ */
+export function isGlobalMgmtOrgMember(opts: {
+  myUnitName?: string | null;
+  myUnitId?: string | null;
+  globalMgmtDept?: string | null;
+  units?: OrgUnitLike[] | null;
+}): boolean {
+  const mgmt = String(opts.globalMgmtDept || '').trim();
+  const me = String(opts.myUnitName || '').trim();
+  if (!mgmt || !me) return false;
+  if (me === mgmt) return true;
+  if (!opts.units?.length) return false;
+  const mgmtUnit = opts.units.find((u) => String(u.unit_name || '').trim() === mgmt);
+  const children = getChildUnitNames(mgmt, mgmtUnit?.id ?? null, opts.units);
+  return children.includes(me);
+}
+
+/**
+ * 타부서 열람 LV로 지정된 인원에게 신청을 열어둔 물품인지
+ * (view_role_ids 미지정=전원 열람만 → 신청 개방 안 함)
+ */
+export function canApplyViaViewRoles(
+  item: { view_role_ids?: unknown; view_allow_apply?: boolean | null },
+  userRoles: unknown
+): boolean {
+  if (!item?.view_allow_apply) return false;
+  const raw = item.view_role_ids;
+  if (!raw) return false;
+  const arr = Array.isArray(raw) ? raw : [raw];
+  const required = Array.from(
+    new Set(
+      arr
+        .map((r) => {
+          const m = String(r ?? '').trim().match(/(\d+)/);
+          return m ? `LV_${m[1]}` : '';
+        })
+        .filter(Boolean)
+    )
+  );
+  if (required.length === 0) return false;
+  const rolesArr = !userRoles ? [] : Array.isArray(userRoles) ? userRoles : [userRoles];
+  const mine = rolesArr.map((r) => {
+    const m = String(r ?? '').trim().match(/(\d+)/);
+    return m ? `LV_${m[1]}` : String(r);
+  });
+  return mine.some((r) => required.includes(r));
 }

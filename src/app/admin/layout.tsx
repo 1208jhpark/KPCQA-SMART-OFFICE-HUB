@@ -47,7 +47,7 @@ export default async function AdminLayout({ children }: { children: ReactNode })
     return (
       <div className="flex h-screen w-full flex-col items-center justify-center bg-slate-50">
         <div className="text-6xl mb-4">🚫</div>
-        <h1 className="text-2xl font-black text-slate-800 mb-2">최고 관리자 전용 영역</h1>
+        <h1 className="text-2xl font-black text-slate-800 mb-2">운영 관리자 전용 영역</h1>
         <p className="text-sm font-bold text-red-500 bg-red-50 px-6 py-3 rounded-2xl border border-red-100 shadow-sm">
           이 페이지는 LV_1(운영관리자) 권한 소유자만 접근할 수 있습니다.<br/>
           <span className="text-[11px] opacity-70">(현재 접속 계정 권한: {primaryRole})</span>

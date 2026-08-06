@@ -1,7 +1,7 @@
 'use client';
 
-import { useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useState, Suspense } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import {
   COMPANY_EMAIL_SUFFIX,
@@ -9,13 +9,31 @@ import {
   resolveCompanyEmail,
 } from '@/utils/companyEmail';
 
-export default function LoginPage() {
+/** open-redirect 방지: 같은 사이트 상대 경로만 허용 */
+function resolveSafeNext(raw: string | null): string | null {
+  if (!raw) return null;
+  let decoded = raw;
+  try {
+    decoded = decodeURIComponent(raw);
+  } catch {
+    /* keep raw */
+  }
+  if (!decoded.startsWith('/') || decoded.startsWith('//') || decoded.includes('://')) {
+    return null;
+  }
+  return decoded;
+}
+
+function LoginForm() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [formData, setFormData] = useState({ emailLocal: '', password: '' });
+  const [showPassword, setShowPassword] = useState(false);
   const [showForgotModal, setShowForgotModal] = useState(false);
   const [requesting, setRequesting] = useState(false);
 
   const fullEmail = resolveCompanyEmail(formData.emailLocal);
+  const returnNext = resolveSafeNext(searchParams.get('next'));
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -36,7 +54,7 @@ export default function LoginPage() {
       if (data.mustReset) {
         router.push('/account/password?forced=1');
       } else {
-        router.push('/home');
+        router.push(returnNext || '/home');
       }
     } else {
       const err = await res.json();
@@ -75,16 +93,23 @@ export default function LoginPage() {
     <div className="min-h-screen flex items-center justify-center bg-[#F8FAFC] font-sans">
       <form onSubmit={handleLogin} className="p-12 bg-white rounded-[3rem] shadow-2xl w-full max-w-md border border-gray-100 animate-in fade-in zoom-in duration-300">
         <div className="text-center mb-10">
-        <h1 className="text-4xl font-black text-slate-900 tracking-tighter italic">
-   <br /> SMART OFFICE HUB
-</h1>
+          <h1 className="text-4xl font-black text-slate-900 tracking-tighter italic">
+            <br /> SMART OFFICE HUB
+          </h1>
           <p className="text-blue-500 text-[10px] font-black uppercase tracking-[0.3em] mt-2">KPCQA 통합 자산 및 업무 관리 플랫폼</p>
+          {returnNext?.startsWith('/survey/public/') && (
+            <p className="text-[11px] font-bold text-indigo-600 mt-4 leading-relaxed">
+              설문·배달 신청 참여를 위해
+              <br />
+              Smart Office Hub 로그인이 필요합니다.
+            </p>
+          )}
         </div>
 
         <div className="space-y-4">
           <div className="space-y-1">
             <label className="text-[10px] font-black text-slate-400 ml-2 uppercase">Email</label>
-            <div className="flex items-stretch overflow-hidden rounded-2xl border border-slate-300 bg-slate-50 focus-within:ring-2 focus-within:ring-blue-500 focus-within:border-blue-400 transition-all">
+            <div className="flex items-stretch overflow-hidden rounded-2xl bg-slate-50 focus-within:ring-2 focus-within:ring-blue-500 transition-all">
               <input
                 type="text"
                 autoComplete="username"
@@ -100,21 +125,43 @@ export default function LoginPage() {
                 }
                 required
               />
-              <span className="shrink-0 flex items-center px-4 bg-slate-200/80 text-sm font-black text-slate-600 border-l border-slate-300 select-none">
+              <span className="shrink-0 flex items-center px-4 bg-slate-50 text-sm font-black text-slate-500 select-none">
                 {COMPANY_EMAIL_SUFFIX}
               </span>
             </div>
           </div>
           <div className="space-y-1">
             <label className="text-[10px] font-black text-slate-400 ml-2 uppercase">Password</label>
-            <input 
-              type="password" 
-              placeholder="비밀번호" 
-              className="w-full p-5 bg-slate-50 border border-slate-300 rounded-2xl outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-400 font-bold text-slate-700 transition-all" 
-              value={formData.password}
-              onChange={e => setFormData({...formData, password: e.target.value})} 
-              required 
-            />
+            <div className="relative">
+              <input
+                type={showPassword ? 'text' : 'password'}
+                autoComplete="current-password"
+                placeholder="Smart Office Hub 비밀번호"
+                className="w-full p-5 pr-14 bg-slate-50 rounded-2xl outline-none focus:ring-2 focus:ring-blue-500 font-bold text-slate-700 transition-all"
+                value={formData.password}
+                onChange={(e) => setFormData({ ...formData, password: e.target.value })}
+                required
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword((v) => !v)}
+                aria-label={showPassword ? '비밀번호 숨기기' : '비밀번호 보기'}
+                title={showPassword ? '비밀번호 숨기기' : '비밀번호 보기'}
+                className="absolute right-3 top-1/2 -translate-y-1/2 p-2 rounded-xl text-slate-400 hover:text-slate-700 hover:bg-slate-200/60 transition-colors"
+              >
+                {showPassword ? (
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-5 h-5">
+                    <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" />
+                    <line x1="1" y1="1" x2="23" y2="23" />
+                  </svg>
+                ) : (
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-5 h-5">
+                    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                    <circle cx="12" cy="12" r="3" />
+                  </svg>
+                )}
+              </button>
+            </div>
           </div>
 
           <div className="flex justify-end px-1">
@@ -126,7 +173,7 @@ export default function LoginPage() {
               비밀번호를 잊으셨나요?
             </button>
           </div>
-          
+
           <button className="w-full py-5 bg-slate-900 text-white rounded-2xl font-black shadow-xl hover:bg-blue-600 transition-all active:scale-95 mt-2">
             로그인
           </button>
@@ -134,15 +181,23 @@ export default function LoginPage() {
 
         <div className="mt-10 pt-6 border-t border-slate-100 text-center space-y-4">
           <p className="text-xs font-bold text-slate-400">
-            아직 계정이 없으신가요? 
-            <Link href="/signup" className="text-blue-600 underline underline-offset-4 ml-2 hover:text-blue-800">회원가입 신청</Link>
+            아직 계정이 없으신가요?
+            <Link href="/signup" className="text-blue-600 underline underline-offset-4 ml-2 hover:text-blue-800">
+              회원가입 신청
+            </Link>
           </p>
         </div>
       </form>
 
       {showForgotModal && (
-        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-[100] flex items-center justify-center p-4" onClick={() => setShowForgotModal(false)}>
-          <div className="bg-white w-full max-w-sm rounded-[2rem] shadow-2xl p-8 border border-slate-100" onClick={(e) => e.stopPropagation()}>
+        <div
+          className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-[100] flex items-center justify-center p-4"
+          onClick={() => setShowForgotModal(false)}
+        >
+          <div
+            className="bg-white w-full max-w-sm rounded-[2rem] shadow-2xl p-8 border border-slate-100"
+            onClick={(e) => e.stopPropagation()}
+          >
             <h3 className="text-lg font-black text-slate-800 mb-3">비밀번호를 잊으셨나요?</h3>
             <p className="text-[12px] font-bold text-slate-600 leading-relaxed mb-5">
               이 시스템은 사내 폐쇄망에서 운영되며,
@@ -191,5 +246,19 @@ export default function LoginPage() {
         </div>
       )}
     </div>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="min-h-screen flex items-center justify-center bg-[#F8FAFC] font-black text-slate-400 animate-pulse text-sm">
+          로딩 중…
+        </div>
+      }
+    >
+      <LoginForm />
+    </Suspense>
   );
 }

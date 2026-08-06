@@ -157,9 +157,9 @@ export default function AdminSettingsPage() {
               <tr className="hover:bg-indigo-50/30 transition-colors h-16">
               <td className="px-8 flex flex-col justify-center">
     <span className="text-slate-800 font-black text-[13px]">전사(최상위 조직) 자산 총괄 부서 지정</span>
-    <span className="text-[10px] text-slate-500 font-bold mt-1">최상위 조직의 입고/매입 및 종료 물품 장부 관리 권한</span>
+    <span className="text-[10px] text-slate-500 font-bold mt-1">최상위 조직 자산의 입고·수정·폐기 등 (지정 부서 + 직속 하위 포함)</span>
   </td>
-  <td className="px-5 text-slate-400 font-mono text-[10px]">/marketing/distribution/*</td>
+  <td className="px-5 text-slate-400 font-mono text-[10px]">/marketing/distribution/* · /equipment/*</td>
   <td className="px-5 text-center">
     <span className="bg-indigo-100 text-indigo-700 px-3 py-1 rounded-full font-black tracking-widest text-[9px]">GLOBAL_MGMT</span>
   </td>

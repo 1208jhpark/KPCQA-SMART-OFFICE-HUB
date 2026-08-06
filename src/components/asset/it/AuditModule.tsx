@@ -6,6 +6,7 @@ import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
 import { useRouter } from 'next/navigation'; // 🚀 Next.js App Router 필수 임포트
 import { getKSTDateString } from '@/utils/dateUtils';
+import LoadingState from '@/components/common/LoadingState';
      
 export default function AuditModule() {
   const router = useRouter(); // 🚀 이 선언문이 있어야 router.push를 사용할 수 있습니다!
@@ -209,7 +210,7 @@ const executeNudgeAndSync = async () => {
     saveAs(content, `실사이력_데이터모음_${todayStr}.zip`);
   };
   
-  if (loading) return <div className="p-20 text-center font-black animate-pulse text-indigo-400">Loading Audit Command Center...</div>;
+  if (loading) return <LoadingState />;
   
   return (
     <div className="w-full max-w-[1600px] mx-auto space-y-6 p-8 font-sans text-slate-900 pb-24 animate-fade-in">

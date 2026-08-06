@@ -3,20 +3,126 @@ import { cookies } from 'next/headers';
 import jwt from 'jsonwebtoken';
 import prisma from '@/lib/prisma';
 import { checkMenuPermission } from './permission-utils';
-import { resolveTopOrgName, canEditTopOrgMarketingAsset } from '@/utils/orgUnits';
+import { resolveTopOrgName, canEditTopOrgMarketingAsset, getChildUnitNames } from '@/utils/orgUnits';
 
 import { JWT_SECRET } from '@/lib/jwt';
 
-/** 마케팅 코너 interface 경로 (하위 카드 중 하나라도 통과하면 API 허용) */
+/** 마케팅 leaf 메뉴 (설계상 API 타깃과 1:1에 가깝게 매핑) */
+export const MARKETING_MENU = {
+  dashboard: '/marketing/dashboard',
+  catalog: '/marketing/distribution/catalog',
+  register: '/marketing/distribution/register',
+  dept: '/marketing/distribution/dept',
+  clientSearch: '/marketing/distribution/client-search',
+} as const;
+
+/**
+ * @deprecated 전 마케팅 OR — leaf별 authorizeMarketing* 사용 권장.
+ * 하위 호환·대시보드 등 광역 조회용으로만 유지.
+ */
 export const MARKETING_MENU_PATHS = [
   '/marketing',
-  '/marketing/dashboard',
+  MARKETING_MENU.dashboard,
   '/marketing/distribution',
-  '/marketing/distribution/catalog',
-  '/marketing/distribution/register',
-  '/marketing/distribution/dept',
-  '/marketing/distribution/client-search',
+  MARKETING_MENU.catalog,
+  MARKETING_MENU.register,
+  MARKETING_MENU.dept,
+  MARKETING_MENU.clientSearch,
 ];
+
+type MarketingAuthOptions = { requireEditor?: boolean };
+
+/** 물품(items) 조회: catalog·register·dept·dashboard */
+export function authorizeMarketingItemsRead(options?: MarketingAuthOptions) {
+  return authorizeAnyMenuPaths(
+    [
+      MARKETING_MENU.catalog,
+      MARKETING_MENU.register,
+      MARKETING_MENU.dept,
+      MARKETING_MENU.dashboard,
+    ],
+    options
+  );
+}
+
+/** 물품 CRUD: catalog(+ dept 종료/강제삭제 UI) */
+export function authorizeMarketingItemsWrite(options?: MarketingAuthOptions) {
+  return authorizeAnyMenuPaths(
+    [MARKETING_MENU.catalog, MARKETING_MENU.dept],
+    { ...options, requireEditor: true }
+  );
+}
+
+/** 입고(purchases): catalog 입고 + dept 입고대장 */
+export function authorizeMarketingPurchasesRead(options?: MarketingAuthOptions) {
+  return authorizeAnyMenuPaths(
+    [MARKETING_MENU.catalog, MARKETING_MENU.dept],
+    options
+  );
+}
+
+export function authorizeMarketingPurchasesWrite(options?: MarketingAuthOptions) {
+  return authorizeAnyMenuPaths(
+    [MARKETING_MENU.catalog, MARKETING_MENU.dept],
+    { ...options, requireEditor: true }
+  );
+}
+
+/** 고객사 조회: client-search(+ register lite 선택용) */
+export function authorizeMarketingClientsRead(options?: {
+  requireEditor?: boolean;
+  /** lite=지급신청 드롭다운 — register 접근도 허용 */
+  forRegisterLite?: boolean;
+}) {
+  const { forRegisterLite, ...authOpts } = options || {};
+  const paths = forRegisterLite
+    ? [MARKETING_MENU.clientSearch, MARKETING_MENU.register]
+    : [MARKETING_MENU.clientSearch];
+  return authorizeAnyMenuPaths(paths, authOpts);
+}
+
+/** 고객사 쓰기: client-search만 */
+export function authorizeMarketingClientsWrite(options?: MarketingAuthOptions) {
+  return authorizeAnyMenuPaths([MARKETING_MENU.clientSearch], {
+    ...options,
+    requireEditor: true,
+  });
+}
+
+/** 고객사 신규 등록: client-search 접근자 전원 (편집자 불필요) */
+export function authorizeMarketingClientsCreate(options?: MarketingAuthOptions) {
+  return authorizeAnyMenuPaths([MARKETING_MENU.clientSearch], options);
+}
+
+/** 지급 이력 조회: register·dept·catalog·client-search·dashboard */
+export function authorizeMarketingDistributionsRead(options?: MarketingAuthOptions) {
+  return authorizeAnyMenuPaths(
+    [
+      MARKETING_MENU.register,
+      MARKETING_MENU.dept,
+      MARKETING_MENU.catalog,
+      MARKETING_MENU.clientSearch,
+      MARKETING_MENU.dashboard,
+    ],
+    options
+  );
+}
+
+/** 지급 신청(POST): register·catalog(카탈로그 신청 버튼) */
+export function authorizeMarketingDistributionsApply(options?: MarketingAuthOptions) {
+  return authorizeAnyMenuPaths(
+    [MARKETING_MENU.register, MARKETING_MENU.catalog],
+    options
+  );
+}
+
+/** 지급 이력 관리(PATCH/DELETE): register·dept */
+export function authorizeMarketingDistributionsManage(options?: MarketingAuthOptions) {
+  return authorizeAnyMenuPaths(
+    [MARKETING_MENU.register, MARKETING_MENU.dept],
+    options
+  );
+}
 
 const safeArray = (val: any) => {
   if (!val) return [];
@@ -174,11 +280,15 @@ export async function authorizeApi(
 /**
  * 여러 interface 경로 중 하나라도 접근/편집 가능하면 통과.
  * (공유 API: items/distributions 등이 여러 L4에서 호출되는 경우)
+ *
+ * elevateMenuMaster (기본 true): 어느 한 경로의 menu Master여도 전사 Master(TOTAL)로 승격.
+ * 장비처럼 경로별 Master가 달라야 하면 false — LV_1만 전역 Master.
  */
 export async function authorizeAnyMenuPaths(
   menuPaths: string[],
-  options?: { requireEditor?: boolean }
+  options?: { requireEditor?: boolean; elevateMenuMaster?: boolean }
 ) {
+  const elevateMenuMaster = options?.elevateMenuMaster !== false;
   const cookieStore = await cookies();
   const token = cookieStore.get('token')?.value;
   if (!token) throw new Error('UNAUTHORIZED');
@@ -230,7 +340,8 @@ export async function authorizeAnyMenuPaths(
     const p = checkMenuPermission(userForPerm, menu, allMenus, unitsList);
     if (p.myRole) merged.myRole = p.myRole;
 
-    if (p.isMaster || p.myRole === 'LV_1') {
+    // LV_1은 항상 전역 Master. menu Master 승격은 elevateMenuMaster일 때만.
+    if (p.myRole === 'LV_1' || (elevateMenuMaster && p.isMaster)) {
       return {
         user,
         permission: {
@@ -258,10 +369,12 @@ export async function authorizeAnyMenuPaths(
 
     if (p.isEditor) {
       merged.isEditor = true;
-      // FE Catalog: edit_scopes 비어 있으면 편집자 = 전체(TOTAL)로 취급
+      // edit_scopes 비어 있으면 TOTAL로 올리지 않음 (UI '제한'과 일치). Task Editor 개별 scope는 permission.editScope 사용
       const rawEditScopes = safeArray(menu.edit_scopes);
       const effectiveEdit =
-        rawEditScopes.length === 0 ? 'TOTAL' : String(p.editScope || 'OWN').toUpperCase();
+        rawEditScopes.length === 0
+          ? String(p.editScope || 'NONE').toUpperCase()
+          : String(p.editScope || 'OWN').toUpperCase();
       if (scopeRank(effectiveEdit) > scopeRank(merged.editScope)) {
         merged.editScope = effectiveEdit;
       }
@@ -303,35 +416,109 @@ export async function authorizeMarketingApi(options?: { requireEditor?: boolean 
   return authorizeAnyMenuPaths(MARKETING_MENU_PATHS, options);
 }
 
-/** 장비 코너 interface 경로 (DB에 등록된 /equipment* 전부) */
-export async function authorizeEquipmentApi(options?: { requireEditor?: boolean }) {
+/**
+ * 장비 범주 코드 → interface 경로 (화면 page.tsx 와 동일 폴백)
+ * /equipment/main/{category} → /equipment/main → /equipment
+ */
+export async function resolveEquipmentMenuPath(categoryCode?: string | null): Promise<string> {
+  const code = String(categoryCode || '').trim();
+  if (code) {
+    const catPath = `/equipment/main/${code}`;
+    const found = await prisma.interfaceConfig.findUnique({
+      where: { path: catPath },
+      select: { path: true },
+    });
+    if (found?.path) return found.path;
+  }
+  const main = await prisma.interfaceConfig.findUnique({
+    where: { path: '/equipment/main' },
+    select: { path: true },
+  });
+  if (main?.path) return main.path;
+  return '/equipment';
+}
+
+/**
+ * 장비 API 권한.
+ * - categoryCode 있으면 해당 범주 메뉴만 검사 (화면과 동일). 쓰기는 범주 필수.
+ * - 없으면 /equipment* 중 하나라도 조회 가능하면 통과. menu Master를 전사 Master로 올리지 않음.
+ */
+export async function authorizeEquipmentApi(options?: {
+  requireEditor?: boolean;
+  categoryCode?: string | null;
+}) {
+  const category = String(options?.categoryCode || '').trim();
+
+  // 쓰기는 반드시 대상 범주 메뉴 기준 (한 범주 Master ≠ 전체 Master)
+  if (options?.requireEditor) {
+    if (!category) throw new Error('FORBIDDEN_EDIT');
+    const path = await resolveEquipmentMenuPath(category);
+    return authorizeApi(path, { requireEditor: true });
+  }
+
+  if (category) {
+    const path = await resolveEquipmentMenuPath(category);
+    return authorizeApi(path);
+  }
+
   const menus = await prisma.interfaceConfig.findMany({ select: { path: true } });
   const paths = menus
     .map((m) => m.path)
     .filter((p): p is string => !!p && normalizePath(p).startsWith('/equipment'));
   const fallback = ['/equipment', '/equipment/main'];
-  return authorizeAnyMenuPaths(paths.length > 0 ? paths : fallback, options);
+  return authorizeAnyMenuPaths(paths.length > 0 ? paths : fallback, {
+    elevateMenuMaster: false,
+  });
 }
 
 /**
  * 장비 department 기준 편집 스코프 (EquipmentClient FE와 동일)
- * - TOTAL / Master / LV_1 → 전체
- * - DEPT → 내 unit_name 과 자산 department 일치
- * - OWN → 장비에 소유자 필드 없음 → 편집 불가
+ * - Organization(최상위) 자산: LV_1 제외 GLOBAL_MGMT(+직속 하위)만 (TOTAL이어도 동일)
+ * - TOTAL / Master / LV_1 → (최상위 제외) 전체
+ * - DEPT → 내 unit_name 일치 + (HQ인 경우) 직속 하위 조직 department
  */
 export function assertCanEditEquipmentDepartment(
   auth: Awaited<ReturnType<typeof authorizeEquipmentApi>>,
   department: string | null | undefined
 ) {
-  const { user, permission } = auth;
+  const { user, permission, unitsList, systemConfig } = auth;
   if (permission.isMaster || permission.myRole === 'LV_1') return;
   if (!permission.isEditor) throw new Error('FORBIDDEN_EDIT');
 
+  const myDept = user.unit?.unit_name || '';
+  const myHq = (user.unit as any)?.parent?.unit_name as string | undefined;
+  const dept = String(department || '').trim();
+  const topOrg = resolveTopOrgName(unitsList);
+  const mgmtDept = systemConfig?.global_mgmt_dept;
+
+  // Organization 자산 → settings GLOBAL_MGMT(+하위)만
+  if (topOrg && dept === topOrg) {
+    if (
+      canEditTopOrgMarketingAsset({
+        ownerDept: dept,
+        topOrgName: topOrg,
+        myUnitName: myDept,
+        myHqName: myHq,
+        globalMgmtDept: mgmtDept,
+        units: unitsList,
+      })
+    ) {
+      return;
+    }
+    throw new Error('FORBIDDEN_EDIT');
+  }
+
   const scope = String(permission.editScope || 'NONE').toUpperCase();
+  // 레거시 미지정(빈 department) — TOTAL만 정리 허용
+  if (!dept) {
+    if (scope === 'TOTAL') return;
+    throw new Error('FORBIDDEN_EDIT');
+  }
   if (scope === 'TOTAL') return;
   if (scope === 'DEPT') {
-    const myDept = user.unit?.unit_name || '';
-    if (myDept && department === myDept) return;
+    if (myDept && dept === myDept) return;
+    const childNames = getChildUnitNames(myDept, user.unit_id, unitsList);
+    if (dept && childNames.includes(dept)) return;
     throw new Error('FORBIDDEN_EDIT');
   }
   throw new Error('FORBIDDEN_EDIT');
@@ -344,7 +531,7 @@ export function assertCanEditEquipmentDepartment(
  * - HQ가 하위 센터 자산을 편집하진 않음 (지급 신청만)
  */
 export function assertCanEditOwnerDept(
-  auth: Awaited<ReturnType<typeof authorizeMarketingApi>>,
+  auth: Awaited<ReturnType<typeof authorizeAnyMenuPaths>>,
   ownerDept: string | null | undefined
 ) {
   const { user, permission, unitsList, systemConfig } = auth;
@@ -365,6 +552,7 @@ export function assertCanEditOwnerDept(
         myUnitName: myCenter,
         myHqName: myHq,
         globalMgmtDept: mgmtDept,
+        units: unitsList,
       })
     ) {
       return;

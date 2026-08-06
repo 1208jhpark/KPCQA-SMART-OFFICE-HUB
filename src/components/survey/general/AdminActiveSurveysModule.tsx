@@ -7,6 +7,13 @@ import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
 import * as XLSX from 'xlsx'; 
 import { getKSTDateString, isPastKSTDeadline } from '@/utils/dateUtils';
+import LoadingState from '@/components/common/LoadingState';
+import {
+  normalizeGeneralResponsesPayload,
+  buildAdminResponseMap,
+  listAnonymousContentRows,
+  getAnonymousDoneCount,
+} from '@/utils/surveyGeneralResponses';
      
 export default function ActiveSurveysAdminPage() {
   const pathname = usePathname();
@@ -15,6 +22,16 @@ export default function ActiveSurveysAdminPage() {
   const [deptList, setDeptList] = useState<string[]>([]);
   const [unitsList, setUnitsList] = useState<any[]>([]);
   const [responses, setResponses] = useState<Record<string, any>>({});
+  const [anonymousParticipationCounts, setAnonymousParticipationCounts] = useState<Record<string, number>>({});
+  const [canEdit, setCanEdit] = useState(false);
+  const [permissionSummary, setPermissionSummary] = useState<{
+    masterName: string;
+    accessDesignate: string;
+    accessOrg: string;
+    accessLevel: string;
+    editDesignate: string;
+    editLevel: string;
+  } | null>(null);
   const [loading, setLoading] = useState(true);
   
   const [surveyListFilter, setSurveyListFilter] = useState<'ALL' | 'ONGOING' | 'CLOSING_TODAY'>('ALL');
@@ -24,7 +41,13 @@ export default function ActiveSurveysAdminPage() {
   
   const [editModal, setEditModal] = useState<any | null>(null);
   const [previewModal, setPreviewModal] = useState<any | null>(null);
-  const [nudgeModal, setNudgeModal] = useState<{surveyId: string, title: string, count: number, targetEmails: string[]} | null>(null);
+  const [nudgeModal, setNudgeModal] = useState<{
+    surveyId: string;
+    title: string;
+    count: number;
+    targetEmails: string[];
+    resolveOnServer?: boolean;
+  } | null>(null);
      
   // 🚀 [신규 추가]: 엑셀/ZIP 내보내기 시 객체(주소, 파일 등) 깨짐 방지 헬퍼
 // 🚀 [보완]: 우편번호가 없더라도 주소 필드가 있다면 깨짐 없이 문자열로 파싱하도록 예외 처리 강화
@@ -52,35 +75,38 @@ const formatAnswerForExport = (ans: any) => {
         if (!surveyRes.ok) throw new Error('설문 공고 데이터를 불러오지 못했습니다.');
         const dbSurveys = await surveyRes.json();
         setSurveys(dbSurveys);
-     
-        // 🚀 2. 부서 및 사용자 로드 (실패 시 차단)
-        const [uRes, unitRes] = await Promise.all([ 
-            fetch(`/api/admin/users?t=${ts}`, { cache: 'no-store' }), 
-            fetch(`/api/admin/units?active=true&t=${ts}`, { cache: 'no-store' }) 
-        ]);
-        
-        if (!uRes.ok || !unitRes.ok) throw new Error('사용자 및 조직도 데이터를 불러오지 못했습니다.');
-        
-        const uData = await uRes.json();
-        const unitData = await unitRes.json();
-        setUnitsList(unitData);
-        
-        const activeDepts = unitData.map((u:any) => u.unit_name);
-        setDeptList(activeDepts);
-    
-        const mappedUsers = (uData.users || []).map((u:any) => ({ 
-          ...u, 
-          dept: unitData.find((un:any) => un.id === u.unit_id)?.unit_name || '소속없음' 
-        }));
-        setUsers(mappedUsers);
-     
-        // 🚀 3. 응답 원장 수거 (권한 403 무음 실패 방어)
+
+        // 🚀 2. 설문관리 컨텍스트 (LV_1·LV_2 메뉴권한) — /api/admin/users(LV_1전용) 대체
+        const contextRes = await fetch(`/api/survey/general?t=${ts}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'GET_ADMIN_CONTEXT', menuPath: pathname }),
+          cache: 'no-store',
+        });
+        if (!contextRes.ok) {
+          if (contextRes.status === 401 || contextRes.status === 403) {
+            throw new Error('설문 관리 화면 권한이 없습니다. 허용된 부서/메뉴 권한을 확인해 주세요.');
+          }
+          throw new Error('사용자 및 조직도 데이터를 불러오지 못했습니다.');
+        }
+        const contextData = await contextRes.json();
+        setUnitsList(contextData.units || []);
+        setDeptList(
+          Array.isArray(contextData.scopeDepts) && contextData.scopeDepts.length > 0
+            ? contextData.scopeDepts
+            : (contextData.units || []).map((u: any) => u.unit_name)
+        );
+        setUsers(contextData.users || []);
+        setCanEdit(!!contextData.canEdit);
+        setPermissionSummary(contextData.permissionSummary || null);
+
+        // 🚀 3. 응답 원장 수거
         const responseRes = await fetch(`/api/survey/general?t=${ts}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'GET_RESPONSES' })
+          body: JSON.stringify({ action: 'GET_RESPONSES', includeAnonymousAnswers: true })
         });
-     
+
         if (!responseRes.ok) {
           if (responseRes.status === 401 || responseRes.status === 403) {
              throw new Error('전체 응답을 조회할 관리자 권한이 없습니다.');
@@ -88,20 +114,11 @@ const formatAnswerForExport = (ans: any) => {
           throw new Error('설문 응답 데이터를 가져오는데 실패했습니다.');
         }
 
-        const dbResponses = await responseRes.json();
-        const realRes: Record<string, any> = {};
-        
-        dbResponses.forEach((r: any) => {
-          if (r.surveyId && r.userEmail) {
-            realRes[`${r.surveyId}_${r.userEmail}`] = {
-              isDone: true,
-              date: r.submittedAt ? getKSTDateString(r.submittedAt) : '-',
-              result: '제출완료',
-              answers: r.answers || {}
-            };
-          }
-        });
-        setResponses(realRes);
+        const dbPayload = await responseRes.json();
+        const { responses: dbResponses, anonymousParticipationCounts: anonCounts } =
+          normalizeGeneralResponsesPayload(dbPayload);
+        setAnonymousParticipationCounts(anonCounts);
+        setResponses(buildAdminResponseMap(dbResponses, getKSTDateString));
         
       } catch (error: any) { 
         console.error("Admin Survey 관제 데이터 로드 실패:", error); 
@@ -112,9 +129,58 @@ const formatAnswerForExport = (ans: any) => {
       }
     };
     fetchOrgData();
-  }, []);
+  }, [pathname]);
      
   const todayStr = getKSTDateString();
+
+  const requireEdit = () => {
+    if (canEdit) return true;
+    alert('권한이 없습니다.');
+    return false;
+  };
+
+  const openNamedSubmissionView = (survey: any, user: any, resp: any) => {
+    if (!canEdit) {
+      alert('권한이 없습니다.');
+      return;
+    }
+    if (survey?.isAnonymous) {
+      alert('🔒 익명 설문은 개별 제출자 명세를 열람할 수 없습니다. 다운로드에서 익명으로 취합하세요.');
+      return;
+    }
+    let questions: any[] = [];
+    try {
+      questions = typeof survey.questions === 'string'
+        ? JSON.parse(survey.questions)
+        : (survey.questions || []);
+    } catch {
+      questions = [];
+    }
+    let answers = resp?.answers || {};
+    if (typeof answers === 'string') {
+      try { answers = JSON.parse(answers); } catch { answers = {}; }
+    }
+    const content = questions
+      .filter((q: any) => q.type !== 'SECTION')
+      .map((q: any) => {
+        let aStr = '미입력';
+        if (q.type === 'SEARCH_ADDRESS') {
+          const zip = answers[`${q.id}_zip`] || answers[q.id]?.zipCode;
+          const road = answers[`${q.id}_road`] || answers[q.id]?.roadAddress;
+          const detail = answers[`${q.id}_detail`] || answers[q.id]?.detailAddress;
+          if (zip || road) aStr = `[${zip || ''}] ${road || ''} ${detail || ''}`;
+        } else {
+          const a = answers[q.id];
+          if (a !== undefined && a !== null && a !== '') {
+            aStr = Array.isArray(a) ? a.join(', ') : (a.fileName || String(a));
+          }
+        }
+        return `• ${q.title}\n  ➔ ${aStr}`;
+      })
+      .join('\n\n');
+    alert(`📋 [${user.name}] ${survey.title}\n제출일: ${resp.date || '-'}\n\n${content || '제출된 내용이 없습니다.'}`);
+  };
+
   const stats = useMemo(() => ({
     activeCount: surveys.filter(s => s.status === '진행중').length,
     closingTodayCount: surveys.filter(s => s.status === '진행중' && s.endDate === todayStr).length,
@@ -192,6 +258,7 @@ const formatAnswerForExport = (ans: any) => {
   };
      
   const handleAddSurvey = () => {
+    if (!requireEdit()) return;
     const nextPostNumber = surveys.length > 0 ? Math.max(...surveys.map(s => s.postNumber)) + 1 : 101;
     setEditModal({ 
       id: `S_${Date.now()}`, 
@@ -211,6 +278,7 @@ const formatAnswerForExport = (ans: any) => {
   };
      
   const handleDeleteSurvey = async (id: string) => {
+    if (!requireEdit()) return;
     if (!confirm('이 설문을 삭제하시겠습니까?')) return;
     try {
       const res = await fetch(`/api/survey/general?id=${id}`, { method: 'DELETE' });
@@ -226,10 +294,11 @@ const formatAnswerForExport = (ans: any) => {
   };
      
   const handleStatusChange = async (id: string, action: 'UP' | 'DOWN' | 'ARCHIVE' | 'FORCE_COMPLETE') => {
+    if (!requireEdit()) return;
     const currentSurvey = surveys.find(s => s.id === id);
     if (!currentSurvey) return;
      
-    let finalPayload = { ...currentSurvey };
+    let finalPayload: any = { ...currentSurvey, menuPath: pathname };
     if (action === 'UP') finalPayload = { ...finalPayload, status: '진행중', postDate: todayStr, hasBeenPublished: true };
     if (action === 'DOWN') finalPayload = { ...finalPayload, status: '게시중단' };
     if (action === 'FORCE_COMPLETE') {
@@ -262,27 +331,46 @@ const formatAnswerForExport = (ans: any) => {
   };
      
   const handleNudge = (surveyId: string) => {
+    if (!requireEdit()) return;
     const survey = surveys.find(s => s.id === surveyId);
+    if (!survey) return;
     const targetDepts = survey.target.split(',').map((t:string) => t.trim());
     const targetUsers = users.filter(u => isOrgAllowed(targetDepts, u.dept));
+    const total = targetUsers.length;
+
+    if (survey.isAnonymous) {
+      const done = getAnonymousDoneCount(surveyId, anonymousParticipationCounts, responses);
+      const notDone = Math.max(0, total - done);
+      if (notDone === 0) return alert('모든 인원이 참여를 완료했습니다!');
+      setNudgeModal({
+        surveyId,
+        title: survey.title,
+        count: notDone,
+        targetEmails: [],
+        resolveOnServer: true,
+      });
+      return;
+    }
+
     const notDoneUsers = targetUsers.filter(u => !responses[`${surveyId}_${u.email}`]?.isDone);
-    
     if (notDoneUsers.length === 0) return alert('모든 인원이 참여를 완료했습니다!');
     
     setNudgeModal({ 
       surveyId, 
       title: survey.title, 
       count: notDoneUsers.length,
-      targetEmails: notDoneUsers.map(u => u.email) 
+      targetEmails: notDoneUsers.map(u => u.email),
+      resolveOnServer: false,
     });
   };
      
   const handleSavePreview = async () => {
+    if (!requireEdit()) return;
     try {
       const res = await fetch('/api/survey/general', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(previewModal)
+        body: JSON.stringify(previewModal ? { ...previewModal, menuPath: pathname } : previewModal)
       });
       if (res.ok) {
         const savedData = await res.json();
@@ -300,8 +388,9 @@ const formatAnswerForExport = (ans: any) => {
      
   const handleSaveEdit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!requireEdit()) return;
     // 🚀 [찌꺼기 제거]: DB에 없는 allowedDepts 파생 로직 삭제. target 필드만 사용.
-    const finalEditData = { ...editModal };
+    const finalEditData = { ...editModal, menuPath: pathname };
      
     try {
       const res = await fetch('/api/survey/general', {
@@ -337,6 +426,7 @@ const formatAnswerForExport = (ans: any) => {
   };
      
   const handleExportAnalysisAll = () => {
+    if (!requireEdit()) return;
     if (selectedSurveyIds.size === 0) return alert('분석할 설문을 하나 이상 선택해주세요.');
     const selectedSurveys = surveys.filter(s => selectedSurveyIds.has(s.id));
     const wb = XLSX.utils.book_new();
@@ -348,6 +438,27 @@ const formatAnswerForExport = (ans: any) => {
         parsedQuestions = typeof survey.questions === 'string' ? JSON.parse(survey.questions) : (survey.questions || []); 
       } catch(e) {}
       const questions = parsedQuestions.length > 0 ? parsedQuestions : [{ id: 'q1', title: '1. 의견 및 건의사항' }];
+
+      if (survey.isAnonymous) {
+        const anonRows = listAnonymousContentRows(responses, survey.id);
+        if (anonRows.length === 0) return;
+        hasData = true;
+        const deptRow = ['제출조직(부서)', ...anonRows.map(() => '익명조직')];
+        const nameRow = ['제출자이름', ...anonRows.map((_, i) => `익명응답자 ${i + 1}`)];
+        const dateRow = ['제출일자', ...anonRows.map((r) => r.date || '-')];
+        const contentRows = questions.map((q: any) => {
+          if (q.type === 'SECTION') return [`[🔖 섹션 단락]: ${q.title}`];
+          const rowData = [q.title];
+          anonRows.forEach((r) => {
+            rowData.push(formatAnswerForExport(r.answers?.[q.id]));
+          });
+          return rowData;
+        });
+        const ws = XLSX.utils.aoa_to_sheet([deptRow, nameRow, dateRow, ...contentRows]);
+        const safeTitle = survey.title.replace(/[/\\?%*:|"<>]/g, '-').substring(0, 30);
+        XLSX.utils.book_append_sheet(wb, ws, safeTitle);
+        return;
+      }
       
       const targetDepts = survey.target.split(',').map((t:string) => t.trim());
       const targetUsers = users.filter(u => isOrgAllowed(targetDepts, u.dept));
@@ -356,8 +467,8 @@ const formatAnswerForExport = (ans: any) => {
       if (submittedUsers.length > 0) {
         hasData = true;
         
-        const deptRow = ['제출조직(부서)', ...submittedUsers.map((u, i) => survey.isAnonymous ? '익명조직' : u.dept)];
-        const nameRow = ['제출자이름', ...submittedUsers.map((u, i) => survey.isAnonymous ? `익명응답자 ${i + 1}` : u.name)];
+        const deptRow = ['제출조직(부서)', ...submittedUsers.map((u) => u.dept)];
+        const nameRow = ['제출자이름', ...submittedUsers.map((u) => u.name)];
         const dateRow = ['제출일자', ...submittedUsers.map(u => responses[`${survey.id}_${u.email}`]?.date || '-')];
         
         const contentRows = questions.map((q: any) => {
@@ -379,10 +490,209 @@ const formatAnswerForExport = (ans: any) => {
     });
       
     if (!hasData) return alert('선택한 설문에 제출된 응답이 없습니다.');
-    XLSX.writeFile(wb, `[조직별_상세분석엑셀]_${getKSTDateString()}.xlsx`);
+    XLSX.writeFile(wb, `[조직별_상세분석Excel]_${getKSTDateString()}.xlsx`);
+  };
+
+  const makePctBar = (pct: number) => {
+    const clamped = Math.max(0, Math.min(100, pct));
+    const filled = Math.round(clamped / 5);
+    return `${'█'.repeat(filled)}${'░'.repeat(20 - filled)}`;
+  };
+
+  const questionTypeLabel = (type: string) => {
+    if (type === 'CHOICE_SINGLE') return '단일선택';
+    if (type === 'CHOICE_MULTI') return '다중선택';
+    if (type === 'SCALE') return '만족도';
+    if (type === 'TEXT_SHORT') return '단답형';
+    if (type === 'TEXT_LONG') return '장문형';
+    if (type === 'FILE') return '파일첨부';
+    if (type === 'SEARCH_ADDRESS') return '주소검색';
+    if (type === 'CALENDAR') return '캘린더';
+    if (type === 'SECTION') return '섹션';
+    return type;
+  };
+
+  /** 단일/다중/만족도 → 빈도·비율 통계 / 그 외 유형 → 안내 문구만 표기 */
+  const handleExportResultAnalysis = () => {
+    if (!requireEdit()) return;
+    if (selectedSurveyIds.size === 0) return alert('분석할 설문을 하나 이상 선택해주세요.');
+    const selectedSurveys = surveys.filter((s) => selectedSurveyIds.has(s.id));
+    const wb = XLSX.utils.book_new();
+    let hasData = false;
+    const usedSheetNames = new Set<string>();
+    const GUIDE_MSG = '선택 ZIP 또는 Excel을 다운받아 확인바랍니다.';
+
+    const uniqueSheetName = (base: string) => {
+      let name = base.replace(/[/\\?*[\]:]/g, '-').substring(0, 31);
+      if (!name) name = 'Sheet';
+      let candidate = name;
+      let i = 2;
+      while (usedSheetNames.has(candidate)) {
+        const suffix = `_${i++}`;
+        candidate = `${name.substring(0, 31 - suffix.length)}${suffix}`;
+      }
+      usedSheetNames.add(candidate);
+      return candidate;
+    };
+
+    /** 문항·유형은 블록 첫 행만 표기 */
+    const pushStatRows = (
+      rows: (string | number)[][],
+      title: string,
+      typeLabel: string,
+      detailRows: (string | number)[][]
+    ) => {
+      detailRows.forEach((cols, i) => {
+        rows.push([
+          i === 0 ? title : '',
+          i === 0 ? typeLabel : '',
+          cols[0] ?? '',
+          cols[1] ?? '',
+          cols[2] ?? '',
+          cols[3] ?? '',
+        ]);
+      });
+      rows.push([]);
+    };
+
+    selectedSurveys.forEach((survey) => {
+      let parsedQuestions: any[] = [];
+      try {
+        parsedQuestions = typeof survey.questions === 'string' ? JSON.parse(survey.questions) : (survey.questions || []);
+      } catch (e) {}
+
+      const targetDepts = survey.target.split(',').map((t: string) => t.trim());
+      const targetUsers = users.filter((u) => isOrgAllowed(targetDepts, u.dept));
+      const submittedUsers = targetUsers.filter((u) => responses[`${survey.id}_${u.email}`]?.isDone);
+
+      const answerSources = survey.isAnonymous
+        ? listAnonymousContentRows(responses, survey.id).map((r) => ({
+            date: r.date,
+            answers: r.answers,
+            dept: '익명조직',
+            name: '',
+          }))
+        : submittedUsers.map((u) => ({
+            date: responses[`${survey.id}_${u.email}`]?.date || '-',
+            answers: responses[`${survey.id}_${u.email}`]?.answers || {},
+            dept: u.dept,
+            name: u.name,
+          }));
+
+      if (answerSources.length === 0) return;
+      hasData = true;
+
+      const safeTitle = String(survey.title || survey.code || '설문').replace(/[/\\?%*:|"<>]/g, '-');
+      const exportQuestions = parsedQuestions.filter((q: any) => q.type !== 'SECTION');
+      if (exportQuestions.length === 0) return;
+
+      const rows: (string | number)[][] = [
+        ['설문명', survey.title],
+        ['응답 인원', answerSources.length],
+        [],
+        ['문항', '유형', '보기/점수', '응답수', '비율(%)', '그래프'],
+      ];
+
+      exportQuestions.forEach((q: any) => {
+        const typeLabel = questionTypeLabel(q.type);
+
+        if (q.type === 'CHOICE_SINGLE' || q.type === 'CHOICE_MULTI') {
+          const counts: Record<string, number> = {};
+          (q.options || []).forEach((opt: any) => {
+            counts[String(opt.label)] = 0;
+          });
+          let answered = 0;
+          answerSources.forEach((src) => {
+            const ans = src.answers?.[q.id];
+            if (ans === null || ans === undefined || ans === '') return;
+            answered += 1;
+            if (q.type === 'CHOICE_MULTI') {
+              const list = Array.isArray(ans) ? ans : [ans];
+              list.forEach((label: unknown) => {
+                const key = String(label);
+                counts[key] = (counts[key] || 0) + 1;
+              });
+            } else {
+              const key = String(ans);
+              counts[key] = (counts[key] || 0) + 1;
+            }
+          });
+          const denom = answered || 1;
+          const labels = Object.keys(counts).length > 0
+            ? Object.keys(counts)
+            : (q.options || []).map((o: any) => String(o.label));
+          const detailRows: (string | number)[][] = labels.map((label: string) => {
+            const count = counts[label] || 0;
+            const pct = Math.round((count / denom) * 1000) / 10;
+            return [label, count, pct, makePctBar(pct)];
+          });
+          detailRows.push(['(응답자 수)', answered, '', '']);
+          pushStatRows(rows, q.title, typeLabel, detailRows);
+          return;
+        }
+
+        if (q.type === 'SCALE') {
+          const max = Number(q.scaleMax) || 5;
+          const counts: Record<number, number> = {};
+          for (let n = 1; n <= max; n++) counts[n] = 0;
+          let sum = 0;
+          let answered = 0;
+          answerSources.forEach((src) => {
+            const ans = src.answers?.[q.id];
+            if (ans === null || ans === undefined || ans === '') return;
+            const n = Number(ans);
+            if (!Number.isFinite(n)) return;
+            answered += 1;
+            sum += n;
+            counts[n] = (counts[n] || 0) + 1;
+          });
+          const detailRows: (string | number)[][] = [];
+          for (let n = 1; n <= max; n++) {
+            const count = counts[n] || 0;
+            const pct = answered ? Math.round((count / answered) * 1000) / 10 : 0;
+            detailRows.push([`${n}점`, count, pct, makePctBar(pct)]);
+          }
+          detailRows.push(['평균', answered ? Math.round((sum / answered) * 100) / 100 : '-', '', '']);
+          detailRows.push(['(응답자 수)', answered, '', '']);
+          pushStatRows(rows, q.title, typeLabel, detailRows);
+          return;
+        }
+
+        // 통계 불가 유형(단답/장문/파일/주소/캘린더 등): 존재만 표기 + 원문 확인 안내
+        rows.push([q.title, typeLabel, GUIDE_MSG, '', '', '']);
+        rows.push([]);
+      });
+
+      const ws = XLSX.utils.aoa_to_sheet(rows);
+      ws['!cols'] = [
+        { wch: 36 }, { wch: 10 }, { wch: 42 }, { wch: 10 }, { wch: 10 }, { wch: 22 },
+      ];
+      XLSX.utils.book_append_sheet(wb, ws, uniqueSheetName(`통계_${safeTitle}`));
+
+      // 단답·장문은 별도 서술 시트에도 원문 제공 (선택 ZIP/Excel과 병행)
+      const textQuestions = exportQuestions.filter(
+        (q: any) => q.type === 'TEXT_SHORT' || q.type === 'TEXT_LONG'
+      );
+      if (textQuestions.length > 0) {
+        const header = ['제출조직', '제출자', '제출일', ...textQuestions.map((q: any) => `[${questionTypeLabel(q.type)}] ${q.title}`)];
+        const body = answerSources.map((src, i) => [
+          survey.isAnonymous ? '익명조직' : src.dept,
+          survey.isAnonymous ? `익명응답자 ${i + 1}` : src.name,
+          src.date || '-',
+          ...textQuestions.map((q: any) => formatAnswerForExport(src.answers?.[q.id])),
+        ]);
+        const textWs = XLSX.utils.aoa_to_sheet([header, ...body]);
+        XLSX.utils.book_append_sheet(wb, textWs, uniqueSheetName(`서술_${safeTitle}`));
+      }
+    });
+
+    if (!hasData) return alert('선택한 설문에 제출된 응답이 없습니다.');
+    if (wb.SheetNames.length === 0) return alert('분석할 문항이 없습니다.');
+    XLSX.writeFile(wb, `[결과분석]_${getKSTDateString()}.xlsx`);
   };
      
   const handleDownloadZipAll = async () => {
+    if (!requireEdit()) return;
     if (selectedSurveyIds.size === 0) return alert('다운로드할 설문을 하나 이상 선택해주세요.');
     const zip = new JSZip();
     const selectedSurveys = surveys.filter(s => selectedSurveyIds.has(s.id));
@@ -396,39 +706,44 @@ const formatAnswerForExport = (ans: any) => {
       try { 
         storedQuestions = typeof survey.questions === 'string' ? JSON.parse(survey.questions) : (survey.questions || []); 
       } catch(e) {}
+
+      const writeOne = (identifier: string, submitterLabel: string, resp: { date?: string; answers?: any }) => {
+        hasData = true;
+        const fileNameBase = `${identifier}_${safeFolderTitle}`;
+        let content = `■ 설문명: ${survey.title}\n■ 제출자: ${submitterLabel}\n■ 제출일: ${resp.date || '-'}\n------------------------------------------\n\n`;
+        let qNum = 1;
+        storedQuestions.forEach((q: any) => {
+          if (q.type === 'SECTION') {
+            content += `\n[🔖 섹션 단락]: ${q.title}\n------------------------------------------\n`;
+          } else {
+            content += `Q${qNum++}. ${q.title}\n`;
+            const rawAns = resp.answers ? resp.answers[q.id] : null;
+            content += `A. ${formatAnswerForExport(rawAns)}\n\n`;
+            if (rawAns && typeof rawAns === 'object' && rawAns.fileName && rawAns.fileData) {
+              const base64Data = rawAns.fileData.split(',')[1];
+              if (base64Data) {
+                folder?.file(`${identifier}_${rawAns.fileName}`, base64Data, { base64: true });
+              }
+            }
+          }
+        });
+        folder?.file(`${fileNameBase}_응답요약.txt`, "\ufeff" + content);
+      };
+
+      if (survey.isAnonymous) {
+        listAnonymousContentRows(responses, survey.id).forEach((resp, idx) => {
+          writeOne(`익명응답자_${idx + 1}`, '익명', resp);
+        });
+        return;
+      }
+
       const targetDepts = survey.target.split(',').map((t:string) => t.trim());
       const targetUsers = users.filter(u => isOrgAllowed(targetDepts, u.dept));
       
-      targetUsers.forEach((user, idx) => {
+      targetUsers.forEach((user) => {
         const resp = responses[`${survey.id}_${user.email}`];
         if (resp?.isDone) {
-          hasData = true;
-          const identifier = survey.isAnonymous ? `익명응답자_${idx + 1}` : `${user.dept}_${user.name}`;
-          const fileNameBase = `${identifier}_${safeFolderTitle}`; 
-      
-          let content = `■ 설문명: ${survey.title}\n■ 제출자: ${survey.isAnonymous ? '익명' : user.dept + ' ' + user.name}\n■ 제출일: ${resp.date}\n------------------------------------------\n\n`;
-          
-          let qNum = 1; // 🚀 [ZIP 해결]: 섹션을 제외한 순수 문항 번호 카운터
-          storedQuestions.forEach((q: any) => {
-             if (q.type === 'SECTION') {
-               content += `\n[🔖 섹션 단락]: ${q.title}\n------------------------------------------\n`;
-             } else {
-               content += `Q${qNum++}. ${q.title}\n`;
-               const rawAns = resp.answers ? resp.answers[q.id] : null;
-               
-               // 🚀 [ZIP 해결]: formatAnswerForExport 헬퍼 적용
-               content += `A. ${formatAnswerForExport(rawAns)}\n\n`;
-               
-               // 파일 물리 추출 로직
-               if (rawAns && typeof rawAns === 'object' && rawAns.fileName && rawAns.fileData) {
-                 const base64Data = rawAns.fileData.split(',')[1];
-                 if (base64Data) {
-                    folder?.file(`${identifier}_${rawAns.fileName}`, base64Data, {base64: true});
-                 }
-               }
-             }
-          });
-          folder?.file(`${fileNameBase}_응답요약.txt`, "\ufeff" + content); 
+          writeOne(`${user.dept}_${user.name}`, `${user.dept} ${user.name}`, resp);
         }
       });
     });
@@ -449,53 +764,80 @@ const formatAnswerForExport = (ans: any) => {
     }
   };
      
-  if (loading) return <div className="p-20 text-center font-black text-blue-600 animate-pulse text-xl uppercase tracking-widest">설문 관제 모듈 동기화 중...</div>;
+  if (loading) return <LoadingState />;
      
   
   return (
     <div className="w-full max-w-[1750px] mx-auto space-y-6 p-8 font-sans text-slate-900 pb-24 animate-fade-in">
       
-      {/* 🚀 1. 설문 관리자 통제실 배너 */}
-      <div className="w-full bg-gradient-to-r from-emerald-900 to-teal-900 p-6 rounded-[2.5rem] text-white shadow-xl relative overflow-hidden flex flex-col justify-center min-h-[140px]">
-        <div className="relative z-10 flex justify-between items-end w-full">
-          <div>
-            <h3 className="text-[10px] font-black uppercase tracking-widest text-emerald-400 mb-3">
-              GENERAL SURVEY MANAGEMENT HUB
-            </h3>
-            <h1 className="text-2xl font-black tracking-tight text-white leading-none">
-              일반조사/익명조사 관리 센터
-            </h1>
-            <p className="text-emerald-100/90 text-xs font-semibold mt-4 opacity-90">
-              일반조사/익명조사 신청 공고 및 부서별 접수 현황을 통합 모니터링합니다.
-            </p>
-          </div>
-        </div>
-        <div className="absolute right-10 top-1/2 -translate-y-1/2 text-8xl opacity-10 select-none pointer-events-none">
-          📋
+      {/* 마케팅 배너 공통 규격: label 10px / title 2xl / desc xs · mb-2.5 · mt-3 · chips mt-4 — client-search와 동일 */}
+      <div className="w-full bg-gradient-to-r from-emerald-900 to-teal-900 rounded-3xl text-white shadow-lg relative overflow-hidden px-6 md:px-8 py-6">
+        <div className="absolute right-0 top-0 w-64 h-64 bg-emerald-400/15 rounded-full blur-3xl -translate-y-1/3 translate-x-1/4 pointer-events-none" />
+        <div className="absolute left-1/4 bottom-0 w-48 h-48 bg-teal-800/20 rounded-full blur-3xl translate-y-1/2 pointer-events-none" />
+        <div className="relative z-10">
+          <h3 className="text-[10px] font-black uppercase tracking-widest text-emerald-400 mb-2.5">
+            GENERAL SURVEY MANAGEMENT HUB
+          </h3>
+          <h1 className="text-2xl font-extrabold tracking-tight text-white leading-none">
+            일반조사/익명조사 통합 관리 센터
+          </h1>
+          <p className="text-emerald-100/90 text-xs mt-3 leading-relaxed">
+            일반조사/익명조사 신청 공고 및 부서별 접수 현황을 통합 모니터링합니다.
+          </p>
+          {permissionSummary && (
+            <div className="flex flex-wrap items-center gap-2 mt-4 pt-3 border-t border-white/15">
+              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-white/10 border-white/25 text-emerald-50 shadow-sm">
+                <span>👑 Master 책임자:</span>
+                <span>{permissionSummary.masterName}</span>
+              </div>
+              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-purple-500/20 border-purple-300/40 text-purple-100 shadow-sm">
+                <span>👁️ Access:</span>
+                <span>{permissionSummary.accessDesignate}</span>
+                <span className="opacity-50">|</span>
+                <span className="truncate max-w-[160px]">Org: {permissionSummary.accessOrg}</span>
+                <span className="opacity-50">|</span>
+                <span>Level: {permissionSummary.accessLevel}</span>
+              </div>
+              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-emerald-400/20 border-emerald-300/40 text-emerald-100 shadow-sm">
+                <span>✍️ Edit:</span>
+                <span>{permissionSummary.editDesignate}</span>
+                <span className="opacity-50">|</span>
+                <span>Level: {permissionSummary.editLevel}</span>
+              </div>
+              {!canEdit && (
+                <span className="text-[10px] font-black text-amber-200 bg-amber-500/20 border border-amber-300/30 px-2.5 py-1 rounded-md">
+                  현재 계정: 조회만 가능 (편집 권한 없음)
+                </span>
+              )}
+            </div>
+          )}
         </div>
       </div>
      
-      {/* 🚀 2. 동적 탭 네비게이션 */}
-      <div className="flex gap-1.5 bg-slate-200/60 p-1.5 rounded-2xl border border-slate-200 shadow-inner w-full max-w-2xl mt-4">
-        {[
-          { name: '📋 현재 진행중인 조사', path: '/survey/general/admin/active-surveys' },
-          { name: '🗂️ 전체 조사 이력 관리', path: '/survey/general/admin/survey-history' },
-        ].map((tab) => {
-          const isActive = pathname.startsWith(tab.path);
-          return (
-            <Link 
-              key={tab.path} 
-              href={tab.path} 
-              className={`flex-1 py-3 text-center text-[11px] font-black rounded-xl transition-all uppercase tracking-tight ${
-                isActive 
-                  ? 'bg-white text-emerald-700 shadow-sm border border-emerald-200/50 scale-[1.01]' 
-                  : 'text-slate-500 hover:text-slate-800 hover:bg-white/40'
-              }`}
-            >
-              {tab.name}
-            </Link>
-          );
-        })}
+      {/* 탭 네비게이션 — equipment inventory / delivery admin 스위처 규격 */}
+      <div className="flex items-center justify-between bg-white p-2 rounded-xl border border-slate-200 shadow-sm">
+        <div className="flex items-center gap-1.5 bg-slate-100/80 p-1 rounded-lg">
+          {[
+            { name: '📋 현재 진행중인 조사', path: '/survey/general/admin/active-surveys', activeClass: 'bg-white text-emerald-700 shadow-sm border border-slate-200/80' },
+            { name: '🗂️ 전체 조사 이력 관리', path: '/survey/general/admin/survey-history', activeClass: 'bg-white text-slate-800 shadow-sm border border-slate-200/80' },
+          ].map((tab) => {
+            const isActive = pathname.startsWith(tab.path);
+            return (
+              <Link
+                key={tab.path}
+                href={tab.path}
+                className={`px-5 py-2 rounded-md text-xs font-black transition-all flex items-center gap-2 ${
+                  isActive ? tab.activeClass : 'text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                <span>{tab.name}</span>
+              </Link>
+            );
+          })}
+        </div>
+        <p className="text-[10px] text-slate-400 font-bold px-3 hidden sm:block">
+          ※ 탭을 클릭하여 진행 현황과 보관 이력을 전환합니다.
+        </p>
       </div>
      
       <div className="flex gap-6 w-full">
@@ -522,7 +864,15 @@ const formatAnswerForExport = (ans: any) => {
       <div className="bg-white border border-slate-200 shadow-sm rounded-2xl overflow-hidden mt-8">
         <div className="p-4 px-6 bg-slate-900 flex justify-between items-center text-white">
           <h3 className="text-[12px] font-black flex items-center gap-2"><span>📢</span> 설문 배포 및 관리 리스트</h3>
-          <button onClick={handleAddSurvey} className="px-4 py-2 bg-blue-500 text-white rounded-xl font-black text-[10px] shadow-sm hover:bg-blue-400 transition-all">+ 새로운 설문 작성</button>
+          <button
+            type="button"
+            onClick={handleAddSurvey}
+            className={`px-4 py-2 rounded-xl font-black text-[10px] shadow-sm transition-all ${
+              canEdit ? 'bg-blue-500 text-white hover:bg-blue-400' : 'bg-slate-300 text-slate-500 cursor-not-allowed'
+            }`}
+          >
+            + 새로운 설문 작성
+          </button>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-left font-medium min-w-[1400px]">
@@ -548,9 +898,11 @@ const formatAnswerForExport = (ans: any) => {
               {filteredSurveys.map((s, idx) => {
                 const targetDepts = s.target.split(',').map((t:string) => t.trim());
                 const targetUsers = users.filter(u => isOrgAllowed(targetDepts, u.dept));
-                const done = targetUsers.filter(u => responses[`${s.id}_${u.email}`]?.isDone).length;
                 const total = targetUsers.length;
-                const notDone = total - done;
+                const done = s.isAnonymous
+                  ? getAnonymousDoneCount(s.id, anonymousParticipationCounts, responses)
+                  : targetUsers.filter(u => responses[`${s.id}_${u.email}`]?.isDone).length;
+                const notDone = Math.max(0, total - done);
                 const rate = total > 0 ? Math.round((done/total)*100) : 0;
                 
                 const isTimeOver = s.status === '진행중' && isPastKSTDeadline(s.endDate, s.endTime);
@@ -623,9 +975,9 @@ const formatAnswerForExport = (ans: any) => {
                     
                     <td className="py-2 px-2 align-middle border-l border-slate-200 bg-slate-50/50">
                       <div className="flex items-center justify-center gap-1 w-full">
-                        <button onClick={() => handleStatusChange(s.id, 'UP')} disabled={s.status === '진행중' || s.status === '완료'} className={`flex-1 py-1.5 rounded text-[9px] font-black whitespace-nowrap transition-all shadow-sm border ${s.status === '게시전' || s.status === '게시중단' ? 'bg-indigo-600 text-white border-indigo-600 hover:bg-indigo-700' : 'bg-slate-50 border-slate-200 text-slate-300 cursor-not-allowed'}`}>게시</button>
-                        <button onClick={() => handleStatusChange(s.id, 'DOWN')} disabled={s.status !== '진행중'} className={`flex-1 py-1.5 rounded text-[9px] font-black whitespace-nowrap transition-all shadow-sm border ${s.status === '진행중' ? 'bg-white border-slate-300 text-slate-700 hover:bg-slate-100' : 'bg-slate-50 border-slate-200 text-slate-300 cursor-not-allowed'}`}>중단</button>
-                        <button onClick={() => handleStatusChange(s.id, 'FORCE_COMPLETE')} disabled={s.status !== '진행중'} className={`flex-1 py-1.5 rounded text-[9px] font-black whitespace-nowrap transition-all shadow-sm border ${s.status === '진행중' ? (isTimeOver ? 'bg-red-600 text-white border-red-600 hover:bg-red-700 animate-bounce' : 'bg-emerald-600 text-white border-emerald-600 hover:bg-emerald-700') : 'bg-slate-50 border-slate-200 text-slate-300 cursor-not-allowed'}`}>마감</button>
+                        <button onClick={() => handleStatusChange(s.id, 'UP')} disabled={!canEdit || s.status === '진행중' || s.status === '완료'} className={`flex-1 py-1.5 rounded text-[9px] font-black whitespace-nowrap transition-all shadow-sm border ${canEdit && (s.status === '게시전' || s.status === '게시중단') ? 'bg-indigo-600 text-white border-indigo-600 hover:bg-indigo-700' : 'bg-slate-50 border-slate-200 text-slate-300 cursor-not-allowed'}`}>게시</button>
+                        <button onClick={() => handleStatusChange(s.id, 'DOWN')} disabled={!canEdit || s.status !== '진행중'} className={`flex-1 py-1.5 rounded text-[9px] font-black whitespace-nowrap transition-all shadow-sm border ${canEdit && s.status === '진행중' ? 'bg-white border-slate-300 text-slate-700 hover:bg-slate-100' : 'bg-slate-50 border-slate-200 text-slate-300 cursor-not-allowed'}`}>중단</button>
+                        <button onClick={() => handleStatusChange(s.id, 'FORCE_COMPLETE')} disabled={!canEdit || s.status !== '진행중'} className={`flex-1 py-1.5 rounded text-[9px] font-black whitespace-nowrap transition-all shadow-sm border ${canEdit && s.status === '진행중' ? (isTimeOver ? 'bg-red-600 text-white border-red-600 hover:bg-red-700 animate-bounce' : 'bg-emerald-600 text-white border-emerald-600 hover:bg-emerald-700') : 'bg-slate-50 border-slate-200 text-slate-300 cursor-not-allowed'}`}>마감</button>
                       </div>
                     </td>
      
@@ -633,7 +985,7 @@ const formatAnswerForExport = (ans: any) => {
                       <div className="flex items-center justify-center gap-1 w-full">
                         <button onClick={() => setEditModal(s)} disabled={s.status === '진행중' || s.status === '완료'} className={`flex-1 py-1.5 rounded text-[9px] font-black whitespace-nowrap transition-all ${s.status === '게시전' || s.status === '게시중단' ? 'bg-white border border-slate-300 text-slate-700 shadow-sm hover:bg-slate-100' : 'bg-slate-200 text-slate-400 cursor-not-allowed border border-transparent'}`}>수정</button>
                         <button onClick={() => handleDeleteSurvey(s.id)} disabled={s.hasBeenPublished} className={`flex-1 py-1.5 rounded text-[9px] font-black whitespace-nowrap transition-all ${!s.hasBeenPublished ? 'bg-white border border-red-200 text-red-500 shadow-sm hover:bg-red-50' : 'bg-slate-200 text-slate-400 cursor-not-allowed border border-transparent'}`}>삭제</button>
-                        <button onClick={() => handleStatusChange(s.id, 'ARCHIVE')} disabled={s.status !== '완료'} className={`flex-1 py-1.5 rounded text-[9px] font-black whitespace-nowrap transition-all ${s.status === '완료' ? 'bg-slate-800 text-white shadow-sm hover:bg-slate-900' : 'bg-slate-200 text-slate-400 cursor-not-allowed border border-transparent'}`}>보관함이동</button>
+                        <button onClick={() => handleStatusChange(s.id, 'ARCHIVE')} disabled={!canEdit || s.status !== '완료'} className={`flex-1 py-1.5 rounded text-[9px] font-black whitespace-nowrap transition-all ${canEdit && s.status === '완료' ? 'bg-slate-800 text-white shadow-sm hover:bg-slate-900' : 'bg-slate-200 text-slate-400 cursor-not-allowed border border-transparent'}`}>보관함이동</button>
                       </div>
                     </td>
                   </tr>
@@ -647,12 +999,35 @@ const formatAnswerForExport = (ans: any) => {
       <div className="bg-white border border-slate-200 shadow-sm rounded-2xl overflow-hidden mt-6">
         <div className="p-4 px-6 bg-slate-900 flex justify-between items-center text-white">
           <h3 className="text-[12px] font-black flex items-center gap-2"><span>🗂️</span> 부서 및 직원별 설문 제출 결과 현황 보드</h3>
-          <div className="flex gap-2">
-            <button onClick={handleDownloadZipAll} className="px-4 py-2 bg-indigo-600 rounded-lg text-[10px] font-black shadow-sm hover:bg-indigo-500 transition-all flex items-center gap-1.5">
+          <div className="flex gap-2 items-center">
+            <button
+              type="button"
+              onClick={handleDownloadZipAll}
+              className={`px-4 py-2 rounded-lg text-[10px] font-black shadow-sm transition-all flex items-center gap-1.5 ${
+                canEdit ? 'bg-indigo-600 hover:bg-indigo-500' : 'bg-slate-500 cursor-not-allowed opacity-60'
+              }`}
+            >
               <span>📥</span> 선택 ZIP 다운로드
             </button>
-            <button onClick={handleExportAnalysisAll} className="px-4 py-2 bg-emerald-600 rounded-lg text-[10px] font-black shadow-sm hover:bg-emerald-500 transition-all flex items-center gap-1.5">
-              <span>📈</span> 선택 엑셀 다운로드
+            <button
+              type="button"
+              onClick={handleExportAnalysisAll}
+              className={`px-4 py-2 rounded-lg text-[10px] font-black shadow-sm transition-all flex items-center gap-1.5 ${
+                canEdit ? 'bg-emerald-600 hover:bg-emerald-500' : 'bg-slate-500 cursor-not-allowed opacity-60'
+              }`}
+            >
+              <span>📈</span> 선택 Excel 다운로드
+            </button>
+            <div className="w-px h-6 bg-white/20 mx-0.5" />
+            <button
+              type="button"
+              onClick={handleExportResultAnalysis}
+              className={`px-4 py-2 rounded-lg text-[10px] font-black shadow-sm transition-all flex items-center gap-1.5 ${
+                canEdit ? 'bg-amber-500 hover:bg-amber-400 text-slate-900' : 'bg-slate-500 cursor-not-allowed opacity-60 text-white'
+              }`}
+              title="단일·다중·만족도 통계 + 단답·장문 응답 원문"
+            >
+              <span>📊</span> 결과 분석 다운로드
             </button>
           </div>
         </div>
@@ -719,14 +1094,35 @@ const formatAnswerForExport = (ans: any) => {
                             <td key={`${s.id}-${user.id}`} className="py-1.5 border-l border-slate-100 text-center">
                               {resp?.isDone ? (
                                 <div className="flex items-center justify-center gap-1.5">
-                                  <span className="text-[8px] font-black text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded">제출 <span className="opacity-60 font-mono">{resp.date}</span></span>
+                                  <button
+                                    type="button"
+                                    onClick={() => openNamedSubmissionView(s, user, resp)}
+                                    className={`text-[8px] font-black px-1.5 py-0.5 rounded tracking-tight ${
+                                      canEdit
+                                        ? 'text-emerald-600 bg-emerald-50 hover:underline cursor-pointer'
+                                        : 'text-slate-300 bg-slate-100 cursor-not-allowed'
+                                    }`}
+                                  >
+                                    제출 <span className="opacity-60 font-mono">{resp.date}</span>
+                                  </button>
                                   {hasFile && (
-                                    <button onClick={() => {
-                                      const fileAns = Object.values(resp.answers || {}).find((a: any) => a && a.fileName);
-                                      if (fileAns && (fileAns as any).fileData) {
-                                        fetch((fileAns as any).fileData).then(r => r.blob()).then(blob => saveAs(blob, (fileAns as any).fileName));
-                                      }
-                                    }} className="text-[8px] font-black px-1.5 py-0.5 rounded shadow-sm border bg-indigo-600 text-white border-indigo-600 hover:bg-indigo-700">📂 파일</button>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        if (!requireEdit()) return;
+                                        const fileAns = Object.values(resp.answers || {}).find((a: any) => a && a.fileName);
+                                        if (fileAns && (fileAns as any).fileData) {
+                                          fetch((fileAns as any).fileData).then(r => r.blob()).then(blob => saveAs(blob, (fileAns as any).fileName));
+                                        }
+                                      }}
+                                      className={`text-[8px] font-black px-1.5 py-0.5 rounded shadow-sm border ${
+                                        canEdit
+                                          ? 'bg-indigo-600 text-white border-indigo-600 hover:bg-indigo-700'
+                                          : 'bg-slate-200 text-slate-400 border-slate-200 cursor-not-allowed'
+                                      }`}
+                                    >
+                                      📂 파일
+                                    </button>
                                   )}
                                 </div>
                               ) : <span className="text-[8px] font-black text-slate-300">미진행</span>}
@@ -744,8 +1140,26 @@ const formatAnswerForExport = (ans: any) => {
       </div>
       
       {previewModal && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[200] flex items-center justify-center p-4" onClick={() => setPreviewModal(null)}>
-          <div className="bg-white w-[600px] rounded-[2rem] overflow-hidden shadow-2xl flex flex-col" onClick={e=>e.stopPropagation()}>
+        <div
+          className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[200] flex items-center justify-center p-4"
+          onMouseDown={(e) => {
+            (e.currentTarget as HTMLElement).dataset.backdropDown =
+              e.target === e.currentTarget ? '1' : '0';
+          }}
+          onClick={(e) => {
+            if (
+              e.target === e.currentTarget &&
+              (e.currentTarget as HTMLElement).dataset.backdropDown === '1'
+            ) {
+              setPreviewModal(null);
+            }
+          }}
+        >
+          <div
+            className="bg-white w-[600px] rounded-[2rem] overflow-hidden shadow-2xl flex flex-col"
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => e.stopPropagation()}
+          >
             <div className="p-5 bg-slate-800 text-white flex justify-between"><h3 className="font-black text-sm">설문 상세 편집 및 배포</h3><button onClick={() => setPreviewModal(null)} className="text-xl">✕</button></div>
             <div className="p-6 space-y-5 bg-slate-50 flex-1">
               <div><label className="text-[10px] font-black text-slate-500">설문 제목</label><input type="text" value={previewModal.title} onChange={e => setPreviewModal({...previewModal, title: e.target.value})} className="w-full p-2 border rounded text-xs font-black outline-none focus:border-indigo-500" /></div>
@@ -759,7 +1173,7 @@ const formatAnswerForExport = (ans: any) => {
               </div>
      
               <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
-                <label className="text-[10px] font-black text-slate-500 block mb-2">🔗 모바일/웹 외부 응답 배포 링크</label>
+                <label className="text-[10px] font-black text-slate-500 block mb-2">🔗 모바일/웹 배포 링크 (사내망)</label>
                 <div className="flex items-center gap-2">
                   <input 
                     type="text" 
@@ -771,12 +1185,22 @@ const formatAnswerForExport = (ans: any) => {
                     onClick={() => {
                       const link = `${window.location.origin}/survey/public/${previewModal.id}`;
                       navigator.clipboard.writeText(link);
-                      alert('배포 링크가 클립보드에 복사되었습니다!\n게시판이나 메신저에 붙여넣기 하세요.');
+                      alert('배포 링크가 클립보드에 복사되었습니다!\n게시판이나 메신저에 붙여넣기 하세요.\n\n⚠ 사내 LAN 및 Wi-Fi에서만 접속 가능합니다. (외부망·LTE 불가)');
                     }}
                     className="px-4 py-2 bg-slate-800 text-white rounded text-[11px] font-black hover:bg-black transition-colors shrink-0"
                   >
                     링크 복사
                   </button>
+                </div>
+                <div className="w-full bg-amber-50 border border-amber-200 rounded-xl p-3 mt-3 text-center">
+                  <p className="text-[11px] font-black text-amber-800">📡 배포 링크 안내</p>
+                  <p className="text-[10px] font-bold text-amber-700 mt-0.5 leading-relaxed">
+                    참여 시 <span className="underline decoration-2">Smart Office Hub 로그인</span>이 필요합니다.
+                    <br />
+                    <span className="font-black">⚠ 반드시 사내 LAN 및 Wi-Fi 연결 후 접속하세요.</span>
+                    <br />
+                    (외부망·LTE에서는 접속되지 않습니다)
+                  </p>
                 </div>
               </div>
      
@@ -787,8 +1211,26 @@ const formatAnswerForExport = (ans: any) => {
       )}
       
       {editModal && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[200] flex items-center justify-center p-4">
-          <div className="bg-white w-[500px] rounded-[2rem] overflow-hidden shadow-2xl">
+        <div
+          className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[200] flex items-center justify-center p-4"
+          onMouseDown={(e) => {
+            (e.currentTarget as HTMLElement).dataset.backdropDown =
+              e.target === e.currentTarget ? '1' : '0';
+          }}
+          onClick={(e) => {
+            if (
+              e.target === e.currentTarget &&
+              (e.currentTarget as HTMLElement).dataset.backdropDown === '1'
+            ) {
+              setEditModal(null);
+            }
+          }}
+        >
+          <div
+            className="bg-white w-[500px] rounded-[2rem] overflow-hidden shadow-2xl"
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => e.stopPropagation()}
+          >
             <div className="p-5 bg-slate-900 text-white flex justify-between items-center"><h3 className="font-black text-sm">설문 기본 정보 {editModal.id.startsWith('S_') ? '추가' : '수정'}</h3><button onClick={() => setEditModal(null)} className="text-lg">✕</button></div>
             <form onSubmit={handleSaveEdit} className="p-6 space-y-4 bg-slate-50 max-h-[85vh] overflow-y-auto">
               
@@ -881,8 +1323,26 @@ const formatAnswerForExport = (ans: any) => {
       )}
       
       {nudgeModal && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[300] flex items-center justify-center p-4">
-          <div className="bg-white w-[400px] rounded-[2rem] overflow-hidden shadow-2xl p-8 border text-center">
+        <div
+          className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[300] flex items-center justify-center p-4"
+          onMouseDown={(e) => {
+            (e.currentTarget as HTMLElement).dataset.backdropDown =
+              e.target === e.currentTarget ? '1' : '0';
+          }}
+          onClick={(e) => {
+            if (
+              e.target === e.currentTarget &&
+              (e.currentTarget as HTMLElement).dataset.backdropDown === '1'
+            ) {
+              setNudgeModal(null);
+            }
+          }}
+        >
+          <div
+            className="bg-white w-[400px] rounded-[2rem] overflow-hidden shadow-2xl p-8 border text-center"
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => e.stopPropagation()}
+          >
             <div className="flex justify-center items-center mb-4 text-4xl">🔔</div>
             <h3 className="font-black text-lg text-slate-800 mb-2">미참여 인원 독촉 알림</h3>
             <p className="text-xs text-slate-500 font-bold mb-6 leading-relaxed">
@@ -901,16 +1361,23 @@ const formatAnswerForExport = (ans: any) => {
                       body: JSON.stringify({ 
                         action: 'NUDGE', 
                         surveyId: nudgeModal.surveyId,
-                        targetEmails: nudgeModal.targetEmails 
+                        // 익명: 서버가 미참여자 산출 (클라이언트에 실이메일 미전달)
+                        ...(nudgeModal.resolveOnServer
+                          ? { resolveUnsubmittedOnServer: true }
+                          : { targetEmails: nudgeModal.targetEmails }),
+                        menuPath: pathname,
                       })
                     });
                     if (res.ok) {
-                      alert(`✅ ${nudgeModal.count}명의 미참여자 화면에 독촉 알람이 성공적으로 발송(서버 기록)되었습니다.`);
+                      const saved = await res.json();
+                      const nudgedCount = typeof saved.nudgedCount === 'number' ? saved.nudgedCount : nudgeModal.count;
+                      alert(`✅ ${nudgedCount}명의 미참여자 화면에 독촉 알람이 성공적으로 발송(서버 기록)되었습니다.`);
                       
-                      // 🚀 [수정]: 독촉 발송 내역 로컬 상태 즉시 갱신 (Set을 이용해 이메일 중복 완벽 방지)
                       setSurveys(prev => prev.map(s => s.id === nudgeModal.surveyId ? { 
                         ...s, 
-                        nudgedUsers: Array.from(new Set([...(s.nudgedUsers || []), ...nudgeModal.targetEmails]))
+                        nudgedUsers: Array.isArray(saved.nudgedUsers)
+                          ? saved.nudgedUsers
+                          : Array.from(new Set([...(s.nudgedUsers || []), ...(nudgeModal.targetEmails || [])]))
                       } : s));
                       
                       setNudgeModal(null);

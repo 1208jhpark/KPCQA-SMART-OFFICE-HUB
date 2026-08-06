@@ -37,7 +37,7 @@ export async function POST(req: Request) {
         level: Number(body.level),
         name: body.name,
         path: body.path,
-        icon: body.icon || "📦",
+        icon: body.icon != null ? String(body.icon) : '',
         sort_order: Number(body.sort_order) || 0,
         parent_id: body.parent_id || null,
       }
@@ -58,6 +58,36 @@ export async function PATCH(req: Request) {
   try {
     await authorizeAdminApi();
     const { id, ...updateData } = await req.json();
+
+    if ('org_ids' in updateData) {
+      const orgIds = Array.isArray(updateData.org_ids)
+        ? updateData.org_ids.filter(Boolean)
+        : [];
+      if (orgIds.length === 0) {
+        return NextResponse.json(
+          { message: 'Org Guard는 최소 1개 부서를 지정해야 합니다.' },
+          { status: 400 }
+        );
+      }
+      updateData.org_ids = orgIds;
+    }
+
+    if ('view_scopes' in updateData) {
+      const raw = Array.isArray(updateData.view_scopes) ? updateData.view_scopes : [];
+      const coded = raw.map(String).includes('CODED');
+      const scopes = raw.filter((s: any) =>
+        ['OWN', 'DEPT', 'TOTAL'].includes(String(s).toUpperCase())
+      );
+      if (!coded && scopes.length === 0) {
+        return NextResponse.json(
+          { message: 'View Scope는 본인/부서/전사 중 최소 1개를 지정해야 합니다. (코드화 시 제외)' },
+          { status: 400 }
+        );
+      }
+      // CODED = 관리자용 표시(설정 미적용). 엔진은 OWN/DEPT/TOTAL만 인식
+      updateData.view_scopes = coded ? ['CODED', ...scopes] : scopes;
+    }
+
     const updated = await prisma.interfaceConfig.update({
       where: { id },
       data: updateData

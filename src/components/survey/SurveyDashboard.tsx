@@ -3,6 +3,7 @@
 import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { isPastKSTDeadline } from '@/utils/dateUtils';
+import { normalizeGeneralResponsesPayload } from '@/utils/surveyGeneralResponses';
   
 // 로딩 스켈레톤 (와이드 형태)
 const LoadingSkeleton = () => (
@@ -92,8 +93,9 @@ export default function SurveyDashboard() {
           alert('일부 응답 데이터를 가져오는데 실패했습니다. 해당 영역의 통계가 0건으로 보일 수 있습니다.');
         }
 
-        const dbGeneralResponses = !gFetchFailed ? await generalRespRes!.json() : [];
+        const generalPayload = !gFetchFailed ? await generalRespRes!.json() : [];
         const dbDeliveryResponses = !dFetchFailed ? await deliveryRespRes!.json() : [];
+        const { responses: dbGeneralResponses } = normalizeGeneralResponsesPayload(generalPayload);
 
         // 내 참여 여부 판단용 해시맵 빌드
         const generalResponsesMap: Record<string, boolean> = {};
@@ -101,8 +103,9 @@ export default function SurveyDashboard() {
           if (r.userEmail === userEmail) generalResponsesMap[r.surveyId] = true;
         });
 
+        const deliveryRows = Array.isArray(dbDeliveryResponses) ? dbDeliveryResponses : [];
         const deliveryResponsesMap: Record<string, boolean> = {};
-        dbDeliveryResponses.forEach((r: any) => {
+        deliveryRows.forEach((r: any) => {
           if (r.userEmail === userEmail) deliveryResponsesMap[r.surveyId] = true;
         });
     

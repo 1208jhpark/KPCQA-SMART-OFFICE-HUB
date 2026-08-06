@@ -3,7 +3,9 @@
 import React, { useState, useEffect, useMemo, useRef, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation'; 
 import { getKSTDateString } from '@/utils/dateUtils';
-import { resolveTopOrgName, canDistributeMarketingOwnerDept, canEditTopOrgMarketingAsset, getChildUnitNames } from '@/utils/orgUnits';
+import { resolveTopOrgName, canDistributeMarketingOwnerDept, canEditTopOrgMarketingAsset, isGlobalMgmtOrgMember, canApplyViaViewRoles } from '@/utils/orgUnits';
+import { resolveInterfaceEditState } from '@/lib/permission-utils';
+import LoadingState from '@/components/common/LoadingState';
 
 const MAX_IMAGE_BYTES = 500 * 1024; // 원본 파일 기준
 const MAX_IMAGE_LABEL = '500KB';
@@ -53,9 +55,18 @@ function CatalogContent() {
   const [purchases, setPurchases] = useState<any[]>([]);
   const [currentUser, setCurrentUser] = useState<any>(null); 
   const [interfaceConfig, setInterfaceConfig] = useState<any>(null);
+  const [permissionSummary, setPermissionSummary] = useState<{
+    masterName: string;
+    accessDesignate: string;
+    accessOrg: string;
+    accessLevel: string;
+    editDesignate: string;
+    editLevel: string;
+  } | null>(null);
   const [systemConfig, setSystemConfig] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const MENU_PATH = '/marketing/distribution/catalog';
   
   const [unitOptions, setUnitOptions] = useState<string[]>(['EA', 'BOX', 'SET']);
       
@@ -70,14 +81,28 @@ function CatalogContent() {
   const [purchaseForm, setPurchaseForm] = useState({
     qty: '' as number | '',
     unit_price: 0,
+    extra_cost: '' as number | '',
     vendor: '',
-    note: '',
-    purchase_date: getKSTDateString()
+    purchase_date: getKSTDateString(),
+    stock_in_date: getKSTDateString(),
   });
   /** 모달 안에서 텍스트 드래그 후 배경에서 mouseup 시 닫히는 것 방지 */
   const purchaseBackdropDownRef = useRef(false);
       
-  const initialForm = { name: '', unit_price: '', current_stock: '', alert_qty: '', owner_dept: '', description: '', image_url: '', owner_type: 'CENTER', unit: 'EA' };
+  const initialForm = {
+    name: '',
+    unit_price: '' as string | number,
+    extra_cost: '' as string | number,
+    current_stock: '' as string | number,
+    alert_qty: '' as string | number,
+    owner_dept: '',
+    description: '',
+    image_url: '',
+    owner_type: 'CENTER',
+    unit: 'EA',
+    view_role_ids: [] as string[],
+    view_allow_apply: false,
+  };
   const [formData, setFormData] = useState(initialForm);
       
   useEffect(() => {
@@ -93,7 +118,7 @@ function CatalogContent() {
     setLoadError(null);
     try {
       const ts = Date.now();
-      const [iRes, uRes, meRes, ifRes, sysRes, masterRes, dRes, pRes] = await Promise.all([
+      const [iRes, uRes, meRes, ifRes, sysRes, masterRes, dRes, pRes, summaryRes] = await Promise.all([
         fetch('/api/marketing/items?t=' + ts),
         fetch('/api/admin/units?active=true&t=' + ts),
         fetch('/api/auth/me?t=' + ts),
@@ -101,7 +126,8 @@ function CatalogContent() {
         fetch('/api/admin/config?t=' + ts),
         fetch('/api/admin/master-data?t=' + ts),
         fetch('/api/marketing/distributions?t=' + ts),
-        fetch('/api/marketing/purchases?t=' + ts)
+        fetch('/api/marketing/purchases?t=' + ts),
+        fetch(`/api/admin/interface/summary?path=${encodeURIComponent(MENU_PATH)}&t=${ts}`),
       ]);
       
       const failed: string[] = [];
@@ -128,9 +154,11 @@ function CatalogContent() {
       if (meRes.ok) setCurrentUser(await meRes.json());
       if (ifRes.ok) {
         const interfaces = await ifRes.json();
-        const config = interfaces.find((m: any) => m.path === '/marketing/distribution/catalog');
+        const config = interfaces.find((m: any) => m.path === MENU_PATH);
         setInterfaceConfig(config);
       }
+      if (summaryRes.ok) setPermissionSummary(await summaryRes.json());
+      else setPermissionSummary(null);
       
       if (masterRes.ok && systemConfigData?.unit_category_group) {
         const masterData = await masterRes.json();
@@ -174,25 +202,16 @@ function CatalogContent() {
   const myRoles = useMemo(() => normalizeRoles(currentUser?.roles), [currentUser]);
   const isLv1 = myRoles.includes('LV_1');
 
-  const canSeeAddForm = useMemo(() => {
-    if (!currentUser || !interfaceConfig) return false;
-    if (isLv1) return true;
-
-    const myId = currentUser.id;
-    const eRoles = safeArray(interfaceConfig.edit_role_ids).map(normalizeRoleId);
-    const tMasters = safeArray(interfaceConfig.task_masters);
-
-    if (interfaceConfig.master_editor_id === myId) return true;
-    if (myRoles.some((r) => eRoles.includes(r))) return true;
-    if (tMasters.some((tm: any) => emailsEqual(tm.email, currentUser.email))) return true;
-    return false;
-  }, [currentUser, interfaceConfig, isLv1, myRoles]);
+  /** API resolveInterfaceEditState와 동일 — edit_scopes 비움=NONE(TOTAL 아님) */
+  const editState = useMemo(
+    () => resolveInterfaceEditState(currentUser, interfaceConfig),
+    [currentUser, interfaceConfig]
+  );
+  const canSeeAddForm = editState.isEditor;
 
   const checkEditPermission = (itemOwnerDept: string) => {
-    if (!currentUser || !interfaceConfig || !systemConfig) return false;
-    if (isLv1) return true;
-    if (interfaceConfig.master_editor_id === currentUser.id) return true;
-    if (!canSeeAddForm) return false;
+    if (!currentUser || !systemConfig) return false;
+    if (!editState.isEditor) return false;
 
     const myCenter = currentUser.unit?.unit_name;
     const myHq = currentUser.unit?.parent?.unit_name;
@@ -206,15 +225,14 @@ function CatalogContent() {
         myUnitName: myCenter,
         myHqName: myHq,
         globalMgmtDept,
+        units,
       });
     }
 
-    const eScopes = safeArray(interfaceConfig.edit_scopes);
-    if (eScopes.includes('TOTAL') || eScopes.length === 0) return true;
-    if (eScopes.includes('DEPT')) {
-      // 본인 소속만 CRUD (상위 HQ·하위 센터는 신청만)
-      if (itemOwnerDept === myCenter) return true;
-    }
+    // assertCanEditOwnerDept와 동일: TOTAL 전체 / OWN·DEPT는 본인 센터만
+    const scope = editState.editScope;
+    if (scope === 'TOTAL') return true;
+    if ((scope === 'DEPT' || scope === 'OWN') && itemOwnerDept === myCenter) return true;
     return false;
   };
 
@@ -223,22 +241,63 @@ function CatalogContent() {
    * Center → 본인+상위HQ+최상위 / HQ → 본인+하위Center+최상위 / Organization → 최상위만
    * LV_1만 전체. (목록 열람은 아랫줄 타 부서로 LV 무관)
    */
-  const checkDistributePermission = (itemOwnerDept: string) => {
+  const checkDistributePermission = (item: { owner_dept?: string | null; view_role_ids?: unknown; view_allow_apply?: boolean | null }) => {
     if (!currentUser) return false;
-    return canDistributeMarketingOwnerDept(itemOwnerDept, {
-      myUnitName: currentUser.unit?.unit_name,
-      myUnitId: currentUser.dept_id || currentUser.unit_id || currentUser.unit?.id,
-      myHqName: currentUser.unit?.parent?.unit_name,
-      topOrgName,
-      units,
-      isPower: isLv1,
-    });
+    if (
+      canDistributeMarketingOwnerDept(item.owner_dept, {
+        myUnitName: currentUser.unit?.unit_name,
+        myUnitId: currentUser.dept_id || currentUser.unit_id || currentUser.unit?.id,
+        myHqName: currentUser.unit?.parent?.unit_name,
+        topOrgName,
+        units,
+        isPower: isLv1,
+      })
+    ) {
+      return true;
+    }
+    return canApplyViaViewRoles(item, currentUser.roles);
   };
 
   /** 등록/수정 시 선택 가능한 owner_dept (편집 스코프 내만) */
   const editableOwnerUnits = useMemo(() => {
     return units.filter((u) => u?.unit_name && checkEditPermission(u.unit_name));
-  }, [units, currentUser, interfaceConfig, systemConfig, topOrgName, isLv1, canSeeAddForm]);
+  }, [units, currentUser, systemConfig, topOrgName, editState.isEditor, editState.editScope]);
+
+  /** admin/settings GLOBAL_MGMT(+직속 하위)만 열람 LV 설정 */
+  const canSetViewRoles = useMemo(() => {
+    if (isLv1) return true;
+    if (!currentUser || !systemConfig) return false;
+    return isGlobalMgmtOrgMember({
+      myUnitName: currentUser.unit?.unit_name,
+      myUnitId: currentUser.dept_id || currentUser.unit_id || currentUser.unit?.id,
+      globalMgmtDept: systemConfig.global_mgmt_dept,
+      units,
+    });
+  }, [currentUser, systemConfig, units, isLv1]);
+
+  const toggleFormViewRole = (lv: string, checked: boolean) => {
+    setFormData((prev) => {
+      const cur = Array.isArray(prev.view_role_ids) ? prev.view_role_ids : [];
+      const next = checked ? Array.from(new Set([...cur, lv])) : cur.filter((r) => r !== lv);
+      return {
+        ...prev,
+        view_role_ids: next,
+        view_allow_apply: next.length > 0 ? prev.view_allow_apply : false,
+      };
+    });
+  };
+
+  const toggleEditViewRole = (lv: string, checked: boolean) => {
+    setEditFormData((prev: any) => {
+      const cur = Array.isArray(prev.view_role_ids) ? prev.view_role_ids.map(normalizeRoleId) : [];
+      const next = checked ? Array.from(new Set([...cur, lv])) : cur.filter((r: string) => r !== lv);
+      return {
+        ...prev,
+        view_role_ids: next,
+        view_allow_apply: next.length > 0 ? prev.view_allow_apply : false,
+      };
+    });
+  };
 
   /** 지급 신청 이력만 — 입고만 있으면 삭제 가능(입고도 함께 삭제) */
   const itemHasDistLedger = (itemId: string) => {
@@ -279,14 +338,23 @@ function CatalogContent() {
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!formData.name || !formData.owner_dept) return alert("물품명과 조직은 필수입니다.");
+    const extraCost = Number(formData.extra_cost) || 0;
+    if (extraCost < 0) return alert('부대비용은 0 이상이어야 합니다.');
+    const { view_role_ids, view_allow_apply, ...rest } = formData;
+    const basePayload = canSetViewRoles
+      ? { ...formData, creator_name: currentUser?.name || null, creator_dept: currentUser?.unit?.unit_name || null }
+      : { ...rest, creator_name: currentUser?.name || null, creator_dept: currentUser?.unit?.unit_name || null };
+    const payload = {
+      ...basePayload,
+      unit_price: Number(formData.unit_price) || 0,
+      extra_cost: extraCost,
+      current_stock: Number(formData.current_stock) || 0,
+      alert_qty: Number(formData.alert_qty) || 0,
+    };
     const res = await fetch('/api/marketing/items', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        ...formData,
-        creator_name: currentUser?.name || null,
-        creator_dept: currentUser?.unit?.unit_name || null,
-      })
+      body: JSON.stringify(payload)
     });
     if (res.ok) {
       alert('신규 물품이 등록되었습니다.');
@@ -299,17 +367,42 @@ function CatalogContent() {
       
   const handleOpenEdit = (item: any) => {
     setEditingId(item.id);
-    setEditFormData({ ...item, unit: item.unit || 'EA' });
+    const roles = Array.isArray(item.view_role_ids)
+      ? item.view_role_ids.map(normalizeRoleId)
+      : [];
+    setEditFormData({
+      ...item,
+      unit: item.unit || 'EA',
+      view_role_ids: roles,
+      view_allow_apply: !!item.view_allow_apply && roles.length > 0,
+    });
   };
       
   const handleSaveEdit = async () => {
     try {
       // 재고(current_stock)는 입고/지급 API로만 변경 — 직접 PATCH 제외
-      const { current_stock: _omitStock, ...safeEdit } = editFormData;
+      const {
+        current_stock: _omitStock,
+        view_role_ids,
+        view_allow_apply,
+        unit_price,
+        unit,
+        ...safeEdit
+      } = editFormData;
+      const lockedByDist = editingId ? itemHasDistLedger(editingId) : false;
+      // 열람 LV는 GLOBAL_MGMT만 — 일반 편집자가 alert_qty 등만 저장할 때 403 방지
+      let payload: Record<string, unknown> = canSetViewRoles
+        ? { ...safeEdit, view_role_ids, view_allow_apply }
+        : { ...safeEdit };
+      // 지급이력 있으면 단가·단위 변경 차단 (단위와 동일 정책)
+      if (!lockedByDist) {
+        if (unit_price !== undefined) payload.unit_price = unit_price;
+        if (unit !== undefined) payload.unit = unit;
+      }
       const res = await fetch('/api/marketing/items', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(safeEdit)
+        body: JSON.stringify(payload)
       });
       if (res.ok) {
         alert('✅ 정상적으로 수정되었습니다.');
@@ -364,9 +457,24 @@ function CatalogContent() {
     e.preventDefault();
     const qty = Number(purchaseForm.qty);
     if (!qty || qty <= 0) return alert('수량은 1개 이상이어야 합니다.');
+    const catalogPrice = Number(purchaseModal?.unit_price) || 0;
+    const inboundPrice = Number(purchaseForm.unit_price) || 0;
+    const extraCost = Number(purchaseForm.extra_cost) || 0;
+    if (inboundPrice !== catalogPrice) {
+      return alert(
+        '물품 순수 단가는 등록된 단가와 같아야 합니다.\n단가가 변경된 경우 신규 기념품으로 등록해 주세요.'
+      );
+    }
+    if (extraCost < 0) return alert('부대비용은 0 이상이어야 합니다.');
+    if (!String(purchaseForm.vendor || '').trim()) return alert('구입처(벤더/업체명)를 입력하세요.');
     const payload = {
-      ...purchaseForm,
       qty,
+      unit_price: catalogPrice,
+      extra_cost: extraCost,
+      vendor: purchaseForm.vendor,
+      note: '',
+      // 비품 대시보드와 동일: 장부 기록일은 창고 입고 일자
+      purchase_date: purchaseForm.stock_in_date,
       item_id: purchaseModal.id,
       purchaser_name: currentUser?.name || '관리자',
       purchaser_dept: currentUser?.unit?.unit_name || '미소속'
@@ -394,16 +502,6 @@ function CatalogContent() {
       
   const activeItems = useMemo(() => items.filter(item => !item.is_archived), [items]);
 
-  const myDeptName = currentUser?.unit?.unit_name as string | undefined;
-  const myHqName = currentUser?.unit?.parent?.unit_name as string | undefined;
-  const myUnitId = currentUser?.unit_id || currentUser?.unit?.id;
-  const isTopOrgUser = Boolean(topOrgName && myDeptName && myDeptName === topOrgName);
-
-  const childCenterNames = useMemo(
-    () => getChildUnitNames(myDeptName, myUnitId, units),
-    [myDeptName, myUnitId, units]
-  );
-
   /** units 정렬 순으로, 활성 물품이 있는 부서만 */
   const availableDepts = useMemo(() => {
     const activeDeptsInItems = new Set(activeItems.map(i => i.owner_dept).filter(Boolean) as string[]);
@@ -420,20 +518,16 @@ function CatalogContent() {
   }, [activeItems, units]);
 
   /**
-   * 윗줄: Organization + 소속/상위HQ/하위센터 — 표시 순서는 units(admin) 정렬 유지
+   * 윗줄(신청가능): 지급신청 가능한 물품이 1건이라도 있는 부서
+   * (소속 범위 + GLOBAL_MGMT 신청허용 포함 — 같은 부서가 위·아래로 쪼개지지 않음)
    */
   const primaryDepts = useMemo(() => {
     const names = new Set<string>();
-    const add = (name?: string | null) => {
-      if (name && availableDepts.includes(name)) names.add(name);
-    };
-    add(topOrgName);
-    add(myDeptName);
-    if (!isTopOrgUser) {
-      if (myHqName && myHqName !== topOrgName) add(myHqName);
-      childCenterNames.forEach((c) => add(c));
+    for (const item of activeItems) {
+      if (item.owner_dept && checkDistributePermission(item)) {
+        names.add(item.owner_dept);
+      }
     }
-    // admin/units 순서: Organization → HQ → Center
     const ordered: string[] = [];
     units.forEach((u) => {
       if (u.unit_name && names.has(u.unit_name) && !ordered.includes(u.unit_name)) {
@@ -444,16 +538,16 @@ function CatalogContent() {
       if (!ordered.includes(n)) ordered.push(n);
     });
     return ordered;
-  }, [availableDepts, myDeptName, myHqName, topOrgName, isTopOrgUser, childCenterNames, units]);
+  }, [activeItems, currentUser, topOrgName, units, isLv1]);
 
-  /** 아랫줄: 타 부서 (윗줄에 없는 HQ/Center 등, units order 유지) — LV 무관 전사 열람 */
+  /** 아랫줄(신청 불가능·열람): 신청 가능 물품이 없는 타 부서 */
   const otherDepts = useMemo(
     () => availableDepts.filter((d) => !primaryDepts.includes(d)),
     [availableDepts, primaryDepts]
   );
 
   const applicableCount = useMemo(
-    () => activeItems.filter((i) => checkDistributePermission(i.owner_dept)).length,
+    () => activeItems.filter((i) => checkDistributePermission(i)).length,
     [activeItems, currentUser, topOrgName, units, isLv1]
   );
 
@@ -462,13 +556,13 @@ function CatalogContent() {
       const matchSearch = !searchQuery || item.name.toLowerCase().includes(searchQuery.toLowerCase());
       const matchDept =
         selectedDept === 'APPLICABLE'
-          ? checkDistributePermission(item.owner_dept)
+          ? checkDistributePermission(item)
           : item.owner_dept === selectedDept;
       return matchSearch && matchDept;
     });
   }, [activeItems, searchQuery, selectedDept, currentUser, topOrgName, units, isLv1]);
       
-  if (loading) return <div className="p-10 text-center font-black animate-pulse text-indigo-400 mt-20 tracking-widest">Syncing Hub Master Data...</div>;
+  if (loading) return <LoadingState />;
       
   return (
     <div className="w-full max-w-[1600px] mx-auto space-y-6 p-8 font-sans text-slate-900 pb-24 animate-fade-in">
@@ -482,27 +576,47 @@ function CatalogContent() {
         </div>
       )}
       
-      <div className="w-full bg-slate-900 p-8 rounded-[2.5rem] min-h-[140px] flex flex-col justify-center text-white shadow-xl relative overflow-hidden group">
-        <div className="absolute right-[-10px] top-[-10px] w-40 h-40 bg-indigo-500/20 rounded-full blur-3xl group-hover:scale-150 transition-transform duration-700"></div>
-        <div className="relative z-10 flex justify-between items-end w-full">
-          <div>
-            <h3 className="text-[10px] font-black uppercase tracking-widest text-indigo-400 mb-3">
-              MARKETING ASSET CATALOG
-            </h3>
-            <h1 className="text-2xl font-black tracking-tight text-white leading-none flex items-center gap-3">
-              마케팅 카탈로그 쇼룸
-            </h1>
-            <p className="text-slate-400 text-xs font-semibold mt-4 leading-relaxed">
-              현재 활성화된 마케팅/기념품 리스트를 확인하고 신규 물품을 등록하는 통합 카탈로그입니다.<br/>
-              <span className="text-rose-300">고객사별 수령현황을 확인 후 "지급 신청하기"로 재고를 확보하세요. (그룹웨어에 별도 신청 필요)</span><br/>
-              <span className="text-indigo-300">(※ 윗줄: 신청가능(본인·상위본부/하위센터·최상위) / 아랫줄: 타 부서 열람(LV 무관). 지급 신청은 신청가능 범위만. 최상위 물품 입고·수정·종료는 통합관리부서만.)</span>
-            </p>
-          </div>
-          <div className="hidden md:block">
-            <div className="w-12 h-12 rounded-[1rem] bg-white/10 flex items-center justify-center text-xl backdrop-blur-sm border border-white/20 shadow-inner">
-              🛍️
+      {/* 마케팅 배너 공통 규격: label 10px / title 2xl / desc xs · mb-2.5 · mt-3 · chips mt-4 */}
+      <div className="w-full bg-gradient-to-r from-blue-700 to-indigo-800 rounded-3xl text-white shadow-lg relative overflow-hidden px-6 md:px-8 py-6">
+        <div className="absolute right-0 top-0 w-64 h-64 bg-sky-400/15 rounded-full blur-3xl -translate-y-1/3 translate-x-1/4 pointer-events-none" />
+        <div className="absolute left-1/4 bottom-0 w-48 h-48 bg-indigo-900/20 rounded-full blur-3xl translate-y-1/2 pointer-events-none" />
+        <div className="relative z-10">
+          <h3 className="text-[10px] font-black uppercase tracking-widest text-blue-200 mb-2.5">
+            MARKETING ASSET CATALOG
+          </h3>
+          <h1 className="text-2xl font-extrabold tracking-tight text-white leading-none">
+            마케팅 카탈로그 쇼룸
+          </h1>
+          <p className="text-white/70 text-xs mt-3 leading-relaxed">
+            활성 기념품을 확인하고 등록합니다. 지급 신청으로 재고를 확보하세요. (입고·수정·마감은 소속 부서만)
+          </p>
+          {permissionSummary && (
+            <div className="flex flex-wrap items-center gap-2 mt-4 pt-3 border-t border-white/15">
+              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-white/10 border-white/25 text-blue-50 shadow-sm">
+                <span>👑 Master 책임자:</span>
+                <span>{permissionSummary.masterName}</span>
+              </div>
+              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-purple-500/20 border-purple-300/40 text-purple-100 shadow-sm">
+                <span>👁️ Access:</span>
+                <span>{permissionSummary.accessDesignate}</span>
+                <span className="opacity-50">|</span>
+                <span className="truncate max-w-[160px]">Org: {permissionSummary.accessOrg}</span>
+                <span className="opacity-50">|</span>
+                <span>Level: {permissionSummary.accessLevel}</span>
+              </div>
+              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-emerald-400/20 border-emerald-300/40 text-emerald-100 shadow-sm">
+                <span>✍️ Edit:</span>
+                <span>{permissionSummary.editDesignate}</span>
+                <span className="opacity-50">|</span>
+                <span>Level: {permissionSummary.editLevel}</span>
+              </div>
+              {!canSeeAddForm && (
+                <span className="text-[10px] font-black text-amber-200 bg-amber-500/20 border border-amber-300/30 px-2.5 py-1 rounded-md">
+                  편집 권한 없음 — 조회·지급신청만 가능
+                </span>
+              )}
             </div>
-          </div>
+          )}
         </div>
       </div>
 
@@ -527,15 +641,16 @@ function CatalogContent() {
             </div>
             <input type="file" ref={fileInputRef} className="hidden" accept="image/*" onChange={(e) => handleImageUpload(e, false)} />
 
-            <div className="flex-1 w-full grid grid-cols-2 lg:grid-cols-7 gap-2.5">
+            <div className="flex-1 w-full grid grid-cols-2 lg:grid-cols-8 gap-2.5">
               <input required placeholder="물품명 *" value={formData.name} onChange={e=>setFormData({...formData, name: e.target.value})} className="w-full h-10 px-2.5 text-xs font-bold border border-slate-200 rounded-xl outline-none focus:ring-2 ring-indigo-500 focus:bg-white transition-all" />
               <select required value={formData.owner_dept} onChange={e=>setFormData({...formData, owner_dept: e.target.value})} className="w-full h-10 px-2.5 text-xs font-bold border border-slate-200 rounded-xl outline-none bg-white focus:ring-2 ring-indigo-500 transition-all">
                 <option value="">관리 조직 선택 *</option>
                 {editableOwnerUnits.map(u => <option key={u.id} value={u.unit_name}>{u.unit_name}</option>)}
               </select>
-              <input type="number" placeholder="단가(원)" value={formData.unit_price} onChange={e=>setFormData({...formData, unit_price: e.target.value})} className="w-full h-10 px-2.5 text-xs font-bold border border-slate-200 rounded-xl outline-none focus:ring-2 ring-indigo-500 transition-all" />
-              <input type="number" placeholder="초기수량" value={formData.current_stock} onChange={e=>setFormData({...formData, current_stock: e.target.value})} className="w-full h-10 px-2.5 text-xs font-bold border border-slate-200 rounded-xl outline-none focus:ring-2 ring-indigo-500 transition-all" />
-              <input type="number" placeholder="재고확보기준수량" value={formData.alert_qty} onChange={e=>setFormData({...formData, alert_qty: e.target.value})} className="w-full h-10 px-2.5 text-xs font-bold border border-slate-200 rounded-xl outline-none focus:ring-2 ring-indigo-500 transition-all" title="이 수량 이하로 떨어지면 알림이 뜹니다." />
+              <input type="number" min="0" placeholder="물품 순수 단가(원)" value={formData.unit_price ?? ''} onChange={e=>setFormData({...formData, unit_price: e.target.value})} className="w-full h-10 px-2.5 text-xs font-bold border border-slate-200 rounded-xl outline-none focus:ring-2 ring-indigo-500 transition-all" title="개당 순수 단가 (부대비용 제외)" />
+              <input type="number" min="0" placeholder="부대비용(원)" value={formData.extra_cost ?? ''} onChange={e=>setFormData({...formData, extra_cost: e.target.value})} className="w-full h-10 px-2.5 text-xs font-bold border border-orange-200 rounded-xl outline-none focus:ring-2 ring-orange-400 transition-all" title="배송비, 인쇄비, 세금 등 (없으면 0)" />
+              <input type="number" min="0" placeholder="초기수량" value={formData.current_stock ?? ''} onChange={e=>setFormData({...formData, current_stock: e.target.value})} className="w-full h-10 px-2.5 text-xs font-bold border border-slate-200 rounded-xl outline-none focus:ring-2 ring-indigo-500 transition-all" />
+              <input type="number" min="0" placeholder="재고확보기준수량" value={formData.alert_qty ?? ''} onChange={e=>setFormData({...formData, alert_qty: e.target.value})} className="w-full h-10 px-2.5 text-xs font-bold border border-slate-200 rounded-xl outline-none focus:ring-2 ring-indigo-500 transition-all" title="이 수량 이하로 떨어지면 알림이 뜹니다." />
               <select value={formData.unit || ''} onChange={e=>setFormData({...formData, unit: e.target.value})} className="w-full h-10 px-2.5 text-xs font-bold border border-slate-200 rounded-xl outline-none bg-white focus:ring-2 ring-indigo-500 transition-all cursor-pointer">
                 {unitOptions.map(u => <option key={u} value={u}>{u}</option>)}
               </select>
@@ -544,6 +659,57 @@ function CatalogContent() {
 
             <button type="submit" className="w-full lg:w-24 shrink-0 h-10 bg-slate-900 text-white rounded-xl text-[11px] font-black shadow-lg hover:bg-indigo-600 transition-all active:scale-95">신규등록</button>
           </form>
+          {canSetViewRoles && (
+            <div className="mt-3 px-1 flex flex-wrap items-center gap-2">
+              <span className="text-[10px] font-black text-amber-700 uppercase tracking-tight">타부서 열람 레벨</span>
+              <span className="text-[9px] font-bold text-slate-400">
+                (미지정=타부서 열람 불가 / 열람 레벨 각 지정필요: LV_1(운영관리자), LV_2(센터장 이상), LV_3(일반 직원))
+              </span>
+              {['LV_1', 'LV_2', 'LV_3'].map((lv) => {
+                const checked = (formData.view_role_ids || []).includes(lv);
+                return (
+                  <label
+                    key={lv}
+                    className={`px-2.5 py-1 rounded-lg border text-[10px] font-black cursor-pointer transition-all ${
+                      checked
+                        ? 'bg-amber-500 border-amber-500 text-white shadow-sm'
+                        : 'bg-white border-slate-200 text-slate-500 hover:border-amber-300'
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      className="hidden"
+                      checked={checked}
+                      onChange={(e) => toggleFormViewRole(lv, e.target.checked)}
+                    />
+                    {lv}
+                  </label>
+                );
+              })}
+              <label
+                className={`ml-1 px-2.5 py-1 rounded-lg border text-[10px] font-black cursor-pointer transition-all ${
+                  formData.view_allow_apply && (formData.view_role_ids || []).length > 0
+                    ? 'bg-emerald-600 border-emerald-600 text-white shadow-sm'
+                    : 'bg-white border-slate-200 text-slate-500 hover:border-emerald-300'
+                } ${(formData.view_role_ids || []).length === 0 ? 'opacity-40 cursor-not-allowed' : ''}`}
+                title="열람 LV를 먼저 지정해야 신청 허용을 켤 수 있습니다"
+              >
+                <input
+                  type="checkbox"
+                  className="hidden"
+                  disabled={(formData.view_role_ids || []).length === 0}
+                  checked={!!formData.view_allow_apply && (formData.view_role_ids || []).length > 0}
+                  onChange={(e) =>
+                    setFormData((prev) => ({
+                      ...prev,
+                      view_allow_apply: e.target.checked && (prev.view_role_ids || []).length > 0,
+                    }))
+                  }
+                />
+                지정 LV 신청 허용
+              </label>
+            </div>
+          )}
         </div>
       )}
       
@@ -558,7 +724,9 @@ function CatalogContent() {
           <div className="flex-1 min-w-0 space-y-3">
             {/* 윗줄: 신청가능 + 내 소속/상위HQ 또는 하위센터 */}
             <div>
-              <div className="text-[9px] font-black text-indigo-500 uppercase tracking-wider mb-1.5 px-0.5">신청가능</div>
+              <div className="text-[9px] font-black text-indigo-500 uppercase tracking-wider mb-1.5 px-0.5">
+                신청가능
+              </div>
               <div className="flex gap-2 overflow-x-auto scrollbar-hide pb-0.5">
                 <button
                   type="button"
@@ -573,18 +741,26 @@ function CatalogContent() {
                 </button>
                 {primaryDepts.map((dept) => {
                   const count = activeItems.filter((i) => i.owner_dept === dept).length;
+                  const selected = selectedDept === dept;
                   return (
                     <button
                       key={`p-${dept}`}
                       type="button"
                       onClick={() => setSelectedDept(dept)}
+                      title={`${dept} 보유 물품 ${count}개`}
                       className={`px-4 py-2.5 rounded-xl text-xs font-black transition-all border whitespace-nowrap ${
-                        selectedDept === dept
+                        selected
                           ? 'bg-indigo-600 text-white border-indigo-600 shadow-md'
-                          : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50 shadow-sm'
+                          : 'bg-white text-slate-900 border-slate-200 hover:bg-slate-50 shadow-sm'
                       }`}
                     >
-                      {dept} ({count})
+                      {dept}
+                      <span className={selected ? 'text-indigo-200 mx-0.5' : 'text-slate-400 mx-0.5'}>
+                        ·
+                      </span>
+                      <span className={selected ? 'text-indigo-100 font-mono' : 'text-slate-600 font-mono'}>
+                        {count}
+                      </span>
                     </button>
                   );
                 })}
@@ -594,22 +770,30 @@ function CatalogContent() {
             {/* 아랫줄: 타 부서 (units order) */}
             {otherDepts.length > 0 && (
               <div>
-                <div className="text-[9px] font-black text-slate-400 uppercase tracking-wider mb-1.5 px-0.5">타 부서</div>
+                <div className="text-[9px] font-black text-slate-400 uppercase tracking-wider mb-1.5 px-0.5">타 부서 물품 열람(신청 불가능)</div>
                 <div className="flex gap-2 overflow-x-auto scrollbar-hide pb-0.5">
                   {otherDepts.map((dept) => {
                     const count = activeItems.filter((i) => i.owner_dept === dept).length;
+                    const selected = selectedDept === dept;
                     return (
                       <button
                         key={`o-${dept}`}
                         type="button"
                         onClick={() => setSelectedDept(dept)}
+                        title={`${dept} 보유 물품 ${count}개`}
                         className={`px-4 py-2.5 rounded-xl text-xs font-black transition-all border whitespace-nowrap ${
-                          selectedDept === dept
-                            ? 'bg-slate-800 text-white border-slate-800 shadow-md'
-                            : 'bg-white text-slate-500 border-slate-200 hover:bg-slate-50 shadow-sm'
+                          selected
+                            ? 'bg-slate-500 text-white border-slate-500 shadow-sm'
+                            : 'bg-slate-100 text-slate-500 border-slate-200 hover:bg-slate-200/80'
                         }`}
                       >
-                        {dept} ({count})
+                        {dept}
+                        <span className={selected ? 'text-slate-300 mx-0.5' : 'text-slate-300 mx-0.5'}>
+                          ·
+                        </span>
+                        <span className={selected ? 'text-slate-200 font-mono' : 'text-slate-400 font-mono'}>
+                          {count}
+                        </span>
                       </button>
                     );
                   })}
@@ -635,11 +819,24 @@ function CatalogContent() {
         {filteredActiveItems.map(item => {
           const isEditing = editingId === item.id;
           const currentData = isEditing ? editFormData : item;
-          const canDistribute = checkDistributePermission(item.owner_dept);
+          const canDistribute = checkDistributePermission(item);
           const canEditThisItem = checkEditPermission(item.owner_dept);
           
           const currentUnit = currentData.unit || 'EA';
           const hasLedger = itemHasDistLedger(item.id);
+          const inStock = canDistribute && item.current_stock > 0;
+          const isTopOrgItem = !!(topOrgName && item.owner_dept === topOrgName);
+          const viaOwner = canDistributeMarketingOwnerDept(item.owner_dept, {
+            myUnitName: currentUser?.unit?.unit_name,
+            myUnitId: currentUser?.dept_id || currentUser?.unit_id || currentUser?.unit?.id,
+            myHqName: currentUser?.unit?.parent?.unit_name,
+            topOrgName,
+            units,
+            isPower: isLv1,
+          });
+          const viaViewApply = canApplyViaViewRoles(item, currentUser?.roles);
+          // Organization 풀 · 열람LV 신청허용(타부서) → 승인 요청(앰버). 승인 단계는 지급대장에서 예정
+          const needsApprovalRequest = inStock && (isTopOrgItem || (viaViewApply && !viaOwner));
       
           return (
             <div key={item.id} className={`flex flex-col sm:flex-row p-6 bg-white border rounded-[2rem] transition-all shadow-sm relative group ${isEditing ? 'border-indigo-500 ring-4 ring-indigo-50 z-50' : 'border-slate-200 hover:shadow-md'}`}>
@@ -659,7 +856,10 @@ function CatalogContent() {
                   </div>
                 )}
                 
-                {!isEditing && currentData.alert_qty > 0 && currentData.current_stock <= currentData.alert_qty && (
+                {!isEditing &&
+                  canDistribute &&
+                  currentData.alert_qty > 0 &&
+                  currentData.current_stock <= currentData.alert_qty && (
                   <div className="absolute top-2 left-2 bg-red-500 text-white px-2 py-1 rounded-lg text-[9px] font-black animate-pulse shadow-sm">
                     🚨 재고 부족!
                   </div>
@@ -675,24 +875,71 @@ function CatalogContent() {
                       <h4 className={`text-lg font-black line-clamp-1 ${canDistribute ? 'text-slate-900' : 'text-slate-400'}`}>{currentData.name}</h4>
                     )}
                     {!isEditing && (
-                      <span className={`text-[9px] font-black px-2.5 py-1 rounded-md ml-2 shrink-0 border whitespace-nowrap ${canDistribute ? 'bg-indigo-50 text-indigo-600 border-indigo-100' : 'bg-slate-50 text-slate-400 border-slate-100'}`}>
-                        {item.owner_dept}
-                      </span>
+                      <div className="flex flex-col items-end gap-1 ml-2 shrink-0">
+                        <span className={`text-[9px] font-black px-2.5 py-1 rounded-md border whitespace-nowrap ${canDistribute ? 'bg-indigo-50 text-indigo-600 border-indigo-100' : 'bg-slate-50 text-slate-400 border-slate-100'}`}>
+                          {item.owner_dept}
+                        </span>
+                        {Array.isArray(item.view_role_ids) && item.view_role_ids.length > 0 && (
+                          <span className="text-[8px] font-black px-2 py-0.5 rounded-md bg-amber-50 text-amber-700 border border-amber-200 whitespace-nowrap">
+                            열람 {item.view_role_ids.map(normalizeRoleId).join(', ')}
+                            {item.view_allow_apply ? ' · 신청허용' : ''}
+                          </span>
+                        )}
+                      </div>
                     )}
                   </div>
         
                   <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-[11px]">
                     <div className="flex flex-col">
-                      <span className="text-slate-400 font-bold uppercase text-[9px] mb-0.5">단가(원)</span>
+                      <span className="text-slate-400 font-bold uppercase text-[9px] mb-0.5">
+                        물품 순수 단가(원)
+                        {isEditing && hasLedger && (
+                          <span className="text-amber-600 font-black ml-1 normal-case">
+                            — 지급이력 있음, 단가변경 불가
+                          </span>
+                        )}
+                      </span>
                       {isEditing ? (
-                         <input type="number" value={currentData.unit_price} onChange={e=>setEditFormData({...editFormData, unit_price: e.target.value})} className="font-mono font-black text-slate-700 bg-slate-50 p-1.5 rounded outline-none border border-slate-200" />
-                      ) : <span className="font-mono font-black text-slate-700 text-sm">{Number(currentData.unit_price || 0).toLocaleString()} <span className="text-[9px] font-bold">KRW</span></span>}
+                        <input
+                          type="number"
+                          disabled={hasLedger}
+                          title={
+                            hasLedger
+                              ? '지급 신청 이력이 있어 단가를 변경할 수 없습니다. 단가가 바뀐 상품은 신규 등록해 주세요.'
+                              : undefined
+                          }
+                          value={currentData.unit_price}
+                          onChange={(e) =>
+                            setEditFormData({ ...editFormData, unit_price: e.target.value })
+                          }
+                          className={`font-mono font-black text-slate-700 bg-slate-50 p-1.5 rounded outline-none border border-slate-200 ${
+                            hasLedger ? 'cursor-not-allowed opacity-60' : ''
+                          }`}
+                        />
+                      ) : canDistribute ? (
+                        <span className="font-mono font-black text-slate-700 text-sm">
+                          {Number(currentData.unit_price || 0).toLocaleString()}{' '}
+                          <span className="text-[9px] font-bold">KRW</span>
+                        </span>
+                      ) : (
+                        <span className="font-mono font-black text-slate-400 text-sm">-</span>
+                      )}
                     </div>
                     
                     <div className="flex flex-col">
                       <span className="text-slate-400 font-bold uppercase text-[9px] mb-0.5">재고 {isEditing && <span className="text-amber-500">(입고로만 변경)</span>}</span>
-                      <span className={`font-mono font-black text-sm ${currentData.current_stock <= (currentData.alert_qty || 0) && currentData.alert_qty > 0 ? 'text-red-500' : 'text-indigo-600'}`}>
-                        {currentData.current_stock} <span className="text-[10px] font-bold pl-1">{currentUnit}</span>
+                      <span
+                        className={`font-mono font-black text-sm ${
+                          !canDistribute
+                            ? 'text-slate-400'
+                            : currentData.current_stock <= (currentData.alert_qty || 0) &&
+                                currentData.alert_qty > 0
+                              ? 'text-red-500'
+                              : 'text-indigo-600'
+                        }`}
+                      >
+                        {currentData.current_stock}{' '}
+                        <span className="text-[10px] font-bold pl-1">{currentUnit}</span>
                       </span>
                     </div>
                   </div>
@@ -711,17 +958,37 @@ function CatalogContent() {
                       </div>
                       
                       <div className="flex flex-col">
-                        <span className="text-slate-400 font-bold text-[9px] mb-0.5">물품 단위</span>
-                        <div onClick={() => { if (hasLedger) alert('⚠️ 지급 신청 이력이 있는 물품의 단위는 수정할 수 없습니다.\n단위가 변경된 상품은 신규 상품으로 등록해 주세요.'); }}>
-                          <select 
-                            disabled={hasLedger}
-                            value={currentData.unit || ''} 
-                            onChange={e=>setEditFormData({...editFormData, unit: e.target.value})} 
-                            className={`font-black text-slate-700 bg-slate-50 p-1.5 rounded outline-none border border-slate-200 text-[10px] w-full ${hasLedger ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}
-                          >
-                            {unitOptions.map(u => <option key={u} value={u}>{u}</option>)}
-                          </select>
-                        </div>
+                        <span className="text-slate-400 font-bold text-[9px] mb-0.5">
+                          물품 단위
+                          {hasLedger && (
+                            <span className="text-amber-600 font-black ml-1">
+                              — 지급이력 있음, 단위변경 불가
+                            </span>
+                          )}
+                        </span>
+                        <select
+                          disabled={hasLedger}
+                          title={
+                            hasLedger
+                              ? '지급 신청 이력이 있어 단위를 변경할 수 없습니다. 단위가 바뀐 상품은 신규 등록해 주세요.'
+                              : undefined
+                          }
+                          value={currentData.unit || ''}
+                          onChange={(e) => setEditFormData({ ...editFormData, unit: e.target.value })}
+                          className={`font-black text-slate-700 bg-slate-50 p-1.5 rounded outline-none border border-slate-200 text-[10px] w-full ${
+                            hasLedger ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'
+                          }`}
+                        >
+                          {currentData.unit &&
+                            !unitOptions.includes(String(currentData.unit)) && (
+                              <option value={currentData.unit}>{currentData.unit}</option>
+                            )}
+                          {unitOptions.map((u) => (
+                            <option key={u} value={u}>
+                              {u}
+                            </option>
+                          ))}
+                        </select>
                       </div>
       
                       <div className="col-span-2 flex flex-col">
@@ -742,6 +1009,77 @@ function CatalogContent() {
                           className="font-bold text-slate-600 bg-slate-50 p-1.5 rounded outline-none border border-slate-200 text-[10px] h-12 resize-none" 
                         />
                       </div>
+                      {canSetViewRoles && (
+                        <div className="col-span-2 flex flex-col mt-1 gap-1.5">
+                          <span className="text-amber-600 font-bold text-[9px]">
+                            타부서 열람 레벨 (미지정=타부서 숨김, 열람레벨 각 설정(LV_1,2=센터장 이상 조회)
+                          </span>
+                          <div className="flex flex-wrap gap-1.5 items-center">
+                            {['LV_1', 'LV_2', 'LV_3'].map((lv) => {
+                              const roles = Array.isArray(currentData.view_role_ids)
+                                ? currentData.view_role_ids.map(normalizeRoleId)
+                                : [];
+                              const checked = roles.includes(lv);
+                              return (
+                                <label
+                                  key={lv}
+                                  className={`px-2 py-1 rounded-md border text-[9px] font-black cursor-pointer ${
+                                    checked
+                                      ? 'bg-amber-500 border-amber-500 text-white'
+                                      : 'bg-white border-slate-200 text-slate-500'
+                                  }`}
+                                >
+                                  <input
+                                    type="checkbox"
+                                    className="hidden"
+                                    checked={checked}
+                                    onChange={(e) => toggleEditViewRole(lv, e.target.checked)}
+                                  />
+                                  {lv}
+                                </label>
+                              );
+                            })}
+                            <label
+                              className={`px-2 py-1 rounded-md border text-[9px] font-black cursor-pointer ${
+                                currentData.view_allow_apply &&
+                                Array.isArray(currentData.view_role_ids) &&
+                                currentData.view_role_ids.length > 0
+                                  ? 'bg-emerald-600 border-emerald-600 text-white'
+                                  : 'bg-white border-slate-200 text-slate-500'
+                              } ${
+                                !Array.isArray(currentData.view_role_ids) ||
+                                currentData.view_role_ids.length === 0
+                                  ? 'opacity-40 cursor-not-allowed'
+                                  : ''
+                              }`}
+                            >
+                              <input
+                                type="checkbox"
+                                className="hidden"
+                                disabled={
+                                  !Array.isArray(currentData.view_role_ids) ||
+                                  currentData.view_role_ids.length === 0
+                                }
+                                checked={
+                                  !!currentData.view_allow_apply &&
+                                  Array.isArray(currentData.view_role_ids) &&
+                                  currentData.view_role_ids.length > 0
+                                }
+                                onChange={(e) =>
+                                  setEditFormData((prev: any) => ({
+                                    ...prev,
+                                    view_allow_apply:
+                                      e.target.checked &&
+                                      Array.isArray(prev.view_role_ids) &&
+                                      prev.view_role_ids.length > 0,
+                                  }))
+                                }
+                              />
+                              지정 LV 신청 허용
+                            </label>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
@@ -756,7 +1094,17 @@ function CatalogContent() {
                     canEditThisItem && (
                       <>
                         <button 
-                          onClick={() => { setPurchaseModal(item); setPurchaseForm({ qty: '', unit_price: item.unit_price, vendor: '', note: '', purchase_date: getKSTDateString() }); }} 
+                          onClick={() => {
+                            setPurchaseModal(item);
+                            setPurchaseForm({
+                              qty: '',
+                              unit_price: item.unit_price,
+                              extra_cost: 0,
+                              vendor: '',
+                              purchase_date: getKSTDateString(),
+                              stock_in_date: getKSTDateString(),
+                            });
+                          }}
                           className="px-3 py-1.5 bg-emerald-50 text-emerald-600 rounded-md text-[10px] font-black hover:bg-emerald-600 hover:text-white transition-colors"
                         >📦 입고</button>
                         <button onClick={() => handleOpenEdit(item)} className="px-3 py-1.5 bg-white border border-slate-200 text-slate-600 rounded-md text-[10px] font-black hover:bg-slate-100 transition-colors">✏️ 수정</button>
@@ -778,12 +1126,28 @@ function CatalogContent() {
                     onClick={() => router.push(`/marketing/distribution/register?itemId=${item.id}`)}
                     disabled={!canDistribute || item.current_stock <= 0}
                     className={`w-full py-4 rounded-2xl text-[12px] font-black shadow-md transition-all flex flex-col items-center justify-center gap-1
-                      ${canDistribute && item.current_stock > 0 
-                        ? 'bg-indigo-600 text-white hover:bg-indigo-700 active:scale-95' 
-                        : 'bg-slate-100 text-slate-300 cursor-not-allowed shadow-none'}`}
+                      ${
+                        !inStock
+                          ? 'bg-slate-100 text-slate-300 cursor-not-allowed shadow-none'
+                          : needsApprovalRequest
+                            ? 'bg-amber-500 text-white hover:bg-amber-600 active:scale-95'
+                            : 'bg-indigo-600 text-white hover:bg-indigo-700 active:scale-95'
+                      }`}
                   >
-                    <span>{canDistribute ? (item.current_stock > 0 ? '지급 신청하기' : '품절 (Sold Out)') : '접근 불가'}</span>
-                    {canDistribute && item.current_stock > 0 && <span className="text-[9px] font-medium opacity-70">클릭 시 폼 이동</span>}
+                    <span>
+                      {!canDistribute
+                        ? '신청 불가능'
+                        : item.current_stock <= 0
+                          ? '품절 (Sold Out)'
+                          : needsApprovalRequest
+                            ? '승인 요청하기'
+                            : '지급 신청하기'}
+                    </span>
+                    {inStock && (
+                      <span className="text-[9px] font-medium opacity-70">
+                        {needsApprovalRequest ? '클릭 시 요청 폼 이동' : '클릭 시 폼 이동'}
+                      </span>
+                    )}
                   </button>
                 </div>
               )}
@@ -816,63 +1180,135 @@ function CatalogContent() {
             purchaseBackdropDownRef.current = false;
           }}
         >
-          <div className="bg-white w-[420px] p-8 rounded-[2rem] shadow-2xl flex flex-col border" onMouseDown={e => e.stopPropagation()}>
-            <div className="border-b border-slate-100 pb-4 mb-6">
-               <h3 className="font-black text-lg text-slate-900 flex items-center gap-2"><span>📦</span> 신규 재고 입고 (구매)</h3>
-               <p className="text-[11px] text-indigo-600 font-bold mt-1">[{purchaseModal.name}] 물품의 재고를 보충합니다.</p>
+          <div className="bg-white w-[550px] max-w-[95vw] border border-slate-200 shadow-2xl p-8 rounded-2xl" onMouseDown={e => e.stopPropagation()}>
+            <h4 className="text-[14px] font-black text-slate-900 uppercase tracking-widest mb-4 border-b-2 border-slate-900 pb-3">
+              📦 기념품 실물 창고 입고 처리
+            </h4>
+            <div className="bg-slate-100 p-3 rounded-lg mb-6 flex justify-between items-center">
+              <span className="font-black text-indigo-700 text-xs">{purchaseModal.name}</span>
+              <span className="font-mono text-[11px] text-slate-500 font-bold">{purchaseModal.id}</span>
             </div>
-            
+
             <form onSubmit={handlePurchaseSubmit} className="space-y-4">
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1.5">
-                  <label className="text-[10px] font-black text-slate-600 uppercase">
-                    입고 수량 ({purchaseModal.unit || 'EA'}) *
-                  </label>
+              <div className="grid grid-cols-2 gap-3 mb-2">
+                <div>
+                  <label className="text-[10px] font-black text-slate-500 block mb-1.5">구입 일자</label>
                   <input
+                    type="date"
                     required
-                    type="number"
-                    min="1"
-                    placeholder="수량 입력"
-                    value={purchaseForm.qty}
-                    onChange={e => setPurchaseForm({
-                      ...purchaseForm,
-                      qty: e.target.value === '' ? '' : Number(e.target.value)
-                    })}
-                    className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold outline-none focus:border-indigo-500 focus:bg-white"
+                    value={purchaseForm.purchase_date}
+                    onChange={(e) => setPurchaseForm({ ...purchaseForm, purchase_date: e.target.value })}
+                    className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-[11px] font-bold outline-none focus:border-emerald-500 text-slate-600"
                   />
                 </div>
-                <div className="space-y-1.5">
-                  <label className="text-[10px] font-black text-slate-600 uppercase">입고 단가(원) *</label>
-                  <input required type="number" min="0" value={purchaseForm.unit_price} onChange={e=>setPurchaseForm({...purchaseForm, unit_price: Number(e.target.value)})} className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold outline-none focus:border-indigo-500 focus:bg-white" />
+                <div>
+                  <label className="text-[10px] font-black text-slate-500 block mb-1.5">창고 입고 일자</label>
+                  <input
+                    type="date"
+                    required
+                    value={purchaseForm.stock_in_date}
+                    onChange={(e) => setPurchaseForm({ ...purchaseForm, stock_in_date: e.target.value })}
+                    className="w-full p-2.5 bg-white border border-slate-300 rounded-lg text-[11px] font-bold outline-none focus:border-emerald-500 text-slate-800"
+                  />
                 </div>
               </div>
-              
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1.5">
-                  <label className="text-[10px] font-black text-slate-600 uppercase">입고일자</label>
-                  <input required type="date" value={purchaseForm.purchase_date} onChange={e=>setPurchaseForm({...purchaseForm, purchase_date: e.target.value})} className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold outline-none focus:border-indigo-500 focus:bg-white" />
-                </div>
-                <div className="space-y-1.5">
-                  <label className="text-[10px] font-black text-slate-600 uppercase">총 입고 금액</label>
-                  <div className="w-full p-3 bg-indigo-50 border border-indigo-100 rounded-xl text-xs font-mono font-black text-indigo-700 text-right">
-                    {((Number(purchaseForm.qty) || 0) * (Number(purchaseForm.unit_price) || 0)).toLocaleString()} 원
+
+              <div>
+                <label className="text-[10px] font-black text-slate-500 block mb-1.5">구입처 (벤더/업체명)</label>
+                <input
+                  type="text"
+                  required
+                  value={purchaseForm.vendor}
+                  onChange={(e) => setPurchaseForm({ ...purchaseForm, vendor: e.target.value })}
+                  placeholder="예: 드림디포, 아트로릭, 한생미디어 등"
+                  className="w-full p-2.5 bg-white border border-slate-300 rounded-lg text-[11px] font-bold outline-none focus:border-emerald-500"
+                />
+              </div>
+
+              <div className="bg-emerald-50/50 p-4 rounded-xl border border-emerald-100 space-y-3">
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-[10px] font-black text-emerald-600 block mb-1.5">입고 수량 (+)</label>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="number"
+                        required
+                        min="1"
+                        value={purchaseForm.qty}
+                        onChange={(e) =>
+                          setPurchaseForm({
+                            ...purchaseForm,
+                            qty: e.target.value === '' ? '' : Number(e.target.value),
+                          })
+                        }
+                        className="w-full p-2.5 bg-white border-2 border-emerald-400 rounded-lg text-[11px] font-black text-emerald-700 outline-none focus:ring-2 focus:ring-emerald-200 text-right shadow-sm"
+                      />
+                      <span className="text-[12px] font-black text-emerald-700 shrink-0 min-w-[24px]">
+                        {purchaseModal.unit || 'EA'}
+                      </span>
+                    </div>
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-black text-slate-500 block mb-1.5">물품 순수 단가(개당)</label>
+                    <input
+                      type="number"
+                      required
+                      min="0"
+                      readOnly
+                      title="단가가 다르면 신규 기념품으로 등록해 주세요."
+                      value={purchaseForm.unit_price}
+                      className="w-full p-2.5 bg-slate-100 border border-slate-200 rounded-lg text-[11px] font-bold outline-none cursor-not-allowed opacity-80 text-right"
+                    />
                   </div>
                 </div>
+                <div>
+                  <label className="text-[10px] font-black text-orange-600 block mb-1.5">
+                    부대비용 (배송비, 인쇄비, 세금 등 전체 금액)
+                  </label>
+                  <input
+                    type="number"
+                    required
+                    min="0"
+                    value={purchaseForm.extra_cost}
+                    onChange={(e) =>
+                      setPurchaseForm({
+                        ...purchaseForm,
+                        extra_cost: e.target.value === '' ? '' : Number(e.target.value),
+                      })
+                    }
+                    className="w-full p-2.5 bg-white border border-orange-300 rounded-lg text-[11px] font-bold outline-none focus:border-orange-500 text-right"
+                    placeholder="발생하지 않았다면 0"
+                  />
+                </div>
               </div>
-      
-              <div className="space-y-1.5">
-                <label className="text-[10px] font-black text-slate-600 uppercase">구매처/공급업체</label>
-                <input type="text" value={purchaseForm.vendor} onChange={e=>setPurchaseForm({...purchaseForm, vendor: e.target.value})} placeholder="예: 한생미디어, 드림디포 등" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold outline-none focus:border-indigo-500 focus:bg-white" />
+
+              <div className="pt-2">
+                <div className="flex justify-between items-center bg-slate-800 text-white p-4 rounded-xl shadow-inner">
+                  <span className="text-[11px] font-black uppercase tracking-widest text-emerald-400">결산 총 입고 비용</span>
+                  <span className="text-lg font-black">
+                    {(
+                      (Number(purchaseForm.qty) || 0) * (Number(purchaseForm.unit_price) || 0) +
+                      (Number(purchaseForm.extra_cost) || 0)
+                    ).toLocaleString()}{' '}
+                    <span className="text-[11px] font-medium ml-0.5">원</span>
+                  </span>
+                </div>
               </div>
-      
-              <div className="space-y-1.5">
-                <label className="text-[10px] font-black text-slate-600 uppercase">비고</label>
-                <input type="text" value={purchaseForm.note} onChange={e=>setPurchaseForm({...purchaseForm, note: e.target.value})} className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold outline-none focus:border-indigo-500 focus:bg-white" />
-              </div>
-              
-              <div className="flex gap-2.5 pt-4">
-                <button type="button" onClick={() => setPurchaseModal(null)} className="flex-1 py-3.5 bg-slate-100 text-slate-500 rounded-xl font-black text-[12px] hover:bg-slate-200">취소</button>
-                <button type="submit" className="flex-[2] py-3.5 bg-emerald-600 text-white rounded-xl font-black text-[12px] shadow-lg hover:bg-emerald-700">입고 처리 완료</button>
+
+              <div className="flex gap-2 mt-4 pt-4 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setPurchaseModal(null)}
+                  className="flex-1 py-3.5 bg-slate-100 text-slate-500 rounded-xl font-bold text-[11px] hover:bg-slate-200"
+                >
+                  취소
+                </button>
+                <button
+                  type="submit"
+                  className="flex-[2] py-3.5 bg-emerald-600 text-white rounded-xl font-black text-[12px] shadow-md hover:bg-emerald-700 flex justify-center items-center gap-2"
+                >
+                  <span>📥</span> 서버 DB 입고 승인
+                </button>
               </div>
             </form>
           </div>
@@ -885,7 +1321,7 @@ function CatalogContent() {
 
 export default function CatalogModule() {
   return (
-    <Suspense fallback={<div className="p-10 text-center font-black animate-pulse text-indigo-400 mt-20 tracking-widest">Loading Catalog Environment...</div>}>
+    <Suspense fallback={<LoadingState />}>
       <CatalogContent />
     </Suspense>
   );

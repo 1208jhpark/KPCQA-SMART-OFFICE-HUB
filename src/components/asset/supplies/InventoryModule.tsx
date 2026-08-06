@@ -2,6 +2,7 @@
 'use client';
      
 import React, { useState, useEffect, useMemo } from 'react';
+import LoadingState from '@/components/common/LoadingState';
      
 export default function InventoryModule() {
   const [items, setItems] = useState<any[]>([]);
@@ -146,37 +147,28 @@ export default function InventoryModule() {
     });
   }, [items, searchQuery]);
      
-  if (loading) return <div className="p-20 text-center font-black text-indigo-600 animate-pulse text-xl tracking-widest uppercase">Syncing Realtime Inventory Catalog...</div>;
+  if (loading) return <LoadingState />;
      
   return (
     <div className="w-full max-w-[1600px] mx-auto space-y-6 p-8 font-sans text-slate-900 pb-24 animate-fade-in">
       
-      {/* 🚀 상단 대형 헤더 배너 (전사 공용 신청 대장이므로 Blue 그라데이션 유지 & 개인정보 제외) */}
-<div className="w-full bg-gradient-to-r from-blue-700 to-indigo-800 p-6 rounded-[2.5rem] min-h-[140px] flex flex-col justify-center text-white shadow-xl relative overflow-hidden">
-  
-  <div className="relative z-10">
-    {/* 1. 상단 라벨 (먹색 배너와 완벽 일치: text-[10px], mb-3) */}
-    <p className="text-[10px] font-black uppercase tracking-widest text-blue-200 mb-3">
-      General Office Supplies
-    </p>
-    
-    {/* 2. 메인 타이틀 (먹색 배너와 완벽 일치: text-2xl, leading-none 추가) */}
-    <h1 className="text-2xl font-black tracking-tight text-white leading-none">
-      소모품 조회 및 신청 대장
-    </h1>
-    
-    {/* 3. 하단 설명 (먹색 배너와 완벽 일치: text-xs, mt-4) */}
-    <p className="text-blue-100 text-xs font-semibold mt-4 opacity-90 max-w-[3xl]">
-      경영기획실에서 중앙 관리하는 사내 공통 소모품과 일반 비품의 실시간 재고를 파악하고 신청합니다.
-    </p>
-  </div>
+      {/* 마케팅 배너 공통 규격: catalog와 동일 · 권한 칩 없음 */}
+      <div className="w-full bg-gradient-to-r from-blue-700 to-indigo-800 rounded-3xl text-white shadow-lg relative overflow-hidden px-6 md:px-8 py-6">
+        <div className="absolute right-0 top-0 w-64 h-64 bg-sky-400/15 rounded-full blur-3xl -translate-y-1/3 translate-x-1/4 pointer-events-none" />
+        <div className="absolute left-1/4 bottom-0 w-48 h-48 bg-indigo-900/20 rounded-full blur-3xl translate-y-1/2 pointer-events-none" />
+        <div className="relative z-10">
+          <h3 className="text-[10px] font-black uppercase tracking-widest text-blue-200 mb-2.5">
+            GENERAL OFFICE SUPPLIES
+          </h3>
+          <h1 className="text-2xl font-extrabold tracking-tight text-white leading-none">
+            소모품 조회 및 신청 대장
+          </h1>
+          <p className="text-white/70 text-xs mt-3 leading-relaxed">
+            경영기획센터에서 중앙 관리하는 사내 공통 소모품과 일반 비품의 실시간 재고를 파악하고 신청합니다.
+          </p>
+        </div>
+      </div>
 
-  {/* 배경 아이콘 (포인터 이벤트 차단) */}
-  <div className="absolute right-10 top-1/2 -translate-y-1/2 text-8xl opacity-10 select-none pointer-events-none">
-    📦
-  </div>
-</div>
-     
       <div className="bg-white border border-slate-200 rounded-[2.5rem] shadow-sm overflow-hidden mt-6">
         <div className="p-4 px-6 bg-slate-200/70 border-b border-slate-300 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
           <div className="flex items-center gap-2">
@@ -259,9 +251,19 @@ export default function InventoryModule() {
         return (
           <div className="fixed inset-0 z-[500] bg-slate-900/60 backdrop-blur-md flex items-center justify-center p-4 animate-in fade-in duration-300">
             <div className="bg-white w-full max-w-md rounded-[2.5rem] shadow-2xl overflow-hidden animate-in slide-in-from-bottom-12 duration-500">
-              <div className="bg-slate-900 p-6 flex justify-between items-center text-white">
-                <h3 className="text-sm font-black tracking-wide">소모품 신청서 작성</h3>
-                <button onClick={() => setSelectedItem(null)} className="w-8 h-8 flex items-center justify-center rounded-full bg-white/10 hover:bg-white/20 transition-colors">✕</button>
+              <div className="bg-gradient-to-r from-blue-700 to-indigo-800 px-6 py-5 flex justify-between items-center text-white shadow-md">
+                <div>
+                  <p className="text-[10px] font-black uppercase tracking-widest text-blue-200 mb-1">SUPPLY REQUEST</p>
+                  <h3 className="text-base font-extrabold tracking-tight text-white">소모품 신청서 작성</h3>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSelectedItem(null)}
+                  className="w-8 h-8 flex items-center justify-center rounded-full bg-white/15 hover:bg-white/25 text-white transition-colors"
+                  aria-label="닫기"
+                >
+                  ✕
+                </button>
               </div>
               <div className="p-8 space-y-6">
                 <div className="space-y-1">

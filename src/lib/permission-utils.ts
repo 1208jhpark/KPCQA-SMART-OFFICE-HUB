@@ -12,8 +12,103 @@ const safeArray = (val: any) => {
     }
     return [val];
   };
+
+export type PermissionScope = 'TOTAL' | 'DEPT' | 'OWN' | 'NONE';
+
+export function pickWidestPermissionScope(scopes: string[]): PermissionScope {
+  if (scopes.includes('TOTAL')) return 'TOTAL';
+  if (scopes.includes('DEPT')) return 'DEPT';
+  if (scopes.includes('OWN')) return 'OWN';
+  return 'NONE';
+}
+
+export function normalizePermissionScopes(raw: any): string[] {
+  return safeArray(raw)
+    .map((s: any) => String(s).toUpperCase())
+    .map((s: string) => (s === 'GLOBAL' ? 'TOTAL' : s))
+    .filter((s: string) => ['OWN', 'DEPT', 'TOTAL'].includes(s));
+}
+
+/**
+ * FE/API 공통 편집 자격·스코프 (checkMenuPermission Edit 관문과 동일).
+ * - edit_scopes 비움/CODED만 = NONE (TOTAL로 취급 금지)
+ * - Task Editor: 규칙 ∪ 개인 scope → 더 넓은 쪽
+ * - hasAccess 기본 true (페이지 진입 후 FE). API는 hasAccessPassed를 넘김
+ */
+export function resolveInterfaceEditState(
+  user: any,
+  menu: any,
+  options?: { hasAccess?: boolean }
+): { isEditor: boolean; editScope: PermissionScope; isMaster: boolean } {
+  const deny = { isEditor: false, editScope: 'NONE' as const, isMaster: false };
+  if (!user) return deny;
+
+  const myId = user.id || user.userId || user._id;
+  const myEmailNorm = String(user.email || '').trim().toLowerCase();
+  const rolesArr = safeArray(user.roles);
+  const firstRole = rolesArr[0] || user.role || user.level || 'LV_3';
+  const levelMatch = String(firstRole).match(/\d+/);
+  const myRole = levelMatch ? `LV_${levelMatch[0]}` : 'LV_3';
+  const isLv1 =
+    myRole === 'LV_1' ||
+    rolesArr.some((r: any) => {
+      const m = String(r).match(/\d+/);
+      return m ? `LV_${m[0]}` === 'LV_1' : false;
+    });
+
+  if (isLv1) {
+    return { isEditor: true, editScope: 'TOTAL', isMaster: true };
+  }
+  if (!menu) return deny;
+
+  if (menu.master_editor_id === myId) {
+    return { isEditor: true, editScope: 'TOTAL', isMaster: true };
+  }
+
+  const hasAccess = options?.hasAccess ?? true;
+  const pEditScopes = safeArray(menu.edit_scopes);
+  const pTMasters = safeArray(menu.task_masters);
+  const pERoles = safeArray(menu.edit_role_ids);
+
+  const isTaskEditor = pTMasters.some(
+    (tm: any) => String(tm?.email || '').trim().toLowerCase() === myEmailNorm
+  );
+  const normalizedEditRoles = pERoles.map((r: any) => {
+    const m = String(r).match(/\d+/);
+    return m ? `LV_${m[0]}` : String(r);
+  });
+  const editLevelPassed =
+    normalizedEditRoles.length > 0 && normalizedEditRoles.includes(myRole);
+  const isEditorPassed = hasAccess && (isTaskEditor || editLevelPassed);
+
+  const validEditScopes = normalizePermissionScopes(pEditScopes);
+  let personalEditScope: string | null = null;
+  if (isTaskEditor) {
+    const tm = pTMasters.find(
+      (t: any) => String(t?.email || '').trim().toLowerCase() === myEmailNorm
+    );
+    const tmScope = String(tm?.scope || '').toUpperCase();
+    if (tmScope === 'GLOBAL' || tmScope === 'TOTAL') personalEditScope = 'TOTAL';
+    else if (tmScope === 'DEPT') personalEditScope = 'DEPT';
+    else if (tmScope === 'OWN') personalEditScope = 'OWN';
+    else personalEditScope = 'DEPT';
+  }
+
+  let editScope: PermissionScope = 'NONE';
+  if (isEditorPassed) {
+    const combined: string[] = [...validEditScopes];
+    if (personalEditScope) combined.push(personalEditScope);
+    editScope = combined.length > 0 ? pickWidestPermissionScope(combined) : 'NONE';
+  }
+
+  return {
+    isEditor: isEditorPassed && editScope !== 'NONE',
+    editScope,
+    isMaster: false,
+  };
+}
   
-  // 1. 상위 부서의 Org Guard(조직 권한)를 상속받아 계산하는 함수
+  // 1. Org Guard: 본인 org_ids 우선, 없으면 상위 상속(레거시). 최종 비면 접근 불허
   export const getEffectiveAllowedOrgs = (menu: any, allMenus: any[]) => {
     let curr = menu;
     while (curr) {
@@ -26,9 +121,12 @@ const safeArray = (val: any) => {
   
   // 2. 부서 계층 구조상 허용된 부서인지 확인하는 함수 (Org Guard 검증)
   export const isOrgAllowed = (effectiveOrgIds: string[], userDeptId: string, unitsList: any[] = []) => {
-    // 관리자가 부서를 지정하지 않았거나 'ALL'이면 "전체 부서 허용"으로 직행
-    if (!effectiveOrgIds || effectiveOrgIds.length === 0 || effectiveOrgIds.includes('ALL')) {
-      return true; 
+    // Org 미지정(빈 배열) = 접근 불허. 'ALL'만 전부서 허용
+    if (!effectiveOrgIds || effectiveOrgIds.length === 0) {
+      return false;
+    }
+    if (effectiveOrgIds.includes('ALL')) {
+      return true;
     }
     if (!userDeptId) return false;
     
@@ -55,8 +153,8 @@ const safeArray = (val: any) => {
       myRole: 'GUEST' 
     };
     
-    if (!user || !menu) return defaultDeny;
-  
+    if (!user) return defaultDeny;
+
     const myId = user.id || user.userId || user._id;
     const myEmail = user.email;
     const myDept = user.dept_id || user.unit_id || user.unit?.id;
@@ -66,72 +164,99 @@ const safeArray = (val: any) => {
     const firstRole = rolesArr[0] || user.role || user.level || 'LV_3';
     const levelMatch = String(firstRole).match(/\d+/);
     const myRole = levelMatch ? `LV_${levelMatch[0]}` : 'LV_3';
+    const isLv1 =
+      myRole === 'LV_1' ||
+      rolesArr.some((r: any) => {
+        const m = String(r).match(/\d+/);
+        return m ? `LV_${m[0]}` === 'LV_1' : false;
+      });
   
-    // 👑 [MASTER 지정] 및 최고관리자(LV_1) 프리패스 룰
-    const isMaster = menu.master_editor_id === myId;
-    if (myRole === 'LV_1' || isMaster) {
+    // 👑 LV_1은 메뉴 미등록(interfaceConfig null)이어도 프리패스 — 미지정 장비 정리 등
+    if (isLv1) {
       return { 
         hasAccess: true, 
         isMaster: true,
         isEditor: true, 
         isViewer: true,
-        viewScope: 'TOTAL', // 마스터는 무조건 전사 데이터 조회
-        editScope: 'TOTAL', // 마스터는 무조건 전사 데이터 편집
+        viewScope: 'TOTAL',
+        editScope: 'TOTAL',
+        myRole: 'LV_1',
+      };
+    }
+
+    if (!menu) return defaultDeny;
+
+    // 👑 [MASTER 지정]
+    const isMaster = menu.master_editor_id === myId;
+    if (isMaster) {
+      return { 
+        hasAccess: true, 
+        isMaster: true,
+        isEditor: true, 
+        isViewer: true,
+        viewScope: 'TOTAL',
+        editScope: 'TOTAL',
         myRole 
       };
     }
   
     // 데이터베이스 설정값 안전 추출
-    const pVScopes = safeArray(menu.view_scopes);      // [결과] 보이는 화면 (Data Scope)
-    const pEditScopes = safeArray(menu.edit_scopes);   // [결과] 편집 가능 범위 (Edit Scope)
+    const pVScopes = safeArray(menu.view_scopes);      // [결과] 보이는 화면 (View Scope)
     const pTAccess = safeArray(menu.task_accesses);    // 1️⃣ [예외] Task Access 명단
-    const pTMasters = safeArray(menu.task_masters);    // 1️⃣ [예외] Task Editor 명단
     const pVRoles = safeArray(menu.view_role_ids);     // 3️⃣ [규칙] 접근 권한 레벨
-    const pERoles = safeArray(menu.edit_role_ids);     // 2️⃣ [규칙] 편집 권한 레벨
   
+    const myEmailNorm = String(myEmail || '').trim().toLowerCase();
+
     // ---------------------------------------------------------
     // 👁️ [접근 권한(ACCESS) 관문]
+    // 규칙: Org ∧ Level → 진입
+    // 예외: Task Access는 Org·Level만 우회 (View Scope는 예외 아님)
+    // 결과: 진입자 전원(예외 포함)이 동일 view_scopes를 따름
     // ---------------------------------------------------------
-    // 1️⃣ 예외 지정자 확인 (Task Access)
-    const isTaskAccess = pTAccess.some((ta: any) => ta.email === myEmail);
-    
-    // 2️⃣ 지정 부서 허용 확인 (Org Guard)
+    // 1️⃣ [예외] Task Access — 규칙 1·2만 우회
+    const isTaskAccess = pTAccess.some(
+      (ta: any) => String(ta?.email || '').trim().toLowerCase() === myEmailNorm
+    );
+
+    // 2️⃣ [규칙 1] Org Guard
     const effectiveOrgIds = getEffectiveAllowedOrgs(menu, allMenus);
     const orgPassed = isOrgAllowed(effectiveOrgIds, myDept, unitsList);
-    
-    // 3️⃣ 접근 권한 레벨 확인 (비어있으면 전체 레벨 허용)
-    const validVRoles = pVRoles.length > 0 ? pVRoles : ['LV_1', 'LV_2', 'LV_3']; 
-    const levelPassed = validVRoles.includes(myRole);
-  
-    // 🎯 [최종 접근 판정]: 예외 대상자 이거나 (부서 통과 AND 레벨 통과)
+
+    // 3️⃣ [규칙 2] Access Level (미지정=제한 → 불허)
+    const normalizedViewRoles = pVRoles.map((r: any) => {
+      const m = String(r).match(/\d+/);
+      return m ? `LV_${m[0]}` : String(r);
+    });
+    const levelPassed =
+      normalizedViewRoles.length > 0 && normalizedViewRoles.includes(myRole);
+
+    // 🎯 진입: Task Access(규칙1·2 예외) OR (Org ∧ Level)
     const hasAccessPassed = isTaskAccess || (orgPassed && levelPassed);
-  
+
     // ---------------------------------------------------------
-    // ✍️ [편집 권한(EDIT) 관문]
+    // 📦 [결과] View Scope — 진입자 전원 동일 (Task Access도 예외 아님)
     // ---------------------------------------------------------
-    // 1️⃣ 예외 지정자 확인 (Task Editor)
-    const isTaskEditor = pTMasters.some((tm: any) => tm.email === myEmail);
-    
-    // 2️⃣ 편집 권한 레벨 확인 (비어있으면 전체 레벨 허용)
-    const editLevelPassed = pERoles.length === 0 || pERoles.includes(myRole); 
-    
-    // 🎯 [최종 편집 판정]: 접근이 허용된 상태에서, 예외 편집자 이거나 편집 레벨 통과
-    const isEditorPassed = hasAccessPassed && (isTaskEditor || editLevelPassed);
-  
+    const validViewScopes = normalizePermissionScopes(pVScopes);
+    // 설정값 적용. 미지정=제한(NONE). Access View Scope는 필수 선택(Org와 동일)
+    const viewScope = hasAccessPassed
+      ? validViewScopes.length > 0
+        ? pickWidestPermissionScope(validViewScopes)
+        : 'NONE'
+      : 'NONE';
+
     // ---------------------------------------------------------
-    // 📦 [데이터 스콥(SCOPE) 결과 매핑]
+    // ✍️ [편집 권한(EDIT) 관문] — Access 통과자만 대상
+    // edit_scopes 미지정=NONE. Task Editor 개인 scope ∪ 규칙
     // ---------------------------------------------------------
-    // 어드민 설정값이 비어있을 경우를 대비한 기본값 처리
-    const viewScope = hasAccessPassed ? (pVScopes[0] || 'TOTAL') : 'NONE';
-    const editScope = isEditorPassed ? (pEditScopes[0] || 'OWN') : 'NONE';
+    const editState = resolveInterfaceEditState(user, menu, { hasAccess: hasAccessPassed });
   
     return { 
       hasAccess: hasAccessPassed, 
       isMaster: false,
-      isEditor: isEditorPassed, 
+      isEditor: editState.isEditor, 
       isViewer: hasAccessPassed,
       viewScope,
-      editScope,
+      editScope: editState.editScope,
       myRole 
     };
   };

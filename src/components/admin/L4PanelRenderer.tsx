@@ -3,12 +3,9 @@
 import dynamic from 'next/dynamic';
 import React from 'react';
 import { usePathname } from 'next/navigation';
+import LoadingState from '@/components/common/LoadingState';
   
-const ModuleLoader = () => (
-  <div className="p-20 text-center font-black animate-pulse text-slate-300 tracking-widest text-xs font-sans">
-    LOADING REALTIME SYSTEM MODULE...
-  </div>
-);
+const ModuleLoader = () => <LoadingState />;
   
 // --- [IT 업무자산] ---
 const ITDeptModule = dynamic(() => import('../asset/it/DeptModule').then(m => m.default || m), { loading: ModuleLoader, ssr: false });

@@ -1,9 +1,18 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
-import { useRouter } from 'next/navigation';
+import React, { useState, useEffect, useMemo } from 'react';
+import { usePathname } from 'next/navigation';
 import * as XLSX from 'xlsx'; // 🚀 엑셀 다운로드를 위한 라이브러리 추가
-import Link from 'next/link'; // 🚀 이 줄을 추가합니다!
+import Link from 'next/link';
+import { resolveInterfaceEditState } from '@/lib/permission-utils';
+
+const MENU_PATH = '/asset/businesscard/master/archive';
+
+const MASTER_TABS = [
+  { id: 'requests', path: '/asset/businesscard/master/requests', name: '📋 사용자 신청현황 관리', activeColor: 'text-indigo-600' },
+  { id: 'order', path: '/asset/businesscard/master/order', name: '📦 외주 발주 관리/견적 비교', activeColor: 'text-emerald-600' },
+  { id: 'archive', path: '/asset/businesscard/master/archive', name: '📁 정산 완료 보관함', activeColor: 'text-slate-800' },
+] as const;
 
 interface RequestItem {
   id: string;
@@ -27,10 +36,20 @@ interface ArchivedBatch {
 }
 
 export default function BusinessCardArchivePanel() {
-  const router = useRouter();
+  const pathname = usePathname();
   const [archivedBatches, setArchivedBatches] = useState<ArchivedBatch[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [expandedBatchId, setExpandedBatchId] = useState<string | null>(null);
+  const [currentUser, setCurrentUser] = useState<any>(null);
+  const [interfaceConfig, setInterfaceConfig] = useState<any>(null);
+  const [permissionSummary, setPermissionSummary] = useState<{
+    masterName: string;
+    accessDesignate: string;
+    accessOrg: string;
+    accessLevel: string;
+    editDesignate: string;
+    editLevel: string;
+  } | null>(null);
 
   // 검색 및 다중 필터 상태
   const [yearFilter, setYearFilter] = useState<string>('ALL');
@@ -42,14 +61,42 @@ export default function BusinessCardArchivePanel() {
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 10;
 
+  const canEditMaster = useMemo(
+    () => resolveInterfaceEditState(currentUser, interfaceConfig).isEditor,
+    [currentUser, interfaceConfig]
+  );
+
   useEffect(() => {
     const fetchArchivedData = async () => {
       try {
-        const res = await fetch('/api/asset/businesscard/master/order?isArchived=true');
+        const ts = Date.now();
+        const [res, meRes, ifRes, summaryRes] = await Promise.all([
+          fetch(`/api/asset/businesscard/master/order?isArchived=true&t=${ts}`, { cache: 'no-store' }),
+          fetch(`/api/auth/me?t=${ts}`, { cache: 'no-store' }).catch(() => null),
+          fetch(`/api/admin/interface?t=${ts}`, { cache: 'no-store' }).catch(() => null),
+          fetch(`/api/admin/interface/summary?path=${encodeURIComponent(MENU_PATH)}&t=${ts}`, {
+            cache: 'no-store',
+          }).catch(() => null),
+        ]);
         if (res.ok) {
           const data = await res.json();
           setArchivedBatches(data);
         }
+        if (meRes && meRes.ok) setCurrentUser(await meRes.json());
+        if (ifRes && ifRes.ok) {
+          const interfaces = await ifRes.json();
+          const menu = Array.isArray(interfaces)
+            ? interfaces.find(
+                (m: any) =>
+                  m.path === MENU_PATH || m.path?.includes('/businesscard/master/archive')
+              )
+            : null;
+          setInterfaceConfig(menu || null);
+        } else {
+          setInterfaceConfig(null);
+        }
+        if (summaryRes && summaryRes.ok) setPermissionSummary(await summaryRes.json());
+        else setPermissionSummary(null);
       } catch (error) {
         console.error("보관함 데이터 로딩 실패:", error);
       } finally {
@@ -124,71 +171,73 @@ export default function BusinessCardArchivePanel() {
     <div className="w-full max-w-[1600px] mx-auto space-y-6 p-8 font-sans text-slate-900 pb-24 animate-fade-in">
       
       {/* 고정 헤더 영역 */}
-{/* 🚀 전사 명함 발주 접수 통제 대장 (최상위 관리자 모드 - 딥 그린 테마 & 140px 표준 규격) */}
-<div className="w-full bg-gradient-to-r from-emerald-900 to-teal-900 p-6 rounded-[2.5rem] text-white shadow-xl relative overflow-hidden flex flex-col justify-center min-h-[140px]">
-  
-  <div className="relative z-10 flex justify-between items-end w-full">
-    <div>
-      {/* 1. 상단 라벨 (mb-3 간격 및 딥 그린에 어울리는 에메랄드 포인트 라벨) */}
-      <h3 className="text-[10px] font-black uppercase tracking-widest text-emerald-400 mb-3">
-        BUSINESS CARD TOTAL GOVERNANCE
-      </h3>
-      
-      {/* 2. 메인 타이틀 (2xl 규격 통일 및 선명한 가독성 확보) */}
-      <h1 className="text-2xl font-black tracking-tight text-white leading-none">
-        전사 임직원 명함 발주 접수 통제 대장
-      </h1>
-      
-      {/* 3. 하단 설명 (mt-4 간격 표준화 및 소프트 텍스트 처리) */}
-      <p className="text-emerald-100/90 text-xs font-semibold mt-4 opacity-90">
-        임직원이 신청한 명함의 국/영문 원본 조판 텍스트 데이터를 검수하고 외주 조판 공정으로 이관 제어하는 마스터 컨트롤 허브입니다.
-      </p>
-    </div>
-  </div>
-
-  {/* 우측 은은한 엠블럼 효과 (통제 타워 느낌 연출) */}
-  <div className="absolute right-10 top-1/2 -translate-y-1/2 text-8xl opacity-10 select-none pointer-events-none">
-    📟
+{/* client-search 배너 규격: emerald→teal · orbs · permission chips */}
+<div className="w-full bg-gradient-to-r from-emerald-900 to-teal-900 rounded-3xl text-white shadow-lg relative overflow-hidden px-6 md:px-8 py-6">
+  <div className="absolute right-0 top-0 w-64 h-64 bg-emerald-400/15 rounded-full blur-3xl -translate-y-1/3 translate-x-1/4 pointer-events-none" />
+  <div className="absolute left-1/4 bottom-0 w-48 h-48 bg-teal-800/20 rounded-full blur-3xl translate-y-1/2 pointer-events-none" />
+  <div className="relative z-10">
+    <h3 className="text-[10px] font-black uppercase tracking-widest text-emerald-400 mb-2.5">
+      BUSINESS CARD TOTAL GOVERNANCE
+    </h3>
+    <h1 className="text-2xl font-extrabold tracking-tight text-white leading-none">
+      전사 임직원 명함 발주 접수 통제 대장
+    </h1>
+    <p className="text-emerald-100/90 text-xs mt-3 leading-relaxed">
+      임직원이 신청한 명함의 국/영문 원본 조판 텍스트 데이터를 검수하고 외주 조판 공정으로 이관 제어하는 마스터 컨트롤 허브입니다.
+    </p>
+    {permissionSummary && (
+      <div className="flex flex-wrap items-center gap-2 mt-4 pt-3 border-t border-white/15">
+        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-white/10 border-white/25 text-emerald-50 shadow-sm">
+          <span>👑 Master 책임자:</span>
+          <span>{permissionSummary.masterName}</span>
+        </div>
+        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-purple-500/20 border-purple-300/40 text-purple-100 shadow-sm">
+          <span>👁️ Access:</span>
+          <span>{permissionSummary.accessDesignate}</span>
+          <span className="opacity-50">|</span>
+          <span className="truncate max-w-[160px]">Org: {permissionSummary.accessOrg}</span>
+          <span className="opacity-50">|</span>
+          <span>Level: {permissionSummary.accessLevel}</span>
+        </div>
+        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-emerald-400/20 border-emerald-300/40 text-emerald-100 shadow-sm">
+          <span>✍️ Edit:</span>
+          <span>{permissionSummary.editDesignate}</span>
+          <span className="opacity-50">|</span>
+          <span>Level: {permissionSummary.editLevel}</span>
+        </div>
+        {!canEditMaster && (
+          <span className="text-[10px] font-black text-amber-200 bg-amber-500/20 border border-amber-300/30 px-2.5 py-1 rounded-md">
+            편집 권한 없음 — 조회만 가능
+          </span>
+        )}
+      </div>
+    )}
   </div>
 </div>
 
-{/* 🚀 URL 기반 동적 활성화 탭 네비게이션 */}
-<div className="bg-slate-100 p-2 rounded-3xl flex gap-2 max-w-max border border-slate-200/50 shadow-inner">
-  <button 
-    type="button" 
-    onClick={() => router.push('/asset/businesscard/master/requests')}
-    className={`px-5 py-2.5 rounded-2xl text-xs font-black transition-all flex items-center justify-center ${
-      typeof window !== 'undefined' && window.location.pathname.includes('/master/requests')
-        ? 'bg-white text-slate-900 shadow-sm border border-slate-200/40' 
-        : 'text-slate-500 hover:text-slate-800'
-    }`}
-  >
-    📋 사용자 신청현황 관리
-  </button>
-  
-  <button 
-    type="button" 
-    onClick={() => router.push('/asset/businesscard/master/order')} 
-    className={`px-5 py-2.5 rounded-2xl text-xs font-black transition-all flex items-center justify-center ${
-      typeof window !== 'undefined' && window.location.pathname.includes('/master/order')
-        ? 'bg-white text-slate-900 shadow-sm border border-slate-200/40' 
-        : 'text-slate-500 hover:text-slate-800'
-    }`}
-  >
-    📦 외주 발주 관리/견적 비교
-  </button>
-  
-  <button 
-    type="button" 
-    onClick={() => router.push('/asset/businesscard/master/archive')} 
-    className={`px-5 py-2.5 rounded-2xl text-xs font-black transition-all flex items-center justify-center ${
-      typeof window !== 'undefined' && window.location.pathname.includes('/master/archive')
-        ? 'bg-white text-slate-900 shadow-sm border border-slate-200/40' 
-        : 'text-slate-500 hover:text-slate-800'
-    }`}
-  >
-    📁 정산 완료 보관함
-  </button>
+{/* 탭 네비게이션 — client-search / distribution 스위처 규격 */}
+<div className="flex items-center justify-between bg-white p-2 rounded-xl border border-slate-200 shadow-sm">
+  <div className="flex items-center gap-1.5 bg-slate-100/80 p-1 rounded-lg flex-wrap">
+    {MASTER_TABS.map((tab) => {
+      const isActive = pathname.startsWith(tab.path);
+      return (
+        <Link
+          key={tab.id}
+          href={tab.path}
+          className={`px-5 py-2 rounded-md text-xs font-black transition-all flex items-center gap-2 ${
+            isActive
+              ? `bg-white ${tab.activeColor} shadow-sm border border-slate-200/80`
+              : 'text-slate-500 hover:text-slate-800'
+          }`}
+        >
+          <span>{tab.name}</span>
+        </Link>
+      );
+    })}
+  </div>
+  <p className="text-[10px] text-slate-400 font-bold px-3 hidden sm:block">
+    ※ 탭을 클릭하여 신청현황·외주발주·보관함을 전환합니다.
+  </p>
 </div>
 
       {/* ========================================== */}
