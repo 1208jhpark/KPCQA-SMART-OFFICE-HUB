@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useParams } from 'next/navigation';
 import { Html5QrcodeScanner } from 'html5-qrcode';
-import { getKSTDateString } from '@/utils/dateUtils';
+import { getKSTDateString, isPastKSTDeadline } from '@/utils/dateUtils';
      
 export default function MobilePublicAuditPage() {
   const params = useParams();
@@ -28,28 +28,29 @@ export default function MobilePublicAuditPage() {
   const fetchInitialData = async () => {
     try {
       const ts = Date.now();
-      const [auditRes, reqRes, uRes] = await Promise.all([
-        fetch(`/api/asset/it/audit?t=${ts}`, { cache: 'no-store' }),
-        fetch(`/api/asset/it/requests?t=${ts}`, { cache: 'no-store' }),
-        fetch(`/api/admin/users?t=${ts}`, { cache: 'no-store' }) // 유저 정보도 캐시 방지
+      const [auditRes, uRes] = await Promise.all([
+        fetch(`/api/asset/it/audit?id=${encodeURIComponent(id)}&t=${ts}`, { cache: 'no-store' }),
+        fetch(`/api/admin/users?t=${ts}`, { cache: 'no-store' }),
       ]);
      
       if (uRes.ok) {
         const uData = await uRes.json();
         setUsers(uData.users || []);
       }
-      if (reqRes.ok) setRequests(await reqRes.json());
      
       if (auditRes.ok) {
         const audits = await auditRes.json();
-        const found = audits.find((a: any) => a.id === id);
+        const found = Array.isArray(audits)
+          ? audits.find((a: any) => a.id === id) || audits[0]
+          : audits;
         
         if (found) {
           setAudit(found);
           const isStatusActive = found.status === '진행중';
-          const isDateValid = todayStr >= found.startDate && todayStr <= found.endDate;
-          
-          if (!isStatusActive || !isDateValid) {
+          const notStarted = todayStr < found.startDate;
+          const pastEnd = isPastKSTDeadline(found.endDate, found.endTime || '23:59');
+
+          if (!isStatusActive || notStarted || pastEnd) {
             setIsActivePeriod(false);
           }
         }
@@ -79,15 +80,22 @@ export default function MobilePublicAuditPage() {
     }
 
     // 검증을 통과한 진짜 유저의 이름
-    const userName = foundUser.name;
+    void foundUser.name;
     
     try {
-      const assetRes = await fetch(`/api/asset/it?t=${Date.now()}`, { cache: 'no-store' });
+      const ts = Date.now();
+      const [assetRes, reqRes] = await Promise.all([
+        fetch(`/api/asset/it?email=${encodeURIComponent(email)}&t=${ts}`, { cache: 'no-store' }),
+        fetch(`/api/asset/it/requests?email=${encodeURIComponent(email)}&t=${ts}`, { cache: 'no-store' }),
+      ]);
+      if (reqRes.ok) setRequests(await reqRes.json());
       if (assetRes.ok) {
-        const allAssets = await assetRes.json();
-        const filtered = allAssets.filter((a: any) => a.user === userName);
-        setMyAssets(filtered);
+        const filtered = await assetRes.json();
+        setMyAssets(Array.isArray(filtered) ? filtered : []);
         setIsVerified(true);
+      } else {
+        const err = await assetRes.json().catch(() => ({}));
+        alert(err.message || '자산 마스터 정보를 불러오지 못했습니다.');
       }
     } catch (err) {
       alert("자산 마스터 정보를 불러오지 못했습니다.");
@@ -105,7 +113,9 @@ export default function MobilePublicAuditPage() {
         body: JSON.stringify({
           id: assetId,
           last_audit_date: todayStr,
-          audit_request_date: '' 
+          last_audit_by: 'user',
+          audit_request_date: '',
+          publicAuditEmail: email,
         })
       });
      
@@ -114,6 +124,7 @@ export default function MobilePublicAuditPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           id: audit.id,
+          publicAuditEmail: email,
           responses: {
             upsert: {
               where: { auditId_userEmail: { auditId: audit.id, userEmail: email } },
@@ -125,7 +136,7 @@ export default function MobilePublicAuditPage() {
       }).catch(() => null); 
      
       if (assetUpdate.ok) {
-        setMyAssets(prev => prev.map(a => a.id === assetId ? { ...a, last_audit_date: todayStr, audit_request_date: '' } : a));
+        setMyAssets(prev => prev.map(a => a.id === assetId ? { ...a, last_audit_date: todayStr, last_audit_by: 'user', audit_request_date: '' } : a));
         alert(`자산 [${currentAsset.code}] 실사 인증이 완료되었습니다.`);
         
         setTimeout(() => {
@@ -150,9 +161,12 @@ export default function MobilePublicAuditPage() {
       assetType: currentAsset.it_type || currentAsset.category,
       content: feedbackContent,
       requester: currentAsset.user,
+      requester_email: currentAsset.user_email || email || null,
+      requester_id: currentAsset.user_id || null,
       dept: currentAsset.dept,
       status: '의견전송',
-      requestDate: todayStr
+      requestDate: todayStr,
+      publicAuditEmail: email,
     };
     
     try {

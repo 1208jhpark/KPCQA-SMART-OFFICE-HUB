@@ -10,7 +10,7 @@ const MENU_PATH = '/asset/businesscard/master/archive';
 
 const MASTER_TABS = [
   { id: 'requests', path: '/asset/businesscard/master/requests', name: '📋 사용자 신청현황 관리', activeColor: 'text-indigo-600' },
-  { id: 'order', path: '/asset/businesscard/master/order', name: '📦 외주 발주 관리/견적 비교', activeColor: 'text-emerald-600' },
+  { id: 'order', path: '/asset/businesscard/master/order', name: '📦 /견적 비교', activeColor: 'text-emerald-600' },
   { id: 'archive', path: '/asset/businesscard/master/archive', name: '📁 정산 완료 보관함', activeColor: 'text-slate-800' },
 ] as const;
 

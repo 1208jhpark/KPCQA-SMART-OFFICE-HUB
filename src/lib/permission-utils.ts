@@ -29,6 +29,45 @@ export function normalizePermissionScopes(raw: any): string[] {
     .filter((s: string) => ['OWN', 'DEPT', 'TOTAL'].includes(s));
 }
 
+/** Master 지정 여부 (id 문자열 정규화 비교) */
+export function isMenuMasterUser(userId: any, menu: any): boolean {
+  const masterId = String(menu?.master_editor_id || '').trim();
+  const uid = String(userId || '').trim();
+  return !!masterId && !!uid && masterId === uid;
+}
+
+/**
+ * 하위(자손) interface 카드 중 Master로 지정된 메뉴가 있는지.
+ * Step3 사이드바는 L3 권한만 보므로, L4 Master만 있어도 조상 L3/L2가 보여야 함.
+ */
+export function isMasterOfDescendantMenu(
+  userId: any,
+  menu: any,
+  allMenus: any[] = []
+): boolean {
+  const uid = String(userId || '').trim();
+  if (!uid || !menu?.id || !Array.isArray(allMenus) || allMenus.length === 0) return false;
+
+  const byParent = new Map<string, any[]>();
+  for (const m of allMenus) {
+    const pid = m?.parent_id;
+    if (pid == null) continue;
+    const key = String(pid);
+    const list = byParent.get(key);
+    if (list) list.push(m);
+    else byParent.set(key, [m]);
+  }
+
+  const stack = [...(byParent.get(String(menu.id)) || [])];
+  while (stack.length) {
+    const cur = stack.pop();
+    if (isMenuMasterUser(uid, cur)) return true;
+    const kids = byParent.get(String(cur.id));
+    if (kids?.length) stack.push(...kids);
+  }
+  return false;
+}
+
 /**
  * FE/API 공통 편집 자격·스코프 (checkMenuPermission Edit 관문과 동일).
  * - edit_scopes 비움/CODED만 = NONE (TOTAL로 취급 금지)
@@ -61,7 +100,7 @@ export function resolveInterfaceEditState(
   }
   if (!menu) return deny;
 
-  if (menu.master_editor_id === myId) {
+  if (menu.master_editor_id === myId || String(menu.master_editor_id || '') === String(myId || '')) {
     return { isEditor: true, editScope: 'TOTAL', isMaster: true };
   }
 
@@ -150,7 +189,8 @@ export function resolveInterfaceEditState(
       isViewer: false, 
       viewScope: 'NONE', 
       editScope: 'NONE', 
-      myRole: 'GUEST' 
+      myRole: 'GUEST',
+      isTaskAccess: false,
     };
     
     if (!user) return defaultDeny;
@@ -181,13 +221,17 @@ export function resolveInterfaceEditState(
         viewScope: 'TOTAL',
         editScope: 'TOTAL',
         myRole: 'LV_1',
+        isTaskAccess: false,
       };
     }
 
     if (!menu) return defaultDeny;
 
-    // 👑 [MASTER 지정]
-    const isMaster = menu.master_editor_id === myId;
+    // 👑 [MASTER 지정] — 이 카드(또는 하위 L4 등)에 한해 LV_1과 동일
+    // Access Org/Level·Edit보다 우선. L4만 Master여도 조상 L3/L2 사이드바·진입 가능.
+    const isMaster =
+      isMenuMasterUser(myId, menu) ||
+      isMasterOfDescendantMenu(myId, menu, allMenus);
     if (isMaster) {
       return { 
         hasAccess: true, 
@@ -196,7 +240,8 @@ export function resolveInterfaceEditState(
         isViewer: true,
         viewScope: 'TOTAL',
         editScope: 'TOTAL',
-        myRole 
+        myRole, // 실제 역할 유지 (전역 LV_1 아님). 권한 판별은 isMaster로.
+        isTaskAccess: false,
       };
     }
   
@@ -257,6 +302,7 @@ export function resolveInterfaceEditState(
       isViewer: hasAccessPassed,
       viewScope,
       editScope: editState.editScope,
-      myRole 
+      myRole,
+      isTaskAccess,
     };
   };

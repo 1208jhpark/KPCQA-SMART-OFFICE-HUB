@@ -79,9 +79,10 @@ model OrgUnit {
   parent_id    String?
   parent       OrgUnit?  @relation("UnitHierarchy", fields: [parent_id], references: [id])
   children     OrgUnit[] @relation("UnitHierarchy")
-  users        User[]
-  is_active    Boolean   @default(true)
-  is_deleted   Boolean   @default(false)
+  users           User[]
+  supplyRequests  SupplyRequest[]
+  is_active       Boolean   @default(true)
+  is_deleted      Boolean   @default(false)
   /// 부서 소모품 보관 위치 안내 (부서 대장 페이지에서 편집)
   supply_storage_note String @default("") @db.Text
 }
@@ -166,6 +167,9 @@ model ITAsset {
   it_type         String   // <--- 여기에 분류(노트북 등) 저장
   dept            String   
   user            String?  @default("공용")
+  /// 자산 담당자 안정 식별자 (동명이인 방지) — 표시명은 user 유지
+  user_email      String?
+  user_id         String?
   code            String   @unique 
   model           String
   sn              String?
@@ -175,7 +179,6 @@ model ITAsset {
   rental_months   Int      @default(0)
   purchase_price  Float    @default(0)
   monthly_fee     Float    @default(0)
-  monthly_sub_fee Float    @default(0)
   in_date         String?
   start_date      String?
   end_date        String?
@@ -183,11 +186,20 @@ model ITAsset {
   cycle           Int      @default(48)
   memo            String?  @default("-")
   reg_date        String?
+  /// 등록 경로: excel(엑셀 업로드) | manual(신규 자산 추가) — 당일 행 하이라이트용
+  entry_source    String?
   is_active       Boolean  @default(true) 
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
   last_audit_date    String?   // 최근 실사 인증 완료일
+  /// 실사 완료 주체: user(본인·QR) | admin(관리자 강제 확인)
+  last_audit_by      String?
   audit_request_date String?   // 관리자 실사 독촉(요청)일
+  /// 사용자 정보수정 제안 (승인 전). { proposed, changedKeys, requestedAt, requestedBy }
+  info_correction_pending Json?
+
+  @@index([user_email])
+  @@index([user_id])
 }
      
 // -----------------------------------------------------------------
@@ -445,7 +457,11 @@ model SupplyRequest {
   qty            Int      
   user_email     String   
   user_name      String   
-  dept_name      String   
+  /// 신청 시점 조직명 스냅샷 (표시용)
+  dept_name      String
+  /// 신청 소속 조직 ID (스코프·필터 기준). 레거시 행은 null 가능
+  unit_id        String?
+  unit           OrgUnit? @relation(fields: [unit_id], references: [id], onDelete: SetNull)
   status         String   @default("PENDING") 
   note           String?  @db.Text 
   createdAt      DateTime @default(now())
@@ -455,6 +471,9 @@ model SupplyRequest {
   /// 지급완료·반려 등 처리 확정 시각 (철회로 대기 복귀 시 null)
   processedAt    DateTime?
   updatedAt      DateTime @updatedAt 
+
+  @@index([unit_id])
+  @@index([user_email])
 }
      
 // -----------------------------------------------------------------
@@ -595,6 +614,7 @@ model ITAudit {
   target      String   // 대상 부서 (예: "전사", "KPCQA")
   startDate   String
   endDate     String
+  endTime     String?  @default("23:59") // 종료 시각 (KST HH:mm, 도래 시 자동 마감)
   status      String   @default("작성중") // 작성중, 진행중, 게시중단, 마감, 보관됨
   postDate    String?
   archivedAt  String?
@@ -621,7 +641,10 @@ model ITAuditResponse {
 model ITRequest {
   id           String   @id @default(uuid())
   requestDate  String   // 요청 일자 (YYYY-MM-DD)
-  requester    String   // 요청자 이름
+  requester    String   // 요청자 이름(표시용)
+  /// 요청자 안정 식별자 (동명이인 방지)
+  requester_email String?
+  requester_id    String?
   dept         String   // 요청자 부서
   assetInfo    String   // 대상 자산 요약 (자산코드 / 모델명)
   assetCode    String   // 자산 식별 코드
@@ -632,6 +655,9 @@ model ITRequest {
   completedAt  String?  // 처리 및 조치 완료 일자
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
+
+  @@index([requester_email])
+  @@index([requester_id])
 }
 
 // -----------------------------------------------------------------
@@ -643,26 +669,33 @@ model ITAssetArchive {
   it_type         String   
   dept            String   
   user            String?  
+  user_email      String?
+  user_id         String?
   code            String   
   model           String
   sn              String?
   brand           String?
   spec            String?
-  is_rental       String   
+  is_rental       String
+  rental_months   Int      @default(0)
   purchase_price  Float    @default(0)
   monthly_fee     Float    @default(0)
-  monthly_sub_fee Float    @default(0)
   in_date         String?
+  start_date      String?
   end_date        String?
   first_bill      String?
   cycle           Int      @default(48)
   memo            String?  
   reg_date        String?
+  entry_source    String?
+  last_audit_date    String?
+  last_audit_by      String?
+  audit_request_date String?
   
   // 아카이브 전용 필수 필드
   status          String   // 반납, 폐기, 재판매 등
   reason          String?  @db.Text
-  reseller        String?  // 매각처
+  reseller        String?  // 반납처/매각처
   resellPrice     Float?   @default(0)
   terminated_at   String?  // 종료일자
   

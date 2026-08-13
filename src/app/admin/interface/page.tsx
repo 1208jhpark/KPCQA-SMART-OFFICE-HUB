@@ -610,7 +610,11 @@ export default function AdminInterfacePage() {
   
             <div className="bg-slate-800 p-5 rounded-2xl border border-slate-700 shadow-md">
               <h4 className="text-white font-black text-[11px] mb-1 uppercase flex items-center gap-1">👑 편집/접근권한 MASTER 지정 (1명만 가능)</h4>
-              <p className="text-[9px] text-slate-400 mb-3 font-bold">이 카드의 생성, 수정, 삭제(CRUD) 및 접근 권한을 모두 갖는 총괄 책임자</p>
+              <p className="text-[9px] text-slate-400 mb-3 font-bold leading-relaxed">
+                이 카드에 한해 <span className="text-indigo-300">LV_1과 동일</span>한 권한(Access·Edit 전부 · Org/Level 우회 · View/Edit Scope TOTAL).
+                하위(L4 등)에만 Master를 지정해도 상위 Step3/2 메뉴가 사이드바에 노출됩니다.
+                Access·Edit보다 우선합니다. 지정 인원의 소속 부서와 무관합니다.
+              </p>
               <div className="space-y-2">
                 <div className="relative">
                   <input type="text" value={masterSearch} onChange={(e) => setMasterSearch(e.target.value)} placeholder="이름으로 마스터 검색..." className="w-full p-2 bg-slate-900 border border-slate-600 text-white rounded-lg text-[10px] font-bold focus:border-indigo-500 outline-none" />
@@ -637,15 +641,39 @@ export default function AdminInterfacePage() {
                 <span>👁️</span> 접근 권한 및 화면 설정 (Access)
               </h4>
               
-              <div className="bg-purple-50 p-3 rounded-lg text-[9px] font-bold text-purple-700 leading-relaxed shadow-inner border border-purple-100">
-                📌 <b>[규칙 1·2]</b> Org Guard AND Access Level을 모두 충족해야 페이지에 진입합니다.<br/>
-                💡 <b>[예외]</b> Task Access는 규칙 1·2만 우회합니다. (전부 프리패스 아님)<br/>
-                🎯 <b>[결과]</b> View Scope: 본인/부서/전사 선택 또는 <b>코드화</b>(이 페이지는 Scope 미사용 표시).
+              <div className="bg-purple-50 p-3 rounded-lg text-[9px] font-bold leading-relaxed shadow-inner border border-purple-100 space-y-1.5">
+                <div className="flex gap-1.5 items-start">
+                  <span className="shrink-0 leading-none pt-0.5">💡</span>
+                  <div className="min-w-0 grid grid-cols-[auto_1fr] gap-x-1 gap-y-0.5">
+                    <span className="text-purple-700 font-black whitespace-nowrap">[예외]</span>
+                    <div className="text-slate-500">
+                      <div>Task Access는 규칙 2️⃣·3️⃣ 만 우회합니다.</div>
+                      <div className="text-slate-400 font-semibold">(전부 프리패스 아님)</div>
+                    </div>
+                  </div>
+                </div>
+                <div className="flex gap-1.5 items-start">
+                  <span className="shrink-0 leading-none pt-0.5">📌</span>
+                  <div className="min-w-0 grid grid-cols-[auto_1fr] gap-x-1">
+                    <span className="text-purple-700 font-black whitespace-nowrap">[규칙 2️⃣·3️⃣]</span>
+                    <span className="text-slate-500">모두 충족해야 페이지에 진입합니다.</span>
+                  </div>
+                </div>
+                <div className="flex gap-1.5 items-start">
+                  <span className="shrink-0 leading-none pt-0.5">🎯</span>
+                  <div className="min-w-0 grid grid-cols-[auto_1fr] gap-x-1 gap-y-0.5">
+                    <span className="text-purple-700 font-black whitespace-nowrap">[결과]</span>
+                    <div className="text-slate-500">
+                      <div>View Scope: 본인/부서/전사 선택 또는 <span className="font-black text-slate-600">코드화</span></div>
+                      <div className="text-slate-400 font-semibold">(코드화 설정시 View Scope 미사용)</div>
+                    </div>
+                  </div>
+                </div>
               </div>
   
               {/* 1️⃣ [예외] Task Access */}
               <div className="space-y-2">
-                <span className="text-[10px] font-black text-slate-800 tracking-tighter">1️⃣ [예외] Task Access — 규칙 1·2만 우회</span>
+                <span className="text-[10px] font-black text-slate-800 tracking-tighter">1️⃣ [예외] Task Access — 규칙 2️⃣·3️⃣ 만 우회</span>
                 <div className="relative">
                   <input type="text" value={taSearch} onChange={(e) => setTaSearch(e.target.value)} className="w-full p-2 bg-gray-50 border border-gray-200 rounded-lg text-[10px] font-bold focus:border-purple-500 outline-none" placeholder="이름으로 조회 권한자 추가..." />
                   {taSearch && (
@@ -888,18 +916,44 @@ export default function AdminInterfacePage() {
                 <h4 className="text-emerald-700 font-black text-[12px] uppercase flex items-center gap-1"><span>✍️</span> 편집 권한자 및 설정 (Edit)</h4>
               </div>
 
-              <div className="bg-emerald-50 p-3 rounded-lg text-[9px] font-bold text-emerald-700 leading-relaxed shadow-inner border border-emerald-100">
-                📌 Access를 통과한 사람에게만 Edit이 적용됩니다.<br/>
-                💡 <b>[예외]</b> Task Editor는 Editor Level만 우회. 개인(부서/전사)은 결과 Scope와 합집합입니다.<br/>
-                📌 <b>[규칙]</b> Editor Level 미지정(제한) → Task Editor 외 편집 불가.<br/>
-                🎯 <b>[결과]</b> Edit Scope 미지정(제한) → Level 통과자도 편집 범위 없음. Task Editor는 개인 부서/전사로 범위 확보.
+              <div className="bg-emerald-50 p-3 rounded-lg text-[9px] font-bold leading-relaxed shadow-inner border border-emerald-100 space-y-1.5">
+                <div className="flex gap-1.5 items-start">
+                  <span className="shrink-0 leading-none pt-0.5">💡</span>
+                  <div className="min-w-0 grid grid-cols-[auto_1fr] gap-x-1 gap-y-0.5">
+                    <span className="text-emerald-700 font-black whitespace-nowrap">[예외]</span>
+                    <div className="text-slate-500">
+                      <div>Task Editor는 규칙 2️⃣ 만 우회합니다.</div>
+                      <div className="text-slate-400 font-semibold">(전부 프리패스 아님 · 개인 부서/전사는 결과 Scope와 합집합)</div>
+                    </div>
+                  </div>
+                </div>
+                <div className="flex gap-1.5 items-start">
+                  <span className="shrink-0 leading-none pt-0.5">📌</span>
+                  <div className="min-w-0 grid grid-cols-[auto_1fr] gap-x-1 gap-y-0.5">
+                    <span className="text-emerald-700 font-black whitespace-nowrap">[규칙 2️⃣]</span>
+                    <div className="text-slate-500">
+                      <div>Editor Level을 충족해야 편집할 수 있습니다.</div>
+                      <div className="text-slate-400 font-semibold">(Access 통과자에게만 Edit 적용 · 미지정=제한)</div>
+                    </div>
+                  </div>
+                </div>
+                <div className="flex gap-1.5 items-start">
+                  <span className="shrink-0 leading-none pt-0.5">🎯</span>
+                  <div className="min-w-0 grid grid-cols-[auto_1fr] gap-x-1 gap-y-0.5">
+                    <span className="text-emerald-700 font-black whitespace-nowrap">[결과]</span>
+                    <div className="text-slate-500">
+                      <div>Edit Scope: 본인/부서/전사 선택 또는 <span className="font-black text-slate-600">코드화</span></div>
+                      <div className="text-slate-400 font-semibold">(코드화 설정시 Edit Scope 미사용)</div>
+                    </div>
+                  </div>
+                </div>
               </div>
   
               <div className="space-y-4">
                 
                 {/* 1️⃣ [예외] Task Editor */}
                 <div className="flex flex-col gap-2">
-                  <label className="text-[10px] font-black text-slate-800 block">1️⃣ [예외] Task Editor — Editor Level만 우회</label>
+                  <label className="text-[10px] font-black text-slate-800 block">1️⃣ [예외] Task Editor — 규칙 2️⃣ 만 우회</label>
                   <div className="relative">
                     <input type="text" value={tmSearch} onChange={(e) => setTmSearch(e.target.value)} className="w-full p-2 bg-gray-50 border border-gray-200 rounded-lg text-[10px] outline-none focus:border-emerald-500 font-bold" placeholder="이름으로 Editor 검색..." />
                     {tmSearch && (

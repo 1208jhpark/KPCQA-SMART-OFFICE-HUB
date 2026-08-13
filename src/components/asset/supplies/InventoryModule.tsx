@@ -3,10 +3,14 @@
      
 import React, { useState, useEffect, useMemo } from 'react';
 import LoadingState from '@/components/common/LoadingState';
+import { resolveInterfaceEditState } from '@/lib/permission-utils';
+
+const MENU_PATH = '/asset/supplies/inventory';
      
 export default function InventoryModule() {
   const [items, setItems] = useState<any[]>([]);
   const [currentUser, setCurrentUser] = useState<any>(null);
+  const [interfaceConfig, setInterfaceConfig] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   
   const [searchQuery, setSearchQuery] = useState('');
@@ -14,28 +18,44 @@ export default function InventoryModule() {
   const [selectedItem, setSelectedItem] = useState<any>(null);
   const [reqForm, setReqForm] = useState<{ qty: number | ''; note: string }>({ qty: 1, note: '' });
   const [submitting, setSubmitting] = useState(false);
+
+  const editState = useMemo(
+    () => resolveInterfaceEditState(currentUser, interfaceConfig),
+    [currentUser, interfaceConfig]
+  );
+  const canApply = editState.isEditor;
      
-  // 🚀 유저 정보와 컴포넌트 최초 아이템 데이터 바인딩 로드 분리
   useEffect(() => { 
     const initLoad = async () => {
       setLoading(true);
-      await Promise.all([fetchCurrentUser(), syncItemsOnly()]);
+      await Promise.all([fetchAuthContext(), syncItemsOnly()]);
       setLoading(false);
     };
     initLoad();
   }, []);
      
-  // 사용자 정보는 세션이 바뀌지 않으므로 딱 한 번만 캡처
-  const fetchCurrentUser = async () => {
+  const fetchAuthContext = async () => {
+    const ts = Date.now();
     try {
-      const res = await fetch(`/api/auth/me?t=${Date.now()}`, { cache: 'no-store' });
-      if (res.ok) setCurrentUser(await res.json());
+      const [userRes, ifRes] = await Promise.all([
+        fetch(`/api/auth/me?t=${ts}`, { cache: 'no-store' }),
+        fetch(`/api/admin/interface?t=${ts}`, { cache: 'no-store' }).catch(() => null),
+      ]);
+      if (userRes.ok) setCurrentUser(await userRes.json());
+      if (ifRes && ifRes.ok) {
+        const interfaces = await ifRes.json();
+        const menu = Array.isArray(interfaces)
+          ? interfaces.find((m: any) => m.path === MENU_PATH || m.path?.includes('/supplies/inventory'))
+          : null;
+        setInterfaceConfig(menu || null);
+      } else {
+        setInterfaceConfig(null);
+      }
     } catch (e) {
-      console.error("유저 정보 로드 실패:", e);
+      console.error("유저/권한 정보 로드 실패:", e);
     }
   };
 
-  // 🚀 초고속 순수 아이템 동기화 전용 엔진 (네트워크 병목 완전 제거)
   const syncItemsOnly = async (): Promise<any[]> => {
     try {
       const itemRes = await fetch(`/api/asset/supplies/inventory?t=${Date.now()}`, { cache: 'no-store' });
@@ -55,12 +75,16 @@ export default function InventoryModule() {
   };
      
   const openPopup = (item: any) => {
+    if (!canApply) {
+      return alert('신청 권한이 없습니다.\nadmin/interface에서 해당 메뉴 Edit 권한을 확인하세요.');
+    }
     setSelectedItem(item);
     setReqForm({ qty: 1, note: '' });
   };
      
   const handleRequestSubmit = async () => {
     if (submitting) return;
+    if (!canApply) return alert('신청 권한이 없습니다. (Edit 필요)');
     if (!currentUser?.id) return alert('로그인 정보가 없습니다. 새로고침 후 다시 시도해 주세요.');
 
     const qty = typeof reqForm.qty === 'number' ? reqForm.qty : NaN;
@@ -71,7 +95,6 @@ export default function InventoryModule() {
 
     const itemId = selectedItem.id;
 
-    // 1️⃣ 낙관적 업데이트 즉시 적용 (목록 + 열린 모달 재고 선다운)
     setItems(prevItems => prevItems.map(item =>
       item.id === itemId
         ? { ...item, current_stock: Math.max(0, Number(item.current_stock) - qty) }
@@ -84,7 +107,6 @@ export default function InventoryModule() {
     );
 
     const syncModalStock = (freshItems: any[]) => {
-      // sync 실패(빈 배열)면 모달 유지 — 다음 수동 재조회/재시도에 맡김
       if (!freshItems.length) return;
       const fresh = freshItems.find((i) => i.id === itemId);
       if (!fresh) {
@@ -94,7 +116,6 @@ export default function InventoryModule() {
       setSelectedItem((prev: any) =>
         prev?.id === itemId ? { ...prev, current_stock: fresh.current_stock } : prev
       );
-      // 품절이면 수량 입력도 맞추기
       if (Number(fresh.current_stock) <= 0) {
         setReqForm((f) => ({ ...f, qty: 1 }));
       } else {
@@ -137,7 +158,6 @@ export default function InventoryModule() {
     }
   };
      
-  // 백엔드 정렬 가속화를 완료했으므로 프론트는 심플 필터만 유지해 메모리 낭비 제거
   const filteredItems = useMemo(() => {
     return items.filter(item => {
       if (item.is_active === false) return false;
@@ -152,7 +172,6 @@ export default function InventoryModule() {
   return (
     <div className="w-full max-w-[1600px] mx-auto space-y-6 p-8 font-sans text-slate-900 pb-24 animate-fade-in">
       
-      {/* 마케팅 배너 공통 규격: catalog와 동일 · 권한 칩 없음 */}
       <div className="w-full bg-gradient-to-r from-blue-700 to-indigo-800 rounded-3xl text-white shadow-lg relative overflow-hidden px-6 md:px-8 py-6">
         <div className="absolute right-0 top-0 w-64 h-64 bg-sky-400/15 rounded-full blur-3xl -translate-y-1/3 translate-x-1/4 pointer-events-none" />
         <div className="absolute left-1/4 bottom-0 w-48 h-48 bg-indigo-900/20 rounded-full blur-3xl translate-y-1/2 pointer-events-none" />
@@ -190,13 +209,16 @@ export default function InventoryModule() {
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8 gap-4">
               {filteredItems.map(item => {
                 let rUnit = '';
+                let publishNote = '';
                 try {
                   const ext = item.description ? JSON.parse(item.description) : {};
                   rUnit = ext.s_unit || ext.r_unit || '';
+                  publishNote = String(ext.publish_note || '').trim();
                 } catch (e) {}
      
                 const currentStock = Number(item.current_stock) || 0;
                 const isOut = currentStock <= 0;
+                const applyDisabled = isOut || !canApply;
           
                 return (
                   <div key={item.id} className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm hover:shadow-lg transition-all group flex flex-col h-full">
@@ -214,7 +236,12 @@ export default function InventoryModule() {
                     
                     <div className="p-3 flex flex-col flex-1">
                       <h3 className={`text-[12px] font-black leading-tight mb-1 line-clamp-2 h-[34px] ${isOut ? 'text-slate-400 line-through' : 'text-slate-800'}`} title={item.name}>{item.name}</h3>
-                      <span className="text-[9px] text-slate-400 font-bold mb-3 uppercase tracking-widest truncate">{item.category || '소모품'}</span>
+                      <span
+                        className="text-[9px] text-slate-400 font-bold mb-3 truncate normal-case tracking-normal"
+                        title={publishNote || undefined}
+                      >
+                        {publishNote || '\u00A0'}
+                      </span>
                       
                       <div className="mt-auto flex flex-col gap-2 pt-3 border-t border-slate-50">
                         <div className="flex justify-between items-center">
@@ -224,12 +251,13 @@ export default function InventoryModule() {
                           </span>
                         </div>
                         <button 
-                          onClick={() => openPopup(item)} disabled={isOut}
+                          onClick={() => openPopup(item)} disabled={applyDisabled}
+                          title={!canApply ? 'Edit 권한 필요' : isOut ? '품절' : '신청하기'}
                           className={`w-full py-1.5 rounded-lg text-[10px] font-black tracking-wide uppercase transition-all shadow-sm ${
-                            isOut ? 'bg-slate-100 text-slate-400 cursor-not-allowed border border-slate-200' : 'bg-slate-900 text-white hover:bg-blue-600 active:scale-95'
+                            applyDisabled ? 'bg-slate-100 text-slate-400 cursor-not-allowed border border-slate-200' : 'bg-slate-900 text-white hover:bg-blue-600 active:scale-95'
                           }`}
                         >
-                          {isOut ? '불가' : '신청하기'}
+                          {isOut ? '불가' : !canApply ? '권한없음' : '신청하기'}
                         </button>
                       </div>
                     </div>
@@ -241,11 +269,13 @@ export default function InventoryModule() {
         </div>
       </div>
      
-      {selectedItem && (() => {
+      {selectedItem && canApply && (() => {
         let sUnit = '';
+        let publishNote = '';
         try {
           const ext = selectedItem.description ? JSON.parse(selectedItem.description) : {};
           sUnit = ext.s_unit || ext.r_unit || '';
+          publishNote = String(ext.publish_note || '').trim();
         } catch (e) {}
      
         return (
@@ -283,6 +313,12 @@ export default function InventoryModule() {
                     <span className="text-[12px] font-bold text-slate-400">물품명</span>
                     <span className="text-[13px] font-black text-slate-900 leading-tight">{selectedItem.name}</span>
                   </div>
+                  {publishNote ? (
+                    <div className="grid grid-cols-[90px_1fr] gap-2 py-2 border-b border-slate-100 items-start">
+                      <span className="text-[12px] font-bold text-slate-400">설명</span>
+                      <span className="text-[12px] font-bold text-slate-600 leading-snug">{publishNote}</span>
+                    </div>
+                  ) : null}
                   <div className="grid grid-cols-[90px_1fr] gap-2 py-2 border-b border-slate-100 items-center">
                     <span className="text-[12px] font-bold text-slate-400">현재고</span>
                     <span className="text-[13px] font-mono font-black text-indigo-600">{Number(selectedItem.current_stock).toLocaleString()} {sUnit && <span className="text-[11px] font-sans text-slate-400 ml-1">{sUnit}</span>}</span>
@@ -304,7 +340,6 @@ export default function InventoryModule() {
                             setReqForm({ ...reqForm, qty: '' });
                             return;
                           }
-                          // 소수·음수·문자 차단 → 양의 정수만
                           const digits = raw.replace(/[^\d]/g, '');
                           if (!digits) {
                             setReqForm({ ...reqForm, qty: '' });
@@ -320,7 +355,6 @@ export default function InventoryModule() {
                           }
                         }}
                         onKeyDown={(e) => {
-                          // 소수점·e·+/- 입력 차단
                           if (['.', ',', 'e', 'E', '+', '-'].includes(e.key)) e.preventDefault();
                         }}
                         className="w-full bg-transparent text-sm font-black text-indigo-600 outline-none"

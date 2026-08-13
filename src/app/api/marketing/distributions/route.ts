@@ -487,9 +487,14 @@ export async function DELETE(req: Request) {
       if (!dist) throw new Error('DIST_NOT_FOUND');
 
       const own = isOwnDistribution(dist, auth.user);
+      const isLv1 = auth.permission.myRole === 'LV_1';
       const canCancelOthers =
-        auth.permission.isMaster || auth.permission.myRole === 'LV_1';
-      if (own) {
+        auth.permission.isMaster || isLv1;
+
+      // 반려 이력 삭제: LV_1 전용 (재고는 반려 시 이미 복구됨)
+      if (dist.status === 'REJECTED') {
+        if (!isLv1) throw new Error('FORBIDDEN_REJECT_PURGE');
+      } else if (own) {
         // 본인 신청 철회: 메뉴 접근만으로 허용
       } else if (canCancelOthers) {
         assertCanEditOwnerDept(auth, dist.item?.owner_dept);
@@ -511,6 +516,12 @@ export async function DELETE(req: Request) {
   } catch (error: any) {
     if (error?.message === 'DIST_NOT_FOUND') {
       return NextResponse.json({ error: '이력을 찾을 수 없습니다.' }, { status: 404 });
+    }
+    if (error?.message === 'FORBIDDEN_REJECT_PURGE') {
+      return NextResponse.json(
+        { error: '반려 이력 삭제는 최고 관리자(LV_1)만 가능합니다.' },
+        { status: 403 }
+      );
     }
     if (error?.message === 'FORBIDDEN_CANCEL') {
       return NextResponse.json(

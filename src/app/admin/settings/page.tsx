@@ -157,7 +157,7 @@ export default function AdminSettingsPage() {
               <tr className="hover:bg-indigo-50/30 transition-colors h-16">
               <td className="px-8 flex flex-col justify-center">
     <span className="text-slate-800 font-black text-[13px]">전사(최상위 조직) 자산 총괄 부서 지정</span>
-    <span className="text-[10px] text-slate-500 font-bold mt-1">최상위 조직 자산의 입고·수정·폐기 등 (지정 부서 + 직속 하위 포함)</span>
+    <span className="text-[10px] text-slate-500 font-bold mt-1">최상위 조직 자산의 입고·수정·폐기·지급승인 등 (지정 부서 + 하위 Center 포함)</span>
   </td>
   <td className="px-5 text-slate-400 font-mono text-[10px]">/marketing/distribution/* · /equipment/*</td>
   <td className="px-5 text-center">

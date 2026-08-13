@@ -124,6 +124,28 @@ export const getKSTDaysUntil = (endDate: string) => {
 };
 
 /**
+ * YYYY-MM-DD(또는 앞 10자)에 개월을 더한 KST 달력일.
+ * `new Date('YYYY-MM-DD')` UTC 파싱 + setMonth 로컬 TZ 문제를 피합니다.
+ */
+export const addMonthsToKSTDateOnly = (
+  dateStr: string | null | undefined,
+  months: number
+): string => {
+  const m = String(dateStr || '').trim().match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return '';
+  const add = Number(months) || 0;
+  let year = Number(m[1]);
+  let monthIndex = Number(m[2]) - 1 + add; // 0–11 기준
+  const day = Number(m[3]);
+  year += Math.floor(monthIndex / 12);
+  monthIndex = ((monthIndex % 12) + 12) % 12;
+  // 말일 클램프 (1/31 + 1개월 → 2/28|29)
+  const lastDay = new Date(Date.UTC(year, monthIndex + 1, 0)).getUTCDate();
+  const safeDay = Math.min(day, lastDay);
+  return `${year}-${String(monthIndex + 1).padStart(2, '0')}-${String(safeDay).padStart(2, '0')}`;
+};
+
+/**
  * YYYY-MM-DD 달력 문자열을 KST 기준으로 `YYYY년 MM월 DD일 (요일)` 표기
  * (UTC midnight 파싱으로 하루 밀리는 문제 방지)
  */
@@ -136,3 +158,65 @@ export const formatKSTCalendarLabel = (dateStr: string, emptyFallback = '') => {
   const weekday = new Intl.DateTimeFormat('ko-KR', { timeZone: KST, weekday: 'long' }).format(dateObj);
   return `${m[1]}년 ${m[2]}월 ${m[3]}일 (${weekday})`;
 };
+
+/**
+ * Excel 시리얼(일 단위) → YYYY-MM-DD.
+ * UTC 자정 변환 후 로컬/KST로 다시 읽으면 경계에서 하루가 밀릴 수 있어,
+ * 1970-01-01(=25569) 기준 달력일을 UTC 정오 앵커로 고정한다.
+ */
+export function excelSerialToKSTDateString(serial: number): string {
+  if (!Number.isFinite(serial)) return '';
+  const days = Math.floor(serial + 1e-9);
+  const utcNoon = Date.UTC(1970, 0, 1, 12, 0, 0) + (days - 25569) * 86400000;
+  const d = new Date(utcNoon);
+  if (Number.isNaN(d.getTime())) return '';
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(d.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+/**
+ * 엑셀 셀(시리얼 / Date / 문자열) → KST 업무일 YYYY-MM-DD
+ */
+export function parseExcelCellToKSTDateString(val: unknown): string {
+  if (val === null || val === undefined || val === '') return '';
+  if (val instanceof Date && !Number.isNaN(val.getTime())) {
+    // SheetJS cellDates: Date 객체 — 달력일은 KST로 고정
+    return getKSTDateString(val);
+  }
+  if (typeof val === 'number') return excelSerialToKSTDateString(val);
+
+  let strVal = String(val).trim().replace(/[./]/g, '-');
+  if (/^\d{8}$/.test(strVal)) {
+    return `${strVal.slice(0, 4)}-${strVal.slice(4, 6)}-${strVal.slice(6, 8)}`;
+  }
+  const ymd = strVal.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (ymd) {
+    return `${ymd[1]}-${ymd[2].padStart(2, '0')}-${ymd[3].padStart(2, '0')}`;
+  }
+  // 이미 Date 파싱 가능한 문자열이면 KST 일자로
+  const parsed = new Date(strVal);
+  if (!Number.isNaN(parsed.getTime())) return getKSTDateString(parsed);
+  return strVal;
+}
+
+/**
+ * 정렬용 epoch(ms).
+ * - 순수 YYYY-MM-DD: KST 정오로 해석 (UTC midnight 하루 밀림 방지)
+ * - ISO datetime 등: 시각까지 유지 (같은 날 스레드 연계/랭크가 깨지지 않게)
+ */
+export function toSortableTime(input: Date | string | number | null | undefined): number {
+  if (input === null || input === undefined || input === '') return 0;
+  if (typeof input === 'number') return Number.isFinite(input) ? input : 0;
+  if (input instanceof Date) return Number.isNaN(input.getTime()) ? 0 : input.getTime();
+  const raw = String(input).trim();
+  // date-only only — `2026-08-13T12:00:00.000Z` 는 아래 Date 파싱으로 보낸다
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    const t = parseKSTDateOnly(raw).getTime();
+    return Number.isNaN(t) ? 0 : t;
+  }
+  const t = new Date(raw).getTime();
+  return Number.isNaN(t) ? 0 : t;
+}
+

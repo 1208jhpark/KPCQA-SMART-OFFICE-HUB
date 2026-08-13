@@ -110,18 +110,6 @@ export default function ServiceLayout({ children }: { children: React.ReactNode 
         if (!res.ok) return;
         const freshMenus = await res.json();
         
-        // 🚀 [보안 가드] URL 직접 진입 원천 차단
-        // master 하위 경로로 진입하려 할 때, 최고 관리자거나 경영기획 부서가 아니면 즉시 차단
-        if (pathname.includes('/master')) {
-          const deptName = user.unit?.unit_name || user.dept_name || '';
-          const isLV1 = user.roles?.includes('LV_1') || user.role === 'LV_1';
-          
-          if (!isLV1 && !deptName.includes('경영기획')) {
-            setAccessError('⛔ 접근이 거부되었습니다: 해당 마스터 페이지는 경영기획본부 전용입니다.');
-            return; // 에러 셋팅 후 아래 라우팅 로직 수행 안함 (강제 렌더링 중단)
-          }
-        }
-
         setMenus(freshMenus);
         setAccessError(null);
         setShowIndexGrid(false); 

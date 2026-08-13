@@ -152,6 +152,10 @@ export default function DeliveryDashboardContent() {
      
  // 💡 [수정] 전역 공통 KST 함수 적용 (오전 9시 이전 오차 완벽 방지)
  const todayStr = getKSTDateString();
+
+ /** DB status가 진행중이어도 KST 마감 시각이 지났으면 실질 종료 */
+ const isSurveyOpen = (s: any) =>
+   s?.status === '진행중' && !isPastKSTDeadline(s.endDate, s.endTime);
      
  // 🚀 수정된 visibleSurveys (관리자가 마감시킨 '완료' 건은 제외)
   const visibleSurveys = useMemo(() => {
@@ -165,13 +169,13 @@ export default function DeliveryDashboardContent() {
   const filteredSurveys = useMemo(() => {
     // 💡 [핵심] 오늘 마감 배너 클릭 시 필터링 연산 추가!
     if (filterClosingToday) {
-      return visibleSurveys.filter(s => s.status === '진행중' && s.endDate === todayStr);
+      return visibleSurveys.filter(s => isSurveyOpen(s) && s.endDate === todayStr);
     }
     if (filterNudged) {
-      return visibleSurveys.filter(s => s.status === '진행중' && !myResponses[s.id] && nudgedSurveys.includes(s.id));
+      return visibleSurveys.filter(s => isSurveyOpen(s) && !myResponses[s.id] && nudgedSurveys.includes(s.id));
     }
     if (filterPending) {
-      return visibleSurveys.filter(s => s.status === '진행중' && !myResponses[s.id]);
+      return visibleSurveys.filter(s => isSurveyOpen(s) && !myResponses[s.id]);
     }
     return visibleSurveys;
   }, [visibleSurveys, filterPending, filterNudged, filterClosingToday, myResponses, nudgedSurveys, todayStr]);
@@ -187,8 +191,9 @@ export default function DeliveryDashboardContent() {
      
   const stats = useMemo(() => {
     if (!currentUser) return { ongoingCount: 0, closingTodayCount: 0, myPendingCount: 0, nudgeCount: 0 };
-    const allOngoing = surveys.filter(s => s.status === '진행중');
-    const pendingSurveys = allOngoing.filter(s => {
+    // 기간종료(마감 시각 경과)는 진행 중·미참여·독촉 카운트에서 제외
+    const openVisible = visibleSurveys.filter((s) => isSurveyOpen(s));
+    const pendingSurveys = openVisible.filter(s => {
       const isTargeted = checkHierarchyTarget(s.target, currentUser?.unit?.unit_name);
       return isTargeted && !myResponses[s.id];
     });
@@ -196,8 +201,8 @@ export default function DeliveryDashboardContent() {
     const nudgedCount = pendingSurveys.filter(s => nudgedSurveys.includes(s.id)).length;
      
     return {
-      ongoingCount: visibleSurveys.filter(s => s.status === '진행중').length,
-      closingTodayCount: visibleSurveys.filter(s => s.endDate === todayStr).length,
+      ongoingCount: openVisible.length,
+      closingTodayCount: openVisible.filter(s => s.endDate === todayStr).length,
       myPendingCount: pendingSurveys.length,
       nudgeCount: nudgedCount
     };
@@ -626,8 +631,13 @@ const handleSaveDraft = () => {
                         📬 제출완료
                       </button>
                     ) : isTimeOver ? (
-                      <button disabled className="px-4 py-1.5 rounded-lg font-black text-[10px] bg-red-50 text-red-500 border border-red-200 cursor-not-allowed">
-                        ⏰ 기간종료
+                      <button
+                        disabled
+                        title="기간종료 · 미접수"
+                        className="px-3 py-1.5 rounded-lg font-black text-[10px] bg-slate-100 text-slate-500 border border-slate-200 cursor-not-allowed leading-tight"
+                      >
+                        <span className="block">📥 미접수</span>
+                        <span className="block text-[8px] font-bold text-slate-400 mt-0.5">기간종료</span>
                       </button>
                     ) : (
                       <button 

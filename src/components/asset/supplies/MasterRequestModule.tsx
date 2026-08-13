@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useMemo, Suspense } from 'react';
 import { usePathname } from 'next/navigation';
 import Link from 'next/link';
-import { getKSTDateString, getKSTNowYearMonth, getKSTYearMonth } from '@/utils/dateUtils';
+import { getKSTDateString, getKSTNowYearMonth, getKSTYearMonth, formatKSTDateTime } from '@/utils/dateUtils';
 import {
   isCompletedSupplyRequest,
   isPendingSupplyRequest,
@@ -11,7 +11,19 @@ import {
   supplyRequestStatusLabel,
 } from '@/utils/supplyRequestStatus';
 import LoadingState from '@/components/common/LoadingState';
+import { resolveInterfaceEditState } from '@/lib/permission-utils';
 import * as XLSX from 'xlsx';
+import {
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer,
+  Cell,
+  LabelList,
+} from 'recharts';
 
 const MENU_PATH = '/asset/supplies/master/requests';
 
@@ -41,12 +53,14 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
     editDesignate: string;
     editLevel: string;
   } | null>(null);
+  const [interfaceConfig, setInterfaceConfig] = useState<any>(null);
   
   // 하단 장부 상태 관리
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [searchItemQuery, setSearchItemQuery] = useState('');
+  const [selectedItem, setSelectedItem] = useState('ALL');
   const [searchUserQuery, setSearchUserQuery] = useState('');
-  const [selectedYear, setSelectedYear] = useState('ALL');
+  /** 진입 시점 KST 연도 (하드코딩 아님) */
+  const [selectedYear, setSelectedYear] = useState(() => String(getKSTNowYearMonth().year));
   const [selectedMonth, setSelectedMonth] = useState('ALL');
   const [selectedDept, setSelectedDept] = useState('ALL');
   const [selectedStatus, setSelectedStatus] = useState('ALL'); 
@@ -54,11 +68,6 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
   const itemsPerPage = 10;
   const [processOpinion, setProcessOpinion] = useState<{ [key: string]: string }>({});
   const [processingId, setProcessingId] = useState<string | null>(null);
-
-  // 🚀 상단 통계 전용 필터 상태
-  const [statYear, setStatYear] = useState('ALL');
-  const [statMonth, setStatMonth] = useState('ALL');
-  const [statDept, setStatDept] = useState('ALL');
      
   const tabItems = [
     { id: 'dashboard', name: '🗂️ 소모품 마스터 대시보드', path: '/asset/supplies/master/dashboard' },
@@ -75,12 +84,13 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
     setLoading(true);
     try { 
       const ts = Date.now();
-      const [reqRes, userRes, summaryRes] = await Promise.all([
+      const [reqRes, userRes, summaryRes, ifRes] = await Promise.all([
         fetch(`/api/asset/supplies/master/requests?t=${ts}`, { cache: 'no-store' }),
         !propUser ? fetch(`/api/auth/me?t=${ts}`, { cache: 'no-store' }) : Promise.resolve(null),
         fetch(`/api/admin/interface/summary?path=${encodeURIComponent(MENU_PATH)}&t=${ts}`, {
           cache: 'no-store',
         }).catch(() => null),
+        fetch(`/api/admin/interface?t=${ts}`, { cache: 'no-store' }).catch(() => null),
       ]);
       
       if (reqRes.ok) {
@@ -92,6 +102,16 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
       if (!propUser && userRes?.ok) setCurrentUser(await userRes.json());
       if (summaryRes && summaryRes.ok) setPermissionSummary(await summaryRes.json());
       else setPermissionSummary(null);
+
+      if (ifRes && ifRes.ok) {
+        const interfaces = await ifRes.json();
+        const menu = Array.isArray(interfaces)
+          ? interfaces.find((m: any) => m.path === MENU_PATH || m.path?.includes('/supplies/master/requests'))
+          : null;
+        setInterfaceConfig(menu || null);
+      } else {
+        setInterfaceConfig(null);
+      }
     } catch(e) {
       console.error("Requests Sync Error", e);
       alert('서버와 통신할 수 없습니다.');
@@ -105,6 +125,13 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
     const roles = Array.isArray(currentUser.roles) ? currentUser.roles : [currentUser.role];
     return roles?.includes('LV_1');
   }, [currentUser]);
+
+  const canEdit = useMemo(
+    () => resolveInterfaceEditState(currentUser, interfaceConfig).isEditor,
+    [currentUser, interfaceConfig]
+  );
+
+  const alertNoEditPermission = () => alert('편집 권한이 없습니다.');
      
   // 장부 필터용 옵션 (Asia/Seoul)
   const availableYears = useMemo(() => {
@@ -119,94 +146,77 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
   const availableMonths = ['01','02','03','04','05','06','07','08','09','10','11','12'];
   const availableDepts = useMemo(() => {
     const depts = requests.map(r => r.dept_name).filter(Boolean);
-    return Array.from(new Set(depts)).sort();
+    return Array.from(new Set(depts)).sort((a, b) => a.localeCompare(b, 'ko'));
   }, [requests]);
 
-  // 부서별 소모품 지급 통계 — 지급완료 신청 내역의 물품명 기준 (dashboard items 비의존)
-  const processedStatsTable = useMemo(() => {
-    const baseApprovedRequests = requests.filter(r => {
-      if (!isCompletedSupplyRequest(r.status)) return false;
-      const ym = getKSTYearMonthParts(r.createdAt);
-      if (!ym) return false;
-      if (statYear !== 'ALL' && ym.year !== statYear) return false;
-      if (statMonth !== 'ALL' && ym.month !== statMonth) return false;
-      return true;
+  const availableItems = useMemo(() => {
+    const names = requests
+      .map((r) => r.item_name || r.item?.name || '')
+      .filter(Boolean) as string[];
+    return Array.from(new Set(names)).sort((a, b) => a.localeCompare(b, 'ko'));
+  }, [requests]);
+
+  /** 장부·차트 공통 필터 (조직 제외) — 차트는 항상 센터별로 펼침 */
+  const matchesSharedFilters = (r: any) => {
+    const ym = getKSTYearMonthParts(r.createdAt);
+    const yearMatch = selectedYear === 'ALL' || ym?.year === selectedYear;
+    const monthMatch = selectedMonth === 'ALL' || ym?.month === selectedMonth;
+    const isPending = isPendingSupplyRequest(r.status);
+    const isCompleted = isCompletedSupplyRequest(r.status);
+    const isRejected = isRejectedSupplyRequest(r.status);
+    const statusMatch =
+      selectedStatus === 'ALL' ||
+      (selectedStatus === 'PENDING' && isPending) ||
+      (selectedStatus === 'COMPLETED' && isCompleted) ||
+      (selectedStatus === 'REJECTED' && isRejected);
+    const itemName = r.item_name || r.item?.name || '';
+    const itemMatch = selectedItem === 'ALL' || itemName === selectedItem;
+    const userMatch =
+      !searchUserQuery ||
+      (r.user_name || '').toLowerCase().includes(searchUserQuery.toLowerCase());
+    return yearMatch && monthMatch && statusMatch && itemMatch && userMatch;
+  };
+
+  const filteredRequests = useMemo(() => {
+    return requests
+      .filter((r) => {
+        const deptMatch = selectedDept === 'ALL' || r.dept_name === selectedDept;
+        return matchesSharedFilters(r) && deptMatch;
+      })
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  }, [requests, selectedYear, selectedMonth, selectedDept, selectedStatus, selectedItem, searchUserQuery]);
+
+  /** 하단 필터(조직 제외) 기준 · 모든 센터별 수량 집계 */
+  const deptChartData = useMemo(() => {
+    const byDept = new Map<string, number>();
+    requests.forEach((r) => {
+      if (!matchesSharedFilters(r)) return;
+      const dept = r.dept_name || '미지정';
+      byDept.set(dept, (byDept.get(dept) || 0) + (Number(r.qty) || 0));
     });
-
-    const byItem = new Map<string, {
-      id: string;
-      name: string;
-      rUnit: string;
-      totalAccumQty: number;
-      deptQty: number;
-    }>();
-
-    baseApprovedRequests.forEach((r) => {
-      const name = r.item_name || r.item?.name || '(삭제된 물품)';
-      const key = r.item_id || `name:${name}`;
-      let ext: any = {};
-      try {
-        ext = r.item?.description ? JSON.parse(r.item.description) : {};
-      } catch {
-        ext = {};
-      }
-      const rUnit = r.unit || ext.s_unit || ext.r_unit || 'EA';
-      const qty = Number(r.qty) || 0;
-      const deptMatch = statDept === 'ALL' || r.dept_name === statDept;
-
-      const row = byItem.get(key) || {
-        id: key,
-        name,
-        rUnit,
-        totalAccumQty: 0,
-        deptQty: 0,
-      };
-      row.totalAccumQty += qty;
-      if (deptMatch) row.deptQty += qty;
-      byItem.set(key, row);
-    });
-
-    return Array.from(byItem.values())
-      .filter((row) => row.totalAccumQty > 0)
-      .sort((a, b) => a.name.localeCompare(b.name, 'ko'))
+    const rows = Array.from(byDept.entries()).map(([dept, qty]) => ({ dept, qty }));
+    const total = rows.reduce((sum, row) => sum + row.qty, 0);
+    return rows
       .map((row) => ({
         ...row,
-        ratio: row.totalAccumQty > 0
-          ? ((row.deptQty / row.totalAccumQty) * 100).toFixed(1)
-          : '0.0',
-      }));
-  }, [requests, statYear, statMonth, statDept]);
-     
-  const filteredRequests = useMemo(() => {
-    return requests.filter(r => {
-      const ym = getKSTYearMonthParts(r.createdAt);
-      const yearMatch = selectedYear === 'ALL' || ym?.year === selectedYear;
-      const monthMatch = selectedMonth === 'ALL' || ym?.month === selectedMonth;
-      const deptMatch = selectedDept === 'ALL' || r.dept_name === selectedDept;
-      
-      const isPending = isPendingSupplyRequest(r.status);
-      const isCompleted = isCompletedSupplyRequest(r.status);
-      const isRejected = isRejectedSupplyRequest(r.status);
-      
-      const statusMatch = selectedStatus === 'ALL' || 
-                         (selectedStatus === 'PENDING' && isPending) ||
-                         (selectedStatus === 'COMPLETED' && isCompleted) ||
-                         (selectedStatus === 'REJECTED' && isRejected);
-     
-      const itemName = r.item_name || r.item?.name || '';
-      const itemMatch = !searchItemQuery ||
-        itemName.toLowerCase().includes(searchItemQuery.toLowerCase());
-      const userMatch = !searchUserQuery ||
-        (r.user_name || '').toLowerCase().includes(searchUserQuery.toLowerCase());
-      
-      return yearMatch && monthMatch && deptMatch && statusMatch && itemMatch && userMatch;
-    }).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-  }, [requests, selectedYear, selectedMonth, selectedDept, selectedStatus, searchItemQuery, searchUserQuery]);
+        percent: total > 0 ? (row.qty / total) * 100 : 0,
+        label: `${row.qty.toLocaleString()} · ${total > 0 ? ((row.qty / total) * 100).toFixed(1) : '0.0'}%`,
+        isSelected: selectedDept !== 'ALL' && selectedDept === row.dept,
+      }))
+      .sort((a, b) => b.qty - a.qty || a.dept.localeCompare(b.dept, 'ko'));
+  }, [requests, selectedYear, selectedMonth, selectedStatus, selectedItem, searchUserQuery, selectedDept]);
+
+  const chartTotalQty = useMemo(
+    () => deptChartData.reduce((sum, row) => sum + row.qty, 0),
+    [deptChartData]
+  );
+
+  const chartHeight = Math.max(140, deptChartData.length * 22 + 28);
      
   const totalPages = Math.max(1, Math.ceil(filteredRequests.length / itemsPerPage));
   const paginatedRequests = filteredRequests.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
   
-  useEffect(() => { setCurrentPage(1); }, [selectedYear, selectedMonth, selectedDept, selectedStatus, searchItemQuery, searchUserQuery]);
+  useEffect(() => { setCurrentPage(1); }, [selectedYear, selectedMonth, selectedDept, selectedStatus, selectedItem, searchUserQuery]);
      
   const toggleSelectAll = () => {
     const currentPageIds = paginatedRequests.map(r => r.id);
@@ -214,15 +224,6 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
     const next = new Set(selectedIds);
     if (allSelected) currentPageIds.forEach(id => next.delete(id)); else currentPageIds.forEach(id => next.add(id));
     setSelectedIds(next);
-  };
-
-  const formatDateTime = (dateStr: string) => {
-    if (!dateStr) return '';
-    const d = new Date(dateStr);
-    return isNaN(d.getTime()) ? '' : d.toLocaleString('ko-KR', {
-      year: '2-digit', month: '2-digit', day: '2-digit',
-      hour: '2-digit', minute: '2-digit', hour12: false,
-    });
   };
 
   const handleExportExcel = () => {
@@ -241,7 +242,7 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
       const itemName = r.item_name || r.item?.name || '';
       return {
         NO: target.length - idx,
-        신청일시: formatDateTime(r.createdAt),
+        신청일시: formatKSTDateTime(r.createdAt),
         소속조직: r.dept_name || '',
         신청자: r.user_name || '',
         물품명: itemName,
@@ -249,7 +250,7 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
         '사용자 의견': r.note || '',
         '관리자 답변': r.admin_opinion || '',
         처리자: r.admin_name || '',
-        처리일시: r.processedAt ? formatDateTime(r.processedAt) : '',
+        처리일시: r.processedAt ? formatKSTDateTime(r.processedAt) : '',
         상태: supplyRequestStatusLabel(r.status),
       };
     });
@@ -269,6 +270,7 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
      
   // 상태 변경 — 재고 복구/재차감은 서버가 이전 status 기준으로 처리
   const handleProcessRequest = async (req: any, status: 'COMPLETED' | 'REJECTED') => {
+    if (!canEdit) return alertNoEditPermission();
     const reqId = req.id;
     if (processingId) return;
     const opinion = processOpinion[reqId] || '';
@@ -295,6 +297,7 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
   };
      
   const handleCancelDispense = async (req: any) => {
+    if (!canEdit) return alertNoEditPermission();
     if (processingId) return;
     if (!confirm(`[경고] 지급철회 하시겠습니까?\n상태가 다시 '대기'로 변경됩니다.\n(선차감 재고는 대기 중에도 유지됩니다.)`)) return;
     
@@ -320,6 +323,7 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
   };
      
   const handleDeleteRequest = async (req: any) => {
+    if (!canEdit) return alertNoEditPermission();
     if (processingId) return;
 
     const status = normalizeSupplyRequestStatus(req.status);
@@ -350,13 +354,15 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
      
   if (loading) return <LoadingState />;
 
-  // 장부 칩 집계: 조직·연도·월 필터 반영 (상태 칩/검색은 제외)
+  // 장부 칩 집계: 조직·연도·월·물품 필터 반영 (상태 칩·신청자 검색 제외)
   const scopedForStatusChips = requests.filter((r) => {
     const ym = getKSTYearMonthParts(r.createdAt);
     const yearMatch = selectedYear === 'ALL' || ym?.year === selectedYear;
     const monthMatch = selectedMonth === 'ALL' || ym?.month === selectedMonth;
     const deptMatch = selectedDept === 'ALL' || r.dept_name === selectedDept;
-    return yearMatch && monthMatch && deptMatch;
+    const itemName = r.item_name || r.item?.name || '';
+    const itemMatch = selectedItem === 'ALL' || itemName === selectedItem;
+    return yearMatch && monthMatch && deptMatch && itemMatch;
   });
   const countAll = scopedForStatusChips.length;
   const countPending = scopedForStatusChips.filter((r) => isPendingSupplyRequest(r.status)).length;
@@ -364,8 +370,6 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
   const countRejected = scopedForStatusChips.filter((r) => isRejectedSupplyRequest(r.status)).length;
   // 탭 배지: 전사 대기건 (필터 무관)
   const tabPendingCount = requests.filter((r) => isPendingSupplyRequest(r.status)).length;
-  
-  const formatNum = (num: any) => Number(num || 0).toLocaleString();
      
   return (
     <div className="w-full max-w-[1700px] mx-auto space-y-6 p-8 font-sans text-slate-900 pb-24 animate-fade-in">
@@ -404,6 +408,11 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
           <span className="opacity-50">|</span>
           <span>Level: {permissionSummary.editLevel}</span>
         </div>
+        {!canEdit && (
+          <span className="text-[10px] font-black text-amber-200 bg-amber-500/20 border border-amber-300/30 px-2.5 py-1 rounded-md">
+            편집 권한 없음 — 조회만 가능
+          </span>
+        )}
       </div>
     )}
   </div>
@@ -444,68 +453,139 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
         </p>
       </div>
      
-      {/* 🚀 [신규 기능 탑재] 부서별 소모품 지급 통계 보드 */}
+      {/* 하단 장부 필터와 동일 기준 · 센터별 수량 집계 차트 (조직 필터는 장부만) */}
       <div className="bg-white border border-slate-200 rounded-[2.5rem] shadow-sm overflow-hidden mt-6">
-        <div className="p-5 bg-slate-100/80 border-b border-slate-200 flex flex-col md:flex-row md:items-center justify-between gap-4">
-          <div className="flex items-center gap-2">
-            <div className="w-2.5 h-2.5 rounded-full bg-emerald-500"></div>
-            <h2 className="text-[13px] font-black text-slate-800 tracking-tight">📊 부서별 소모품 지급 통계 <span className="text-xs font-normal text-slate-500 ml-1">(지급완료 신청 내역 기준 · 수량/점유율)</span></h2>
+        <div className="px-4 py-2.5 bg-slate-100/80 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <div className="w-2 h-2 rounded-full bg-emerald-500 shrink-0"></div>
+            <div className="min-w-0">
+              <h2 className="text-[12px] font-black text-slate-800 tracking-tight">
+                📊 센터별 신청 수량
+                <span className="ml-2 text-[9px] font-bold text-slate-500">
+                  하단 필터 기준 · 막대 클릭 시 조직 필터
+                </span>
+              </h2>
+            </div>
           </div>
-          
-          <div className="flex flex-wrap items-center gap-2">
-            <select value={statYear} onChange={(e) => setStatYear(e.target.value)} className="p-2 bg-white border border-slate-300 rounded-xl text-[11px] font-black text-slate-700 outline-none">
-              <option value="ALL">전체 연도</option>
-              {availableYears.map(y => <option key={y} value={y}>{y}년</option>)}
-            </select>
-            <select value={statMonth} onChange={(e) => setStatMonth(e.target.value)} className="p-2 bg-white border border-slate-300 rounded-xl text-[11px] font-black text-slate-700 outline-none">
-              <option value="ALL">전체 월</option>
-              {availableMonths.map(m => <option key={m} value={m}>{m}월</option>)}
-            </select>
-            <select value={statDept} onChange={(e) => setStatDept(e.target.value)} className="p-2 bg-white border border-slate-300 rounded-xl text-[11px] font-black text-indigo-700 font-bold outline-none ring-2 ring-indigo-100">
-              <option value="ALL">🏢 전체 부서 요약</option>
-              {/* 🚀 물품 단위(deptOptions) 대신, 실제 부서 데이터(availableDepts)로 교체 */}
-              {availableDepts.map(d => <option key={d} value={d}>{d}</option>)}
-            </select>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <span className="text-[10px] font-bold bg-slate-300/80 text-slate-700 px-1.5 py-0.5 rounded-md">
+              {deptChartData.length}개 조직
+            </span>
+            <span className="text-[10px] font-black text-indigo-600 bg-indigo-50 border border-indigo-100 px-1.5 py-0.5 rounded-md">
+              합계 {chartTotalQty.toLocaleString()}
+            </span>
+            {selectedDept !== 'ALL' && (
+              <button
+                type="button"
+                onClick={() => setSelectedDept('ALL')}
+                className="text-[9px] font-black text-slate-500 hover:text-indigo-600 underline"
+              >
+                조직 필터 해제
+              </button>
+            )}
           </div>
         </div>
-
-        <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse">
-            <thead className="bg-slate-100 text-slate-700 text-[10px] font-black uppercase tracking-widest border-b border-slate-200">
-              <tr className="text-center">
-                <th className="h-12 px-2 w-16">NO</th>
-                <th className="h-12 px-2 text-left w-[350px] text-indigo-600">품목명</th>
-                <th className="h-12 px-2 w-24">신청단위</th>
-                <th className="h-12 px-2 w-36 bg-slate-100">총 누적 지급량(전사)</th>
-                <th className="h-12 px-2 bg-indigo-50 text-indigo-800 border-l border-indigo-100">
-                  {statDept === 'ALL' ? '전체부서' : `[${statDept}]`} 통계 수량
-                </th>
-                <th className="h-12 px-2 bg-indigo-900 text-white border-l border-indigo-800">
-                  {statDept === 'ALL' ? '전사 통합' : `[${statDept}]`} 점유율 (%)
-                </th>
-              </tr>
-            </thead>
-            <tbody className="bg-white divide-y divide-slate-100 text-[11px] font-bold text-slate-700">
-              {processedStatsTable.length === 0 ? (
-                <tr><td colSpan={6} className="p-16 text-center text-slate-400 text-xs">데이터가 존재하지 않습니다.</td></tr>
-              ) : (
-                processedStatsTable.map((row, idx) => (
-                  <tr key={row.id} className="hover:bg-slate-50/50 transition-colors text-center h-12">
-                    <td className="px-2 font-mono text-slate-500 tabular-nums">{idx + 1}</td>
-                    <td className="px-2 text-left text-indigo-700 truncate" title={row.name}>{row.name}</td>
-                    <td className="px-2 text-slate-500">{row.rUnit}</td>
-                    <td className="px-2 bg-slate-50 font-mono tabular-nums text-slate-800">{formatNum(row.totalAccumQty)}</td>
-                    <td className="px-2 bg-indigo-50/30 text-indigo-600 font-mono tabular-nums border-l border-indigo-100">{formatNum(row.deptQty)}</td>
-                    <td className="px-2 bg-slate-900/5 font-mono tabular-nums border-l border-indigo-100">
-                      <span className={Number(row.ratio) > 50 ? 'text-red-500' : 'text-slate-700'}>
-                        {row.ratio}%
-                      </span>
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
+        <div className="px-3 py-2">
+          {deptChartData.length === 0 ? (
+            <div className="h-[100px] flex items-center justify-center rounded-xl border border-dashed border-slate-200 bg-slate-50/60">
+              <p className="text-[10px] font-bold text-slate-400">조건에 맞는 집계 데이터가 없습니다.</p>
+            </div>
+          ) : (
+            <div style={{ height: chartHeight }} className="w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart
+                  layout="vertical"
+                  data={deptChartData}
+                  margin={{ top: 2, right: 72, left: 0, bottom: 0 }}
+                  barCategoryGap="32%"
+                >
+                  <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#e2e8f0" />
+                  <XAxis
+                    type="number"
+                    allowDecimals={false}
+                    tick={{ fontSize: 9, fontWeight: 700, fill: '#94a3b8' }}
+                    tickLine={false}
+                    axisLine={{ stroke: '#e2e8f0' }}
+                    height={22}
+                  />
+                  <YAxis
+                    type="category"
+                    dataKey="dept"
+                    width={148}
+                    tick={{ fontSize: 9, fontWeight: 700, fill: '#334155' }}
+                    tickLine={false}
+                    axisLine={false}
+                    interval={0}
+                  />
+                  <Tooltip
+                    cursor={{ fill: 'rgba(99, 102, 241, 0.06)' }}
+                    content={({ active, payload }) => {
+                      if (!active || !payload?.length) return null;
+                      const row = payload[0].payload as {
+                        dept: string;
+                        qty: number;
+                        percent: number;
+                      };
+                      return (
+                        <div className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 shadow-md">
+                          <p className="text-[10px] font-black text-slate-800">{row.dept}</p>
+                          <p className="text-[10px] font-bold text-indigo-600 mt-0.5">
+                            {row.qty.toLocaleString()} · {row.percent.toFixed(1)}%
+                          </p>
+                          <p className="text-[9px] font-bold text-slate-400 mt-0.5">클릭하면 장부 조직 필터</p>
+                        </div>
+                      );
+                    }}
+                  />
+                  <Bar
+                    dataKey="qty"
+                    radius={[0, 3, 3, 0]}
+                    maxBarSize={12}
+                    cursor="pointer"
+                    onClick={(data: any) => {
+                      const dept = data?.dept || data?.payload?.dept;
+                      if (!dept) return;
+                      setSelectedDept((prev) => (prev === dept ? 'ALL' : dept));
+                    }}
+                  >
+                    {deptChartData.map((row) => (
+                      <Cell
+                        key={row.dept}
+                        fill={row.isSelected ? '#4f46e5' : '#818cf8'}
+                      />
+                    ))}
+                    <LabelList
+                      dataKey="label"
+                      position="right"
+                      content={(props: any) => {
+                        const { x, y, width, height, value } = props;
+                        if (x == null || y == null || value == null) return null;
+                        const text = String(value);
+                        const sep = ' · ';
+                        const sepIdx = text.lastIndexOf(sep);
+                        const left = sepIdx >= 0 ? text.slice(0, sepIdx + sep.length) : text;
+                        const right = sepIdx >= 0 ? text.slice(sepIdx + sep.length) : '';
+                        const tx = Number(x) + Number(width || 0) + 6;
+                        const ty = Number(y) + Number(height || 0) / 2;
+                        return (
+                          <text
+                            x={tx}
+                            y={ty}
+                            dominantBaseline="central"
+                            fontSize={9}
+                            fontWeight={800}
+                          >
+                            <tspan fill="#334155">{left}</tspan>
+                            {right ? <tspan fill="#4f46e5">{right}</tspan> : null}
+                          </text>
+                        );
+                      }}
+                    />
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          )}
         </div>
       </div>
      
@@ -612,15 +692,18 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
               </div>
 
               <div className="flex items-center gap-2">
-                <div className="relative w-40">
-                  <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-[10px]">📦</span>
-                  <input
-                    type="text"
-                    placeholder="물품명 검색..."
-                    value={searchItemQuery}
-                    onChange={(e) => setSearchItemQuery(e.target.value)}
-                    className="w-full pl-7 pr-3 py-1.5 bg-white border border-slate-200 rounded-lg text-[11px] font-bold outline-none focus:border-indigo-500 shadow-sm transition-colors"
-                  />
+                <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm">
+                  <span className="text-[10px] font-black text-slate-400 uppercase">물품</span>
+                  <select
+                    value={selectedItem}
+                    onChange={(e) => setSelectedItem(e.target.value)}
+                    className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent max-w-[160px]"
+                  >
+                    <option value="ALL">전체 물품</option>
+                    {availableItems.map((name) => (
+                      <option key={name} value={name}>{name}</option>
+                    ))}
+                  </select>
                 </div>
                 <div className="relative w-32">
                   <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-[10px]">👤</span>
@@ -656,26 +739,26 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
               <col className="w-[180px]" />
               <col className="w-[100px]" />
               <col className="w-[180px]" />
-              <col className="w-[64px]" />
               <col className="w-[180px]" />
               <col className="w-[110px]" />
               <col className="w-[90px]" />
+              <col className="w-[64px]" />
               <col className="w-[128px]" />
             </colgroup>
               <thead className="bg-slate-100 text-slate-700 text-[10px] font-black uppercase tracking-widest border-b border-slate-200">
                 <tr>
                   <th className="h-12 pl-4 text-center"><input type="checkbox" checked={paginatedRequests.length > 0 && paginatedRequests.every(r => selectedIds.has(r.id))} onChange={toggleSelectAll} className="w-3 h-3 accent-indigo-600 cursor-pointer" /></th>
                   <th className="h-12 px-2 text-center">NO</th>
-                  <th className="h-12 px-2 text-center whitespace-nowrap border-l-4 border-white">신청일시</th>
+                  <th className="h-12 px-2 text-center whitespace-nowrap">신청 일자</th>
                   <th className="h-12 px-2">부서 / 신청자</th>
                   <th className="h-12 px-2 text-indigo-600">물품명</th>
                   <th className="h-12 px-2 text-center text-indigo-600 whitespace-nowrap">신청수량</th>
-                  <th className="h-12 px-2 border-l-4 border-white">사용자 의견</th>
-                  <th className="h-12 px-2 text-center border-l border-slate-300">상태</th>
-                  <th className="h-12 px-2 border-l-4 border-white">관리자 답변</th>
-                  <th className="h-12 px-2 text-center border-l-4 border-white whitespace-nowrap">부서 / 처리자</th>
-                  <th className="h-12 px-2 text-center whitespace-nowrap">처리날짜</th>
-                  <th className="h-12 px-2 text-center border-l-4 border-white whitespace-nowrap">관리 액션</th>
+                  <th className="h-12 px-2">사용자 의견</th>
+                  <th className="h-12 px-2 border-l border-slate-200">관리자 답변</th>
+                  <th className="h-12 px-2 text-center whitespace-nowrap">부서 / 처리자</th>
+                  <th className="h-12 px-2 text-center whitespace-nowrap">처리 일자</th>
+                  <th className="h-12 px-2 text-center">상태</th>
+                  <th className="h-12 px-2 text-center whitespace-nowrap border-l border-slate-200">관리 액션</th>
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-slate-100 text-[11px] font-bold text-slate-700">
@@ -697,7 +780,7 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
                     <tr key={req.id} className={`hover:bg-slate-50/50 h-12 transition-colors ${selectedIds.has(req.id) ? 'bg-indigo-50/50' : ''}`}>
                       <td className="pl-4 text-center"><input type="checkbox" checked={selectedIds.has(req.id)} onChange={() => { const next = new Set(selectedIds); selectedIds.has(req.id) ? next.delete(req.id) : next.add(req.id); setSelectedIds(next); }} className="w-3 h-3 accent-indigo-600 cursor-pointer" /></td>
                       <td className="px-2 text-center font-mono text-slate-500 tabular-nums">{rowNo}</td>
-                      <td className="px-2 text-center whitespace-nowrap tabular-nums text-slate-800 border-l-4 border-white">{createdDate}</td>
+                      <td className="px-2 text-center whitespace-nowrap tabular-nums text-slate-800">{createdDate}</td>
                       <td className="px-2 truncate">
                         <span className="text-[10px] text-slate-500 block truncate">{req.dept_name || '-'}</span>
                         <span className="text-slate-800 truncate">{req.user_name || '-'}</span>
@@ -707,18 +790,8 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
                         {req.qty}
                         <span className="text-[10px] font-sans ml-0.5 text-slate-500">{sUnit}</span>
                       </td>
-                      <td className="px-2 text-slate-700 truncate border-l-4 border-white" title={req.note}>{req.note ? `"${req.note}"` : '-'}</td>
-                      <td className="px-2 text-center border-l border-slate-300">
-                        <span className={`inline-block border px-1.5 py-0.5 rounded text-[10px] font-bold whitespace-nowrap ${
-                          isPending ? 'bg-orange-50 text-orange-600 border-orange-200' :
-                          isRejected ? 'bg-red-50 text-red-600 border-red-200' :
-                          'bg-emerald-50 text-emerald-600 border-emerald-200'
-                        }`}>
-                          {statusLabel === '대기중' ? '대기' : statusLabel}
-                        </span>
-                      </td>
-                      
-                      <td className="px-2 border-l-4 border-white">
+                      <td className="px-2 text-slate-700 truncate" title={req.note}>{req.note ? `"${req.note}"` : '-'}</td>
+                      <td className="px-2 border-l border-slate-200">
                         {isPending ? (
                           <input 
                             placeholder="답변..." 
@@ -733,7 +806,7 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
                         )}
                       </td>
      
-                      <td className="px-2 text-center border-l-4 border-white">
+                      <td className="px-2 text-center">
                         {!isPending ? (
                           <div className="truncate">
                             <span className="text-[10px] text-slate-500 block truncate">{req.admin_dept || '-'}</span>
@@ -747,25 +820,108 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
                       <td className="px-2 text-center whitespace-nowrap tabular-nums text-slate-800">
                         {!isPending ? processDate : <span className="text-slate-300">-</span>}
                       </td>
+
+                      <td className="px-2 text-center">
+                        <span className={`inline-block border px-1.5 py-0.5 rounded text-[10px] font-bold whitespace-nowrap ${
+                          isPending ? 'bg-orange-50 text-orange-600 border-orange-200' :
+                          isRejected ? 'bg-red-50 text-red-600 border-red-200' :
+                          'bg-emerald-50 text-emerald-600 border-emerald-200'
+                        }`}>
+                          {statusLabel === '대기중' ? '대기' : statusLabel}
+                        </span>
+                      </td>
      
-                      <td className="px-2 text-center border-l-4 border-white">
+                      <td className="px-2 text-center border-l border-slate-200">
                         {isPending ? (
                           <div className="flex items-center justify-center gap-0.5 w-full flex-wrap">
-                            <button onClick={()=>handleProcessRequest(req, 'REJECTED')} className="px-1.5 py-1.5 bg-red-50 text-red-500 border border-red-100 rounded-md text-[10px] font-black hover:bg-red-500 hover:text-white transition-colors shadow-sm whitespace-nowrap">반려</button>
-                            <button onClick={()=>handleProcessRequest(req, 'COMPLETED')} className="px-1.5 py-1.5 bg-indigo-600 text-white border border-indigo-700 rounded-md text-[10px] font-black shadow-sm hover:bg-indigo-700 whitespace-nowrap">지급</button>
-                            <button onClick={()=>handleDeleteRequest(req)} title="대기 건 영구 삭제 (재고 복구)" className="px-1.5 py-1.5 bg-slate-100 text-slate-500 border border-slate-200 rounded-md text-[10px] font-black hover:text-red-500 hover:bg-red-50 whitespace-nowrap">삭제</button>
+                            <button
+                              type="button"
+                              onClick={() => handleProcessRequest(req, 'REJECTED')}
+                              title={canEdit ? '반려' : '편집 권한 필요'}
+                              className={
+                                canEdit
+                                  ? 'px-1.5 py-1.5 bg-red-50 text-red-500 border border-red-100 rounded-md text-[10px] font-black hover:bg-red-500 hover:text-white transition-colors shadow-sm whitespace-nowrap'
+                                  : 'px-1.5 py-1.5 bg-slate-100 text-slate-400 border border-slate-200 rounded-md text-[10px] font-black cursor-not-allowed whitespace-nowrap opacity-70'
+                              }
+                            >
+                              반려
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleProcessRequest(req, 'COMPLETED')}
+                              title={canEdit ? '지급' : '편집 권한 필요'}
+                              className={
+                                canEdit
+                                  ? 'px-1.5 py-1.5 bg-indigo-600 text-white border border-indigo-700 rounded-md text-[10px] font-black shadow-sm hover:bg-indigo-700 whitespace-nowrap'
+                                  : 'px-1.5 py-1.5 bg-slate-100 text-slate-400 border border-slate-200 rounded-md text-[10px] font-black cursor-not-allowed whitespace-nowrap opacity-70'
+                              }
+                            >
+                              지급
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteRequest(req)}
+                              title={canEdit ? '대기 건 영구 삭제 (재고 복구)' : '편집 권한 필요'}
+                              className={
+                                canEdit
+                                  ? 'px-1.5 py-1.5 bg-slate-100 text-slate-500 border border-slate-200 rounded-md text-[10px] font-black hover:text-red-500 hover:bg-red-50 whitespace-nowrap'
+                                  : 'px-1.5 py-1.5 bg-slate-100 text-slate-400 border border-slate-200 rounded-md text-[10px] font-black cursor-not-allowed whitespace-nowrap opacity-70'
+                              }
+                            >
+                              삭제
+                            </button>
                           </div>
                         ) : (
                           <div className="flex items-center justify-center gap-0.5 w-full flex-wrap">
                             {isCompleted && (
-                              <button onClick={()=>handleCancelDispense(req)} title="지급철회(대기 상태로 원복 · 선차감 재고 유지)" className="px-1.5 py-1.5 bg-orange-50 text-orange-600 border border-orange-200 rounded-md text-[10px] font-black hover:bg-orange-100 shadow-sm whitespace-nowrap">철회</button>
+                              <button
+                                type="button"
+                                onClick={() => handleCancelDispense(req)}
+                                title={canEdit ? '지급철회(대기 상태로 원복 · 선차감 재고 유지)' : '편집 권한 필요'}
+                                className={
+                                  canEdit
+                                    ? 'px-1.5 py-1.5 bg-orange-50 text-orange-600 border border-orange-200 rounded-md text-[10px] font-black hover:bg-orange-100 shadow-sm whitespace-nowrap'
+                                    : 'px-1.5 py-1.5 bg-slate-100 text-slate-400 border border-slate-200 rounded-md text-[10px] font-black cursor-not-allowed whitespace-nowrap opacity-70'
+                                }
+                              >
+                                철회
+                              </button>
                             )}
                             {isCompleted ? (
-                              isLV1 ? (
-                                <button onClick={()=>handleDeleteRequest(req)} title="지급완료 건 영구 삭제 — LV_1 전용" className="px-1.5 py-1.5 bg-slate-100 text-slate-500 border border-slate-200 rounded-md text-[10px] font-black hover:text-red-500 hover:bg-red-50 whitespace-nowrap">삭제</button>
-                              ) : null
+                              canEdit ? (
+                                isLV1 ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleDeleteRequest(req)}
+                                    title="지급완료 건 영구 삭제 — LV_1 전용"
+                                    className="px-1.5 py-1.5 bg-slate-100 text-slate-500 border border-slate-200 rounded-md text-[10px] font-black hover:text-red-500 hover:bg-red-50 whitespace-nowrap"
+                                  >
+                                    삭제(LV_1)
+                                  </button>
+                                ) : null
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteRequest(req)}
+                                  title="편집 권한 필요"
+                                  className="px-1.5 py-1.5 bg-slate-100 text-slate-400 border border-slate-200 rounded-md text-[10px] font-black cursor-not-allowed whitespace-nowrap opacity-70"
+                                >
+                                  삭제(LV_1)
+                                </button>
+                              )
                             ) : (
-                              <button onClick={()=>handleDeleteRequest(req)} title="반려 건 영구 삭제" className="px-1.5 py-1.5 bg-slate-100 text-slate-500 border border-slate-200 rounded-md text-[10px] font-black hover:text-red-500 hover:bg-red-50 whitespace-nowrap">삭제</button>
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteRequest(req)}
+                                title={canEdit ? '반려 건 영구 삭제' : '편집 권한 필요'}
+                                className={
+                                  canEdit
+                                    ? 'px-1.5 py-1.5 bg-slate-100 text-slate-500 border border-slate-200 rounded-md text-[10px] font-black hover:text-red-500 hover:bg-red-50 whitespace-nowrap'
+                                    : 'px-1.5 py-1.5 bg-slate-100 text-slate-400 border border-slate-200 rounded-md text-[10px] font-black cursor-not-allowed whitespace-nowrap opacity-70'
+                                }
+                              >
+                                삭제
+                              </button>
                             )}
                           </div>
                         )}
@@ -778,13 +934,13 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
             </table>
           </div>
   
-          {totalPages > 1 && (
-            <div className="flex justify-center items-center gap-1.5 pt-6 pb-6 border-t border-slate-100 mt-4 bg-white">
-              <button disabled={currentPage === 1} onClick={() => setCurrentPage(p => p - 1)} className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50">이전</button>
+          {filteredRequests.length > 0 && (
+            <div className="flex justify-center items-center gap-1.5 py-3 border-t border-slate-100 bg-white">
+              <button disabled={currentPage === 1} onClick={() => setCurrentPage(p => p - 1)} className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors">이전</button>
               {Array.from({ length: totalPages }).map((_, i) => (
                 <button key={i} onClick={() => setCurrentPage(i + 1)} className={`w-8 h-8 rounded-xl font-black text-xs transition-all ${currentPage === i + 1 ? 'bg-slate-800 text-white shadow-sm scale-105' : 'bg-white border border-slate-200 text-slate-500 hover:bg-slate-50'}`}>{i + 1}</button>
               ))}
-              <button disabled={currentPage === totalPages} onClick={() => setCurrentPage(p => p + 1)} className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50">다음</button>
+              <button disabled={currentPage === totalPages} onClick={() => setCurrentPage(p => p + 1)} className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors">다음</button>
             </div>
           )}
         </section>

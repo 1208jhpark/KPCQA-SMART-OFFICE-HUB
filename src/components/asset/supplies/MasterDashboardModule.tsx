@@ -5,9 +5,9 @@ import React, { useState, useEffect, useMemo, Suspense, useRef } from 'react';
 import { usePathname } from 'next/navigation';
 import Link from 'next/link';
 import { getKSTDateString } from '@/utils/dateUtils';
-import { isPendingSupplyRequest } from '@/utils/supplyRequestStatus';
-import LoadingState from '@/components/common/LoadingState';
 import { resolveInterfaceEditState } from '@/lib/permission-utils';
+import { parseSupplyOwnerDepts, resolveTopOrgName } from '@/utils/orgUnits';
+import LoadingState from '@/components/common/LoadingState';
 
 const MENU_PATH = '/asset/supplies/master/dashboard';
      
@@ -15,13 +15,10 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
   const pathname = usePathname();
   
   const [items, setItems] = useState<any[]>([]);
-  const [requests, setRequests] = useState<any[]>([]);
+  const [pendingCount, setPendingCount] = useState(0);
+  const [pendingItemIds, setPendingItemIds] = useState<string[]>([]);
   const [currentUser, setCurrentUser] = useState<any>(propUser || null);
   const [interfaceConfig, setInterfaceConfig] = useState<any>(null);
-  
-  const [config, setConfig] = useState<any>(null);
-  const [masterData, setMasterData] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
   const [permissionSummary, setPermissionSummary] = useState<{
     masterName: string;
     accessDesignate: string;
@@ -30,6 +27,11 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
     editDesignate: string;
     editLevel: string;
   } | null>(null);
+  
+  const [config, setConfig] = useState<any>(null);
+  const [masterData, setMasterData] = useState<any[]>([]);
+  const [orgUnits, setOrgUnits] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
      
   const [editModal, setEditModal] = useState<any | null>(null);
   const [stockInModal, setStockInModal] = useState<any | null>(null);
@@ -48,36 +50,34 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
     setLoading(true);
     try {
       const ts = Date.now();
-      const [dashRes, reqRes, confRes, mastRes, userRes, summaryRes, ifRes] = await Promise.all([
+      const [dashRes, confRes, mastRes, userRes, ifRes, summaryRes, unitsRes] = await Promise.all([
         fetch(`/api/asset/supplies/master/dashboard?t=${ts}`, { cache: 'no-store' }),
-        fetch(`/api/asset/supplies/master/requests?t=${ts}`, { cache: 'no-store' }),
         fetch(`/api/admin/config?t=${ts}`, { cache: 'no-store' }),
         fetch(`/api/admin/master-data?t=${ts}`, { cache: 'no-store' }),
         !propUser ? fetch(`/api/auth/me?t=${ts}`, { cache: 'no-store' }) : Promise.resolve(null),
+        fetch(`/api/admin/interface?t=${ts}`, { cache: 'no-store' }).catch(() => null),
         fetch(`/api/admin/interface/summary?path=${encodeURIComponent(MENU_PATH)}&t=${ts}`, {
           cache: 'no-store',
         }).catch(() => null),
-        fetch(`/api/admin/interface?t=${ts}`, { cache: 'no-store' }).catch(() => null),
+        fetch(`/api/admin/units?active=true&t=${ts}`, { cache: 'no-store' }).catch(() => null),
       ]);
      
       if (dashRes.ok) {
         const data = await dashRes.json();
         setItems(data.items || []);
+        setPendingCount(Number(data.pendingCount) || 0);
+        setPendingItemIds(Array.isArray(data.pendingItemIds) ? data.pendingItemIds : []);
       } else if (dashRes.status === 401 || dashRes.status === 403) {
         const err = await dashRes.json().catch(() => ({}));
         alert(err.error || '마스터 대시보드 권한이 없습니다.');
       }
 
-      if (reqRes.ok) setRequests(await reqRes.json());
       if (confRes.ok) setConfig(await confRes.json());
       if (mastRes.ok) setMasterData(await mastRes.json());
       
       if (!propUser && userRes?.ok) {
         setCurrentUser(await userRes.json());
       }
-
-      if (summaryRes && summaryRes.ok) setPermissionSummary(await summaryRes.json());
-      else setPermissionSummary(null);
 
       if (ifRes && ifRes.ok) {
         const interfaces = await ifRes.json();
@@ -87,6 +87,16 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
         setInterfaceConfig(menu || null);
       } else {
         setInterfaceConfig(null);
+      }
+
+      if (summaryRes && summaryRes.ok) setPermissionSummary(await summaryRes.json());
+      else setPermissionSummary(null);
+
+      if (unitsRes && unitsRes.ok) {
+        const units = await unitsRes.json();
+        setOrgUnits(Array.isArray(units) ? units : []);
+      } else {
+        setOrgUnits([]);
       }
     } catch (e) {
       console.error("Master Dashboard Sync Error", e);
@@ -99,6 +109,15 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
   useEffect(() => {
     fetchDashboardData();
   }, []);
+
+  const canEdit = useMemo(
+    () => resolveInterfaceEditState(currentUser, interfaceConfig).isEditor,
+    [currentUser, interfaceConfig]
+  );
+
+  const alertNoEditPermission = () => alert('편집 권한이 없습니다.');
+  const disabledActionBtn =
+    'px-2 py-1 rounded text-[10px] font-black bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed opacity-70 whitespace-nowrap';
      
   const stats = useMemo(() => {
     const activeItems = items.filter(i => i.is_active !== false); 
@@ -107,9 +126,8 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
     const warningCount = activeItems.filter(item => Number(item.current_stock) <= Number(item.alert_qty || 5) && Number(item.current_stock) > 0).length;
     const outOfStockCount = activeItems.filter(item => Number(item.current_stock) === 0).length;
     
-    const pendingReqs = requests.filter(r => isPendingSupplyRequest(r.status)).length;
-    return { totalItems, warningCount, outOfStockCount, pendingReqs };
-  }, [items, requests]);
+    return { totalItems, warningCount, outOfStockCount, pendingReqs: pendingCount };
+  }, [items, pendingCount]);
      
   const filteredItems = useMemo(() => {
     let list = items.filter(i => i.is_active !== false);
@@ -119,12 +137,12 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
     } else if (statFilter === 'OUT') {
       list = list.filter(i => Number(i.current_stock) === 0);
     } else if (statFilter === 'PENDING') {
-      const pendingItemIds = new Set(requests.filter(r => isPendingSupplyRequest(r.status)).map(r => r.item_id));
-      list = list.filter(i => pendingItemIds.has(i.id));
+      const idSet = new Set(pendingItemIds);
+      list = list.filter(i => idSet.has(i.id));
     }
     
     return list.sort((a, b) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime());
-  }, [items, requests, statFilter]);
+  }, [items, pendingItemIds, statFilter]);
   
   const supplyOptions = useMemo(() => {
     if (!config?.supply_category_group || !masterData.length) return [];
@@ -137,34 +155,64 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
     const group = masterData.find(g => g.id === config.unit_category_group);
     return group?.codes?.filter((c: any) => c.is_active && !c.is_archived) || [];
   }, [config, masterData]);
+
+  /** 물품소속 — /admin/units 활성 목록 · sort_order 유지 (최상위 = 전 조직 풀) */
+  const ownerDeptUnits = useMemo(() => {
+    return orgUnits.filter((u: any) => String(u?.unit_name || '').trim());
+  }, [orgUnits]);
+
+  const topOrgName = useMemo(() => resolveTopOrgName(orgUnits), [orgUnits]);
+
+  const formatOwnerDeptsLabel = (raw: unknown) => {
+    const names = parseSupplyOwnerDepts(raw);
+    if (!names.length) return topOrgName || '-';
+    return names.join(' · ');
+  };
   
   const formatNum = (num: any) => Number(num || 0).toLocaleString();
+
+  const toggleOwnerDept = (unitName: string) => {
+    const name = String(unitName || '').trim();
+    if (!name) return;
+    setEditModal((prev: any) => {
+      if (!prev) return prev;
+      const cur = Array.isArray(prev.owner_depts) ? prev.owner_depts.map(String) : [];
+      const next = cur.includes(name) ? cur.filter((n: string) => n !== name) : [...cur, name];
+      return { ...prev, owner_depts: next };
+    });
+  };
   
   const handleAddNewClick = () => {
+    if (!canEdit) return alertNoEditPermission();
+    const defaultOwner = topOrgName || ownerDeptUnits[0]?.unit_name || '';
     setEditModal({
       isNew: true, 
       id: '', 
       name: supplyOptions[0]?.label || '', 
       current_stock: 0, 
       alert_qty: 5, 
-      p_unit: unitOptions[0]?.label || 'BOX', 
-      r_unit: unitOptions[0]?.label || 'EA',  
-      note: '', 
+      r_unit: unitOptions[0]?.label || 'EA',
+      owner_depts: defaultOwner ? [defaultOwner] : [],
+      note: '',
+      publish_note: '',
       image_url: ''
     });
   };
      
   const handleEditClick = (item: any) => {
+    if (!canEdit) return alertNoEditPermission();
     const ext = item.description ? JSON.parse(item.description) : {};
+    const owners = parseSupplyOwnerDepts(item.owner_dept);
     setEditModal({
       isNew: false, 
       id: item.id, 
       name: item.name, 
       current_stock: Number(item.current_stock), 
       alert_qty: Number(item.alert_qty) || 5, 
-      p_unit: ext.p_unit || 'BOX', 
-      r_unit: ext.s_unit || ext.r_unit || 'EA', 
-      note: ext.note || '', 
+      r_unit: ext.s_unit || ext.r_unit || 'EA',
+      owner_depts: owners.length ? owners : (topOrgName ? [topOrgName] : []),
+      note: ext.note || '',
+      publish_note: ext.publish_note || '',
       image_url: item.image_url || ''
     });
   };
@@ -181,23 +229,26 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
      
   const handleSaveSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!canEdit) return alertNoEditPermission();
     if (!editModal.name.trim()) return alert('품목명을 선택/입력해주세요.');
     if (!editModal.isNew && !editModal.id.trim()) return alert('품목 정보가 올바르지 않습니다.');
      
+    const ownerDepts = Array.isArray(editModal.owner_depts)
+      ? editModal.owner_depts.map((n: string) => String(n).trim()).filter(Boolean)
+      : [];
+    if (!ownerDepts.length) return alert('물품소속(조직)을 1개 이상 선택해주세요.');
     const payload = {
       ...(editModal.isNew ? {} : { id: editModal.id.trim() }),
       name: editModal.name,
-      current_stock: Number(editModal.current_stock) || 0,
+      // 수정 시 현재고는 전송하지 않음 — 입고/신청 선차감만 변경 (절대값 덮어쓰기 방지)
+      ...(editModal.isNew ? { current_stock: Number(editModal.current_stock) || 0 } : {}),
       alert_qty: Number(editModal.alert_qty) || 0,
       category: '소모품',
-      p_unit: editModal.p_unit,
+      owner_depts: ownerDepts,
       s_unit: editModal.r_unit,
-      p_qty: 1, 
-      sub_qty: editModal.isNew ? (Number(editModal.current_stock) || 1) : 1,
-      batch_price: 0,
-      vendor: '',
       image_url: editModal.image_url || '',
-      note: editModal.note || '' 
+      note: editModal.note || '',
+      publish_note: editModal.publish_note || '',
     };
      
     try {
@@ -220,38 +271,50 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
     }
   };
      
-  // 🚀 [정밀 튜닝 완료] 입고 승인 시 꼬이는 데이터 포맷 전면 재배치
+  // 입고수량(구매단위) × 연동수량 = 재고 반영(지급단위)
   const handleStockInSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const qty = Number(stockInModal.qty) || 0;
-    const basePrice = Number(stockInModal.base_price) || 0; // 순수 개당 단가
+    if (!canEdit) return alertNoEditPermission();
+    const pQty = Math.floor(Number(stockInModal.qty) || 0);
+    const linkQty = Math.floor(Number(stockInModal.link_qty) || 0);
+    const basePrice = Number(stockInModal.base_price) || 0; // 입고단위당 순수 단가
     const extraCost = Number(stockInModal.extra_cost) || 0;
+    const pUnit = String(stockInModal.p_unit || '').trim();
+    const sUnit = String(stockInModal.s_unit || '').trim();
      
-    if (qty <= 0) return alert('입고 수량을 1개 이상 입력하세요.');
+    if (pQty <= 0) return alert('입고 수량을 1개 이상 입력하세요.');
+    if (!pUnit) return alert('입고 단위를 선택하세요.');
+    if (linkQty <= 0) return alert('입고단위 연동 수량을 1 이상 입력하세요.');
     
-    // (순수 물품 총 비용) + 부대비용 = 실제 결산 금액 총액
-    const calculatedTotal = (qty * basePrice) + extraCost;
+    const stockQty = pQty * linkQty;
+    const calculatedTotal = (pQty * basePrice) + extraCost;
      
     const payload = {
+      action: 'stock_in',
       item_id: stockInModal.id,
-      qty: qty,
+      p_qty: pQty,
+      p_unit: pUnit,
+      link_qty: linkQty,
+      s_unit: sUnit,
+      qty: stockQty, // 재고 반영 수량(지급단위)
       unit_price: basePrice,
       total_price: calculatedTotal,
       extra_cost: extraCost,
       purchase_date: stockInModal.stock_in_date,
+      bought_date: stockInModal.purchase_date,
       vendor: stockInModal.vendor,
       note: stockInModal.note || '대시보드 직접 입고'
     };
      
     try {
-      const res = await fetch('/api/asset/supplies/master/purchase', {
+      const res = await fetch('/api/asset/supplies/master/dashboard', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
      
       if (res.ok) {
-        alert(`✅ 서버 입고 처리 완료!\n재고가 +${qty}개 증가했으며 입고 대장에 기록되었습니다.`);
+        alert(`✅ 서버 입고 처리 완료!\n재고가 +${stockQty.toLocaleString()}${sUnit ? ` ${sUnit}` : ''} 증가했습니다.\n(입고 ${pQty.toLocaleString()} ${pUnit} × ${linkQty.toLocaleString()})`);
         setStockInModal(null);
         fetchDashboardData();
       } else {
@@ -264,6 +327,7 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
   };
      
   const handleTogglePublish = async (id: string, currentStatus: boolean) => {
+    if (!canEdit) return alertNoEditPermission();
     const nextStatus = !currentStatus;
     if (!confirm(nextStatus ? '해당 물품을 사용자 앱에 [게시올리기] 하시겠습니까?' : '사용자 앱에서 [게시내리기] 처리하시겠습니까?')) return;
     
@@ -288,6 +352,7 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
   };
      
   const handleArchive = async (id: string) => {
+    if (!canEdit) return alertNoEditPermission();
     const reason = prompt('보관함으로 이동합니다.\n보관(폐기) 사유를 명확히 입력해주세요:');
     if (reason === null || reason.trim() === '') return alert('사유가 입력되지 않아 취소되었습니다.');
     
@@ -295,7 +360,7 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
       const payload = {
         id,
         is_active: false,
-        disposal_date: new Date().toISOString(),
+        disposal_date: getKSTDateString(),
         disposal_reason: reason.trim(),
       };
      
@@ -314,15 +379,10 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
       }
     } catch (e) { alert("아카이브 처리 실패"); }
   };
-     
-  const canEdit = useMemo(
-    () => resolveInterfaceEditState(currentUser, interfaceConfig).isEditor,
-    [currentUser, interfaceConfig]
-  );
 
   /** 삭제: Edit 권한 + 신청·입고 이력 0건일 때만 (잘못 등록한 데이터 정리용) */
   const handleDeleteItem = async (item: any) => {
-    if (!canEdit) return alert('삭제 권한이 없습니다.');
+    if (!canEdit) return alertNoEditPermission();
 
     const usageCount = Number(item?._count?.requests || 0) + Number(item?._count?.purchases || 0);
     if (usageCount > 0) {
@@ -384,6 +444,11 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
           <span className="opacity-50">|</span>
           <span>Level: {permissionSummary.editLevel}</span>
         </div>
+        {!canEdit && (
+          <span className="text-[10px] font-black text-amber-200 bg-amber-500/20 border border-amber-300/30 px-2.5 py-1 rounded-md">
+            편집 권한 없음 — 조회만 가능
+          </span>
+        )}
       </div>
     )}
   </div>
@@ -470,7 +535,16 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
               </button>
             </div>
           </div>
-          <button onClick={handleAddNewClick} className="px-5 py-2 bg-blue-600 text-white rounded-lg text-[11px] font-black hover:bg-blue-700 transition-all shadow-sm flex items-center gap-1.5 shrink-0">
+          <button
+            type="button"
+            onClick={handleAddNewClick}
+            title={canEdit ? '신규 물품 추가' : '편집 권한 필요'}
+            className={
+              canEdit
+                ? 'px-5 py-2 bg-blue-600 text-white rounded-lg text-[11px] font-black hover:bg-blue-700 transition-all shadow-sm flex items-center gap-1.5 shrink-0'
+                : 'px-5 py-2 bg-slate-100 text-slate-400 border border-slate-200 rounded-lg text-[11px] font-black cursor-not-allowed opacity-70 flex items-center gap-1.5 shrink-0'
+            }
+          >
             + 신규 물품 추가
           </button>
         </div>
@@ -485,8 +559,8 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
               <col className="w-[92px]" />
               <col className="w-[280px]" />
               <col className="w-[88px]" />
-              <col className="w-[108px]" />
-              <col className="w-[200px]" />
+              <col className="w-[148px]" />
+              <col className="w-[160px]" />
             </colgroup>
             <thead className="bg-slate-100 text-slate-700 text-[10px] font-black uppercase tracking-widest border-b border-slate-200">
               <tr>
@@ -498,7 +572,7 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
                 <th className="h-12 px-2 text-left bg-blue-50/60">관리 비고</th>
                 <th className="h-12 px-2 text-center whitespace-nowrap text-amber-700 border-l border-slate-300 bg-amber-50/60">신청단위</th>
                 <th className="h-12 px-2 text-center whitespace-nowrap text-amber-700 bg-amber-50/60">게시 제어</th>
-                <th className="h-12 pr-3 text-center whitespace-nowrap border-l border-slate-300">마스터 액션</th>
+                <th className="h-12 pr-3 pl-2 text-left whitespace-nowrap border-l border-slate-300">관리 액션</th>
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-slate-100 text-[11px] font-bold text-slate-700">
@@ -511,7 +585,6 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
               ) : (
                 filteredItems.map((item, idx) => {
                   const ext = item.description ? JSON.parse(item.description) : {};
-                  const pUnit = ext.p_unit || 'BOX';
                   const rUnit = ext.s_unit || ext.r_unit || 'EA';
                   const note = ext.note || '-';
                   const safeStock = Number(item.alert_qty || 5);
@@ -521,6 +594,15 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
                   const isPublished = item.is_published !== false;
 
                   const lastPurchase = item.purchases?.[0] || {};
+                  let lastPUnit = unitOptions[0]?.label || 'BOX';
+                  let lastLinkQty = 1;
+                  try {
+                    if (lastPurchase.note) {
+                      const n = JSON.parse(lastPurchase.note);
+                      if (n.p_unit) lastPUnit = n.p_unit;
+                      if (Number(n.link_qty) > 0) lastLinkQty = Number(n.link_qty);
+                    }
+                  } catch {}
                   const usageCount =
                     Number(item?._count?.requests || 0) + Number(item?._count?.purchases || 0);
                   const hasUsageHistory = usageCount > 0;
@@ -548,9 +630,17 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
                               <span className="text-[10px] opacity-40">📦</span>
                             )}
                           </div>
-                          <span className="text-slate-900 truncate" title={item.name}>
-                            {item.name}
-                          </span>
+                          <div className="min-w-0 flex flex-col">
+                            <span className="text-slate-900 truncate" title={item.name}>
+                              {item.name}
+                            </span>
+                            <span
+                              className="text-[9px] font-bold text-slate-400 truncate"
+                              title={`물품소속: ${formatOwnerDeptsLabel(item.owner_dept)}`}
+                            >
+                              {formatOwnerDeptsLabel(item.owner_dept)}
+                            </span>
+                          </div>
                         </div>
                       </td>
                       <td
@@ -559,9 +649,11 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
                         }`}
                       >
                         {formatNum(currentStock)}
+                        <span className="text-[9px] text-slate-400 font-bold ml-0.5">{rUnit}</span>
                       </td>
                       <td className="px-2 text-center font-mono text-slate-500 tabular-nums whitespace-nowrap bg-blue-50/20">
                         {safeStock}
+                        <span className="text-[9px] text-slate-400 font-bold ml-0.5">{rUnit}</span>
                       </td>
                       <td className="px-2 text-center bg-blue-50/20">
                         <span
@@ -586,20 +678,26 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
                         <button
                           type="button"
                           onClick={() => handleTogglePublish(item.id, isPublished)}
-                          className={`w-full py-1 rounded-md text-[10px] font-black shadow-sm transition-all border ${
-                            isPublished
-                              ? 'bg-slate-100 border-slate-200 text-slate-500 hover:bg-slate-200'
-                              : 'bg-indigo-50 border-indigo-200 text-indigo-700 hover:bg-indigo-100'
-                          }`}
+                          title={canEdit ? (isPublished ? '게시내리기' : '게시올리기') : '편집 권한 필요'}
+                          className={
+                            canEdit
+                              ? `w-full py-1 rounded-md text-[10px] font-black shadow-sm transition-all border ${
+                                  isPublished
+                                    ? 'bg-slate-100 border-slate-200 text-slate-500 hover:bg-slate-200'
+                                    : 'bg-indigo-50 border-indigo-200 text-indigo-700 hover:bg-indigo-100'
+                                }`
+                              : 'w-full py-1 rounded-md text-[10px] font-black border bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed opacity-70'
+                          }
                         >
                           {isPublished ? '게시내리기' : '게시올리기'}
                         </button>
                       </td>
-                      <td className="pr-3 px-2 border-l border-slate-200">
-                        <div className="flex items-center justify-center gap-1 whitespace-nowrap">
+                      <td className="pr-3 pl-2 border-l border-slate-200 text-left">
+                        <div className="flex items-center justify-start gap-1 whitespace-nowrap">
                           <button
                             type="button"
-                            onClick={() =>
+                            onClick={() => {
+                              if (!canEdit) return alertNoEditPermission();
                               setStockInModal({
                                 id: item.id,
                                 name: item.name,
@@ -607,35 +705,60 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
                                 base_price: item.unit_price || 0,
                                 extra_cost: 0,
                                 qty: '',
-                                p_unit: pUnit,
+                                p_unit: lastPUnit,
+                                link_qty: lastLinkQty,
+                                s_unit: rUnit,
                                 purchase_date: getKSTDateString(),
                                 stock_in_date: getKSTDateString(),
-                              })
+                              });
+                            }}
+                            title={canEdit ? '입고' : '편집 권한 필요'}
+                            className={
+                              canEdit
+                                ? 'px-2 py-1 rounded text-[10px] font-black bg-emerald-600 text-white shadow-sm hover:bg-emerald-700 transition-colors whitespace-nowrap'
+                                : disabledActionBtn
                             }
-                            className="px-2 py-1 rounded text-[10px] font-black bg-emerald-600 text-white shadow-sm hover:bg-emerald-700 transition-colors"
                           >
                             입고
                           </button>
                           <button
                             type="button"
                             onClick={() => handleEditClick(item)}
-                            className="px-2 py-1 rounded text-[10px] font-black bg-white text-blue-600 border border-blue-200 shadow-sm hover:bg-blue-50 transition-colors"
+                            title={canEdit ? '수정' : '편집 권한 필요'}
+                            className={
+                              canEdit
+                                ? 'px-2 py-1 rounded text-[10px] font-black bg-white text-blue-600 border border-blue-200 shadow-sm hover:bg-blue-50 transition-colors whitespace-nowrap'
+                                : disabledActionBtn
+                            }
                           >
                             수정
                           </button>
                           <button
                             type="button"
                             onClick={() => handleArchive(item.id)}
-                            className="px-2 py-1 rounded text-[10px] font-black bg-white text-slate-500 border border-slate-200 shadow-sm hover:bg-slate-100 transition-colors"
+                            title={canEdit ? '보관함' : '편집 권한 필요'}
+                            className={
+                              canEdit
+                                ? 'px-2 py-1 rounded text-[10px] font-black bg-white text-slate-500 border border-slate-200 shadow-sm hover:bg-slate-100 transition-colors whitespace-nowrap'
+                                : disabledActionBtn
+                            }
                           >
                             보관함
                           </button>
-                          {canEdit && !hasUsageHistory && (
+                          {(!hasUsageHistory || !canEdit) && (
                             <button
                               type="button"
                               onClick={() => handleDeleteItem(item)}
-                              className="px-2 py-1 rounded text-[10px] font-black bg-red-50 border border-red-200 text-red-500 shadow-sm hover:bg-red-500 hover:text-white transition-colors"
-                              title="신청·입고 이력이 없는 품목만 삭제 가능"
+                              className={
+                                canEdit
+                                  ? 'px-2 py-1 rounded text-[10px] font-black bg-red-50 border border-red-200 text-red-500 shadow-sm hover:bg-red-500 hover:text-white transition-colors whitespace-nowrap'
+                                  : disabledActionBtn
+                              }
+                              title={
+                                canEdit
+                                  ? '신청·입고 이력이 없는 품목만 삭제 가능'
+                                  : '편집 권한 필요'
+                              }
                             >
                               삭제
                             </button>
@@ -652,7 +775,7 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
       </div>
      
       {/* ✏️ 신규 등록/수정 모달 */}
-      {editModal && (
+      {editModal && canEdit && (
         <div className="fixed inset-0 z-[500] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200">
           <div className="bg-white w-full max-w-2xl rounded-[2.5rem] shadow-2xl overflow-hidden animate-in slide-in-from-bottom-8">
             <div className="bg-slate-900 p-6 flex justify-between items-center text-white">
@@ -702,40 +825,106 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
                     <input type="text" required value={editModal.name} onChange={(e) => setEditModal({...editModal, name: e.target.value})} className="w-full p-2.5 bg-white border border-slate-200 rounded-xl text-xs font-black text-slate-900 outline-none shadow-sm" placeholder="직접 입력" />
                   )}
                 </div>
+
+                <div>
+                  <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-1.5">
+                    물품소속 (신청 가능 조직 · 복수 선택)
+                  </label>
+                  <div className="max-h-40 overflow-y-auto rounded-xl border border-slate-200 bg-white p-2.5 space-y-1.5 shadow-sm">
+                    {ownerDeptUnits.length === 0 ? (
+                      <p className="text-[10px] font-bold text-slate-400 px-1 py-2">조직 목록이 없습니다.</p>
+                    ) : (
+                      ownerDeptUnits.map((u: any) => {
+                        const name = String(u.unit_name || '').trim();
+                        const checked = Array.isArray(editModal.owner_depts) && editModal.owner_depts.includes(name);
+                        const isTop = !!topOrgName && name === topOrgName;
+                        return (
+                          <label
+                            key={u.id || name}
+                            className={`flex items-center gap-2 px-2 py-1.5 rounded-lg cursor-pointer transition-colors ${
+                              checked ? 'bg-indigo-50 border border-indigo-200' : 'hover:bg-slate-50 border border-transparent'
+                            }`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => toggleOwnerDept(name)}
+                              className="w-3.5 h-3.5 accent-indigo-600 cursor-pointer"
+                            />
+                            <span className="text-[11px] font-black text-slate-800 truncate">
+                              {name}
+                              {isTop ? (
+                                <span className="ml-1 text-[9px] font-bold text-indigo-500">(최상위 · 전 조직)</span>
+                              ) : null}
+                            </span>
+                          </label>
+                        );
+                      })
+                    )}
+                    {Array.isArray(editModal.owner_depts) &&
+                      editModal.owner_depts
+                        .filter(
+                          (n: string) => !ownerDeptUnits.some((u: any) => u.unit_name === n)
+                        )
+                        .map((n: string) => (
+                          <label
+                            key={`orphan-${n}`}
+                            className="flex items-center gap-2 px-2 py-1.5 rounded-lg cursor-pointer bg-amber-50 border border-amber-200"
+                          >
+                            <input
+                              type="checkbox"
+                              checked
+                              onChange={() => toggleOwnerDept(n)}
+                              className="w-3.5 h-3.5 accent-indigo-600 cursor-pointer"
+                            />
+                            <span className="text-[11px] font-black text-amber-800 truncate">
+                              {n} <span className="text-[9px] font-bold">(목록 외)</span>
+                            </span>
+                          </label>
+                        ))}
+                  </div>
+                  <p className="text-[9px] text-slate-500 font-bold mt-1.5 leading-tight">
+                    admin/units 순서 · 예: 본부 2곳만 체크하면 해당 조직(스코프)만 inventory에 노출
+                  </p>
+                </div>
      
-                <div className="bg-slate-100 p-3 rounded-xl border border-slate-200 grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="text-[10px] font-black text-emerald-600 uppercase tracking-widest block mb-1.5">입고(구매) 단위</label>
-                    {unitOptions.length > 0 ? (
-                      <select required value={editModal.p_unit} onChange={(e) => setEditModal({...editModal, p_unit: e.target.value})} className="w-full p-2.5 bg-white border border-emerald-200 rounded-lg text-[11px] font-black text-slate-700 outline-none focus:border-emerald-500 shadow-sm">
-                        {unitOptions.map((opt:any) => <option key={opt.id} value={opt.label}>{opt.label}</option>)}
-                      </select>
-                    ) : (
-                      <input type="text" required value={editModal.p_unit} onChange={(e) => setEditModal({...editModal, p_unit: e.target.value})} className="w-full p-2.5 bg-white border border-emerald-200 rounded-lg text-[11px] font-black text-slate-900 outline-none shadow-sm" placeholder="예: BOX" />
-                    )}
-                  </div>
-                  <div>
-                    <label className="text-[10px] font-black text-amber-600 uppercase tracking-widest block mb-1.5">지급(신청) 단위</label>
-                    {unitOptions.length > 0 ? (
-                      <select required value={editModal.r_unit} onChange={(e) => setEditModal({...editModal, r_unit: e.target.value})} className="w-full p-2.5 bg-white border border-amber-200 rounded-lg text-[11px] font-black text-slate-700 outline-none focus:border-amber-500 shadow-sm">
-                        {unitOptions.map((opt:any) => <option key={opt.id} value={opt.label}>{opt.label}</option>)}
-                      </select>
-                    ) : (
-                      <input type="text" required value={editModal.r_unit} onChange={(e) => setEditModal({...editModal, r_unit: e.target.value})} className="w-full p-2.5 bg-white border border-amber-200 rounded-lg text-[11px] font-black text-slate-900 outline-none shadow-sm" placeholder="예: EA" />
-                    )}
-                  </div>
+                <div className="bg-amber-50/60 p-3 rounded-xl border border-amber-100">
+                  <label className="text-[10px] font-black text-amber-700 uppercase tracking-widest block mb-1.5">지급(신청) 단위</label>
+                  {unitOptions.length > 0 ? (
+                    <select required value={editModal.r_unit} onChange={(e) => setEditModal({...editModal, r_unit: e.target.value})} className="w-full p-2.5 bg-white border border-amber-200 rounded-lg text-[11px] font-black text-slate-700 outline-none focus:border-amber-500 shadow-sm">
+                      {unitOptions.map((opt:any) => <option key={opt.id} value={opt.label}>{opt.label}</option>)}
+                    </select>
+                  ) : (
+                    <input type="text" required value={editModal.r_unit} onChange={(e) => setEditModal({...editModal, r_unit: e.target.value})} className="w-full p-2.5 bg-white border border-amber-200 rounded-lg text-[11px] font-black text-slate-900 outline-none shadow-sm" placeholder="예: EA, 병, 장" />
+                  )}
+                  <p className="text-[9px] text-amber-600/80 font-bold mt-1.5">현재고·알람·사용자 신청은 모두 이 단위 기준입니다. 입고단위는 입고 시 입력합니다.</p>
                 </div>
      
                 <div className="grid grid-cols-2 gap-4">
                   <div>
-                    <label className="text-[10px] font-black text-blue-600 uppercase tracking-widest block mb-1.5">현재고 (수동강제조정)</label>
-                    <input 
-                      type="number" min="0" required value={editModal.current_stock} onChange={(e) => setEditModal({...editModal, current_stock: e.target.value})}
-                      className="w-full p-2.5 bg-white border border-blue-200 rounded-xl text-xs font-black text-blue-600 outline-none focus:border-blue-500 shadow-sm text-right"
-                    />
+                    <label className="text-[10px] font-black text-blue-600 uppercase tracking-widest block mb-1.5">
+                      현재고 <span className="text-slate-400 normal-case tracking-normal">({editModal.r_unit || '지급단위'})</span>
+                    </label>
+                    {editModal.isNew ? (
+                      <input 
+                        type="number" min="0" required value={editModal.current_stock} onChange={(e) => setEditModal({...editModal, current_stock: e.target.value})}
+                        className="w-full p-2.5 bg-white border border-blue-200 rounded-xl text-xs font-black text-blue-600 outline-none focus:border-blue-500 shadow-sm text-right"
+                      />
+                    ) : (
+                      <>
+                        <div className="w-full p-2.5 bg-slate-100 border border-slate-200 rounded-xl text-xs font-black text-blue-600 text-right tabular-nums">
+                          {Number(editModal.current_stock || 0).toLocaleString()}
+                        </div>
+                        <p className="text-[9px] text-slate-500 font-bold mt-1.5 leading-tight">
+                          수정 불가 · 재고는 <span className="text-emerald-600">입고</span> / <span className="text-indigo-600">신청 선차감·반려 복구</span>로만 변경됩니다.
+                        </p>
+                      </>
+                    )}
                   </div>
                   <div>
-                    <label className="text-[10px] font-black text-orange-500 uppercase tracking-widest block mb-1.5">재고 알람 기준 수량</label>
+                    <label className="text-[10px] font-black text-orange-500 uppercase tracking-widest block mb-1.5">
+                      재고 알람 기준 <span className="text-slate-400 normal-case tracking-normal">({editModal.r_unit || '지급단위'})</span>
+                    </label>
                     <input 
                       type="number" min="0" required value={editModal.alert_qty} onChange={(e) => setEditModal({...editModal, alert_qty: e.target.value})}
                       className="w-full p-2.5 bg-white border border-orange-200 rounded-xl text-xs font-black text-orange-600 outline-none focus:border-orange-400 shadow-sm text-right"
@@ -744,11 +933,22 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
                 </div>
      
                 <div>
+                  <label className="text-[10px] font-black text-indigo-600 uppercase tracking-widest block mb-1.5">게시설명글 (Inventory 표시)</label>
+                  <input
+                    type="text"
+                    value={editModal.publish_note || ''}
+                    onChange={(e) => setEditModal({ ...editModal, publish_note: e.target.value })}
+                    className="w-full p-2.5 bg-white border border-indigo-100 rounded-xl text-[11px] font-bold text-slate-700 outline-none focus:border-indigo-500 shadow-sm"
+                    placeholder="비품 청구 리스트에 노출될 짧은 설명 (선택)"
+                  />
+                </div>
+
+                <div>
                   <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-1.5">관리 비고 (Note)</label>
                   <input 
                     type="text" value={editModal.note} onChange={(e) => setEditModal({...editModal, note: e.target.value})}
                     className="w-full p-2.5 bg-white border border-slate-200 rounded-xl text-[11px] font-bold text-slate-700 outline-none focus:border-indigo-500 shadow-sm"
-                    placeholder="특이사항 메모 (선택)"
+                    placeholder="특이사항 메모 (선택 · 마스터 관리용)"
                   />
                 </div>
      
@@ -767,84 +967,135 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
       )}
      
       {/* 📦 입고 처리 모달 */}
-      {stockInModal && (
+      {stockInModal && canEdit && (
         <div className="fixed inset-0 z-[600] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-white w-[550px] border border-slate-200 shadow-2xl p-8 rounded-2xl">
-            <h4 className="text-[14px] font-black text-slate-900 uppercase tracking-widest mb-4 border-b-2 border-slate-900 pb-3">
-              📦 소모품 실물 창고 입고 처리
-            </h4>
-            <div className="bg-slate-100 p-3 rounded-lg mb-6 flex justify-between items-center">
-              <span className="font-black text-indigo-700 text-xs">{stockInModal.name}</span>
-              <span className="font-mono text-[11px] text-slate-500 font-bold">{stockInModal.id}</span>
+          <div className="bg-white w-[640px] border border-slate-200 shadow-2xl p-5 rounded-2xl">
+            <div className="flex items-center justify-between gap-3 mb-3 border-b border-slate-200 pb-2.5">
+              <h4 className="text-[13px] font-black text-slate-900 tracking-wide">
+                📦 소모품 창고 입고
+              </h4>
+              <span className="font-black text-indigo-700 text-[11px] truncate max-w-[55%] text-right">{stockInModal.name}</span>
             </div>
             
-            <form onSubmit={handleStockInSubmit} className="space-y-4">
-              <div className="grid grid-cols-2 gap-3 mb-2">
+            <form onSubmit={handleStockInSubmit} className="space-y-2.5">
+              <div className="grid grid-cols-2 gap-2">
                 <div>
-                  <label className="text-[10px] font-black text-slate-500 block mb-1.5">구입 일자</label>
+                  <label className="text-[9px] font-black text-slate-500 block mb-0.5">구입 일자</label>
                   <input 
                     type="date" required value={stockInModal.purchase_date} onChange={e => setStockInModal({...stockInModal, purchase_date: e.target.value})}
-                    className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-[11px] font-bold outline-none focus:border-emerald-500 text-slate-600" 
+                    className="w-full py-1.5 px-2 bg-slate-50 border border-slate-200 rounded-md text-[11px] font-bold outline-none focus:border-emerald-500 text-slate-600" 
                   />
                 </div>
                 <div>
-                  <label className="text-[10px] font-black text-slate-500 block mb-1.5">창고 입고 일자</label>
+                  <label className="text-[9px] font-black text-slate-500 block mb-0.5">창고 입고 일자</label>
                   <input 
                     type="date" required value={stockInModal.stock_in_date} onChange={e => setStockInModal({...stockInModal, stock_in_date: e.target.value})}
-                    className="w-full p-2.5 bg-white border border-slate-300 rounded-lg text-[11px] font-bold outline-none focus:border-emerald-500 text-slate-800" 
+                    className="w-full py-1.5 px-2 bg-white border border-slate-300 rounded-md text-[11px] font-bold outline-none focus:border-emerald-500 text-slate-800" 
                   />
                 </div>
               </div>
      
               <div>
-                <label className="text-[10px] font-black text-slate-500 block mb-1.5">구입처 (벤더/업체명)</label>
+                <label className="text-[9px] font-black text-slate-500 block mb-0.5">구입처 (벤더/업체명)</label>
                 <input 
                   type="text" required value={stockInModal.vendor} onChange={e => setStockInModal({...stockInModal, vendor: e.target.value})}
                   placeholder="예: 드림디포, 아트로릭, 한생미디어 등"
-                  className="w-full p-2.5 bg-white border border-slate-300 rounded-lg text-[11px] font-bold outline-none focus:border-emerald-500" 
+                  className="w-full py-1.5 px-2 bg-white border border-slate-300 rounded-md text-[11px] font-bold outline-none focus:border-emerald-500" 
                 />
               </div>
      
-              <div className="bg-emerald-50/50 p-4 rounded-xl border border-emerald-100 space-y-3">
-                <div className="grid grid-cols-2 gap-3">
+              <div className="bg-emerald-50/50 p-2.5 rounded-lg border border-emerald-100 space-y-2">
+                <div className="grid grid-cols-4 gap-2">
                   <div>
-                    <label className="text-[10px] font-black text-emerald-600 block mb-1.5">입고 수량 (+)</label>
-                    <div className="flex items-center gap-2">
-                      <input 
-                        type="number" required min="1" value={stockInModal.qty} onChange={e => setStockInModal({...stockInModal, qty: e.target.value})}
-                        className="w-full p-2.5 bg-white border-2 border-emerald-400 rounded-lg text-[11px] font-black text-emerald-700 outline-none focus:ring-2 focus:ring-emerald-200 text-right shadow-sm" 
-                      />
-                      <span className="text-[12px] font-black text-emerald-700 shrink-0 min-w-[24px]">{stockInModal.p_unit}</span>
-                    </div>
+                    <label className="text-[9px] font-black text-emerald-600 block mb-0.5">입고 수량 (+)</label>
+                    <input 
+                      type="number" required min="1" value={stockInModal.qty} onChange={e => setStockInModal({...stockInModal, qty: e.target.value})}
+                      className="w-full py-1.5 px-2 bg-white border-2 border-emerald-400 rounded-md text-[11px] font-black text-emerald-700 outline-none focus:ring-1 focus:ring-emerald-200 text-right" 
+                    />
                   </div>
                   <div>
-                    <label className="text-[10px] font-black text-slate-500 block mb-1.5">물품 순수 단가(개당)</label>
+                    <label className="text-[9px] font-black text-emerald-600 block mb-0.5">입고 단위</label>
+                    {unitOptions.length > 0 ? (
+                      <select
+                        required
+                        value={stockInModal.p_unit}
+                        onChange={e => setStockInModal({...stockInModal, p_unit: e.target.value})}
+                        className="w-full py-1.5 px-2 bg-white border border-emerald-300 rounded-md text-[11px] font-black text-slate-700 outline-none focus:border-emerald-500"
+                      >
+                        {unitOptions.map((opt: any) => (
+                          <option key={opt.id} value={opt.label}>{opt.label}</option>
+                        ))}
+                      </select>
+                    ) : (
+                      <input
+                        type="text"
+                        required
+                        value={stockInModal.p_unit}
+                        onChange={e => setStockInModal({...stockInModal, p_unit: e.target.value})}
+                        placeholder="예: BOX"
+                        className="w-full py-1.5 px-2 bg-white border border-emerald-300 rounded-md text-[11px] font-black outline-none"
+                      />
+                    )}
+                  </div>
+                  <div>
+                    <label className="text-[9px] font-black text-emerald-700 block mb-0.5">입고단위 연동 수량</label>
+                    <input 
+                      type="number" required min="1" value={stockInModal.link_qty}
+                      onChange={e => setStockInModal({...stockInModal, link_qty: e.target.value})}
+                      className="w-full py-1.5 px-2 bg-white border border-emerald-300 rounded-md text-[11px] font-black text-emerald-800 outline-none focus:border-emerald-500 text-right"
+                      placeholder="1단위=몇개"
+                    />
+                    <p className="text-[8px] text-emerald-600/80 font-bold mt-0.5 leading-tight">
+                      1 {stockInModal.p_unit || '입고단위'} = ? {stockInModal.s_unit || '지급단위'}
+                    </p>
+                  </div>
+                  <div>
+                    <label className="text-[9px] font-black text-amber-600 block mb-0.5">지급단위 (연동)</label>
+                    <div className="w-full py-1.5 px-2 bg-amber-50 border border-amber-200 rounded-md text-[11px] font-black text-amber-700 text-center">
+                      {stockInModal.s_unit || 'EA'}
+                    </div>
+                    <p className="text-[8px] text-amber-600/80 font-bold mt-0.5 text-center leading-tight">마스터 고정</p>
+                  </div>
+                </div>
+
+                <div className="flex justify-between items-center bg-white/80 border border-emerald-200 rounded-md px-2.5 py-1.5">
+                  <span className="text-[9px] font-black text-slate-500 uppercase tracking-wider">재고 반영 예정</span>
+                  <span className="text-[12px] font-black text-emerald-700 tabular-nums">
+                    +{formatNum((Number(stockInModal.qty) || 0) * (Number(stockInModal.link_qty) || 0))}
+                    <span className="text-[10px] ml-0.5">{stockInModal.s_unit || ''}</span>
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-[9px] font-black text-slate-500 block mb-0.5">물품 순수 단가 (입고단위)</label>
                     <input 
                       type="number" required min="0" value={stockInModal.base_price} onChange={e => setStockInModal({...stockInModal, base_price: e.target.value})}
-                      className="w-full p-2.5 bg-white border border-slate-300 rounded-lg text-[11px] font-bold outline-none focus:border-emerald-500 text-right" 
+                      className="w-full py-1.5 px-2 bg-white border border-slate-300 rounded-md text-[11px] font-bold outline-none focus:border-emerald-500 text-right" 
+                    />
+                    <p className="text-[8px] text-slate-500/80 font-bold mt-0.5 leading-tight">
+                      1 {stockInModal.p_unit || '입고단위'}당 순수 단가 (부대비용 제외)
+                    </p>
+                  </div>
+                  <div>
+                    <label className="text-[9px] font-black text-orange-600 block mb-0.5">부대비용 (배송·인쇄·세금 등)</label>
+                    <input 
+                      type="number" required min="0" value={stockInModal.extra_cost} onChange={e => setStockInModal({...stockInModal, extra_cost: e.target.value})}
+                      className="w-full py-1.5 px-2 bg-white border border-orange-300 rounded-md text-[11px] font-bold outline-none focus:border-orange-500 text-right" 
+                      placeholder="없으면 0" 
                     />
                   </div>
                 </div>
-                <div>
-                  <label className="text-[10px] font-black text-orange-600 block mb-1.5">부대비용 (배송비, 인쇄비, 세금 등 전체 금액)</label>
-                  <input 
-                    type="number" required min="0" value={stockInModal.extra_cost} onChange={e => setStockInModal({...stockInModal, extra_cost: e.target.value})}
-                    className="w-full p-2.5 bg-white border border-orange-300 rounded-lg text-[11px] font-bold outline-none focus:border-orange-500 text-right" 
-                    placeholder="발생하지 않았다면 0" 
-                  />
-                </div>
               </div>
      
-              <div className="pt-2">
-                <div className="flex justify-between items-center bg-slate-800 text-white p-4 rounded-xl shadow-inner">
-                  <span className="text-[11px] font-black uppercase tracking-widest text-emerald-400">결산 총 입고 비용</span>
-                  <span className="text-lg font-black">{formatNum((Number(stockInModal.qty) * Number(stockInModal.base_price)) + Number(stockInModal.extra_cost))} <span className="text-[11px] font-medium ml-0.5">원</span></span>
-                </div>
+              <div className="flex justify-between items-center bg-slate-800 text-white px-3 py-2.5 rounded-lg">
+                <span className="text-[10px] font-black uppercase tracking-wider text-emerald-400">결산 총 입고 비용</span>
+                <span className="text-[15px] font-black tabular-nums">{formatNum((Number(stockInModal.qty) * Number(stockInModal.base_price)) + Number(stockInModal.extra_cost))} <span className="text-[10px] font-medium">원</span></span>
               </div>
      
-              <div className="flex gap-2 mt-4 pt-4 border-t border-slate-100">
-                <button type="button" onClick={() => setStockInModal(null)} className="flex-1 py-3.5 bg-slate-100 text-slate-500 rounded-xl font-bold text-[11px] hover:bg-slate-200">취소</button>
-                <button type="submit" className="flex-[2] py-3.5 bg-emerald-600 text-white rounded-xl font-black text-[12px] shadow-md hover:bg-emerald-700 flex justify-center items-center gap-2">
+              <div className="flex gap-2 pt-1">
+                <button type="button" onClick={() => setStockInModal(null)} className="flex-1 py-2 bg-slate-100 text-slate-500 rounded-lg font-bold text-[11px] hover:bg-slate-200">취소</button>
+                <button type="submit" className="flex-[2] py-2 bg-emerald-600 text-white rounded-lg font-black text-[11px] shadow-sm hover:bg-emerald-700 flex justify-center items-center gap-1.5">
                   <span>📥</span> 서버 DB 입고 승인
                 </button>
               </div>

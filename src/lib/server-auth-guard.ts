@@ -237,7 +237,10 @@ export async function authorizeApi(
 
   const [allMenus, unitsList, systemConfig] = await Promise.all([
     prisma.interfaceConfig.findMany(),
-    prisma.orgUnit.findMany({ where: { is_deleted: false, is_active: true } }),
+    prisma.orgUnit.findMany({
+      where: { is_deleted: false, is_active: true },
+      include: { parent: true },
+    }),
     prisma.systemConfig.findUnique({ where: { id: 'global' } }),
   ]);
 
@@ -308,7 +311,10 @@ export async function authorizeAnyMenuPaths(
 
   const [allMenus, unitsList, systemConfig] = await Promise.all([
     prisma.interfaceConfig.findMany(),
-    prisma.orgUnit.findMany({ where: { is_deleted: false, is_active: true } }),
+    prisma.orgUnit.findMany({
+      where: { is_deleted: false, is_active: true },
+      include: { parent: true },
+    }),
     prisma.systemConfig.findUnique({ where: { id: 'global' } }),
   ]);
 
@@ -567,6 +573,16 @@ export function assertCanEditOwnerDept(
   if (ownerDept && ownerDept === myCenter) return;
 
   throw new Error('FORBIDDEN_EDIT');
+}
+
+/** 소모품 다중 owner_dept — 레거시 '전사'만 예외, 나머지는 assertCanEditOwnerDept */
+export function assertSupplyOwnerDeptsEditable(auth: any, ownerDepts: string[]) {
+  if (auth.permission?.isMaster || auth.permission?.myRole === 'LV_1') return;
+  if (!ownerDepts.length) throw new Error('FORBIDDEN_EDIT');
+  for (const ownerDept of ownerDepts) {
+    if (ownerDept === '전사') continue;
+    assertCanEditOwnerDept(auth, ownerDept);
+  }
 }
 
 export function authErrorToResponse(error: unknown) {

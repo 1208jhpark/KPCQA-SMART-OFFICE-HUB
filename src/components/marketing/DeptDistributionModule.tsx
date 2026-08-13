@@ -207,6 +207,8 @@ function DeptDistributionContent() {
   const [purchaseYear, setPurchaseYear] = useState(kstYear.toString());
   const [purchaseMonth, setPurchaseMonth] = useState('ALL');
   const [purchaseOwnerFilter, setPurchaseOwnerFilter] = useState<string>('ALL');
+  /** 신청자(등록자) 소속 — 대장 연계필터 (기본: 전체) */
+  const [purchasePurchaserFilter, setPurchasePurchaserFilter] = useState<string>('ALL');
   const [selectedPurchaseIds, setSelectedPurchaseIds] = useState<Set<string>>(new Set());
   const [currentPurchasePage, setCurrentPurchasePage] = useState(1);
   const [selectedItemFilter, setSelectedItemFilter] = useState<string | null>(null);
@@ -214,7 +216,7 @@ function DeptDistributionContent() {
   // [탭 3] 종료 물품 상태
   const [endedItemQuery, setEndedItemQuery] = useState('');
   const [endedRegistrantQuery, setEndedRegistrantQuery] = useState('');
-  const [endedYearFilter, setEndedYearFilter] = useState<string>('ALL');
+  const [endedYearFilter, setEndedYearFilter] = useState(() => String(kstYear));
   const [endedMonthFilter, setEndedMonthFilter] = useState<string>('ALL');
   const [endedOwnerFilter, setEndedOwnerFilter] = useState<string>('ALL');
   const [endedPage, setEndedPage] = useState<number>(1);
@@ -397,6 +399,8 @@ function DeptDistributionContent() {
     setSelectedIds(new Set());
     setDistOwnerFilter('ALL');
     setDistSenderFilter('ALL');
+    setSelectedYear(kstYear.toString());
+    setSelectedMonth('ALL');
     if (!currentUser) return;
     setLoading(true);
     const result = await loadDistributions(currentUser, units, systemConfig, mode);
@@ -455,25 +459,49 @@ function DeptDistributionContent() {
     return false;
   };
 
-  /** 타인 건 철회: LV_1·메뉴 마스터만. 그 외는 본인 건만 */
+  /** 타인 건 철회: LV_1·메뉴 마스터만. 그 외는 본인 건만. 반려는 LV_1 삭제만. */
   const isMenuMaster =
     isLv1 || (!!currentUser?.id && interfaceConfig?.master_editor_id === currentUser.id);
-  const canCancelDist = (d: any) =>
-    d?.status !== 'REJECTED' && (isOwnDistribution(d, currentUser) || isMenuMaster);
-
-  const handleDelete = async (id: string) => {
-    const dist = distributions.find((d) => d.id === id);
-    if (!dist || !canCancelDist(dist)) {
-      return alert('❌ 본인 신청만 철회할 수 있습니다. (타인 건은 LV_1·마스터만 가능)');
+  /** 확정·지급대기(본인/마스터) 철회 — 승인자가 처리하는 PENDING은 제외 */
+  const canCancelDist = (d: any) => {
+    if (!d || d.status === 'REJECTED') return false;
+    if (d.status === 'PENDING') {
+      // 승인 가능자는 대장에서 승인/반려 — 철회 버튼 숨김
+      return false;
     }
-    if (!confirm('정말 지급 신청을 철회하시겠습니까?\n(철회 시 카탈로그 재고가 자동으로 복구됩니다.)')) return;
+    return isOwnDistribution(d, currentUser) || isMenuMaster;
+  };
+  /** 지급대기: 본인만 신청철회 (승인 권한 없을 때) */
+  const canWithdrawPending = (d: any) =>
+    d?.status === 'PENDING' && isOwnDistribution(d, currentUser);
+  /** 반려 이력 삭제: LV_1 전용 */
+  const canDeleteRejected = (d: any) => d?.status === 'REJECTED' && isLv1;
+
+  const handleDelete = async (id: string, mode: 'withdraw' | 'rejectPurge' = 'withdraw') => {
+    const dist = distributions.find((d) => d.id === id);
+    if (mode === 'rejectPurge') {
+      if (!dist || !canDeleteRejected(dist)) {
+        return alert('❌ 반려 이력 삭제는 최고 관리자(LV_1)만 가능합니다.');
+      }
+      if (!confirm('이 반려 이력을 영구 삭제하시겠습니까?\n(재고는 이미 복구된 상태이며, 이력만 삭제됩니다.)')) return;
+    } else {
+      if (!dist || !(canCancelDist(dist) || canWithdrawPending(dist))) {
+        return alert('❌ 본인 신청만 철회할 수 있습니다. (타인 건은 LV_1·마스터만 가능)');
+      }
+      if (!confirm('정말 지급 신청을 철회하시겠습니까?\n(철회 시 카탈로그 재고가 자동으로 복구됩니다.)')) return;
+    }
     const res = await fetch(`/api/marketing/distributions?id=${id}`, { method: 'DELETE' });
     if (res.ok) {
-      setDistributions(prev => prev.filter(d => d.id !== id));
-      alert('지급 신청이 정상적으로 철회되었습니다.');
+      setDistributions((prev) => prev.filter((d) => d.id !== id));
+      if (mode === 'rejectPurge') {
+        alert('반려 이력이 삭제되었습니다.');
+      } else {
+        setPendingApprovals((prev) => prev.filter((d) => d.id !== id));
+        alert('지급 신청이 정상적으로 철회되었습니다.');
+      }
       fetchData();
     } else {
-      alert(await readApiError(res, '철회에 실패했습니다.'));
+      alert(await readApiError(res, mode === 'rejectPurge' ? '삭제에 실패했습니다.' : '철회에 실패했습니다.'));
     }
   };
 
@@ -526,11 +554,7 @@ function DeptDistributionContent() {
         alert(await readApiError(res, '승인 실패'));
         return;
       }
-      setPendingApprovals((prev) => {
-        const next = prev.filter((d) => d.id !== id);
-        if (next.length === 0) setApprovalModalOpen(false);
-        return next;
-      });
+      setPendingApprovals((prev) => prev.filter((d) => d.id !== id));
       await loadDistributions(currentUser, units, systemConfig, distViewMode);
     } finally {
       setApprovalBusyId(null);
@@ -556,11 +580,7 @@ function DeptDistributionContent() {
         alert(await readApiError(res, '반려 실패'));
         return;
       }
-      setPendingApprovals((prev) => {
-        const next = prev.filter((d) => d.id !== id);
-        if (next.length === 0) setApprovalModalOpen(false);
-        return next;
-      });
+      setPendingApprovals((prev) => prev.filter((d) => d.id !== id));
       setRejectTarget(null);
       setRejectReason('');
       await loadDistributions(currentUser, units, systemConfig, distViewMode);
@@ -589,28 +609,96 @@ const canSeeApprovalInbox = isLv1 || isMgmtTree;
 const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
   
   // ==========================================
-  // [탭 1] 지급 이력 연산 로직 (부서/하위센터 + 이메일 식별)
+  // [탭 1] 지급 이력 연계 필터
+  // 공통: 연도 → 월 → …
+  // OWNER(관리물품): … → 물품소속 → 신청자소속
+  // SENDER(부서원신청): … → 신청자소속 → 물품소속
   // ==========================================
+  const isSenderView = distViewMode === 'SENDER';
+
   const availableYears = useMemo(() => {
     const years = distributions
       .map((d) => getKSTYearMonth(getDistBusinessDate(d) as string)?.year?.toString())
       .filter(Boolean) as string[];
-    const unique = Array.from(new Set(years)).sort((a,b) => b.localeCompare(a));
-    const currentYear = kstYear.toString();
-    if (!unique.includes(currentYear)) unique.push(currentYear);
-    return unique;
+    const unique = Array.from(new Set(years));
+    const cur = kstYear.toString();
+    if (!unique.includes(cur)) unique.push(cur);
+    return unique.sort((a, b) => b.localeCompare(a));
   }, [distributions, kstYear]);
 
-  // 🚀 필터 드롭다운을 위한 지급 이력 내 물품 소속 / 신청자 소속 추출
-  const availableDistOwners = useMemo(() => {
-    return Array.from(new Set(distributions.map(d => d.item?.owner_dept || '미지정'))).sort();
-  }, [distributions]);
+  const afterYearList = useMemo(() => {
+    if (selectedYear === 'ALL') return distributions;
+    return distributions.filter((d) => {
+      const ym = getKSTYearMonth(getDistBusinessDate(d) as string);
+      return ym?.year?.toString() === selectedYear;
+    });
+  }, [distributions, selectedYear]);
 
-  const availableDistSenders = useMemo(() => {
-    return Array.from(new Set(distributions.map((d) => d.sender_dept || '미지정'))).sort((a, b) =>
+  const availableMonths = useMemo(() => {
+    const months = afterYearList
+      .map((d) => {
+        const ym = getKSTYearMonth(getDistBusinessDate(d) as string);
+        return ym ? String(ym.month).padStart(2, '0') : '';
+      })
+      .filter(Boolean);
+    return Array.from(new Set(months)).sort((a, b) => a.localeCompare(b));
+  }, [afterYearList]);
+
+  const afterPeriodList = useMemo(() => {
+    if (selectedMonth === 'ALL') return afterYearList;
+    return afterYearList.filter((d) => {
+      const ym = getKSTYearMonth(getDistBusinessDate(d) as string);
+      const m = ym ? String(ym.month).padStart(2, '0') : '';
+      return m === selectedMonth;
+    });
+  }, [afterYearList, selectedMonth]);
+
+  const availableDistOwners = useMemo(() => {
+    const src = isSenderView
+      ? distSenderFilter === 'ALL'
+        ? afterPeriodList
+        : afterPeriodList.filter((d) => (d.sender_dept || '미지정') === distSenderFilter)
+      : afterPeriodList;
+    return Array.from(new Set(src.map((d) => d.item?.owner_dept || '미지정'))).sort((a, b) =>
       a.localeCompare(b, 'ko')
     );
-  }, [distributions]);
+  }, [afterPeriodList, isSenderView, distSenderFilter]);
+
+  const availableDistSenders = useMemo(() => {
+    const src = isSenderView
+      ? afterPeriodList
+      : distOwnerFilter === 'ALL'
+        ? afterPeriodList
+        : afterPeriodList.filter((d) => (d.item?.owner_dept || '미지정') === distOwnerFilter);
+    return Array.from(new Set(src.map((d) => d.sender_dept || '미지정'))).sort((a, b) =>
+      a.localeCompare(b, 'ko')
+    );
+  }, [afterPeriodList, isSenderView, distOwnerFilter]);
+
+  useEffect(() => {
+    if (
+      selectedYear !== 'ALL' &&
+      availableYears.length > 0 &&
+      !availableYears.includes(selectedYear)
+    ) {
+      setSelectedYear(kstYear.toString());
+    }
+  }, [availableYears, selectedYear, kstYear]);
+
+  useEffect(() => {
+    if (selectedMonth !== 'ALL' && !availableMonths.includes(selectedMonth)) {
+      setSelectedMonth('ALL');
+    }
+  }, [availableMonths, selectedMonth]);
+
+  useEffect(() => {
+    if (distOwnerFilter !== 'ALL' && !availableDistOwners.includes(distOwnerFilter)) {
+      setDistOwnerFilter('ALL');
+    }
+    if (distSenderFilter !== 'ALL' && !availableDistSenders.includes(distSenderFilter)) {
+      setDistSenderFilter('ALL');
+    }
+  }, [availableDistOwners, availableDistSenders, distOwnerFilter, distSenderFilter]);
   
   const baseFilteredList = useMemo(() => {
     const itemQ = searchItemQuery.trim().toLowerCase();
@@ -699,8 +787,9 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
   };
   
 // ==========================================
-  // 🚀 [탭 2] 입고 내역 — 지급「관리소속」·카탈로그 편집 가능 스코프와 동일
-  // 나+하위센터 (+ GLOBAL_MGMT 트리면 Organization 풀) / LV_1: 전체
+  // 🚀 [탭 2] 입고 내역
+  // - 가시성: 신청자(등록자)소속 = 나·하위 (타 본부 제외)
+  // - 물품소속 필터로 Organization 등 최상위 물품 입고도 좁혀 볼 수 있음
   // ==========================================
   const ownerScopedDeptNames = useMemo(
     () =>
@@ -717,30 +806,115 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
     [myDeptName, currentUser, units, topOrgName, mgmtDept, isLv1]
   );
 
-  const myDeptPurchases = useMemo(() => {
-    if (ownerScopedDeptNames.size === 0 && !isLv1) return [];
-    return purchases.filter((p) => {
-      const owner = p.item?.owner_dept;
-      if (!owner) return false;
-      if (isLv1) return true;
-      return ownerScopedDeptNames.has(owner);
-    });
-  }, [purchases, ownerScopedDeptNames, isLv1]);
+  const purchaserScopedDeptNames = useMemo(() => {
+    const names = getScopedDeptNames(
+      myDeptName,
+      currentUser?.unit_id || currentUser?.unit?.id,
+      units
+    );
+    return new Set(names);
+  }, [myDeptName, currentUser, units]);
 
+  const myDeptPurchases = useMemo(() => {
+    if (isLv1) return purchases;
+    if (purchaserScopedDeptNames.size === 0) return [];
+    // 신청자(등록자) 소속 = 나·하위만. 타 본부가 Organization 물품을 입고해도 목록·드롭다운에 섞지 않음
+    return purchases.filter((p) => {
+      const purchaser = String(p.purchaser_dept || '').trim();
+      return !!purchaser && purchaserScopedDeptNames.has(purchaser);
+    });
+  }, [purchases, purchaserScopedDeptNames, isLv1]);
+
+  // 입고 장부 연계필터: 연도 → 월 → 물품소속 → 신청자소속 (대장 데이터 기준)
   const purchaseYears = useMemo(() => {
     const years = myDeptPurchases
       .map((p) => getKSTYearMonth(p.purchase_date)?.year?.toString())
       .filter(Boolean) as string[];
-    const unique = Array.from(new Set(years)).sort((a, b) => b.localeCompare(a));
-    const curYear = kstYear.toString();
-    if (!unique.includes(curYear)) unique.push(curYear);
-    return unique;
+    const unique = Array.from(new Set(years));
+    const cur = kstYear.toString();
+    if (!unique.includes(cur)) unique.push(cur);
+    return unique.sort((a, b) => b.localeCompare(a));
   }, [myDeptPurchases, kstYear]);
 
-  // 🚀 필터 드롭다운을 위한 소속 종류 추출
+  const afterPurchaseYearList = useMemo(() => {
+    if (purchaseYear === 'ALL') return myDeptPurchases;
+    return myDeptPurchases.filter((p) => {
+      const ym = getKSTYearMonth(p.purchase_date);
+      return ym?.year?.toString() === purchaseYear;
+    });
+  }, [myDeptPurchases, purchaseYear]);
+
+  const availablePurchaseMonths = useMemo(() => {
+    const months = afterPurchaseYearList
+      .map((p) => {
+        const ym = getKSTYearMonth(p.purchase_date);
+        return ym ? String(ym.month).padStart(2, '0') : '';
+      })
+      .filter(Boolean);
+    return Array.from(new Set(months)).sort((a, b) => a.localeCompare(b));
+  }, [afterPurchaseYearList]);
+
+  const afterPurchasePeriodList = useMemo(() => {
+    if (purchaseMonth === 'ALL') return afterPurchaseYearList;
+    return afterPurchaseYearList.filter((p) => {
+      const ym = getKSTYearMonth(p.purchase_date);
+      const m = ym ? String(ym.month).padStart(2, '0') : '';
+      return m === purchaseMonth;
+    });
+  }, [afterPurchaseYearList, purchaseMonth]);
+
   const availablePurchaseOwners = useMemo(() => {
-    return Array.from(new Set(myDeptPurchases.map(p => p.item?.owner_dept || '미지정'))).sort();
-  }, [myDeptPurchases]);
+    return Array.from(
+      new Set(afterPurchasePeriodList.map((p) => p.item?.owner_dept || '미지정'))
+    ).sort((a, b) => a.localeCompare(b, 'ko'));
+  }, [afterPurchasePeriodList]);
+
+  const afterPurchaseOwnerList = useMemo(() => {
+    if (purchaseOwnerFilter === 'ALL') return afterPurchasePeriodList;
+    return afterPurchasePeriodList.filter(
+      (p) => (p.item?.owner_dept || '미지정') === purchaseOwnerFilter
+    );
+  }, [afterPurchasePeriodList, purchaseOwnerFilter]);
+
+  const availablePurchasePurchasers = useMemo(() => {
+    return Array.from(
+      new Set(afterPurchaseOwnerList.map((p) => p.purchaser_dept || '미지정'))
+    ).sort((a, b) => a.localeCompare(b, 'ko'));
+  }, [afterPurchaseOwnerList]);
+
+  useEffect(() => {
+    if (
+      purchaseYear !== 'ALL' &&
+      purchaseYears.length > 0 &&
+      !purchaseYears.includes(purchaseYear)
+    ) {
+      setPurchaseYear(kstYear.toString());
+    }
+  }, [purchaseYears, purchaseYear, kstYear]);
+
+  useEffect(() => {
+    if (purchaseMonth !== 'ALL' && !availablePurchaseMonths.includes(purchaseMonth)) {
+      setPurchaseMonth('ALL');
+    }
+  }, [availablePurchaseMonths, purchaseMonth]);
+
+  useEffect(() => {
+    if (
+      purchaseOwnerFilter !== 'ALL' &&
+      !availablePurchaseOwners.includes(purchaseOwnerFilter)
+    ) {
+      setPurchaseOwnerFilter('ALL');
+    }
+  }, [availablePurchaseOwners, purchaseOwnerFilter]);
+
+  useEffect(() => {
+    if (
+      purchasePurchaserFilter !== 'ALL' &&
+      !availablePurchasePurchasers.includes(purchasePurchaserFilter)
+    ) {
+      setPurchasePurchaserFilter('ALL');
+    }
+  }, [availablePurchasePurchasers, purchasePurchaserFilter]);
 
   const baseFilteredPurchases = useMemo(() => {
     const itemQ = purchaseItemQuery.trim().toLowerCase();
@@ -750,13 +924,26 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
       const yearMatch = purchaseYear === 'ALL' || ym?.year?.toString() === purchaseYear;
       const dMonth = ym ? String(ym.month).padStart(2, '0') : '';
       const monthMatch = purchaseMonth === 'ALL' || dMonth === purchaseMonth;
-      const ownerMatch = purchaseOwnerFilter === 'ALL' || p.item?.owner_dept === purchaseOwnerFilter;
+      const ownerMatch =
+        purchaseOwnerFilter === 'ALL' ||
+        (p.item?.owner_dept || '미지정') === purchaseOwnerFilter;
+      const purchaserMatch =
+        purchasePurchaserFilter === 'ALL' ||
+        (p.purchaser_dept || '미지정') === purchasePurchaserFilter;
       const vendorName = (p.old_vendor || (typeof p.vendor === 'string' ? p.vendor : '') || '').toLowerCase();
       const itemMatch = !itemQ || (p.item?.name || '').toLowerCase().includes(itemQ);
       const vendorMatch = !vendorQ || vendorName.includes(vendorQ);
-      return yearMatch && monthMatch && ownerMatch && itemMatch && vendorMatch;
+      return yearMatch && monthMatch && ownerMatch && purchaserMatch && itemMatch && vendorMatch;
     }).sort((a, b) => new Date(b.purchase_date).getTime() - new Date(a.purchase_date).getTime());
-  }, [myDeptPurchases, purchaseYear, purchaseMonth, purchaseItemQuery, purchaseVendorQuery, purchaseOwnerFilter]);
+  }, [
+    myDeptPurchases,
+    purchaseYear,
+    purchaseMonth,
+    purchaseItemQuery,
+    purchaseVendorQuery,
+    purchaseOwnerFilter,
+    purchasePurchaserFilter,
+  ]);
 
   const totalPurchaseAmount = useMemo(() => {
     return baseFilteredPurchases.reduce((acc, cur) => acc + (cur.total_price || 0), 0);
@@ -793,7 +980,15 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
   useEffect(() => {
     setCurrentPurchasePage(1);
     setSelectedPurchaseIds(new Set());
-  }, [purchaseYear, purchaseMonth, purchaseItemQuery, purchaseVendorQuery, selectedItemFilter, purchaseOwnerFilter]);
+  }, [
+    purchaseYear,
+    purchaseMonth,
+    purchaseItemQuery,
+    purchaseVendorQuery,
+    selectedItemFilter,
+    purchaseOwnerFilter,
+    purchasePurchaserFilter,
+  ]);
 
   const toggleAllPurchases = () => {
     const currentIds = paginatedPurchases.map(p => p.id);
@@ -822,26 +1017,75 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
     const years = myDeptEndedItems
       .map((i) => getKSTYearMonth(i.updatedAt || i.createdAt)?.year?.toString())
       .filter(Boolean) as string[];
-    const unique = Array.from(new Set(years)).sort((a, b) => b.localeCompare(a));
+    const unique = Array.from(new Set(years));
     const curYear = kstYear.toString();
     if (!unique.includes(curYear)) unique.push(curYear);
-    return unique;
+    return unique.sort((a, b) => b.localeCompare(a));
   }, [myDeptEndedItems, kstYear]);
 
-  // 🚀 필터 드롭다운을 위한 소속 종류 추출
+  const afterEndedYearList = useMemo(() => {
+    if (endedYearFilter === 'ALL') return myDeptEndedItems;
+    return myDeptEndedItems.filter((item) => {
+      const ym = getKSTYearMonth(item.updatedAt || item.createdAt);
+      return ym?.year?.toString() === endedYearFilter;
+    });
+  }, [myDeptEndedItems, endedYearFilter]);
+
+  const availableEndedMonths = useMemo(() => {
+    const months = afterEndedYearList
+      .map((item) => {
+        const ym = getKSTYearMonth(item.updatedAt || item.createdAt);
+        return ym ? String(ym.month).padStart(2, '0') : '';
+      })
+      .filter(Boolean);
+    return Array.from(new Set(months)).sort((a, b) => a.localeCompare(b));
+  }, [afterEndedYearList]);
+
+  const afterEndedPeriodList = useMemo(() => {
+    if (endedMonthFilter === 'ALL') return afterEndedYearList;
+    return afterEndedYearList.filter((item) => {
+      const ym = getKSTYearMonth(item.updatedAt || item.createdAt);
+      const m = ym ? String(ym.month).padStart(2, '0') : '';
+      return m === endedMonthFilter;
+    });
+  }, [afterEndedYearList, endedMonthFilter]);
+
   const availableEndedOwners = useMemo(() => {
-    return Array.from(new Set(myDeptEndedItems.map(i => i.owner_dept || '미지정'))).sort();
-  }, [myDeptEndedItems]);
+    return Array.from(
+      new Set(afterEndedPeriodList.map((i) => i.owner_dept || '미지정'))
+    ).sort((a, b) => a.localeCompare(b, 'ko'));
+  }, [afterEndedPeriodList]);
+
+  useEffect(() => {
+    if (
+      endedYearFilter !== 'ALL' &&
+      endedYears.length > 0 &&
+      !endedYears.includes(endedYearFilter)
+    ) {
+      setEndedYearFilter(kstYear.toString());
+    }
+  }, [endedYears, endedYearFilter, kstYear]);
+
+  useEffect(() => {
+    if (endedMonthFilter !== 'ALL' && !availableEndedMonths.includes(endedMonthFilter)) {
+      setEndedMonthFilter('ALL');
+    }
+  }, [availableEndedMonths, endedMonthFilter]);
+
+  useEffect(() => {
+    if (
+      endedOwnerFilter !== 'ALL' &&
+      !availableEndedOwners.includes(endedOwnerFilter)
+    ) {
+      setEndedOwnerFilter('ALL');
+    }
+  }, [availableEndedOwners, endedOwnerFilter]);
 
   const filteredEndedItems = useMemo(() => {
     const itemQ = endedItemQuery.trim().toLowerCase();
     const regQ = endedRegistrantQuery.trim().toLowerCase();
-    return myDeptEndedItems.filter(item => {
-      const ym = getKSTYearMonth(item.updatedAt || item.createdAt);
-      const yearMatch = endedYearFilter === 'ALL' || ym?.year?.toString() === endedYearFilter;
-      const dMonth = ym ? String(ym.month).padStart(2, '0') : '';
-      const monthMatch = endedMonthFilter === 'ALL' || dMonth === endedMonthFilter;
-      const ownerMatch = endedOwnerFilter === 'ALL' || item.owner_dept === endedOwnerFilter;
+    return afterEndedPeriodList.filter(item => {
+      const ownerMatch = endedOwnerFilter === 'ALL' || (item.owner_dept || '미지정') === endedOwnerFilter;
       const reg = resolveItemRegistrant(item);
       const itemMatch = !itemQ || (item.name || '').toLowerCase().includes(itemQ);
       const registrantMatch =
@@ -849,9 +1093,9 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
         (reg.name || '').toLowerCase().includes(regQ) ||
         (reg.dept || '').toLowerCase().includes(regQ) ||
         (reg.email || '').toLowerCase().includes(regQ);
-      return yearMatch && monthMatch && ownerMatch && itemMatch && registrantMatch;
+      return ownerMatch && itemMatch && registrantMatch;
     }).sort((a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime());
-  }, [myDeptEndedItems, endedYearFilter, endedMonthFilter, endedOwnerFilter, endedItemQuery, endedRegistrantQuery]);
+  }, [afterEndedPeriodList, endedOwnerFilter, endedItemQuery, endedRegistrantQuery]);
 
   const paginatedEndedItems = useMemo(() => {
     const start = (endedPage - 1) * itemsPerPage;
@@ -1080,30 +1324,52 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
         </p>
       </div>
 
-      {/* GLOBAL_MGMT / LV_1: Organization 풀 승인대기 — 부서 지급 이력 탭에서만 */}
-      {activeTab === 'DIST' && canSeeApprovalInbox && pendingApprovals.length > 0 && (
+      {/* GLOBAL_MGMT / LV_1: Organization 풀 승인대기 — 0건이어도 항상 표시 (건수>0만 황색 강조) */}
+      {activeTab === 'DIST' && canSeeApprovalInbox && (
         <button
           type="button"
           onClick={() => setApprovalModalOpen(true)}
-          className="w-full text-left bg-amber-50 border border-amber-200 hover:bg-amber-100/80 hover:border-amber-300 rounded-[1.5rem] px-5 py-4 shadow-sm transition-colors group"
+          className={`w-full text-left rounded-[1.5rem] px-5 py-4 shadow-sm transition-colors group border ${
+            pendingApprovals.length > 0
+              ? 'bg-amber-50 border-amber-200 hover:bg-amber-100/80 hover:border-amber-300'
+              : 'bg-slate-50 border-slate-200 hover:bg-slate-100/80 hover:border-slate-300'
+          }`}
         >
           <div className="flex items-center justify-between gap-3 flex-wrap">
             <div className="min-w-0 flex items-center gap-3">
-              <span className="w-10 h-10 rounded-xl bg-amber-500 text-white flex items-center justify-center text-lg shrink-0 shadow-sm">
+              <span
+                className={`w-10 h-10 rounded-xl text-white flex items-center justify-center text-lg shrink-0 shadow-sm ${
+                  pendingApprovals.length > 0 ? 'bg-amber-500' : 'bg-slate-400'
+                }`}
+              >
                 ⏳
               </span>
               <div className="min-w-0">
-                <p className="text-sm font-black text-amber-900">
+                <p
+                  className={`text-sm font-black ${
+                    pendingApprovals.length > 0 ? 'text-amber-900' : 'text-slate-700'
+                  }`}
+                >
                   승인 대기 {pendingApprovals.length.toLocaleString()}건
                 </p>
-                <p className="text-[11px] font-bold text-amber-700/80 mt-0.5 truncate">
-                  {canProcessApprovals
-                    ? '전사(Organization) 풀 지급 승인 요청 · 클릭하여 확인'
-                    : '전사(Organization) 풀 지급 승인 요청 · 열람만 가능 (편집 권한 없음)'}
+                <p
+                  className={`text-[11px] font-bold mt-0.5 truncate ${
+                    pendingApprovals.length > 0 ? 'text-amber-700/80' : 'text-slate-500'
+                  }`}
+                >
+                  {pendingApprovals.length > 0
+                    ? canProcessApprovals
+                      ? '전사(Organization) 풀 지급 승인 요청 · 클릭하여 확인'
+                      : '전사(Organization) 풀 지급 승인 요청 · 열람만 가능 (편집 권한 없음)'
+                    : '대기 중인 요청이 없습니다 · 클릭하여 확인'}
                 </p>
               </div>
             </div>
-            <span className="text-amber-600 group-hover:translate-x-0.5 transition-transform font-black text-sm shrink-0">
+            <span
+              className={`group-hover:translate-x-0.5 transition-transform font-black text-sm shrink-0 ${
+                pendingApprovals.length > 0 ? 'text-amber-600' : 'text-slate-400'
+              }`}
+            >
               확인하기 →
             </span>
           </div>
@@ -1159,39 +1425,25 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
               count={finalFilteredList.length}
             >
               <div className="flex items-center gap-2 flex-wrap">
-                <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm">
-                  <span className="text-[10px] font-black text-slate-400 uppercase">물품소속</span>
-                  <select
-                    value={distOwnerFilter}
-                    onChange={(e) => setDistOwnerFilter(e.target.value)}
-                    className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent max-w-[140px]"
+                <div className="relative group/filter flex items-center gap-2 bg-white px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm">
+                  <span
+                    role="tooltip"
+                    className="pointer-events-none absolute left-0 top-full mt-1.5 z-50 hidden group-hover/filter:block whitespace-nowrap rounded-lg bg-slate-800 px-2.5 py-1.5 text-[10px] font-bold text-white shadow-lg"
                   >
-                    <option value="ALL">전체</option>
-                    {availableDistOwners.map((o) => (
-                      <option key={o} value={o}>{o}</option>
-                    ))}
-                  </select>
-
-                  <div className="w-px h-3.5 bg-slate-300 mx-0.5"></div>
-
-                  <span className="text-[10px] font-black text-slate-400 uppercase">신청자소속</span>
-                  <select
-                    value={distSenderFilter}
-                    onChange={(e) => setDistSenderFilter(e.target.value)}
-                    className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent max-w-[140px]"
-                  >
-                    <option value="ALL">전체</option>
-                    {availableDistSenders.map((s) => (
-                      <option key={s} value={s}>{s}</option>
-                    ))}
-                  </select>
-
-                  <div className="w-px h-3.5 bg-slate-300 mx-0.5"></div>
+                    {isSenderView
+                      ? '연도 → 월 → 신청자소속 → 물품소속 · 연계필터'
+                      : '연도 → 월 → 물품소속 → 신청자소속 · 연계필터'}
+                  </span>
 
                   <span className="text-[10px] font-black text-slate-400 uppercase">연도</span>
                   <select
                     value={selectedYear}
-                    onChange={(e) => setSelectedYear(e.target.value)}
+                    onChange={(e) => {
+                      setSelectedYear(e.target.value);
+                      setSelectedMonth('ALL');
+                      setDistOwnerFilter('ALL');
+                      setDistSenderFilter('ALL');
+                    }}
                     className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent"
                   >
                     <option value="ALL">전체</option>
@@ -1205,14 +1457,84 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
                   <span className="text-[10px] font-black text-slate-400 uppercase">월별</span>
                   <select
                     value={selectedMonth}
-                    onChange={(e) => setSelectedMonth(e.target.value)}
+                    onChange={(e) => {
+                      setSelectedMonth(e.target.value);
+                      setDistOwnerFilter('ALL');
+                      setDistSenderFilter('ALL');
+                    }}
                     className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent"
                   >
                     <option value="ALL">전체</option>
-                    {Array.from({ length: 12 }, (_, i) => String(i + 1).padStart(2, '0')).map((m) => (
+                    {availableMonths.map((m) => (
                       <option key={m} value={m}>{m}월</option>
                     ))}
                   </select>
+
+                  <div className="w-px h-3.5 bg-slate-300 mx-0.5"></div>
+
+                  {isSenderView ? (
+                    <>
+                      <span className="text-[10px] font-black text-slate-400 uppercase">신청자소속</span>
+                      <select
+                        value={distSenderFilter}
+                        onChange={(e) => {
+                          setDistSenderFilter(e.target.value);
+                          setDistOwnerFilter('ALL');
+                        }}
+                        className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent max-w-[140px]"
+                      >
+                        <option value="ALL">전체</option>
+                        {availableDistSenders.map((s) => (
+                          <option key={s} value={s}>{s}</option>
+                        ))}
+                      </select>
+
+                      <div className="w-px h-3.5 bg-slate-300 mx-0.5"></div>
+
+                      <span className="text-[10px] font-black text-slate-400 uppercase">물품소속</span>
+                      <select
+                        value={distOwnerFilter}
+                        onChange={(e) => setDistOwnerFilter(e.target.value)}
+                        className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent max-w-[140px]"
+                      >
+                        <option value="ALL">전체</option>
+                        {availableDistOwners.map((o) => (
+                          <option key={o} value={o}>{o}</option>
+                        ))}
+                      </select>
+                    </>
+                  ) : (
+                    <>
+                      <span className="text-[10px] font-black text-slate-400 uppercase">물품소속</span>
+                      <select
+                        value={distOwnerFilter}
+                        onChange={(e) => {
+                          setDistOwnerFilter(e.target.value);
+                          setDistSenderFilter('ALL');
+                        }}
+                        className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent max-w-[140px]"
+                      >
+                        <option value="ALL">전체</option>
+                        {availableDistOwners.map((o) => (
+                          <option key={o} value={o}>{o}</option>
+                        ))}
+                      </select>
+
+                      <div className="w-px h-3.5 bg-slate-300 mx-0.5"></div>
+
+                      <span className="text-[10px] font-black text-slate-400 uppercase">신청자소속</span>
+                      <select
+                        value={distSenderFilter}
+                        onChange={(e) => setDistSenderFilter(e.target.value)}
+                        className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent max-w-[140px]"
+                      >
+                        <option value="ALL">전체</option>
+                        {availableDistSenders.map((s) => (
+                          <option key={s} value={s}>{s}</option>
+                        ))}
+                      </select>
+                    </>
+                  )}
                 </div>
 
                 <div className="flex items-center gap-2">
@@ -1410,8 +1732,50 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
                         </td>
                         <td className={`px-2 text-center truncate max-w-[120px] ${isRejected ? '' : 'text-slate-700'}`} title={d.sender_email || ''}>{d.sender_email || '-'}</td>
                         <td className="pr-4 text-center no-underline" style={isRejected ? { textDecoration: 'none' } : undefined} onClick={(e)=>e.stopPropagation()}>
-                          {canCancel ? (
-                            <button onClick={() => handleDelete(d.id)} className="w-full py-1.5 bg-red-50 text-red-500 border border-red-100 rounded-md text-[10px] font-black hover:bg-red-500 hover:text-white transition-colors shadow-sm whitespace-nowrap">
+                          {isPending && canProcessApprovals ? (
+                            <div className="flex gap-1 justify-center">
+                              <button
+                                type="button"
+                                disabled={approvalBusyId === d.id}
+                                onClick={() => handleApprovePending(d.id)}
+                                className="px-2 py-1.5 rounded-md text-[10px] font-black bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-40 whitespace-nowrap"
+                              >
+                                승인
+                              </button>
+                              <button
+                                type="button"
+                                disabled={approvalBusyId === d.id}
+                                onClick={() => {
+                                  setRejectReason('');
+                                  setRejectTarget(d);
+                                }}
+                                className="px-2 py-1.5 rounded-md text-[10px] font-black bg-white border border-red-200 text-red-500 hover:bg-red-500 hover:text-white disabled:opacity-40 whitespace-nowrap"
+                              >
+                                반려
+                              </button>
+                            </div>
+                          ) : isPending && canWithdrawPending(d) ? (
+                            <button
+                              type="button"
+                              onClick={() => handleDelete(d.id, 'withdraw')}
+                              className="w-full py-1.5 bg-red-50 text-red-500 border border-red-100 rounded-md text-[10px] font-black hover:bg-red-500 hover:text-white transition-colors shadow-sm whitespace-nowrap"
+                            >
+                              신청철회
+                            </button>
+                          ) : canDeleteRejected(d) ? (
+                            <button
+                              type="button"
+                              onClick={() => handleDelete(d.id, 'rejectPurge')}
+                              className="w-full py-1.5 bg-slate-800 text-white border border-slate-700 rounded-md text-[10px] font-black hover:bg-red-600 transition-colors shadow-sm whitespace-nowrap"
+                            >
+                              삭제(LV_1)
+                            </button>
+                          ) : canCancel ? (
+                            <button
+                              type="button"
+                              onClick={() => handleDelete(d.id, 'withdraw')}
+                              className="w-full py-1.5 bg-red-50 text-red-500 border border-red-100 rounded-md text-[10px] font-black hover:bg-red-500 hover:text-white transition-colors shadow-sm whitespace-nowrap"
+                            >
                               신청철회
                             </button>
                           ) : (
@@ -1445,25 +1809,23 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
         <div className="bg-white border border-slate-200 rounded-[2.5rem] shadow-sm overflow-hidden animate-in fade-in slide-in-from-bottom-4 duration-500">
           <HeaderLight title="부서 입고 내역 장부" count={finalFilteredPurchases.length}>
             <div className="flex items-center gap-2 flex-wrap">
-              <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm">
-                <span className="text-[10px] font-black text-slate-400 uppercase">물품소속</span>
-                <select
-                  value={purchaseOwnerFilter}
-                  onChange={(e) => setPurchaseOwnerFilter(e.target.value)}
-                  className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent max-w-[140px]"
+              <div className="relative group/filter flex items-center gap-2 bg-white px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm">
+                <span
+                  role="tooltip"
+                  className="pointer-events-none absolute left-0 top-full mt-1.5 z-50 hidden group-hover/filter:block whitespace-nowrap rounded-lg bg-slate-800 px-2.5 py-1.5 text-[10px] font-bold text-white shadow-lg"
                 >
-                  <option value="ALL">전체</option>
-                  {availablePurchaseOwners.map((o) => (
-                    <option key={o} value={o}>{o}</option>
-                  ))}
-                </select>
-
-                <div className="w-px h-3.5 bg-slate-300 mx-0.5"></div>
+                  연도 → 월 → 물품소속 → 신청자소속 · 연계필터
+                </span>
 
                 <span className="text-[10px] font-black text-slate-400 uppercase">연도</span>
                 <select
                   value={purchaseYear}
-                  onChange={(e) => setPurchaseYear(e.target.value)}
+                  onChange={(e) => {
+                    setPurchaseYear(e.target.value);
+                    setPurchaseMonth('ALL');
+                    setPurchaseOwnerFilter('ALL');
+                    setPurchasePurchaserFilter('ALL');
+                  }}
                   className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent"
                 >
                   <option value="ALL">전체</option>
@@ -1477,12 +1839,47 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
                 <span className="text-[10px] font-black text-slate-400 uppercase">월별</span>
                 <select
                   value={purchaseMonth}
-                  onChange={(e) => setPurchaseMonth(e.target.value)}
+                  onChange={(e) => {
+                    setPurchaseMonth(e.target.value);
+                    setPurchaseOwnerFilter('ALL');
+                    setPurchasePurchaserFilter('ALL');
+                  }}
                   className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent"
                 >
                   <option value="ALL">전체</option>
-                  {Array.from({ length: 12 }, (_, i) => String(i + 1).padStart(2, '0')).map((m) => (
+                  {availablePurchaseMonths.map((m) => (
                     <option key={m} value={m}>{m}월</option>
+                  ))}
+                </select>
+
+                <div className="w-px h-3.5 bg-slate-300 mx-0.5"></div>
+
+                <span className="text-[10px] font-black text-slate-400 uppercase">물품소속</span>
+                <select
+                  value={purchaseOwnerFilter}
+                  onChange={(e) => {
+                    setPurchaseOwnerFilter(e.target.value);
+                    setPurchasePurchaserFilter('ALL');
+                  }}
+                  className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent max-w-[140px]"
+                >
+                  <option value="ALL">전체</option>
+                  {availablePurchaseOwners.map((o) => (
+                    <option key={o} value={o}>{o}</option>
+                  ))}
+                </select>
+
+                <div className="w-px h-3.5 bg-slate-300 mx-0.5"></div>
+
+                <span className="text-[10px] font-black text-slate-400 uppercase">신청자소속</span>
+                <select
+                  value={purchasePurchaserFilter}
+                  onChange={(e) => setPurchasePurchaserFilter(e.target.value)}
+                  className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent max-w-[140px]"
+                >
+                  <option value="ALL">전체</option>
+                  {availablePurchasePurchasers.map((d) => (
+                    <option key={d} value={d}>{d}</option>
                   ))}
                 </select>
               </div>
@@ -1668,25 +2065,22 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
         <div className="bg-white border border-slate-200 rounded-[2.5rem] shadow-sm overflow-hidden animate-in fade-in slide-in-from-bottom-4 duration-500">
           <HeaderLight title="종료 물품 리스트" count={filteredEndedItems.length}>
             <div className="flex items-center gap-2 flex-wrap">
-              <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm">
-                <span className="text-[10px] font-black text-slate-400 uppercase">물품소속</span>
-                <select
-                  value={endedOwnerFilter}
-                  onChange={(e) => setEndedOwnerFilter(e.target.value)}
-                  className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent max-w-[140px]"
+              <div className="relative group/filter flex items-center gap-2 bg-white px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm">
+                <span
+                  role="tooltip"
+                  className="pointer-events-none absolute left-0 top-full mt-1.5 z-50 hidden group-hover/filter:block whitespace-nowrap rounded-lg bg-slate-800 px-2.5 py-1.5 text-[10px] font-bold text-white shadow-lg"
                 >
-                  <option value="ALL">전체</option>
-                  {availableEndedOwners.map((o) => (
-                    <option key={o} value={o}>{o}</option>
-                  ))}
-                </select>
-
-                <div className="w-px h-3.5 bg-slate-300 mx-0.5"></div>
+                  연도 → 월 → 물품소속 · 연계필터
+                </span>
 
                 <span className="text-[10px] font-black text-slate-400 uppercase">연도</span>
                 <select
                   value={endedYearFilter}
-                  onChange={(e) => setEndedYearFilter(e.target.value)}
+                  onChange={(e) => {
+                    setEndedYearFilter(e.target.value);
+                    setEndedMonthFilter('ALL');
+                    setEndedOwnerFilter('ALL');
+                  }}
                   className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent"
                 >
                   <option value="ALL">전체</option>
@@ -1700,12 +2094,29 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
                 <span className="text-[10px] font-black text-slate-400 uppercase">월별</span>
                 <select
                   value={endedMonthFilter}
-                  onChange={(e) => setEndedMonthFilter(e.target.value)}
+                  onChange={(e) => {
+                    setEndedMonthFilter(e.target.value);
+                    setEndedOwnerFilter('ALL');
+                  }}
                   className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent"
                 >
                   <option value="ALL">전체</option>
-                  {Array.from({ length: 12 }, (_, i) => String(i + 1).padStart(2, '0')).map((m) => (
+                  {availableEndedMonths.map((m) => (
                     <option key={m} value={m}>{m}월</option>
+                  ))}
+                </select>
+
+                <div className="w-px h-3.5 bg-slate-300 mx-0.5"></div>
+
+                <span className="text-[10px] font-black text-slate-400 uppercase">물품소속</span>
+                <select
+                  value={endedOwnerFilter}
+                  onChange={(e) => setEndedOwnerFilter(e.target.value)}
+                  className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent max-w-[140px]"
+                >
+                  <option value="ALL">전체</option>
+                  {availableEndedOwners.map((o) => (
+                    <option key={o} value={o}>{o}</option>
                   ))}
                 </select>
               </div>
@@ -1834,13 +2245,31 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
 
       {approvalModalOpen && activeTab === 'DIST' && canSeeApprovalInbox && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[400] flex items-center justify-center p-4">
-          <div className="bg-white w-full max-w-4xl max-h-[85vh] rounded-[2rem] shadow-2xl flex flex-col border border-amber-100 overflow-hidden">
-            <div className="flex items-center justify-between gap-3 px-6 py-4 border-b border-amber-100 bg-amber-50 shrink-0">
+          <div
+            className={`bg-white w-full max-w-4xl max-h-[85vh] rounded-[2rem] shadow-2xl flex flex-col overflow-hidden border ${
+              pendingApprovals.length > 0 ? 'border-amber-100' : 'border-slate-200'
+            }`}
+          >
+            <div
+              className={`flex items-center justify-between gap-3 px-6 py-4 border-b shrink-0 ${
+                pendingApprovals.length > 0
+                  ? 'border-amber-100 bg-amber-50'
+                  : 'border-slate-100 bg-slate-50'
+              }`}
+            >
               <div>
-                <h3 className="text-lg font-black text-amber-900 flex items-center gap-2">
+                <h3
+                  className={`text-lg font-black flex items-center gap-2 ${
+                    pendingApprovals.length > 0 ? 'text-amber-900' : 'text-slate-800'
+                  }`}
+                >
                   <span>⏳</span> 승인 대기 요청
                 </h3>
-                <p className="text-[11px] font-bold text-amber-700/80 mt-0.5">
+                <p
+                  className={`text-[11px] font-bold mt-0.5 ${
+                    pendingApprovals.length > 0 ? 'text-amber-700/80' : 'text-slate-500'
+                  }`}
+                >
                   전사(Organization) 풀 · {pendingApprovals.length.toLocaleString()}건
                   {!canProcessApprovals ? ' · 열람 전용' : ''}
                 </p>
@@ -1848,7 +2277,11 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
               <button
                 type="button"
                 onClick={() => setApprovalModalOpen(false)}
-                className="w-10 h-10 rounded-full bg-white border border-amber-200 text-amber-700 font-black hover:bg-amber-100"
+                className={`w-10 h-10 rounded-full bg-white font-black hover:bg-slate-100 border ${
+                  pendingApprovals.length > 0
+                    ? 'border-amber-200 text-amber-700 hover:bg-amber-100'
+                    : 'border-slate-200 text-slate-500'
+                }`}
               >
                 ✕
               </button>

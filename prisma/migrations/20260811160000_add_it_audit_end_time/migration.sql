@@ -1,0 +1,2 @@
+-- AlterTable
+ALTER TABLE "ITAudit" ADD COLUMN IF NOT EXISTS "endTime" TEXT DEFAULT '23:59';

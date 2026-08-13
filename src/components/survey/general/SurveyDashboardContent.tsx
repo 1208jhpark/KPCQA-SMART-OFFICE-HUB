@@ -176,23 +176,27 @@ export default function SurveyDashboardContent() {
      
   // 💡 [원인 해결] 전역 공통 KST 함수 적용
   const todayStr = getKSTDateString();
+
+  /** DB status가 진행중이어도 KST 마감 시각이 지났으면 실질 종료 */
+  const isSurveyOpen = (s: any) =>
+    s?.status === '진행중' && !isPastKSTDeadline(s.endDate, s.endTime);
     
   const visibleSurveys = useMemo(() => surveys.filter(s => s.status === '진행중' || s.status === '완료'), [surveys]);
    
   const filteredSurveys = useMemo(() => {
     if (filterClosingToday) {
-      return visibleSurveys.filter(s => s.status === '진행중' && s.endDate === todayStr);
+      return visibleSurveys.filter(s => isSurveyOpen(s) && s.endDate === todayStr);
     }
     if (filterNudged) {
       return visibleSurveys.filter(s => { 
         const isTargeted = currentUser?.roles?.includes('LV_1') || checkHierarchyTarget(s.target, currentUser?.unit?.unit_name); 
-        return s.status === '진행중' && isTargeted && !myResponses[s.id] && nudgedSurveys.includes(s.id); 
+        return isSurveyOpen(s) && isTargeted && !myResponses[s.id] && nudgedSurveys.includes(s.id); 
       });
     }
     if (filterPending) {
       return visibleSurveys.filter(s => { 
         const isTargeted = currentUser?.roles?.includes('LV_1') || checkHierarchyTarget(s.target, currentUser?.unit?.unit_name); 
-        return s.status === '진행중' && isTargeted && !myResponses[s.id]; 
+        return isSurveyOpen(s) && isTargeted && !myResponses[s.id]; 
       });
     }
     return visibleSurveys;
@@ -200,13 +204,16 @@ export default function SurveyDashboardContent() {
      
   const stats = useMemo(() => {
     if (!currentUser) return { ongoingCount: 0, closingTodayCount: 0, myPendingCount: 0, nudgeCount: 0 };
-    const allOngoing = surveys.filter(s => s.status === '진행중');
+    // 기간종료(마감 시각 경과)는 진행 중·미참여·독촉 카운트에서 제외
+    const allOngoing = surveys.filter((s) => isSurveyOpen(s));
     const pendingSurveys = allOngoing.filter(s => { const isTargeted = currentUser?.roles?.includes('LV_1') || checkHierarchyTarget(s.target, currentUser?.unit?.unit_name); return isTargeted && !myResponses[s.id]; });
     return { ongoingCount: allOngoing.length, closingTodayCount: allOngoing.filter(s => s.endDate === todayStr).length, myPendingCount: pendingSurveys.length, nudgeCount: pendingSurveys.filter(s => nudgedSurveys.includes(s.id)).length };
   }, [surveys, myResponses, todayStr, currentUser, unitsList, nudgedSurveys]);
      
   const handleOpenIntro = (survey: any) => {
-    if (survey.status === '완료') return alert('🔒 본 설문조사 창구는 기한이 만료되어 닫혔습니다.');
+    if (survey.status === '완료' || isPastKSTDeadline(survey.endDate, survey.endTime)) {
+      return alert('🔒 본 설문조사 창구는 기한이 만료되어 닫혔습니다.');
+    }
     setIntroModalSurvey(survey);
   };
      
@@ -533,8 +540,15 @@ export default function SurveyDashboardContent() {
                       ) : isSubmitted ? (
                         <button onClick={() => alert(`✅ 제출 내역 정보: ${myResponses[s.id].submittedAt}`)} className="px-3 py-1.5 rounded-lg font-black text-[10px] bg-emerald-50 border border-emerald-100 text-emerald-700 hover:bg-emerald-100/50">📬 제출완료</button>
                       ) : isClosed ? (
-                        <button disabled className="px-4 py-1.5 rounded-lg font-black text-[10px] bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed">
-                          {s.status === '완료' ? '🔒 마감됨' : '⏰ 기간종료'}
+                        <button
+                          disabled
+                          title={s.status === '완료' ? '관리자 마감 · 미참여' : '기간종료 · 미참여'}
+                          className="px-3 py-1.5 rounded-lg font-black text-[10px] bg-slate-100 text-slate-500 border border-slate-200 cursor-not-allowed leading-tight"
+                        >
+                          <span className="block">📥 미참여</span>
+                          <span className="block text-[8px] font-bold text-slate-400 mt-0.5">
+                            {s.status === '완료' ? '마감됨' : '기간종료'}
+                          </span>
                         </button>
                       ) : (
                         <button 

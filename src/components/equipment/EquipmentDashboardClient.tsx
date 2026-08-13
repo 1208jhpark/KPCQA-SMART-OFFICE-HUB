@@ -628,24 +628,41 @@ export default function EquipmentMainDashboard() {
 
       {showQrModal && (
         <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-sm z-[500] flex items-center justify-center p-4" onClick={() => setShowQrModal(null)}>
-          <div className="bg-white p-8 rounded-[2rem] flex flex-col items-center shadow-2xl animate-fade-in" onClick={e => e.stopPropagation()}>
-            <div className="w-full flex justify-between items-center mb-6">
+          <div className="bg-white p-8 rounded-[2rem] flex flex-col items-center shadow-2xl animate-in zoom-in-95 duration-200" onClick={e => e.stopPropagation()}>
+            <div className="w-full flex justify-between items-center mb-4">
               <h3 className="font-black text-lg text-slate-800 tracking-tight">장비 QR 라벨</h3>
-              <span className="bg-sky-100 text-sky-700 px-2 py-1 rounded text-[10px] font-black">{showQrModal.department || '공용'}</span>
+              <span className="bg-indigo-100 text-indigo-700 px-2 py-1 rounded text-[10px] font-black">실제 출력 미리보기</span>
             </div>
-            <div className="bg-white p-4 border-2 border-slate-100 rounded-2xl shadow-sm mb-4">
-              <EquipmentQrImage
-                equipmentId={showQrModal.id}
-                size={250}
-                className="w-48 h-48 bg-white p-2"
-                alt="Asset QR Code"
-              />
+
+            {/* 실제 인쇄되는 40mm 정사각 라벨과 동일한 형태 (화면용 확대) */}
+            <div
+              className="flex flex-col justify-between bg-white border-2 border-dashed border-slate-300 rounded-lg text-center mb-4"
+              style={{ width: '260px', height: '260px', padding: '14px 12px 12px 12px', boxSizing: 'border-box' }}
+            >
+              <div className="w-full space-y-1">
+                <div className="flex justify-center items-center gap-1.5">
+                  <span className="text-[11px] font-black bg-slate-900 text-white px-2 py-0.5 rounded-full leading-none">장비</span>
+                  <span className="text-[12px] font-black text-slate-700 truncate max-w-[170px]">{showQrModal.name}</span>
+                </div>
+                <p className="text-[13px] font-black text-slate-900 truncate tracking-tight">{showQrModal.model_name || '모델번호 미상'}</p>
+                {showQrModal.serial_no ? (
+                  <p className="text-[11px] font-mono text-slate-500 truncate">시리얼 {showQrModal.serial_no}</p>
+                ) : null}
+              </div>
+              <div className="w-full flex justify-center items-center my-1">
+                <EquipmentQrImage
+                  equipmentId={showQrModal.id}
+                  size={150}
+                  alt="Asset QR Code"
+                  className="w-[130px] h-[130px] object-contain"
+                />
+              </div>
+              <div className="w-full">
+                <p className="text-[15px] font-black font-mono tracking-tighter text-indigo-700 leading-none">{displayAssetNo(showQrModal.asset_no)}</p>
+                <p className="text-[10px] font-bold text-slate-400 truncate mt-1">{showQrModal.department || '공용'} · <span className="text-amber-700 font-black">사내 Wi-Fi 스캔</span></p>
+              </div>
             </div>
-            <p className="text-slate-800 font-black text-xl mb-1">{displayAssetNo(showQrModal.asset_no)}</p>
-            <p className="text-slate-400 text-xs font-bold mb-4 truncate max-w-[200px] text-center">
-              {showQrModal.name} / {showQrModal.model_name || '모델번호 없음'}
-              {showQrModal.serial_no ? ` · 시리얼 ${showQrModal.serial_no}` : ''}
-            </p>
+
             <div className="w-full bg-amber-50 border border-amber-200 rounded-xl p-3 mb-4 text-center">
               <p className="text-[11px] font-black text-amber-800">📡 QR 스캔 안내</p>
               <p className="text-[10px] font-bold text-amber-700 mt-0.5 leading-relaxed">

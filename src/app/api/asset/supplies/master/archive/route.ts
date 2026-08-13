@@ -1,14 +1,36 @@
 import { NextResponse } from 'next/server';
 import prisma from '@/lib/prisma';
-import { authorizeApi, authErrorToResponse } from '@/lib/server-auth-guard';
+import { authorizeApi, assertSupplyOwnerDeptsEditable, authErrorToResponse } from '@/lib/server-auth-guard';
+import { parseSupplyOwnerDepts } from '@/utils/orgUnits';
 
 export const dynamic = 'force-dynamic';
 
 const MENU_PATH = '/asset/supplies/master/archive';
 
+/** 영구 삭제 — 역할 LV_1만 (메뉴 Master 제외) */
 function assertLv1(auth: Awaited<ReturnType<typeof authorizeApi>>) {
-  if (auth.permission.isMaster || auth.permission.myRole === 'LV_1') return;
+  if (auth.permission.myRole === 'LV_1') return;
   throw new Error('FORBIDDEN_ADMIN');
+}
+
+/** 복구 시 폐기 JSON 메타 제거 (s_unit·note 등은 유지) */
+function stripDisposalMeta(description: string | null | undefined) {
+  let ext: Record<string, unknown> = {};
+  try {
+    ext = JSON.parse(description || '{}');
+  } catch {
+    ext = {};
+  }
+  if (!ext || typeof ext !== 'object' || Array.isArray(ext)) return description || '{}';
+  const {
+    disposal_date: _d,
+    disposal_reason: _r,
+    disposer_dept: _dd,
+    disposer_name: _dn,
+    disposer_email: _de,
+    ...rest
+  } = ext as Record<string, unknown>;
+  return JSON.stringify(rest);
 }
 
 /** [GET] 폐기(비활성) 품목 */
@@ -18,6 +40,20 @@ export async function GET() {
 
     const archivedItems = await prisma.supplyItem.findMany({
       where: { is_active: false },
+      select: {
+        id: true,
+        name: true,
+        description: true,
+        current_stock: true,
+        owner_dept: true,
+        unit_price: true,
+        alert_qty: true,
+        category: true,
+        is_active: true,
+        is_published: true,
+        createdAt: true,
+        updatedAt: true,
+      },
       orderBy: { updatedAt: 'desc' },
     });
     return NextResponse.json(archivedItems);
@@ -29,10 +65,10 @@ export async function GET() {
   }
 }
 
-/** [PATCH] 폐기 품목 복구 (is_active: true) */
+/** [PATCH] 폐기 품목 복구 — 대시보드와 동일하게 owner_dept 편집 스코프 */
 export async function PATCH(req: Request) {
   try {
-    await authorizeApi(MENU_PATH, { requireEditor: true });
+    const auth = await authorizeApi(MENU_PATH, { requireEditor: true });
     const body = await req.json();
     const id = String(body.id || '').trim();
     if (!id) return NextResponse.json({ error: 'ID 누락' }, { status: 400 });
@@ -45,9 +81,14 @@ export async function PATCH(req: Request) {
       return NextResponse.json({ success: true, message: '이미 운영 중 품목입니다.' });
     }
 
+    assertSupplyOwnerDeptsEditable(auth, parseSupplyOwnerDepts(existing.owner_dept));
+
     const updated = await prisma.supplyItem.update({
       where: { id },
-      data: { is_active: true },
+      data: {
+        is_active: true,
+        description: stripDisposalMeta(existing.description),
+      },
     });
     return NextResponse.json({ success: true, message: '복구 완료', data: updated });
   } catch (error) {

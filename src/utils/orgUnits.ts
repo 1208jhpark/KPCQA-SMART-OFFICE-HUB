@@ -37,13 +37,101 @@ export function getChildUnitNames(
   units: OrgUnitLike[] | null | undefined
 ): string[] {
   if (!Array.isArray(units) || (!parentName && !parentId)) return [];
+  const pName = parentName ? String(parentName).trim() : '';
+  const pId = parentId ? String(parentId).trim() : '';
   const names = new Set<string>();
   for (const u of units) {
     if (!u?.unit_name) continue;
-    if (parentName && u.parent?.unit_name === parentName) names.add(u.unit_name);
-    else if (parentId && u.parent_id === parentId) names.add(u.unit_name);
+    const uidParent = u.parent_id ? String(u.parent_id).trim() : '';
+    const byId = !!pId && uidParent === pId;
+    const byRelName = !!pName && String(u.parent?.unit_name || '').trim() === pName;
+    // parent include 없는 목록(서버 unitsList 등)에서도 parent_id → 이름 해석
+    const parentRow =
+      !byRelName && !!pName && uidParent
+        ? units.find((x) => String(x.id || '').trim() === uidParent)
+        : null;
+    const byResolvedName =
+      !!pName && !!parentRow && String(parentRow.unit_name || '').trim() === pName;
+    if (byId || byRelName || byResolvedName) names.add(String(u.unit_name).trim());
   }
   return Array.from(names);
+}
+
+/**
+ * SupplyItem.owner_dept 파싱
+ * - JSON 배열 문자열: '["A","B"]'
+ * - 레거시 단일 문자열: '본부A' | '전사'
+ * - 배열 그대로 / 콤마 구분
+ */
+export function parseSupplyOwnerDepts(raw: unknown): string[] {
+  if (raw == null || raw === '') return [];
+  if (Array.isArray(raw)) {
+    return Array.from(
+      new Set(raw.map((x) => String(x ?? '').trim()).filter(Boolean))
+    );
+  }
+  const s = String(raw).trim();
+  if (!s) return [];
+  if (s.startsWith('[')) {
+    try {
+      const parsed = JSON.parse(s);
+      if (Array.isArray(parsed)) {
+        return Array.from(
+          new Set(parsed.map((x) => String(x ?? '').trim()).filter(Boolean))
+        );
+      }
+    } catch {
+      /* fall through */
+    }
+  }
+  if (s.includes(',')) {
+    return Array.from(
+      new Set(s.split(',').map((x) => x.trim()).filter(Boolean))
+    );
+  }
+  return [s];
+}
+
+/** DB 저장용 — JSON 배열 문자열 */
+export function serializeSupplyOwnerDepts(names: string[] | null | undefined): string {
+  const uniq = Array.from(
+    new Set((names || []).map((n) => String(n ?? '').trim()).filter(Boolean))
+  );
+  return JSON.stringify(uniq);
+}
+
+/**
+ * 소모품 inventory 신청 가능 여부 (물품 owner_dept 단건)
+ * - 레거시 '전사': 전 조직 신청 가능 (구 데이터)
+ * - 그 외: 마케팅 지급 스코프와 동일
+ */
+export function canRequestSupplyOwnerDept(
+  ownerDept: string | null | undefined,
+  opts: {
+    myUnitName?: string | null;
+    myUnitId?: string | null;
+    myHqName?: string | null;
+    topOrgName?: string | null;
+    units?: OrgUnitLike[] | null;
+    isPower?: boolean;
+  }
+): boolean {
+  if (opts.isPower) return true;
+  const owner = String(ownerDept || '').trim();
+  if (!owner) return false;
+  if (owner === '전사') return true;
+  return canDistributeMarketingOwnerDept(owner, opts);
+}
+
+/** 다중 물품소속 — 하나라도 신청 가능하면 true */
+export function canRequestSupplyOwnerDepts(
+  ownerDeptRaw: unknown,
+  opts: Parameters<typeof canRequestSupplyOwnerDept>[1]
+): boolean {
+  if (opts.isPower) return true;
+  const owners = parseSupplyOwnerDepts(ownerDeptRaw);
+  if (owners.length === 0) return false;
+  return owners.some((o) => canRequestSupplyOwnerDept(o, opts));
 }
 
 /**
@@ -115,18 +203,25 @@ export function canEditTopOrgMarketingAsset(opts: {
   const hq = (opts.myHqName || '').trim();
   if (me === mgmt || hq === mgmt) return true;
 
-  // GLOBAL_MGMT(HQ 등)의 직속 하위 소속도 허용
+  // GLOBAL_MGMT(HQ 등)의 하위 소속(직속 Center 포함)도 허용
   if (opts.units?.length) {
-    const mgmtUnit = opts.units.find((u) => String(u.unit_name || '').trim() === mgmt);
-    const children = getChildUnitNames(mgmt, mgmtUnit?.id ?? null, opts.units);
-    if (children.includes(me)) return true;
+    if (
+      isGlobalMgmtOrgMember({
+        myUnitName: me,
+        myUnitId: opts.units.find((u) => String(u.unit_name || '').trim() === me)?.id,
+        globalMgmtDept: mgmt,
+        units: opts.units,
+      })
+    ) {
+      return true;
+    }
   }
   return false;
 }
 
 /**
- * admin/settings GLOBAL_MGMT 지정 부서 본인 또는 그 직속 하위 조직 소속인지
- * (마케팅 물품 열람 LV 설정 권한)
+ * admin/settings GLOBAL_MGMT 지정 부서 본인 또는 그 하위 조직(직속 Center 등) 소속인지
+ * HQ로 지정하면 하위 Center까지 true (조상 체인이 mgmt에 도달하면 포함)
  */
 export function isGlobalMgmtOrgMember(opts: {
   myUnitName?: string | null;
@@ -139,9 +234,40 @@ export function isGlobalMgmtOrgMember(opts: {
   if (!mgmt || !me) return false;
   if (me === mgmt) return true;
   if (!opts.units?.length) return false;
-  const mgmtUnit = opts.units.find((u) => String(u.unit_name || '').trim() === mgmt);
-  const children = getChildUnitNames(mgmt, mgmtUnit?.id ?? null, opts.units);
-  return children.includes(me);
+
+  const units = opts.units;
+  const mgmtUnit = units.find((u) => String(u.unit_name || '').trim() === mgmt);
+  const mgmtId = mgmtUnit?.id ? String(mgmtUnit.id).trim() : '';
+
+  // 직속 하위 (HQ → Center)
+  const children = getChildUnitNames(mgmt, mgmtId || null, units);
+  if (children.includes(me)) return true;
+
+  // 조상 체인 상승: Center → HQ(mgmt) 등
+  const myId = String(opts.myUnitId || '').trim();
+  let cur =
+    (myId ? units.find((u) => String(u.id || '').trim() === myId) : undefined) ||
+    units.find((u) => String(u.unit_name || '').trim() === me);
+
+  const seen = new Set<string>();
+  while (cur) {
+    const cid = cur.id ? String(cur.id).trim() : '';
+    if (cid) {
+      if (seen.has(cid)) break;
+      seen.add(cid);
+    }
+
+    const parentId = cur.parent_id ? String(cur.parent_id).trim() : '';
+    const parentRelName = String(cur.parent?.unit_name || '').trim();
+    if (mgmtId && parentId === mgmtId) return true;
+    if (parentRelName === mgmt) return true;
+
+    if (!parentId) break;
+    const parent = units.find((u) => String(u.id || '').trim() === parentId);
+    if (parent && String(parent.unit_name || '').trim() === mgmt) return true;
+    cur = parent;
+  }
+  return false;
 }
 
 /**

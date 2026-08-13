@@ -6,14 +6,14 @@ import {
   normalizeSupplyRequestStatus,
   type SupplyRequestStatus,
 } from '@/utils/supplyRequestStatus';
-import { migrateLegacySupplyRequestStatus } from '@/lib/migrateSupplyRequestStatus';
 
 export const dynamic = 'force-dynamic';
 
 const MENU_PATH = '/asset/supplies/master/requests';
 
+/** 지급완료 영구 삭제 — 역할 LV_1만 (메뉴 Master 제외) */
 function assertLv1(auth: Awaited<ReturnType<typeof authorizeApi>>) {
-  if (auth.permission.isMaster || auth.permission.myRole === 'LV_1') return;
+  if (auth.permission.myRole === 'LV_1') return;
   throw new Error('FORBIDDEN_ADMIN');
 }
 
@@ -25,10 +25,18 @@ function sessionDeptName(user: any) {
 export async function GET() {
   try {
     await authorizeApi(MENU_PATH);
-    await migrateLegacySupplyRequestStatus();
 
     const requests = await prisma.supplyRequest.findMany({
-      include: { item: true },
+      include: {
+        item: {
+          select: {
+            id: true,
+            name: true,
+            description: true,
+            current_stock: true,
+          },
+        },
+      },
       orderBy: { createdAt: 'desc' },
     });
     return NextResponse.json(requests);
@@ -144,6 +152,7 @@ export async function PATCH(req: Request) {
  * [DELETE] 신청 영구 삭제 — 편집 권한 필요
  * - PENDING / REJECTED: 편집 관리자 가능
  * - COMPLETED: LV_1만
+ * - 재고 복구는 status 조건부 deleteMany 선점 성공 후에만 (PATCH와 동일 경합 방지)
  */
 export async function DELETE(req: Request) {
   try {
@@ -161,18 +170,44 @@ export async function DELETE(req: Request) {
       assertLv1(auth);
     }
 
-    await prisma.$transaction(async (tx) => {
-      if (isStockOutSupplyRequest(status)) {
-        await tx.supplyItem.update({
-          where: { id: existing.item_id },
-          data: { current_stock: { increment: existing.qty } },
+    const needRestore = isStockOutSupplyRequest(status);
+
+    try {
+      await prisma.$transaction(async (tx) => {
+        // 1) 동일 status일 때만 삭제 선점 — 이미 반려/삭제된 건이면 0건
+        const claimed = await tx.supplyRequest.deleteMany({
+          where: { id, status: existing.status },
         });
+        if (claimed.count === 0) {
+          throw new Error('STATUS_CONFLICT');
+        }
+
+        // 2) 선점(삭제) 성공 후에만 선차감분 복구
+        if (needRestore) {
+          await tx.supplyItem.update({
+            where: { id: existing.item_id },
+            data: { current_stock: { increment: existing.qty } },
+          });
+        }
+      });
+    } catch (e: any) {
+      if (e?.message === 'STATUS_CONFLICT') {
+        return NextResponse.json(
+          { error: '다른 관리자가 이미 처리한 건입니다. 새로고침 후 다시 확인해 주세요.' },
+          { status: 409 }
+        );
       }
-      await tx.supplyRequest.delete({ where: { id } });
-    });
+      throw e;
+    }
 
     return NextResponse.json({ success: true });
   } catch (error: any) {
+    if (error?.message === 'FORBIDDEN_ADMIN') {
+      return NextResponse.json(
+        { error: '지급완료 건 삭제는 LV_1만 가능합니다.' },
+        { status: 403 }
+      );
+    }
     const authRes = authErrorToResponse(error);
     if (authRes.status !== 500) return authRes;
     console.error('[supplies/master/requests DELETE]', error);

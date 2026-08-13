@@ -3,11 +3,22 @@ import React, { useState, useEffect, useMemo, Suspense } from 'react';
 import * as XLSX from 'xlsx';
 import { usePathname } from 'next/navigation';
 import Link from 'next/link';
-import { getKSTDateString } from '@/utils/dateUtils';
+import { getKSTDateString, getKSTNowYearMonth, getKSTYearMonth } from '@/utils/dateUtils';
 import LoadingState from '@/components/common/LoadingState';
-import { isPendingSupplyRequest } from '@/utils/supplyRequestStatus';
+import { resolveInterfaceEditState } from '@/lib/permission-utils';
 
 const MENU_PATH = '/asset/supplies/master/purchase';
+
+/** KST 기준 연·월 문자열 (year: '2026', month: '07') */
+function getKSTYearMonthParts(dateInput: Date | string | number | null | undefined) {
+  if (dateInput === null || dateInput === undefined || dateInput === '') return null;
+  const ym = getKSTYearMonth(dateInput);
+  if (!ym) return null;
+  return {
+    year: String(ym.year),
+    month: String(ym.month).padStart(2, '0'),
+  };
+}
      
 function MasterPurchaseContent() {
   const pathname = usePathname();
@@ -23,15 +34,16 @@ function MasterPurchaseContent() {
     editDesignate: string;
     editLevel: string;
   } | null>(null);
+  const [interfaceConfig, setInterfaceConfig] = useState<any>(null);
   
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [searchQuery, setSearchQuery] = useState('');
   
-  const [selectedYear, setSelectedYear] = useState(new Date().getFullYear().toString());
+  const [selectedYear, setSelectedYear] = useState(String(getKSTNowYearMonth().year));
   const [selectedMonth, setSelectedMonth] = useState('ALL');
   const [selectedItemFilter, setSelectedItemFilter] = useState<string | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
-  const itemsPerPage = 20;
+  const itemsPerPage = 10;
   
   const tabItems = [
     { id: 'dashboard', name: '🗂️ 소모품 마스터 대시보드', path: '/asset/supplies/master/dashboard' },
@@ -48,13 +60,14 @@ function MasterPurchaseContent() {
     setLoading(true);
     try {
       const ts = Date.now();
-      const [userRes, purchaseRes, summaryRes, reqRes] = await Promise.all([
+      const [userRes, purchaseRes, summaryRes, pendingRes, ifRes] = await Promise.all([
         fetch(`/api/auth/me?t=${ts}`, { cache: 'no-store' }),
         fetch(`/api/asset/supplies/master/purchase?t=${ts}`, { cache: 'no-store' }),
         fetch(`/api/admin/interface/summary?path=${encodeURIComponent(MENU_PATH)}&t=${ts}`, {
           cache: 'no-store',
         }).catch(() => null),
-        fetch(`/api/asset/supplies/master/requests?t=${ts}`, { cache: 'no-store' }).catch(() => null),
+        fetch(`/api/asset/supplies/master/pending-count?t=${ts}`, { cache: 'no-store' }).catch(() => null),
+        fetch(`/api/admin/interface?t=${ts}`, { cache: 'no-store' }).catch(() => null),
       ]);
       
       if (userRes.ok) setCurrentUser(await userRes.json());
@@ -69,9 +82,18 @@ function MasterPurchaseContent() {
       }
       if (summaryRes && summaryRes.ok) setPermissionSummary(await summaryRes.json());
       else setPermissionSummary(null);
-      if (reqRes && reqRes.ok) {
-        const reqs = await reqRes.json();
-        setPendingReqCount(Array.isArray(reqs) ? reqs.filter((r: any) => isPendingSupplyRequest(r.status)).length : 0);
+      if (ifRes && ifRes.ok) {
+        const interfaces = await ifRes.json();
+        const menu = Array.isArray(interfaces)
+          ? interfaces.find((m: any) => m.path === MENU_PATH || m.path?.includes('/supplies/master/purchase'))
+          : null;
+        setInterfaceConfig(menu || null);
+      } else {
+        setInterfaceConfig(null);
+      }
+      if (pendingRes && pendingRes.ok) {
+        const data = await pendingRes.json();
+        setPendingReqCount(Number(data.pendingCount) || 0);
       } else {
         setPendingReqCount(0);
       }
@@ -84,9 +106,11 @@ function MasterPurchaseContent() {
   };
      
   const availableYears = useMemo(() => {
-    const years = purchases.map(p => new Date(p.purchase_date || p.createdAt).getFullYear().toString());
+    const years = purchases
+      .map((p) => getKSTYearMonthParts(p.purchase_date || p.createdAt)?.year)
+      .filter(Boolean) as string[];
     const unique = Array.from(new Set(years)).sort((a, b) => b.localeCompare(a));
-    const curr = new Date().getFullYear().toString();
+    const curr = String(getKSTNowYearMonth().year);
     if (!unique.includes(curr)) unique.push(curr);
     return unique;
   }, [purchases]);
@@ -95,14 +119,14 @@ function MasterPurchaseContent() {
      
   const baseFilteredPurchases = useMemo(() => {
     return purchases.filter(p => {
-      const pDate = new Date(p.purchase_date || p.createdAt);
-      const yearMatch = selectedYear === 'ALL' || pDate.getFullYear().toString() === selectedYear;
-      const monthMatch = selectedMonth === 'ALL' || (pDate.getMonth() + 1).toString().padStart(2, '0') === selectedMonth;
+      const ym = getKSTYearMonthParts(p.purchase_date || p.createdAt);
+      const yearMatch = selectedYear === 'ALL' || ym?.year === selectedYear;
+      const monthMatch = selectedMonth === 'ALL' || ym?.month === selectedMonth;
       
       const itemName = p.item?.name || '알 수 없는 품목';
       const searchMatch = !searchQuery || 
         itemName.toLowerCase().includes(searchQuery.toLowerCase()) || 
-        (p.old_vendor || p.vendor || '').toLowerCase().includes(searchQuery.toLowerCase()) || // 🚀 old_vendor 검색 추가
+        (p.old_vendor || p.vendor || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
         (p.purchaser_name || '').toLowerCase().includes(searchQuery.toLowerCase());
       
       return yearMatch && monthMatch && searchMatch;
@@ -135,25 +159,66 @@ function MasterPurchaseContent() {
   useEffect(() => { setCurrentPage(1); setSelectedIds(new Set()); }, [selectedYear, selectedMonth, searchQuery, selectedItemFilter]);
      
   const handleCancelPurchase = async (purchaseData: any) => {
+    if (!canEdit) return alertNoEditPermission();
     const itemName = purchaseData.item?.name || '알 수 없는 품목';
-    if (!confirm(`[경고] 정말 [${itemName}] 입고 내역을 철회하시겠습니까?\n철회 시 해당 물품의 재고가 자동으로 차감됩니다.`)) return;
-     
+    if (
+      !confirm(
+        `[경고] 정말 [${itemName}] 입고 내역을 철회하시겠습니까?\n철회 시 해당 물품의 재고가 자동으로 차감됩니다.`
+      )
+    ) {
+      return;
+    }
+
     try {
       const res = await fetch(`/api/asset/supplies/master/purchase?id=${purchaseData.id}`, {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: purchaseData.id }) 
+        body: JSON.stringify({ id: purchaseData.id }),
       });
-      
+
       if (res.ok) {
-        alert(`✅ 정상적으로 입고가 철회(삭제)되었습니다.`);
-        fetchData(); 
+        alert('✅ 정상적으로 입고가 철회되었습니다.');
+        fetchData();
       } else {
-        const err = await res.json();
-        alert(`🚨 삭제 실패: ${err.error}`);
+        const err = await res.json().catch(() => ({}));
+        alert(`🚨 철회 실패: ${err.error || '알 수 없는 오류'}`);
       }
     } catch (e) {
-      alert("서버와 통신할 수 없습니다.");
+      alert('서버와 통신할 수 없습니다.');
+    }
+  };
+
+  /** LV_1 전용 — 잘못된 백데이터 정리용 영구 삭제 (입고철회와 동일 API) */
+  const handleDeletePurchaseLv1 = async (purchaseData: any) => {
+    if (!canEdit) return alertNoEditPermission();
+    if (!isLv1) {
+      return alert('잘못된 데이터 삭제는 LV_1만 가능합니다.');
+    }
+    const itemName = purchaseData.item?.name || '알 수 없는 품목';
+    if (
+      !confirm(
+        `경고: [${itemName}] 입고 내역을 영구 삭제하시겠습니까? (LV_1 · 백데이터 정리)\n삭제 시 해당 수량만큼 현재고가 차감됩니다.`
+      )
+    ) {
+      return;
+    }
+
+    try {
+      const res = await fetch(`/api/asset/supplies/master/purchase?id=${purchaseData.id}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: purchaseData.id }),
+      });
+
+      if (res.ok) {
+        alert('🗑️ 입고 내역이 삭제되었습니다.');
+        fetchData();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        alert(`🚨 삭제 실패: ${err.error || '알 수 없는 오류'}`);
+      }
+    } catch (e) {
+      alert('서버와 통신할 수 없습니다.');
     }
   };
      
@@ -161,15 +226,21 @@ function MasterPurchaseContent() {
     const targetList = selectedIds.size > 0 ? purchases.filter(p => selectedIds.has(p.id)) : finalFilteredPurchases;
     if (targetList.length === 0) return alert("다운로드할 데이터가 없습니다.");
     
-    // 🚀 엑셀 다운로드 항목도 대시보드 포맷과 동일하게 변경
+    // 엑셀 다운로드 — 입고 팝업/장부 라벨과 동일
     const exportData = targetList.map((p, idx) => {
-      let pUnit = 'BOX';
       let extraCost = 0;
+      let boughtDate = '';
+      let pQty = Number(p.qty) || 0;
+      let pUnit = '';
+      let linkQty = 1;
+      let sUnit = '';
+      let stockQty = Number(p.qty) || 0;
       
       try {
         if (p.item?.description) {
           const itemExt = JSON.parse(p.item.description);
-          pUnit = itemExt.p_unit || 'BOX';
+          sUnit = itemExt.s_unit || itemExt.r_unit || '';
+          pUnit = itemExt.p_unit || '';
         }
       } catch(e) {}
       
@@ -177,21 +248,31 @@ function MasterPurchaseContent() {
         if (p.note) {
           const parsed = JSON.parse(p.note);
           extraCost = Number(parsed.extra_cost) || 0;
+          boughtDate = parsed.bought_date || '';
+          if (Number(parsed.p_qty) > 0) pQty = Number(parsed.p_qty);
+          if (parsed.p_unit) pUnit = parsed.p_unit;
+          if (Number(parsed.link_qty) > 0) linkQty = Number(parsed.link_qty);
+          if (parsed.s_unit) sUnit = parsed.s_unit;
+          if (Number(parsed.stock_qty) > 0) stockQty = Number(parsed.stock_qty);
         }
       } catch(e) {}
      
       return {
         'NO': targetList.length - idx,
-        '최근 입고일': p.purchase_date ? getKSTDateString(p.purchase_date) : '-',
+        '창고 입고일': p.purchase_date ? getKSTDateString(p.purchase_date) : '-',
+        '구입 일자': boughtDate ? getKSTDateString(boughtDate) : '-',
         '물품명': p.item?.name || '(삭제된 품목)',
-        '구매처(벤더)': p.old_vendor || '-',
-        '구매단위': pUnit,
-        '입고수량': p.qty,
-        '순수 단가(원)': p.unit_price,
+        '구입처(벤더)': p.old_vendor || '-',
+        '입고수량': pQty,
+        '입고단위': pUnit || '-',
+        '연동수량': linkQty,
+        '재고반영(지급단위)': stockQty,
+        '지급단위': sUnit || '-',
+        '물품 순수 단가(입고단위)': p.unit_price,
         '부대비용(원)': extraCost,
         '결산 총비용(원)': p.total_price,
         '등록자': p.purchaser_name || '관리자',
-        '소속부서': p.purchaser_dept || '경영기획센터'
+        '소속부서': p.purchaser_dept || '-',
       };
     });
     
@@ -201,9 +282,22 @@ function MasterPurchaseContent() {
     XLSX.writeFile(wb, `소모품_입고매입대장_${selectedYear}년${selectedMonth !== 'ALL' ? `_${selectedMonth}월` : ''}.xlsx`);
   };
      
+  const isLv1 = useMemo(() => {
+    if (!currentUser) return false;
+    const roles = Array.isArray(currentUser.roles) ? currentUser.roles : [currentUser.role];
+    return roles?.includes('LV_1');
+  }, [currentUser]);
+
+  const canEdit = useMemo(
+    () => resolveInterfaceEditState(currentUser, interfaceConfig).isEditor,
+    [currentUser, interfaceConfig]
+  );
+
+  const alertNoEditPermission = () => alert('편집 권한이 없습니다.');
+  const disabledActionBtn =
+    'px-1.5 py-1.5 bg-slate-100 text-slate-400 border border-slate-200 rounded-md text-[10px] font-black cursor-not-allowed whitespace-nowrap opacity-70';
+
   if (loading) return <LoadingState />;
-     
-  const isLv1 = currentUser?.roles?.includes('LV_1') || currentUser?.role === 'LV_1';
      
   return (
     <div className="w-full max-w-[1700px] mx-auto space-y-6 p-8 font-sans text-slate-900 pb-24 animate-fade-in">
@@ -242,6 +336,11 @@ function MasterPurchaseContent() {
           <span className="opacity-50">|</span>
           <span>Level: {permissionSummary.editLevel}</span>
         </div>
+        {!canEdit && (
+          <span className="text-[10px] font-black text-amber-200 bg-amber-500/20 border border-amber-300/30 px-2.5 py-1 rounded-md">
+            편집 권한 없음 — 조회만 가능
+          </span>
+        )}
       </div>
     )}
   </div>
@@ -284,35 +383,34 @@ function MasterPurchaseContent() {
   
       <section className="bg-white rounded-[2.5rem] border border-slate-200 shadow-sm overflow-hidden mt-6">
         
-        <div className="p-5 px-6 bg-slate-200/70 border-b border-slate-300 flex flex-wrap gap-4 items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className="w-2.5 h-2.5 rounded-full bg-emerald-500"></div>
-            <h2 className="text-[13px] font-black text-slate-800 tracking-tight">입고(매입) 내역 장부</h2>
-            <span className="text-[11px] font-bold bg-slate-300/80 text-slate-700 px-2 py-0.5 rounded-md">{finalFilteredPurchases.length}건 검색됨</span>
+        <div className="p-4 px-6 bg-slate-200/70 border-b border-slate-300 flex flex-wrap items-center justify-between gap-4">
+          <div className="flex items-center gap-2 flex-wrap min-w-0">
+            <div className="w-2.5 h-2.5 rounded-full bg-blue-600 shrink-0"></div>
+            <h2 className="text-sm font-black text-slate-800 tracking-tight">입고(매입) 내역 장부</h2>
+            <span className="text-[11px] font-bold bg-slate-300/80 text-slate-700 px-2 py-0.5 rounded-md">{finalFilteredPurchases.length}건</span>
           </div>
           
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-1.5 bg-white px-3 py-1.5 rounded-lg border border-slate-300 shadow-sm text-[11px] font-bold text-slate-600">
-              <span>🗓️ 연도:</span>
-              <select value={selectedYear} onChange={e => setSelectedYear(e.target.value)} className="outline-none bg-transparent cursor-pointer font-black text-indigo-700">
-                <option value="ALL">전체 연도</option>
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm">
+              <span className="text-[10px] font-black text-slate-400 uppercase">연도</span>
+              <select value={selectedYear} onChange={e => setSelectedYear(e.target.value)} className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent">
+                <option value="ALL">전체</option>
                 {availableYears.map(y => <option key={y} value={y}>{y}년</option>)}
               </select>
-            </div>
-            <div className="flex items-center gap-1.5 bg-white px-3 py-1.5 rounded-lg border border-slate-300 shadow-sm text-[11px] font-bold text-slate-600">
-              <span>📅 월별:</span>
-              <select value={selectedMonth} onChange={e => setSelectedMonth(e.target.value)} className="outline-none bg-transparent cursor-pointer font-black text-indigo-700">
-                <option value="ALL">전체 달</option>
+              <div className="w-px h-3.5 bg-slate-300 mx-0.5"></div>
+              <span className="text-[10px] font-black text-slate-400 uppercase">월별</span>
+              <select value={selectedMonth} onChange={e => setSelectedMonth(e.target.value)} className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent">
+                <option value="ALL">전체</option>
                 {availableMonths.map(m => <option key={m} value={m}>{m}월</option>)}
               </select>
             </div>
-            <button onClick={handleDownloadExcel} className="text-[10px] font-black bg-emerald-50 border border-emerald-200 text-emerald-700 rounded-lg px-4 py-1.5 hover:bg-emerald-100 transition-colors shadow-sm">
-              {selectedIds.size > 0 ? `선택 항목 엑셀 다운로드 (${selectedIds.size})` : '화면 목록 엑셀 다운로드 ⬇️'}
-            </button>
             <div className="relative w-48">
-              <span className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400 text-[10px]">🔍</span>
-              <input type="text" placeholder="물품, 구입처, 부서 검색..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} className="w-full pl-7 pr-3 py-1.5 bg-white border border-slate-300 rounded-lg text-[11px] font-bold outline-none focus:border-indigo-500 shadow-inner" />
+              <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-[10px]">🔍</span>
+              <input type="text" placeholder="물품, 구입처, 등록자 검색..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} className="w-full pl-7 pr-3 py-1.5 bg-white border border-slate-200 rounded-lg text-[11px] font-bold outline-none focus:border-indigo-500 shadow-sm transition-colors" />
             </div>
+            <button onClick={handleDownloadExcel} className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-[10px] font-black shadow-sm hover:bg-emerald-700 transition-all whitespace-nowrap">
+              {selectedIds.size > 0 ? `선택 EXCEL 다운로드(${selectedIds.size})` : '화면 목록 EXCEL 다운로드'}
+            </button>
           </div>
         </div>
      
@@ -348,95 +446,156 @@ function MasterPurchaseContent() {
           </div>
         </div>
         
-        <div className="overflow-x-auto pb-4">
-          <table className="w-full text-left text-[11px] border-collapse min-w-[1300px]">
-            <thead className="bg-slate-100 text-slate-600 font-black uppercase tracking-widest border-b border-slate-200">
+        <div className="overflow-x-auto">
+          <table className="w-full text-left border-collapse table-fixed min-w-[1360px]">
+            <colgroup>
+              <col className="w-[40px]" />
+              <col className="w-[48px]" />
+              <col className="w-[88px]" />
+              <col className="w-[88px]" />
+              <col className="w-[140px]" />
+              <col className="w-[100px]" />
+              <col className="w-[72px]" />
+              <col className="w-[72px]" />
+              <col className="w-[72px]" />
+              <col className="w-[88px]" />
+              <col className="w-[100px]" />
+              <col className="w-[88px]" />
+              <col className="w-[100px]" />
+              <col className="w-[110px]" />
+              <col className="w-[168px]" />
+            </colgroup>
+            <thead className="bg-slate-100 text-slate-700 text-[10px] font-black uppercase tracking-widest border-b border-slate-200">
               <tr>
-                <th className="h-12 pl-4 w-10 text-center">
+                <th className="h-12 pl-4 text-center">
                   <input type="checkbox" checked={paginatedPurchases.length > 0 && paginatedPurchases.every(p => selectedIds.has(p.id))} onChange={() => {
                     const currentIds = paginatedPurchases.map(p => p.id);
                     const allSelected = currentIds.every(id => selectedIds.has(id));
                     const next = new Set(selectedIds);
                     if (allSelected) currentIds.forEach(id => next.delete(id)); else currentIds.forEach(id => next.add(id));
                     setSelectedIds(next);
-                  }} className="w-3 h-3 accent-emerald-600 cursor-pointer" />
+                  }} className="w-3 h-3 accent-indigo-600 cursor-pointer" />
                 </th>
-                <th className="h-12 px-4 w-14 text-center">NO</th>
-                
-                <th className="h-12 px-4 w-32 text-center border-l-4 border-white bg-emerald-50/50 text-slate-600">최근 입고일</th>
-                <th className="h-12 px-4 w-48 bg-emerald-50/50 text-indigo-700">물품명</th>
-                
-                {/* 🚀 렌더링 헤더를 대시보드와 정확하게 동일한 명칭과 순서로 교체 */}
-                <th className="h-12 px-4 w-32 text-center bg-emerald-50/50 text-slate-600">구매처(벤더)</th>
-                <th className="h-12 px-4 w-20 text-center bg-emerald-50/50 text-emerald-700">구매단위</th>
-                <th className="h-12 px-4 w-24 text-center bg-emerald-50/50 text-emerald-700">입고수량</th>
-                <th className="h-12 px-4 w-28 text-right bg-emerald-50/50 text-emerald-700">순수 단가(원)</th>
-                <th className="h-12 px-4 w-28 text-right bg-emerald-50/50 text-orange-600">부대비용(원)</th>
-                <th className="h-12 px-4 w-32 text-right bg-emerald-50/50 text-emerald-800 font-black">결산 총비용</th>
-     
-                <th className="h-12 px-4 w-24 text-center border-l-4 border-white">등록자</th>
-                <th className="h-12 px-4 w-32 text-center">소속부서</th>
-                <th className="h-12 px-4 text-center w-28 border-l-4 border-white">관리</th>
+                <th className="h-12 px-2 text-center">NO</th>
+                <th className="h-12 px-2 text-center whitespace-nowrap">창고 입고 일자</th>
+                <th className="h-12 px-2 text-center whitespace-nowrap">구입 일자</th>
+                <th className="h-12 px-2 text-indigo-600">물품명</th>
+                <th className="h-12 px-2 text-center whitespace-nowrap">구입처(벤더)</th>
+                <th className="h-12 px-2 text-center text-indigo-600 whitespace-nowrap">입고수량</th>
+                <th className="h-12 px-2 text-center whitespace-nowrap">입고단위</th>
+                <th className="h-12 px-2 text-center whitespace-nowrap">연동수량</th>
+                <th className="h-12 px-2 text-center text-indigo-600 whitespace-nowrap">재고반영</th>
+                <th className="h-12 px-2 text-right whitespace-nowrap">물품 순수 단가</th>
+                <th className="h-12 px-2 text-right whitespace-nowrap">부대비용</th>
+                <th className="h-12 px-2 text-right text-emerald-700 whitespace-nowrap">결산 총비용</th>
+                <th className="h-12 px-2 text-center border-l border-slate-200 whitespace-nowrap">부서 / 등록자</th>
+                <th className="h-12 px-2 text-center whitespace-nowrap border-l border-slate-200">관리 액션</th>
               </tr>
             </thead>
-            <tbody className="bg-white divide-y divide-slate-100 font-bold">
+            <tbody className="bg-white divide-y divide-slate-100 text-[11px] font-bold text-slate-700">
               {paginatedPurchases.length === 0 ? (
-                <tr><td colSpan={13} className="h-32 text-center text-slate-400 italic">조건에 맞는 입고 내역이 없습니다.</td></tr>
+                <tr><td colSpan={15} className="p-16 text-center text-slate-400 text-xs">조건에 맞는 입고 내역이 없습니다.</td></tr>
               ) : paginatedPurchases.map((p, i) => {
                 const isSelected = selectedIds.has(p.id);
                 const itemName = p.item?.name || '(삭제된 품목)';
                 
-                // 🚀 구매 단위 파싱 (item.description)
-                let pUnit = 'BOX';
+                let pQty = Number(p.qty) || 0;
+                let pUnit = '-';
+                let linkQty = 1;
+                let sUnit = '';
+                let stockQty = Number(p.qty) || 0;
+                let extraCost = 0;
+                let boughtDate = '';
+
                 try {
                   if (p.item?.description) {
                     const itemExt = JSON.parse(p.item.description);
-                    pUnit = itemExt.p_unit || 'BOX';
+                    sUnit = itemExt.s_unit || itemExt.r_unit || '';
+                    if (itemExt.p_unit) pUnit = itemExt.p_unit;
                   }
                 } catch(e) {}
                 
-                // 🚀 부대비용 파싱 (p.note)
-                let extraCost = 0;
                 try {
                   if (p.note) {
                     const parsedNote = JSON.parse(p.note);
                     extraCost = Number(parsedNote.extra_cost) || 0;
+                    boughtDate = parsedNote.bought_date || '';
+                    if (Number(parsedNote.p_qty) > 0) pQty = Number(parsedNote.p_qty);
+                    if (parsedNote.p_unit) pUnit = parsedNote.p_unit;
+                    if (Number(parsedNote.link_qty) > 0) linkQty = Number(parsedNote.link_qty);
+                    if (parsedNote.s_unit) sUnit = parsedNote.s_unit;
+                    if (Number(parsedNote.stock_qty) > 0) stockQty = Number(parsedNote.stock_qty);
                   }
                 } catch(e) {}
+
+                const rowNo = finalFilteredPurchases.length - ((currentPage - 1) * itemsPerPage) - i;
      
                 return (
-                  <tr key={p.id} className={`h-16 transition-colors ${isSelected ? 'bg-emerald-50/30' : 'hover:bg-slate-50'}`}>
+                  <tr key={p.id} className={`hover:bg-slate-50/50 h-12 transition-colors ${isSelected ? 'bg-indigo-50/50' : ''}`}>
                     <td className="pl-4 text-center" onClick={(e)=>e.stopPropagation()}>
-                      <input type="checkbox" checked={isSelected} onChange={() => { const next = new Set(selectedIds); next.has(p.id) ? next.delete(p.id) : next.add(p.id); setSelectedIds(next); }} className="w-3 h-3 accent-emerald-600 cursor-pointer" />
+                      <input type="checkbox" checked={isSelected} onChange={() => { const next = new Set(selectedIds); next.has(p.id) ? next.delete(p.id) : next.add(p.id); setSelectedIds(next); }} className="w-3 h-3 accent-indigo-600 cursor-pointer" />
                     </td>
-                    <td className="px-4 text-center text-slate-400 font-mono">
-                      {finalFilteredPurchases.length - ((currentPage - 1) * itemsPerPage) - i}
-                    </td>
-                    
-                    <td className="px-4 text-center font-mono text-slate-500 bg-emerald-50/10 border-l-4 border-slate-50">
+                    <td className="px-2 text-center font-mono text-slate-500 tabular-nums">{rowNo}</td>
+                    <td className="px-2 text-center whitespace-nowrap tabular-nums text-slate-800">
                       {p.purchase_date ? getKSTDateString(p.purchase_date) : '-'}
                     </td>
-                    <td className="px-4 text-indigo-700 text-[12px] bg-emerald-50/10 truncate max-w-[200px]">{itemName}</td>
-                    
-                    {/* 🚀 데이터를 대시보드 구조에 맞게 순서대로 재배치 */}
-                    <td className="px-4 text-center text-slate-600 bg-emerald-50/10 truncate max-w-[120px]" title={p.old_vendor}>{p.old_vendor || '-'}</td>
-                    <td className="px-4 text-center text-slate-500 bg-emerald-50/10">{pUnit}</td>
-                    <td className="px-4 text-center font-black font-mono text-emerald-600 bg-emerald-50/10">{p.qty}</td>
-                    <td className="px-4 text-right font-mono text-slate-600 bg-emerald-50/10">{Number(p.unit_price || 0).toLocaleString()}</td>
-                    <td className="px-4 text-right font-mono text-orange-600 bg-emerald-50/10">{extraCost.toLocaleString()}</td>
-                    <td className="px-4 text-right font-black font-mono text-emerald-700 bg-emerald-50/10">{Number(p.total_price || 0).toLocaleString()}</td>
-     
-                    <td className="px-4 text-center border-l-4 border-slate-50 text-slate-700">{p.purchaser_name || '관리자'}</td>
-                    <td className="px-4 text-center text-[10px] text-slate-400">{p.purchaser_dept || '경영기획센터'}</td>
-                    
-                    <td className="px-4 text-center border-l-4 border-slate-50">
-                      <button 
-                        onClick={() => handleCancelPurchase(p)} 
-                        title="입고 장부에서 내역을 삭제합니다. (재고 자동 복구)"
-                        className="w-full py-2 rounded-lg text-[10px] font-black transition-colors shadow-sm bg-red-50 text-red-600 border border-red-200 hover:bg-red-600 hover:text-white"
-                      >
-                        입고 철회
-                      </button>
+                    <td className="px-2 text-center whitespace-nowrap tabular-nums text-slate-700">
+                      {boughtDate ? getKSTDateString(boughtDate) : '-'}
+                    </td>
+                    <td className="px-2 text-indigo-700 truncate" title={itemName}>{itemName}</td>
+                    <td className="px-2 text-center text-slate-700 truncate" title={p.old_vendor}>{p.old_vendor || '-'}</td>
+                    <td className="px-2 text-center font-mono whitespace-nowrap tabular-nums text-indigo-600">{pQty}</td>
+                    <td className="px-2 text-center text-slate-500">{pUnit}</td>
+                    <td className="px-2 text-center font-mono tabular-nums text-slate-600">{linkQty}</td>
+                    <td className="px-2 text-center font-mono whitespace-nowrap tabular-nums text-indigo-600" title={`지급단위: ${sUnit || '-'}`}>
+                      {stockQty}
+                      {sUnit && <span className="text-[9px] text-indigo-500 font-bold ml-0.5">{sUnit}</span>}
+                    </td>
+                    <td className="px-2 text-right font-mono tabular-nums text-slate-700">{Number(p.unit_price || 0).toLocaleString()}</td>
+                    <td className="px-2 text-right font-mono tabular-nums text-slate-700">{extraCost.toLocaleString()}</td>
+                    <td className="px-2 text-right font-mono tabular-nums text-emerald-600">{Number(p.total_price || 0).toLocaleString()}</td>
+                    <td className="px-2 text-center border-l border-slate-200">
+                      <div className="truncate">
+                        <span className="text-[10px] text-slate-500 block truncate">{p.purchaser_dept || '-'}</span>
+                        <span className="text-slate-800 truncate">{p.purchaser_name || '관리자'}</span>
+                      </div>
+                    </td>
+                    <td className="px-1.5 text-center border-l border-slate-200">
+                      <div className="inline-flex items-center justify-center gap-1 whitespace-nowrap">
+                        <button
+                          type="button"
+                          onClick={() => handleCancelPurchase(p)}
+                          title={canEdit ? '입고 철회 (재고 차감)' : '편집 권한 필요'}
+                          className={
+                            canEdit
+                              ? 'px-1.5 py-1.5 bg-orange-50 text-orange-600 border border-orange-200 rounded-md text-[10px] font-black hover:bg-orange-100 shadow-sm whitespace-nowrap'
+                              : disabledActionBtn
+                          }
+                        >
+                          입고철회
+                        </button>
+                        {canEdit ? (
+                          isLv1 ? (
+                            <button
+                              type="button"
+                              onClick={() => handleDeletePurchaseLv1(p)}
+                              title="잘못된 백데이터 영구 삭제 — LV_1 전용"
+                              className="px-1.5 py-1.5 bg-slate-100 text-slate-500 border border-slate-200 rounded-md text-[10px] font-black hover:text-red-500 hover:bg-red-50 whitespace-nowrap"
+                            >
+                              삭제(LV_1)
+                            </button>
+                          ) : null
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => handleDeletePurchaseLv1(p)}
+                            title="편집 권한 필요"
+                            className={disabledActionBtn}
+                          >
+                            삭제(LV_1)
+                          </button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 );
@@ -445,13 +604,13 @@ function MasterPurchaseContent() {
           </table>
         </div>
      
-        {totalPages > 1 && (
-          <div className="flex justify-center items-center gap-1.5 pt-6 pb-6 border-t border-slate-100 bg-white">
-            <button disabled={currentPage === 1} onClick={() => setCurrentPage(p => p - 1)} className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50">이전</button>
+        {finalFilteredPurchases.length > 0 && (
+          <div className="flex justify-center items-center gap-1.5 py-3 border-t border-slate-100 bg-white">
+            <button disabled={currentPage === 1} onClick={() => setCurrentPage(p => p - 1)} className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors">이전</button>
             {Array.from({ length: totalPages }).map((_, i) => (
-              <button key={i} onClick={() => setCurrentPage(i + 1)} className={`w-8 h-8 rounded-xl font-black text-xs transition-all ${currentPage === i + 1 ? 'bg-emerald-600 text-white shadow-sm scale-105' : 'bg-white border border-slate-200 text-slate-500 hover:bg-slate-50'}`}>{i + 1}</button>
+              <button key={i} onClick={() => setCurrentPage(i + 1)} className={`w-8 h-8 rounded-xl font-black text-xs transition-all ${currentPage === i + 1 ? 'bg-slate-800 text-white shadow-sm scale-105' : 'bg-white border border-slate-200 text-slate-500 hover:bg-slate-50'}`}>{i + 1}</button>
             ))}
-            <button disabled={currentPage === totalPages} onClick={() => setCurrentPage(p => p + 1)} className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50">다음</button>
+            <button disabled={currentPage === totalPages} onClick={() => setCurrentPage(p => p + 1)} className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors">다음</button>
           </div>
         )}
       </section>

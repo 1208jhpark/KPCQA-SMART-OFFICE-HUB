@@ -1,22 +1,29 @@
 import { NextResponse } from 'next/server';
 import prisma from '@/lib/prisma';
-import { authorizeApi, authErrorToResponse } from '@/lib/server-auth-guard';
+import { authorizeApi, assertSupplyOwnerDeptsEditable, authErrorToResponse } from '@/lib/server-auth-guard';
+import { createSupplyStockIn } from '@/lib/supply-stock-in';
+import { parseSupplyOwnerDepts } from '@/utils/orgUnits';
 
 export const dynamic = 'force-dynamic';
 
 const MENU_PATH = '/asset/supplies/master/purchase';
 
-function sessionDeptName(user: any) {
-  return user?.unit?.unit_name || '소속 부서 없음';
-}
-
-/** [GET] 입고 이력 */
+/** [GET] 입고 이력 — item.image_url 제외(목록 페이로드) */
 export async function GET() {
   try {
     await authorizeApi(MENU_PATH);
 
     const logs = await prisma.supplyPurchase.findMany({
-      include: { item: true },
+      include: {
+        item: {
+          select: {
+            id: true,
+            name: true,
+            description: true,
+            current_stock: true,
+          },
+        },
+      },
       orderBy: { purchase_date: 'desc' },
     });
     return NextResponse.json(logs);
@@ -28,74 +35,17 @@ export async function GET() {
   }
 }
 
-/** [POST] 입고 — 등록자는 세션 유저 고정 */
+/** [POST] 입고 — 등록자는 세션 유저 고정 · owner_dept 편집 스코프 · 일자는 KST */
 export async function POST(req: Request) {
   try {
     const auth = await authorizeApi(MENU_PATH, { requireEditor: true });
     const body = await req.json();
 
-    const itemId = String(body.item_id || body.itemId || '').trim();
-    const qty = Math.floor(Number(body.qty || body.p_qty || 0));
-    const unitPrice = Math.floor(Number(body.unit_price || body.unitPrice || 0));
-    const extraCost = Math.floor(Number(body.extra_cost || body.extraCost || 0));
-
-    if (!itemId) {
-      return NextResponse.json({ error: '품목 ID가 필요합니다.' }, { status: 400 });
+    const result = await createSupplyStockIn(auth, body);
+    if (!result.ok) {
+      return NextResponse.json({ error: result.error }, { status: result.status });
     }
-    if (!Number.isFinite(qty) || qty <= 0) {
-      return NextResponse.json({ error: '입고 수량은 1 이상의 정수여야 합니다.' }, { status: 400 });
-    }
-    if (unitPrice < 0 || extraCost < 0) {
-      return NextResponse.json({ error: '단가/부대비용은 0 이상이어야 합니다.' }, { status: 400 });
-    }
-
-    const item = await prisma.supplyItem.findUnique({ where: { id: itemId } });
-    if (!item || !item.is_active) {
-      return NextResponse.json({ error: '입고할 수 없는 품목입니다.' }, { status: 400 });
-    }
-
-    const totalPrice = Math.floor(
-      Number(body.total_price || body.totalPrice) || unitPrice * qty + extraCost
-    );
-
-    const inputVendor = String(body.supplier || body.vendor || '').trim();
-
-    let safeDate = new Date();
-    if (body.purchase_date || body.purchaseDate) {
-      const parsedDate = new Date(body.purchase_date || body.purchaseDate);
-      if (!isNaN(parsedDate.getTime())) safeDate = parsedDate;
-    }
-
-    const newLog = await prisma.$transaction(async (tx) => {
-      const purchaseData: any = {
-        item_id: itemId,
-        qty,
-        total_price: totalPrice,
-        unit_price: unitPrice,
-        purchaser_name: auth.user.name || '관리자',
-        purchaser_dept: sessionDeptName(auth.user),
-        purchase_date: safeDate,
-        note: JSON.stringify({
-          text: body.note || '대시보드 직접 입고',
-          extra_cost: extraCost,
-        }),
-      };
-
-      if (inputVendor) {
-        purchaseData.old_vendor = inputVendor;
-      }
-
-      const log = await tx.supplyPurchase.create({ data: purchaseData });
-
-      await tx.supplyItem.update({
-        where: { id: itemId },
-        data: { current_stock: { increment: qty } },
-      });
-
-      return log;
-    });
-
-    return NextResponse.json({ success: true, data: newLog });
+    return NextResponse.json({ success: true, data: result.data });
   } catch (error: any) {
     const authRes = authErrorToResponse(error);
     if (authRes.status !== 500) return authRes;
@@ -107,16 +57,21 @@ export async function POST(req: Request) {
   }
 }
 
-/** [DELETE] 입고 철회 — 재고 차감 (부족하면 거부) */
+/** [DELETE] 입고 철회 — 재고 차감 · 해당 품목 owner_dept 편집 스코프 */
 export async function DELETE(req: Request) {
   try {
-    await authorizeApi(MENU_PATH, { requireEditor: true });
+    const auth = await authorizeApi(MENU_PATH, { requireEditor: true });
 
     const id = new URL(req.url).searchParams.get('id');
     if (!id) return NextResponse.json({ error: '삭제할 ID가 없습니다.' }, { status: 400 });
 
-    const log = await prisma.supplyPurchase.findUnique({ where: { id } });
+    const log = await prisma.supplyPurchase.findUnique({
+      where: { id },
+      include: { item: { select: { id: true, owner_dept: true } } },
+    });
     if (!log) return NextResponse.json({ error: '존재하지 않는 입고 내역입니다.' }, { status: 404 });
+
+    assertSupplyOwnerDeptsEditable(auth, parseSupplyOwnerDepts(log.item?.owner_dept));
 
     try {
       await prisma.$transaction(async (tx) => {

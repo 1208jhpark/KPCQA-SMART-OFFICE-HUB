@@ -349,6 +349,9 @@ export default function EquipmentClient({
   };
 
   const handleExportDetailExcel = () => {
+    if (!checkItemCanEdit(isEditingDetail ? editFormData : selectedEq)) {
+      return alert('해당 소속 장비에 대한 엑셀 다운로드 권한이 없습니다.\n(admin/interface Edit 권한 확인)');
+    }
     const eq = isEditingDetail ? editFormData : selectedEq;
     if (!eq || String(eq.id || '').startsWith('NEW-')) {
       return alert('저장되지 않은 신규 장비는 다운로드할 수 없습니다.');
@@ -491,6 +494,9 @@ export default function EquipmentClient({
   };
   
   const handleExportArchiveExcel = () => {
+    if (!permission?.isEditor) {
+      return alert('폐기/반납함 엑셀 다운로드 권한이 없습니다.\n(admin/interface Edit 권한 확인)');
+    }
     const targetArchives =
       selectedArchiveIds.size > 0
         ? filteredArchives.filter((a) => selectedArchiveIds.has(a.id))
@@ -1469,8 +1475,23 @@ export default function EquipmentClient({
 
               <button
                 type="button"
-                onClick={handleExportArchiveExcel}
-                className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-[10px] font-black shadow-sm hover:bg-emerald-700 transition-all whitespace-nowrap"
+                disabled={!canEditGeneral}
+                onClick={() => {
+                  if (!canEditGeneral) return;
+                  handleExportArchiveExcel();
+                }}
+                title={
+                  canEditGeneral
+                    ? selectedArchiveIds.size > 0
+                      ? `선택 EXCEL 다운로드(${selectedArchiveIds.size})`
+                      : '화면 목록 EXCEL 다운로드'
+                    : '엑셀 다운로드는 Edit 권한이 필요합니다.'
+                }
+                className={`px-3 py-1.5 rounded-lg text-[10px] font-black shadow-sm transition-all whitespace-nowrap ${
+                  canEditGeneral
+                    ? 'bg-emerald-600 text-white hover:bg-emerald-700 cursor-pointer'
+                    : 'bg-slate-200 text-slate-400 cursor-not-allowed'
+                }`}
               >
                 {selectedArchiveIds.size > 0
                   ? `선택 EXCEL 다운로드(${selectedArchiveIds.size})`
@@ -1623,18 +1644,18 @@ export default function EquipmentClient({
       <>
         <button
           type="button"
-          disabled={!canEditCurrent && !isArchivedView}
+          disabled={!canEditCurrent}
           onClick={() => {
-            if (!canEditCurrent && !isArchivedView) return;
+            if (!canEditCurrent) return;
             handleExportDetailExcel();
           }}
           title={
-            canEditCurrent || isArchivedView
+            canEditCurrent
               ? '상세 정보 EXCEL 다운로드'
-              : '해당 소속 장비에 대한 권한이 없습니다.'
+              : '해당 소속 장비에 대한 엑셀 다운로드 권한이 없습니다.'
           }
           className={`px-4 py-2 rounded-xl text-[11px] font-black transition-all shadow-sm ${
-            canEditCurrent || isArchivedView
+            canEditCurrent
               ? 'bg-emerald-600 text-white hover:bg-emerald-500 cursor-pointer'
               : 'bg-slate-600/40 text-slate-400 cursor-not-allowed border border-slate-600'
           }`}
