@@ -20,7 +20,7 @@ const TAB_ITEMS = [
   { id: 'archive', name: '📁 종료 처리 아카이브', path: '/asset/it/master/archive' },
 ] as const;
 
-export default function ItMasterPageChrome({
+export default function ItMasterPageBanner({
   label,
   title,
   description,

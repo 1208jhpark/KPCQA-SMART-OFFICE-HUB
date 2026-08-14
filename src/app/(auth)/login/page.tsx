@@ -99,9 +99,11 @@ function LoginForm() {
           <p className="text-blue-500 text-[10px] font-black uppercase tracking-[0.3em] mt-2">KPCQA 통합 자산 및 업무 관리 플랫폼</p>
           {returnNext?.startsWith('/survey/public/') && (
             <p className="text-[11px] font-bold text-indigo-600 mt-4 leading-relaxed">
-              설문·배달 신청 참여를 위해
+              배포 링크는 Hub 로그인 없이
               <br />
-              Smart Office Hub 로그인이 필요합니다.
+              이메일 + 비밀번호/사번 인증으로 참여합니다.
+              <br />
+              링크로 다시 접속해 주세요.
             </p>
           )}
         </div>

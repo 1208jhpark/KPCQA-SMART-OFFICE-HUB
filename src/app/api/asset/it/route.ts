@@ -15,6 +15,7 @@ import {
   toItIdentity,
 } from '@/utils/itUserIdentity';
 import { withItAssetScheduleFields } from '@/utils/itAssetSchedule';
+import { assetInAuditTarget } from '@/utils/itAuditTarget';
 
 export const dynamic = 'force-dynamic';
 
@@ -251,15 +252,75 @@ export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
     const publicEmail = String(searchParams.get('email') || '').trim();
+    const publicCode = String(searchParams.get('code') || '').trim();
 
-    // 공개 QR 실사: 이메일로 본인 자산만
-    const session = await tryGetSessionUser();
-    if (!session && publicEmail) {
-      const { user, assets } = await assetsForEmail(publicEmail);
+    // QR 스캔: 자산번호로 등록정보 조회 (로그인 여부·권한과 무관, 최소 필드만)
+    if (publicCode) {
+      const asset = await prisma.iTAsset.findFirst({
+        where: { is_active: true, code: publicCode },
+        select: {
+          id: true,
+          code: true,
+          it_type: true,
+          category: true,
+          model: true,
+          sn: true,
+          brand: true,
+          spec: true,
+          dept: true,
+          user: true,
+        },
+      });
+      if (!asset) {
+        return NextResponse.json({ message: '자산을 찾을 수 없습니다.' }, { status: 404 });
+      }
+      return NextResponse.json(asset);
+    }
+
+    // 공개 실사: email + auditId + 세션(쿠키/Bearer) 일치 필수 (세션 있어도 이 모드 유지)
+    const auditId = String(searchParams.get('auditId') || '').trim();
+    if (publicEmail && auditId) {
+      const authHeader = req.headers.get('authorization') || '';
+      const bearer = authHeader.toLowerCase().startsWith('bearer ')
+        ? authHeader.slice(7).trim()
+        : '';
+      const session = await tryGetSessionUser(bearer || undefined);
+      if (!session?.email) {
+        return NextResponse.json(
+          { message: '본인 인증(세션)이 필요합니다. 배포 링크에서 다시 인증해 주세요.' },
+          { status: 401 }
+        );
+      }
+      if (normalizeEmail(publicEmail) !== normalizeEmail(session.email)) {
+        return NextResponse.json(
+          { message: '인증된 계정과 요청 이메일이 일치하지 않습니다.' },
+          { status: 403 }
+        );
+      }
+      const { user, assets } = await assetsForEmail(session.email);
       if (!user) {
         return NextResponse.json({ message: '가입된 정보가 없습니다.' }, { status: 403 });
       }
-      return NextResponse.json(assets);
+      const audit = await prisma.iTAudit.findUnique({
+        where: { id: auditId },
+        select: { target: true },
+      });
+      if (!audit) {
+        return NextResponse.json({ message: '실사를 찾을 수 없습니다.' }, { status: 404 });
+      }
+      const units = await prisma.orgUnit.findMany({
+        where: { is_deleted: false },
+        select: { id: true, unit_name: true, parent_id: true },
+      });
+      const scoped = assets.filter((a) => assetInAuditTarget(a.dept, audit.target, units));
+      return NextResponse.json(scoped);
+    }
+
+    if (publicEmail && !auditId) {
+      return NextResponse.json(
+        { message: '실사 ID(auditId)와 본인 인증이 필요합니다.' },
+        { status: 400 }
+      );
     }
 
     const auth = await authorizeAnyMenuPaths([...IT_READ_PATHS]);
@@ -334,15 +395,56 @@ export async function PATCH(req: Request) {
     if (!id) return NextResponse.json({ message: 'ID 누락' }, { status: 400 });
 
     const publicEmail = String(body.publicAuditEmail || body.email || '').trim();
-    const session = await tryGetSessionUser();
+    const authHeader = req.headers.get('authorization') || '';
+    const bearer = authHeader.toLowerCase().startsWith('bearer ')
+      ? authHeader.slice(7).trim()
+      : String(body.accessToken || '').trim();
+    const session = await tryGetSessionUser(bearer || undefined);
 
-    // 공개 QR 실사: 본인 자산 + 실사 필드만
-    if (!session && publicEmail) {
-      const { user, assets } = await assetsForEmail(publicEmail);
+    // 공개 실사 배포 링크: mobile-gate 세션 필수 + 본인 이메일 일치 + 본인 자산만
+    if (publicEmail) {
+      if (!session?.email) {
+        return NextResponse.json(
+          { message: '본인 인증(세션)이 필요합니다. 배포 링크에서 다시 인증해 주세요.' },
+          { status: 401 }
+        );
+      }
+      if (normalizeEmail(publicEmail) !== normalizeEmail(session.email)) {
+        return NextResponse.json(
+          { message: '인증된 계정과 요청 이메일이 일치하지 않습니다.' },
+          { status: 403 }
+        );
+      }
+      const { user, assets } = await assetsForEmail(session.email);
       if (!user) return NextResponse.json({ message: '가입된 정보가 없습니다.' }, { status: 403 });
       const target = assets.find((a) => String(a.id) === String(id));
       if (!target) {
         return NextResponse.json({ message: '본인 자산만 실사할 수 있습니다.' }, { status: 403 });
+      }
+      // 공개 실사: auditId 필수 — 진행중 + 대상범위 검증
+      const auditId = String(body.auditId || '').trim();
+      if (!auditId) {
+        return NextResponse.json(
+          { message: '실사 ID(auditId)가 필요합니다.' },
+          { status: 400 }
+        );
+      }
+      const audit = await prisma.iTAudit.findUnique({
+        where: { id: auditId },
+        select: { target: true, status: true },
+      });
+      if (!audit || audit.status !== '진행중') {
+        return NextResponse.json({ message: '진행 중 실사만 처리할 수 있습니다.' }, { status: 403 });
+      }
+      const units = await prisma.orgUnit.findMany({
+        where: { is_deleted: false },
+        select: { id: true, unit_name: true, parent_id: true },
+      });
+      if (!assetInAuditTarget(target.dept, audit.target, units)) {
+        return NextResponse.json(
+          { message: '이번 실사 대상 범위에 포함되지 않은 자산입니다.' },
+          { status: 403 }
+        );
       }
       const cleanData = sanitizePersonalSelfPatch(body);
       const updated = await prisma.iTAsset.update({ where: { id }, data: cleanData });

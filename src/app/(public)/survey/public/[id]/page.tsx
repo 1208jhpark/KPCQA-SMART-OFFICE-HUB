@@ -1,11 +1,12 @@
 'use client';
   
-import React, { useState, useEffect } from 'react';
-import { useParams } from 'next/navigation';
+import React, { useState, useEffect, useCallback, Suspense } from 'react';
+import { useParams, useSearchParams } from 'next/navigation';
 import { saveAs } from 'file-saver';
 import { isPastKSTDeadline, getKSTDateString } from '@/utils/dateUtils';
 import { getVisibleQuestionsByBranch } from '@/utils/surveyBranching';
 import { normalizeGeneralResponsesPayload } from '@/utils/surveyGeneralResponses';
+import MobileHubAuthCard from '@/components/common/MobileHubAuthCard';
   
 interface SurveyOption {
   label: string;
@@ -37,12 +38,28 @@ const isSurveyOpen = (survey: any) => {
 };
 
 export default function PublicSurveyResponsePage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="p-20 text-center font-black text-slate-400 animate-pulse">인프라 로드 중...</div>
+      }
+    >
+      <PublicSurveyResponseContent />
+    </Suspense>
+  );
+}
+
+function PublicSurveyResponseContent() {
   const params = useParams();
+  const searchParams = useSearchParams();
   const id = params?.id as string;
+  const domainHint = String(searchParams.get('domain') || '').toLowerCase();
+  const preferDelivery = domainHint === 'delivery' || domainHint === '배송';
      
   const [surveyMeta, setSurveyMeta] = useState<any>(null);
   const [questions, setQuestions] = useState<Question[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
+  const [needsAuth, setNeedsAuth] = useState(true);
   const [unavailableReason, setUnavailableReason] = useState<string | null>(null);
   
   const [sessionUser, setSessionUser] = useState<{ email: string; name: string } | null>(null);
@@ -58,124 +75,127 @@ export default function PublicSurveyResponsePage() {
     const ymd = raw ? getKSTDateString(raw) : '';
     return ymd ? ymd.replace(/-/g, '.') : '';
   };
-     
-  useEffect(() => {
+
+  const loadSurveyForUser = useCallback(async (user: { email: string; name: string }) => {
     if (!id) return;
-     
-    if (typeof window !== 'undefined') {
-      const scriptId = 'kakao-postcode-script';
-      if (!document.getElementById(scriptId)) {
-        const script = document.createElement('script');
-        script.id = scriptId;
-        script.src = '//t1.daumcdn.net/mapjsapi/bundle/postcode/prod/postcode.v2.js';
-        script.async = true;
-        document.head.appendChild(script);
+    setLoading(true);
+    setUnavailableReason(null);
+    setNeedsAuth(false);
+    setSessionUser(user);
+    try {
+      const ts = Date.now();
+      const [generalRes, deliveryRes] = await Promise.all([
+        fetch(`/api/survey/general?t=${ts}`, { cache: 'no-store' }).then((r) =>
+          r.ok ? r.json() : []
+        ).catch(() => []),
+        fetch(`/api/survey/delivery?t=${ts}`, { cache: 'no-store' }).then((r) =>
+          r.ok ? r.json() : []
+        ).catch(() => []),
+      ]);
+
+      const generalMatch = Array.isArray(generalRes)
+        ? generalRes.find((s: any) => s.id === id)
+        : null;
+      const deliveryMatch = Array.isArray(deliveryRes)
+        ? deliveryRes.find((s: any) => s.id === id)
+        : null;
+
+      let activeMeta = null;
+      if (generalMatch) activeMeta = { ...generalMatch, _domain: 'GENERAL' };
+      else if (deliveryMatch) activeMeta = { ...deliveryMatch, _domain: 'DELIVERY' };
+
+      if (!activeMeta) {
+        setUnavailableReason('존재하지 않거나 삭제된 배포 링크입니다.');
+        return;
       }
-    }
-     
-    const init = async () => {
+
+      if (activeMeta.status !== '진행중') {
+        setUnavailableReason(
+          activeMeta.status === '완료' || activeMeta.status === '보관됨'
+            ? '이미 마감·보관 처리된 배포 링크입니다. 더 이상 응답할 수 없습니다.'
+            : `현재 참여할 수 없는 상태입니다. (상태: ${activeMeta.status || '알 수 없음'})`
+        );
+        return;
+      }
+
+      if (isPastKSTDeadline(activeMeta.endDate, activeMeta.endTime)) {
+        setUnavailableReason('제출 기한이 만료되어 더 이상 응답할 수 없습니다.');
+        return;
+      }
+
+      const respEndpoint =
+        activeMeta._domain === 'DELIVERY' ? '/api/survey/delivery' : '/api/survey/general';
       try {
-        const ts = Date.now();
-        const [meRes, generalRes, deliveryRes] = await Promise.all([
-          fetch('/api/auth/me', { cache: 'no-store' }).then((r) => (r.ok ? r.json() : null)).catch(() => null),
-          fetch(`/api/survey/general?t=${ts}`, { cache: 'no-store' }).then(r => r.ok ? r.json() : []).catch(() => []),
-          fetch(`/api/survey/delivery?t=${ts}`, { cache: 'no-store' }).then(r => r.ok ? r.json() : []).catch(() => [])
-        ]);
-
-        if (!meRes?.email) {
-          setUnavailableReason('로그인 정보가 없습니다. Smart Office Hub에 다시 로그인해 주세요.');
-          return;
-        }
-        setSessionUser({ email: meRes.email, name: meRes.name || meRes.email });
-        
-        const generalMatch = generalRes.find((s: any) => s.id === id);
-        const deliveryMatch = deliveryRes.find((s: any) => s.id === id);
-        
-        let activeMeta = null;
-        if (generalMatch) activeMeta = { ...generalMatch, _domain: 'GENERAL' };
-        else if (deliveryMatch) activeMeta = { ...deliveryMatch, _domain: 'DELIVERY' };
-        
-        if (!activeMeta) {
-          setUnavailableReason('존재하지 않거나 삭제된 배포 링크입니다.');
-          return;
-        }
-
-        // 🚀 설문 상태·마감 가드: 진행중이 아니거나 기한 지나면 작성 UI 진입 차단
-        if (activeMeta.status !== '진행중') {
-          setUnavailableReason(
-            activeMeta.status === '완료' || activeMeta.status === '보관됨'
-              ? '이미 마감·보관 처리된 배포 링크입니다. 더 이상 응답할 수 없습니다.'
-              : `현재 참여할 수 없는 상태입니다. (상태: ${activeMeta.status || '알 수 없음'})`
+        const respRes = await fetch(respEndpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'GET_RESPONSES' }),
+        });
+        if (respRes.ok) {
+          const payload = await respRes.json();
+          const rows =
+            activeMeta._domain === 'DELIVERY'
+              ? Array.isArray(payload)
+                ? payload
+                : []
+              : normalizeGeneralResponsesPayload(payload).responses;
+          const mine = rows.find(
+            (r: any) =>
+              r?.surveyId === id &&
+              String(r.userEmail || '').toLowerCase() === String(user.email).toLowerCase()
           );
-          return;
-        }
-
-        if (isPastKSTDeadline(activeMeta.endDate, activeMeta.endTime)) {
-          setUnavailableReason('제출 기한이 만료되어 더 이상 응답할 수 없습니다.');
-          return;
-        }
-
-        // 본인 기존 제출 여부 확인 (배포 링크에서 중복 진입 방지)
-        const respEndpoint =
-          activeMeta._domain === 'DELIVERY' ? '/api/survey/delivery' : '/api/survey/general';
-        try {
-          const respRes = await fetch(respEndpoint, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ action: 'GET_RESPONSES' }),
-          });
-          if (respRes.ok) {
-            const payload = await respRes.json();
-            const rows =
-              activeMeta._domain === 'DELIVERY'
-                ? Array.isArray(payload)
-                  ? payload
-                  : []
-                : normalizeGeneralResponsesPayload(payload).responses;
-            const mine = rows.find(
-              (r: any) =>
-                r?.surveyId === id &&
-                String(r.userEmail || '').toLowerCase() === String(meRes.email).toLowerCase()
+          if (mine?.submittedAt) {
+            setExistingSubmittedAt(
+              typeof mine.submittedAt === 'string'
+                ? mine.submittedAt
+                : new Date(mine.submittedAt).toISOString()
             );
-            if (mine?.submittedAt) {
-              setExistingSubmittedAt(
-                typeof mine.submittedAt === 'string'
-                  ? mine.submittedAt
-                  : new Date(mine.submittedAt).toISOString()
-              );
-            }
-          }
-        } catch (e) {
-          console.error('기존 제출 조회 실패:', e);
-        }
-
-        setSurveyMeta(activeMeta);
-          
-        if (activeMeta.questions) {
-          const parsed = typeof activeMeta.questions === 'string' ? JSON.parse(activeMeta.questions) : activeMeta.questions;
-          const safeQuestions = Array.isArray(parsed) ? parsed : [];
-          setQuestions(safeQuestions);
-          
-          if (safeQuestions.length > 0) {
-            if (safeQuestions[0].type !== 'SECTION') {
-              setCurrentSectionId(null);
-            } else {
-              const firstSection = safeQuestions.find((q: any) => q.type === 'SECTION');
-              if (firstSection) setCurrentSectionId(firstSection.id);
-            }
           }
         }
-      } catch (e) { 
-        console.error("인프라 동기화 에러:", e);
-        setUnavailableReason('설문 정보를 불러오는 중 오류가 발생했습니다.');
-      } finally { 
-        setLoading(false); 
+      } catch (e) {
+        console.error('기존 제출 조회 실패:', e);
       }
-    };
-    init();
+
+      setSurveyMeta(activeMeta);
+
+      if (activeMeta.questions) {
+        const parsed =
+          typeof activeMeta.questions === 'string'
+            ? JSON.parse(activeMeta.questions)
+            : activeMeta.questions;
+        const safeQuestions = Array.isArray(parsed) ? parsed : [];
+        setQuestions(safeQuestions);
+
+        if (safeQuestions.length > 0) {
+          if (safeQuestions[0].type !== 'SECTION') {
+            setCurrentSectionId(null);
+          } else {
+            const firstSection = safeQuestions.find((q: any) => q.type === 'SECTION');
+            if (firstSection) setCurrentSectionId(firstSection.id);
+          }
+        }
+      }
+    } catch (e) {
+      console.error('인프라 동기화 에러:', e);
+      setUnavailableReason('설문 정보를 불러오는 중 오류가 발생했습니다.');
+    } finally {
+      setLoading(false);
+    }
   }, [id]);
      
-  const isDelivery = surveyMeta?._domain === 'DELIVERY';
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const scriptId = 'kakao-postcode-script';
+    if (!document.getElementById(scriptId)) {
+      const script = document.createElement('script');
+      script.id = scriptId;
+      script.src = '//t1.daumcdn.net/mapjsapi/bundle/postcode/prod/postcode.v2.js';
+      script.async = true;
+      document.head.appendChild(script);
+    }
+  }, []);
+     
+  const isDelivery = surveyMeta?._domain === 'DELIVERY' || (!surveyMeta && preferDelivery);
   const email = sessionUser?.email || '';
   const displayName = sessionUser?.name || email;
 
@@ -281,6 +301,29 @@ export default function PublicSurveyResponsePage() {
     }
   };
      
+  if (needsAuth && !sessionUser) {
+    return (
+      <div className="min-h-screen bg-slate-100 flex items-center justify-center p-4 font-sans w-full max-w-md mx-auto shadow-2xl border-x">
+        <MobileHubAuthCard
+          title={preferDelivery ? '배송 신청 본인 인증' : '설문 본인 인증'}
+          subtitle="이메일 앞자리와 Hub 비밀번호 또는 사번으로 본인을 확인합니다."
+          submitLabel="인증하고 안내문 보기"
+          accent={preferDelivery ? 'teal' : 'indigo'}
+          onSuccess={loadSurveyForUser}
+          footer={
+            <div className="w-full bg-amber-50 border border-amber-200 rounded-xl p-3 text-center">
+              <p className="text-[10px] font-bold text-amber-800 leading-relaxed">
+                ⚠ 반드시 사내 LAN / Wi-Fi 연결 후 접속하세요.
+                <br />
+                (외부망·LTE에서는 접속되지 않습니다)
+              </p>
+            </div>
+          }
+        />
+      </div>
+    );
+  }
+
   if (loading) return <div className="p-20 text-center font-black text-slate-400 animate-pulse">인프라 로드 중...</div>;
   if (!surveyMeta) {
     return (
@@ -304,8 +347,19 @@ export default function PublicSurveyResponsePage() {
             정상적인 원장 등록 처리가 완료되었습니다. <br />
             보안을 위해 본 브라우저 창을 닫아주셔도 좋습니다.
           </p>
-          <button onClick={() => { if(typeof window !== 'undefined') window.close(); }} className="w-full py-3.5 bg-slate-900 text-white rounded-xl font-black text-xs transition-all active:scale-95">
-            확인 (창 닫기)
+          <button
+            type="button"
+            onClick={() => {
+              if (typeof window === 'undefined') return;
+              window.close();
+              // 주소창·QR로 연 탭은 브라우저가 close를 막음 → 안내만
+              window.setTimeout(() => {
+                alert('브라우저 정책상 이 창을 자동으로 닫을 수 없습니다.\n상단의 탭(창)을 직접 닫아 주세요.');
+              }, 200);
+            }}
+            className="w-full py-3.5 bg-slate-900 text-white rounded-xl font-black text-xs transition-all active:scale-95"
+          >
+            확인 (탭 닫기)
           </button>
         </div>
       </div>
@@ -340,11 +394,15 @@ export default function PublicSurveyResponsePage() {
           <button
             type="button"
             onClick={() => {
-              if (typeof window !== 'undefined') window.close();
+              if (typeof window === 'undefined') return;
+              window.close();
+              window.setTimeout(() => {
+                alert('브라우저 정책상 이 창을 자동으로 닫을 수 없습니다.\n상단의 탭(창)을 직접 닫아 주세요.');
+              }, 200);
             }}
             className="w-full py-3.5 bg-slate-900 text-white rounded-xl font-black text-xs transition-all active:scale-95"
           >
-            확인 (창 닫기)
+            확인 (탭 닫기)
           </button>
         </div>
       </div>

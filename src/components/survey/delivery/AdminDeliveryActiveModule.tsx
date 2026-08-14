@@ -1972,12 +1972,12 @@ const handleDownloadZipAll = async () => {
                   <input
                     type="text"
                     readOnly
-                    value={`${typeof window !== 'undefined' ? window.location.origin : ''}/survey/public/${previewModal.id}`}
+                    value={`${typeof window !== 'undefined' ? window.location.origin : ''}/survey/public/${previewModal.id}?domain=delivery`}
                     className="flex-1 p-2 bg-slate-100 rounded border border-slate-200 text-xs font-mono text-slate-500 outline-none"
                   />
                   <button
                     onClick={() => {
-                      const link = `${window.location.origin}/survey/public/${previewModal.id}`;
+                      const link = `${window.location.origin}/survey/public/${previewModal.id}?domain=delivery`;
                       navigator.clipboard.writeText(link);
                       alert('배달 신청 배포 링크가 클립보드에 복사되었습니다!\n\n⚠ 사내 LAN 및 Wi-Fi에서만 접속 가능합니다. (외부망·LTE 불가)');
                     }}
@@ -1989,7 +1989,8 @@ const handleDownloadZipAll = async () => {
                 <div className="w-full bg-amber-50 border border-amber-200 rounded-xl p-3 mt-3 text-center">
                   <p className="text-[11px] font-black text-amber-800">📡 배포 링크 안내</p>
                   <p className="text-[10px] font-bold text-amber-700 mt-0.5 leading-relaxed">
-                    참여 시 <span className="underline decoration-2">Smart Office Hub 로그인</span>이 필요합니다.
+                    참여 시 <span className="underline decoration-2">이메일 + Hub 비밀번호 또는 사번</span>으로
+                    본인 인증합니다.
                     <br />
                     <span className="font-black">⚠ 반드시 사내 LAN 및 Wi-Fi 연결 후 접속하세요.</span>
                     <br />

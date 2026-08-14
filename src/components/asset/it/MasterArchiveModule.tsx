@@ -5,7 +5,7 @@ import * as XLSX from 'xlsx';
 import { getKSTDateString, getKSTNowYearMonth, getKSTYearMonth } from '@/utils/dateUtils';
 import { resolveInterfaceEditState } from '@/lib/permission-utils';
 import LoadingState from '@/components/common/LoadingState';
-import ItMasterPageChrome from '@/components/asset/it/ItMasterPageChrome';
+import ItMasterPageBanner from '@/components/asset/it/ItMasterPageBanner';
 
 const MENU_PATH = '/asset/it/master/archive';
 
@@ -302,7 +302,7 @@ function MasterArchiveContent() {
 
   return (
     <div className="w-full max-w-[1750px] mx-auto space-y-6 p-8 font-sans text-slate-900 pb-24 animate-fade-in">
-      <ItMasterPageChrome
+      <ItMasterPageBanner
         label="TERMINATED ASSET ARCHIVE"
         title="종료 자산 아카이브 관리"
         description="종료처리된 IT·업무자산의 영구 이력 및 매각 관리"

@@ -1,11 +1,12 @@
 'use client';
      
 import React, { useState, useEffect, useMemo } from 'react';
-import { getKSTDateString, getKSTNowYearMonth, getKSTYearMonth } from '@/utils/dateUtils';
+import * as XLSX from 'xlsx';
+import { getKSTDateString, getKSTNowYearMonth, getKSTYearMonth, isPastKSTDeadline } from '@/utils/dateUtils';
 import { resolveTopOrgName } from '@/utils/orgUnits';
 import { resolveInterfaceEditState } from '@/lib/permission-utils';
 import LoadingState from '@/components/common/LoadingState';
-import ItMasterPageChrome from '@/components/asset/it/ItMasterPageChrome';
+import ItMasterPageBanner from '@/components/asset/it/ItMasterPageBanner';
 
 const MENU_PATH = '/asset/it/master/audit';
 
@@ -111,8 +112,19 @@ export default function AuditModule() {
   
   const isLV1 = useMemo(() => {
     if (!currentUser) return false;
-    const roles = Array.isArray(currentUser.roles) ? currentUser.roles : JSON.parse(currentUser.roles || '[]');
-    return roles.includes('LV_1');
+    const roles = Array.isArray(currentUser.roles)
+      ? currentUser.roles
+      : (() => {
+          try {
+            return JSON.parse(currentUser.roles || '[]');
+          } catch {
+            return [];
+          }
+        })();
+    return roles.some((r: any) => {
+      const m = String(r).match(/\d+/);
+      return m ? `LV_${m[0]}` === 'LV_1' : String(r).includes('LV_1');
+    });
   }, [currentUser]);
 
   const canEdit = useMemo(
@@ -183,6 +195,29 @@ export default function AuditModule() {
   
   const totalHistoryPages = Math.max(1, Math.ceil(filteredHistory.length / itemsPerPage));
   const paginatedHistory = filteredHistory.slice((historyPage - 1) * itemsPerPage, historyPage * itemsPerPage);
+
+  const handleExportExcel = () => {
+    if (filteredHistory.length === 0) {
+      return alert('내보낼 실사 이력이 없습니다.');
+    }
+    const rows = filteredHistory.map((h, index) => ({
+      NO: filteredHistory.length - index,
+      게시일: h.postDate || '-',
+      실사명: h.title || '-',
+      대상범위: formatTargetLabel(h.target),
+      시작일: h.startDate || '-',
+      종료일: h.endDate || '-',
+      종료시각: h.endTime || '23:59',
+      보관일: h.archivedAt || '-',
+      상태: h.status || '-',
+    }));
+    const ws = XLSX.utils.json_to_sheet(rows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'IT_Audit_Archive');
+    const yearStr = selectedYear === 'ALL' ? '전체' : `${selectedYear}년`;
+    const monthStr = selectedMonth === 'ALL' ? '' : `_${selectedMonth}월`;
+    XLSX.writeFile(wb, `IT실사이력_${yearStr}${monthStr}.xlsx`);
+  };
   
   const parseTargets = (target: string) =>
     String(target || '')
@@ -237,8 +272,56 @@ export default function AuditModule() {
     return false;
   };
 
+  /** 운영 충돌: 작성중·게시중단·진행중 (마감·보관됨은 후속 실사 허용) */
   const findOverlappingActive = (target: string, excludeId?: string) =>
-    activeAudits.filter((a) => a.id !== excludeId && targetsOverlap(a.target, target));
+    audits.filter(
+      (a) =>
+        a.id !== excludeId &&
+        (a.status === '작성중' || a.status === '게시중단' || a.status === '진행중') &&
+        targetsOverlap(a.target, target)
+    );
+
+  /** 동시 운영 충돌: 진행중만 */
+  const findOverlappingRunning = (target: string, excludeId?: string) =>
+    audits.filter(
+      (a) => a.status === '진행중' && a.id !== excludeId && targetsOverlap(a.target, target)
+    );
+
+  const copyDeployLink = async (publicLink: string) => {
+    let ok = false;
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(publicLink);
+        ok = true;
+      }
+    } catch {
+      ok = false;
+    }
+    if (!ok) {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = publicLink;
+        ta.setAttribute('readonly', '');
+        ta.style.position = 'fixed';
+        ta.style.left = '-9999px';
+        document.body.appendChild(ta);
+        ta.select();
+        ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+      } catch {
+        ok = false;
+      }
+    }
+    if (ok) {
+      alert(
+        '모바일/웹 배포 링크가 클립보드에 복사되었습니다!\n게시판이나 메신저에 붙여넣기 하세요.\n\n⚠ 사내 LAN 및 Wi-Fi에서만 접속 가능합니다. (외부망·LTE 불가)'
+      );
+    } else {
+      alert(
+        `클립보드 복사에 실패했습니다.\n아래 링크를 직접 선택해 복사하세요.\n\n${publicLink}\n\n⚠ 사내 LAN 및 Wi-Fi에서만 접속 가능합니다.`
+      );
+    }
+  };
 
   const saveAuditPlan = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -247,20 +330,48 @@ export default function AuditModule() {
       const { id, createdAt, updatedAt, responses, ...submitData } = editModal;
       submitData.endTime = normalizeEndTime24(submitData.endTime);
 
+      if (submitData.startDate && submitData.endDate && submitData.startDate > submitData.endDate) {
+        return alert('시작일이 종료일보다 늦을 수 없습니다.');
+      }
+
+      const pastDeadline = isPastKSTDeadline(submitData.endDate, submitData.endTime || '23:59');
+      const status = String(submitData.status || '작성중');
+      if (pastDeadline && (status === '작성중' || status === '게시중단')) {
+        return alert(
+          '종료 시각이 이미 지났습니다.\n종료일·마감 시각을 수정한 뒤 저장해 주세요.\n(지난 일정으로는 배포 시 즉시 자동마감됩니다.)'
+        );
+      }
+      if (pastDeadline && status === '진행중') {
+        if (
+          !confirm(
+            '종료 시각이 이미 지났습니다.\n오늘 23:59까지로 연장하여 저장할까요?\n(연장하지 않으면 다음 조회 때 자동 마감됩니다.)'
+          )
+        ) {
+          return;
+        }
+        submitData.endDate = todayStr;
+        submitData.endTime = '23:59';
+      }
+
       const excludeId = String(id || '').startsWith('NEW_') ? undefined : id;
       const overlaps = findOverlappingActive(submitData.target || '', excludeId);
       if (overlaps.length > 0) {
-        const names = overlaps.map((a) => `· ${a.title} (${formatTargetLabel(a.target)})`).join('\n');
+        const names = overlaps.map((a) => `· ${a.title} (${formatTargetLabel(a.target)}) [${a.status}]`).join('\n');
         return alert(`대상범위가 겹치는 운영 중 실사가 있어 저장할 수 없습니다.\n\n${names}`);
       }
 
-      if (id.startsWith('NEW_')) {
-        await fetch('/api/asset/it/audit', { method: 'POST', body: JSON.stringify(submitData) });
-      } else {
-        await fetch('/api/asset/it/audit', { method: 'PATCH', body: JSON.stringify({ id, ...submitData }) });
+      const isNew = String(id).startsWith('NEW_');
+      const res = await fetch('/api/asset/it/audit', {
+        method: isNew ? 'POST' : 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(isNew ? submitData : { id, ...submitData }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        return alert(`❌ 저장에 실패했습니다.${err?.error ? `\n${err.error}` : ''}`);
       }
       setEditModal(null);
-      fetchAuditData();
+      await fetchAuditData();
       alert('✅ 실사 계획이 저장되었습니다.');
     } catch (error) {
       alert('❌ 저장 중 오류가 발생했습니다.');
@@ -268,46 +379,116 @@ export default function AuditModule() {
   };
 
   const handleStatusChange = async (id: string, action: 'PUBLISH' | 'STOP' | 'CLOSE' | 'REOPEN' | 'ARCHIVE' | 'RESTORE' | 'DELETE') => {
-    if (!canEdit) return alert('편집 권한이 없습니다.');
     if (action === 'DELETE') {
       if (!isLV1) return alert('데이터 영구 삭제는 최고 관리자(LV_1) 권한이 필요합니다.');
       if (!confirm('🚨 경고: 이 실사 이력을 영구적으로 삭제하시겠습니까? 데이터 복구가 불가능합니다.')) return;
-      await fetch(`/api/asset/it/audit?id=${id}`, { method: 'DELETE' });
-      fetchAuditData();
+      try {
+        const res = await fetch(`/api/asset/it/audit?id=${id}`, { method: 'DELETE' });
+        if (!res.ok) {
+          const err = await res.json().catch(() => null);
+          return alert(`❌ 삭제에 실패했습니다.${err?.error ? `\n${err.error}` : ''}`);
+        }
+        await fetchAuditData();
+      } catch {
+        alert('❌ 삭제 중 오류가 발생했습니다.');
+      }
       return;
     }
+
+    if (!canEdit) return alert('편집 권한이 없습니다.');
+
+    const row = audits.find((a) => a.id === id);
+
+    if (action === 'PUBLISH' || action === 'REOPEN') {
+      const overlaps = findOverlappingRunning(row?.target || '', id);
+      if (overlaps.length > 0) {
+        const names = overlaps.map((a) => `· ${a.title} (${formatTargetLabel(a.target)})`).join('\n');
+        return alert(`대상범위가 겹치는 진행 중 실사가 있어 ${action === 'PUBLISH' ? '배포' : '마감취소'}할 수 없습니다.\n\n${names}`);
+      }
+    }
+
+    const rowPastDeadline = row
+      ? isPastKSTDeadline(row.endDate, normalizeEndTime24(row.endTime))
+      : false;
   
     let patchData: any = { id };
-    if (action === 'PUBLISH') patchData = { id, status: '진행중', postDate: todayStr };
+    if (action === 'PUBLISH') {
+      if (rowPastDeadline) {
+        if (
+          !confirm(
+            '종료 시각이 이미 지났습니다.\n배포하면 오늘 23:59까지로 자동 연장됩니다.\n그래도 배포할까요?'
+          )
+        ) {
+          return;
+        }
+      } else if (!confirm('이 실사를 배포(진행중)할까요?')) {
+        return;
+      }
+      patchData = { id, status: '진행중', postDate: todayStr };
+    }
     if (action === 'STOP') patchData = { id, status: '게시중단' };
     if (action === 'CLOSE') {
-      if (!confirm("실사 운영을 강제로 마감하시겠습니까?\n마감임박 독촉 상태는 모두 해제되고 미실사로 정리됩니다.")) return;
+      if (!confirm("실사 운영을 강제로 마감하시겠습니까?\n해당 대상범위의 마감임박 독촉(audit_request_date)은 해제됩니다.\n자산별 실사 완료 기록(last_audit_date)은 유지됩니다.")) return;
       patchData = { id, status: '마감' };
     }
     if (action === 'REOPEN') {
-      if (!confirm("마감을 취소하고 실사를 다시 '진행중'으로 되돌릴까요?")) return;
+      if (
+        !confirm(
+          rowPastDeadline
+            ? "마감을 취소하고 다시 '진행중'으로 되돌릴까요?\n종료 시각이 이미 지나 오늘 23:59까지로 자동 연장됩니다."
+            : "마감을 취소하고 실사를 다시 '진행중'으로 되돌릴까요?\n(종료일이 이미 지났다면 오늘 23:59까지로 자동 연장됩니다.)"
+        )
+      ) {
+        return;
+      }
       patchData = { id, status: '진행중' };
     }
     if (action === 'ARCHIVE') patchData = { id, status: '보관됨', archivedAt: todayStr };
     if (action === 'RESTORE') {
       const targetAudit = historyAuditsRaw.find((h) => h.id === id);
-      const overlaps = findOverlappingActive(targetAudit?.target || '');
+      const overlaps = findOverlappingRunning(targetAudit?.target || '', id);
       if (overlaps.length > 0) {
         const names = overlaps.map((a) => `· ${a.title} (${a.target})`).join('\n');
-        return alert(`대상범위가 겹치는 운영 중 실사가 있어 복구할 수 없습니다.\n\n${names}`);
+        return alert(`대상범위가 겹치는 진행 중 실사가 있어 복구할 수 없습니다.\n\n${names}`);
       }
       if (!confirm("선택한 이력을 현황판(운영 리스트)으로 복구하시겠습니까?")) return;
       patchData = { id, status: '마감' }; 
     }
   
     try {
-      await fetch('/api/asset/it/audit', { method: 'PATCH', body: JSON.stringify(patchData) });
-      fetchAuditData();
+      const res = await fetch('/api/asset/it/audit', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(patchData),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => null);
+        return alert(`❌ 상태 변경에 실패했습니다.${err?.error ? `\n${err.error}` : ''}`);
+      }
+      const updated = await res.json().catch(() => null);
+      await fetchAuditData();
+      if (action === 'PUBLISH') {
+        alert(
+          updated?.deadlineExtended
+            ? '✅ 배포되었습니다.\n종료 시각이 지나 오늘 23:59까지로 연장되었습니다. 필요하면 기간을 수정하세요.'
+            : '✅ 배포되었습니다.'
+        );
+      }
+      if (action === 'REOPEN') {
+        alert(
+          updated?.deadlineExtended
+            ? "✅ '진행중'으로 복구했습니다.\n종료일이 지나 오늘 23:59까지로 연장되었습니다. 필요하면 기간을 수정하세요."
+            : "✅ '진행중'으로 복구했습니다."
+        );
+      }
     } catch(err) { alert('상태 변경 실패'); }
   };
 
   const publicAuditLink = (auditId: string) => {
-    const BASE_URL = process.env.NEXT_PUBLIC_SITE_URL || (typeof window !== 'undefined' ? window.location.origin : '');
+    const BASE_URL =
+      process.env.NEXT_PUBLIC_BASE_URL ||
+      process.env.NEXT_PUBLIC_SITE_URL ||
+      (typeof window !== 'undefined' ? window.location.origin : '');
     return `${BASE_URL}/audit/public/${auditId}`;
   };
 
@@ -346,7 +527,7 @@ export default function AuditModule() {
   
   return (
     <div className="w-full max-w-[1750px] mx-auto space-y-6 p-8 font-sans text-slate-900 pb-24 animate-fade-in">
-      <ItMasterPageChrome
+      <ItMasterPageBanner
         label="IT Asset Audit Control Hub"
         title="IT 자산 정기 실사 관제 센터"
         description="실사 일정 수립·배포·마감과 배포 링크를 관리합니다. 자산별 실사·독촉은 마스터 대시보드에서 확인하세요."
@@ -390,7 +571,7 @@ export default function AuditModule() {
                 <th className="h-12 px-3 text-left whitespace-nowrap">내용 요약</th>
                 <th className="h-12 px-2 text-center whitespace-nowrap">실사 운영 기간</th>
                 <th className="h-12 px-2 text-center whitespace-nowrap">대상범위</th>
-                <th className="h-12 px-2 text-center border-l border-slate-200 whitespace-nowrap">모바일 실사 URL</th>
+                <th className="h-12 px-2 text-center border-l border-slate-200 whitespace-nowrap">모바일/웹 배포 링크 (사내망)</th>
                 <th className="h-12 px-2 text-center whitespace-nowrap">상태</th>
                 <th className="h-12 pr-4 text-center border-l border-slate-200 whitespace-nowrap">관리 액션</th>
               </tr>
@@ -417,7 +598,15 @@ export default function AuditModule() {
                     <td className="px-2 border-l border-slate-100">
                       <div className="flex items-center gap-1 bg-slate-50 border border-slate-200 rounded-lg p-1.5">
                         <input type="text" readOnly value={publicLink} className="w-full min-w-0 text-[9px] font-mono text-slate-500 outline-none bg-transparent" />
-                        <button type="button" onClick={() => { navigator.clipboard.writeText(publicLink); alert('모바일 실사 URL이 복사되었습니다.'); }} className="px-2 py-1 bg-white border border-slate-200 text-slate-700 rounded text-[9px] font-black shrink-0 hover:bg-slate-100 whitespace-nowrap">복사</button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            void copyDeployLink(publicLink);
+                          }}
+                          className="px-2 py-1 bg-white border border-slate-200 text-slate-700 rounded text-[9px] font-black shrink-0 hover:bg-slate-100 whitespace-nowrap"
+                        >
+                          복사
+                        </button>
                       </div>
                     </td>
                     <td className="px-2 text-center whitespace-nowrap">
@@ -453,6 +642,15 @@ export default function AuditModule() {
           </table>
         </div>
       </div>
+
+      {/* 배포 링크 안내 — 한 줄 요약 */}
+      <div className="rounded-xl bg-amber-50 border border-amber-200 px-4 py-2.5 text-[11px] font-bold text-amber-800 leading-snug">
+        <span className="font-black">📡 배포 링크 안내</span>
+        <span className="mx-1.5 text-amber-300">·</span>
+        참여 시 <span className="underline decoration-2">이메일 + Hub 비밀번호 또는 사번</span> 인증
+        <span className="mx-1.5 text-amber-300">·</span>
+        <span className="font-black">사내 LAN/Wi-Fi만</span> 접속 (외부망·LTE 불가, Wi-Fi 시 모바일 가능)
+      </div>
   
       {/* 이력 보관함 */}
       <div className="mt-6 bg-white border border-slate-300 rounded-[2.5rem] shadow-sm overflow-hidden">
@@ -461,48 +659,57 @@ export default function AuditModule() {
             <div className="w-2.5 h-2.5 rounded-full bg-slate-300 shrink-0" />
             <h2 className="text-sm font-black text-white tracking-tight">실사 종료 이력 (Archive)</h2>
             <span className="text-[11px] font-bold bg-slate-600 text-slate-200 px-2 py-0.5 rounded-md">{filteredHistory.length}건</span>
+          </div>
+
+          <div className="flex items-center gap-2 flex-wrap ml-auto">
+            <div className="relative group/filter flex items-center gap-2 bg-white/95 px-3 py-1.5 rounded-lg border border-slate-400 shadow-sm">
+              <span
+                role="tooltip"
+                className="pointer-events-none absolute right-0 top-full mt-1.5 z-50 hidden group-hover/filter:block whitespace-nowrap rounded-lg bg-slate-900 px-2.5 py-1.5 text-[10px] font-bold text-white shadow-lg"
+              >
+                연도 → 월 · 연계필터
+              </span>
+              <span className="text-[10px] font-black text-slate-400 uppercase">연도</span>
+              <select
+                value={selectedYear}
+                onChange={(e) => {
+                  setSelectedYear(e.target.value);
+                  setSelectedMonth('ALL');
+                }}
+                className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent"
+              >
+                <option value="ALL">전체</option>
+                {availableYears.map((year) => (
+                  <option key={year} value={year}>{year}년</option>
+                ))}
+              </select>
+              <div className="w-px h-3.5 bg-slate-300 mx-0.5" />
+              <span className="text-[10px] font-black text-slate-400 uppercase">월별</span>
+              <select
+                value={selectedMonth}
+                onChange={(e) => setSelectedMonth(e.target.value)}
+                className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent"
+              >
+                <option value="ALL">전체</option>
+                {availableMonths.map((month) => (
+                  <option key={month} value={month}>{month}월</option>
+                ))}
+              </select>
+            </div>
+            <button
+              type="button"
+              onClick={handleExportExcel}
+              className="px-3 py-1.5 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-lg text-[10px] font-black hover:bg-emerald-600 hover:text-white transition-all shadow-sm"
+            >
+              📥 엑셀
+            </button>
             <button
               type="button"
               onClick={() => setIsHistoryOpen(!isHistoryOpen)}
-              className="text-xs ml-1 text-slate-200 font-bold bg-slate-600/80 border border-slate-500 px-2 py-0.5 rounded-lg hover:bg-slate-500"
+              className="text-[11px] font-black bg-white text-slate-900 border border-slate-200 rounded-lg px-4 py-1.5 hover:bg-slate-100 transition-colors shadow-sm shrink-0"
             >
-              {isHistoryOpen ? '▲ 접기' : '▼ 펼치기'}
+              {isHistoryOpen ? '보관함 접기 ▲' : '보관함 펼치기 ▼'}
             </button>
-          </div>
-
-          <div className="relative group/filter flex items-center gap-2 bg-white/95 px-3 py-1.5 rounded-lg border border-slate-400 shadow-sm">
-            <span
-              role="tooltip"
-              className="pointer-events-none absolute right-0 top-full mt-1.5 z-50 hidden group-hover/filter:block whitespace-nowrap rounded-lg bg-slate-900 px-2.5 py-1.5 text-[10px] font-bold text-white shadow-lg"
-            >
-              연도 → 월 · 연계필터
-            </span>
-            <span className="text-[10px] font-black text-slate-400 uppercase">연도</span>
-            <select
-              value={selectedYear}
-              onChange={(e) => {
-                setSelectedYear(e.target.value);
-                setSelectedMonth('ALL');
-              }}
-              className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent"
-            >
-              <option value="ALL">전체</option>
-              {availableYears.map((year) => (
-                <option key={year} value={year}>{year}년</option>
-              ))}
-            </select>
-            <div className="w-px h-3.5 bg-slate-300 mx-0.5" />
-            <span className="text-[10px] font-black text-slate-400 uppercase">월별</span>
-            <select
-              value={selectedMonth}
-              onChange={(e) => setSelectedMonth(e.target.value)}
-              className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent"
-            >
-              <option value="ALL">전체</option>
-              {availableMonths.map((month) => (
-                <option key={month} value={month}>{month}월</option>
-              ))}
-            </select>
           </div>
         </div>
 
@@ -519,7 +726,7 @@ export default function AuditModule() {
                     <th className="h-12 px-3 text-left whitespace-nowrap">내용 요약</th>
                     <th className="h-12 px-2 text-center whitespace-nowrap">실사 운영 기간</th>
                     <th className="h-12 px-2 text-center whitespace-nowrap">대상범위</th>
-                    <th className="h-12 px-2 text-center border-l border-slate-200 whitespace-nowrap">모바일 실사 URL</th>
+                    <th className="h-12 px-2 text-center border-l border-slate-200 whitespace-nowrap">모바일/웹 배포 링크 (사내망)</th>
                     <th className="h-12 px-2 text-center whitespace-nowrap">상태</th>
                     <th className="h-12 pr-4 text-center border-l border-slate-200 whitespace-nowrap">관리 액션</th>
                   </tr>
@@ -530,7 +737,7 @@ export default function AuditModule() {
                   ) : paginatedHistory.map((h, idx) => {
                     const publicLink = publicAuditLink(h.id);
                     const no = filteredHistory.length - ((historyPage - 1) * itemsPerPage + idx);
-                    const restoreBlocked = findOverlappingActive(h.target).length > 0;
+                    const restoreBlocked = findOverlappingRunning(h.target, h.id).length > 0;
                     return (
                       <tr key={h.id} className="h-14 hover:bg-slate-50/50 transition-colors">
                         <td className="pl-4 text-center text-slate-400">{no}</td>
@@ -548,7 +755,15 @@ export default function AuditModule() {
                         <td className="px-2 border-l border-slate-100">
                           <div className="flex items-center gap-1 bg-slate-50 border border-slate-200 rounded-lg p-1.5">
                             <input type="text" readOnly value={publicLink} className="w-full min-w-0 text-[9px] font-mono text-slate-500 outline-none bg-transparent" />
-                            <button type="button" onClick={() => { navigator.clipboard.writeText(publicLink); alert('모바일 실사 URL이 복사되었습니다.'); }} className="px-2 py-1 bg-white border border-slate-200 text-slate-700 rounded text-[9px] font-black shrink-0 hover:bg-slate-100 whitespace-nowrap">복사</button>
+                            <button
+                          type="button"
+                          onClick={() => {
+                            void copyDeployLink(publicLink);
+                          }}
+                          className="px-2 py-1 bg-white border border-slate-200 text-slate-700 rounded text-[9px] font-black shrink-0 hover:bg-slate-100 whitespace-nowrap"
+                        >
+                          복사
+                        </button>
                           </div>
                         </td>
                         <td className="px-2 text-center whitespace-nowrap">
@@ -558,36 +773,40 @@ export default function AuditModule() {
                           <div className="flex justify-center gap-1.5 whitespace-nowrap">
                             <button
                               type="button"
-                              disabled={!canEdit || restoreBlocked}
+                              disabled={!canEdit}
                               onClick={() => handleStatusChange(h.id, 'RESTORE')}
                               title={
                                 !canEdit
-                                  ? '편집 권한 필요'
+                                  ? '편집 권한 필요 (admin/interface)'
                                   : restoreBlocked
-                                    ? '대상범위가 겹치는 운영 중 실사가 있습니다.'
+                                    ? '진행 중 실사와 대상범위가 겹칩니다. 클릭 시 안내가 표시됩니다.'
                                     : '현황판으로 복구'
                               }
                               className={`px-3 py-1.5 rounded-lg text-[10px] transition-colors border ${
-                                !canEdit || restoreBlocked
+                                !canEdit
                                   ? disabledActionClass
                                   : 'bg-white border-slate-300 text-slate-700 hover:bg-slate-800 hover:text-white'
                               }`}
                             >
                               복구
                             </button>
-                            {isLV1 && (
+                            {isLV1 ? (
                               <button
                                 type="button"
-                                disabled={!canEdit}
-                                title={!canEdit ? '편집 권한 필요' : undefined}
                                 onClick={() => handleStatusChange(h.id, 'DELETE')}
-                                className={`px-3 py-1.5 rounded-lg text-[10px] border transition-colors ${
-                                  canEdit
-                                    ? 'bg-white border-red-200 text-red-500 hover:bg-red-50'
-                                    : disabledActionClass
-                                }`}
+                                title="최고 관리자(LV_1) 전용 · 영구 삭제"
+                                className="px-3 py-1.5 rounded-lg text-[10px] border transition-colors bg-white border-red-200 text-red-500 hover:bg-red-50"
                               >
-                                삭제
+                                삭제(LV_1)
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                disabled
+                                title="최고 관리자(LV_1)만 삭제할 수 있습니다."
+                                className={`px-3 py-1.5 rounded-lg text-[10px] border ${disabledActionClass}`}
+                              >
+                                삭제(LV_1)
                               </button>
                             )}
                           </div>

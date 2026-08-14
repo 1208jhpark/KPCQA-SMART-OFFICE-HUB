@@ -7,7 +7,7 @@ import { saveAs } from 'file-saver';
 import { getKSTDateString, getKSTNowYearMonth, getKSTYearMonth, toSortableTime } from '@/utils/dateUtils';
 import { resolveInterfaceEditState } from '@/lib/permission-utils';
 import LoadingState from '@/components/common/LoadingState';
-import ItMasterPageChrome from '@/components/asset/it/ItMasterPageChrome';
+import ItMasterPageBanner from '@/components/asset/it/ItMasterPageBanner';
 
 const MENU_PATH = '/asset/it/master/requests';
 
@@ -61,10 +61,16 @@ function isClosedStatus(status: string) {
   return status === '처리완료' || status === '관리자 확인완료' || status === '사용자 종료처리';
 }
 
-/** 스레드(대표+하위) 중 종결 건이 있으면 관리액션「종료」— 필터와 UI 공통 */
+/** 스레드 종결 = 시간순 최신 행이 종결 상태일 때만 (중간 이력 종결로 전체를 끝내지 않음) */
 function isThreadClosed(root: any, children: any[] = []) {
   const members = [root, ...(children || [])].filter(Boolean);
-  return members.some((r) => isClosedStatus(String(r?.status || '')));
+  if (members.length === 0) return false;
+  const latest = [...members].sort((a, b) => {
+    const d = reqTime(b) - reqTime(a);
+    if (d !== 0) return d;
+    return String(b.id || '').localeCompare(String(a.id || ''));
+  })[0];
+  return isClosedStatus(String(latest?.status || ''));
 }
 
 function isWaitingForUser(status: string) {
@@ -75,8 +81,14 @@ function isUserPendingStatus(status: string) {
   return status === '답변 대기중' || status === '의견전송' || status === '답변회신' || status === '대기중';
 }
 
+/** 동일 스레드: 자산번호 + 자산분류가 같을 때만 */
 function sameAssetCode(a: any, b: any) {
-  return String(a?.assetCode || '').trim() === String(b?.assetCode || '').trim();
+  const codeA = String(a?.assetCode || a?.code || '').trim();
+  const codeB = String(b?.assetCode || b?.code || '').trim();
+  if (!codeA || codeA !== codeB) return false;
+  const typeA = String(a?.assetType || a?.category || '').trim() || '일반';
+  const typeB = String(b?.assetType || b?.category || '').trim() || '일반';
+  return typeA === typeB;
 }
 
 function isIncomingReply(req: any, allRequests: any[] = []) {
@@ -269,10 +281,6 @@ function threadUserLabel(root: any) {
   return [root?.dept || root?.department, root?.requester || root?.name].filter(Boolean).join(' / ');
 }
 
-function samePersonLabel(a: string, b: string) {
-  return String(a || '').replace(/\s+/g, '') === String(b || '').replace(/\s+/g, '');
-}
-
 function isAdminSideStatus(status: string) {
   return status === '관리자 의견발송' || status === '관리자 답변' || status === '사용자 확인완료';
 }
@@ -406,6 +414,14 @@ function ITMasterRequestContent() {
     const responderDept = currentUser?.dept || '';
     const thread = collectThreadMessages(editingReq, requests);
     const latest = thread[thread.length - 1] || editingReq;
+    // 종료·답변은 최신 이력 행에서만
+    if (String(editingReq.id) !== String(latest.id)) {
+      return alert(
+        mode === 'close'
+          ? '처리 완료(종료)는 가장 최근 이력에서만 할 수 있습니다.'
+          : '답변 전송은 가장 최근 이력에서만 할 수 있습니다.'
+      );
+    }
 
     try {
       if (mode === 'reply') {
@@ -711,7 +727,7 @@ function ITMasterRequestContent() {
       .filter((t) => {
         // 연계필터는 대표(root) 줄 기준 — 하위 회신은 스레드에 자동 포함
         if (!matchesMeta(t.root)) return false;
-        // 관리액션「종료」와 동일: 스레드 어디에든 종결 상태가 있으면 처리 완료
+        // 최신 행 종결만 처리 완료 — 중간 이력 종결과 구분
         const threadClosed = isThreadClosed(t.root, t.children);
         if (filterStatus === 'PENDING') return !threadClosed; // 문의/답변 진행
         if (filterStatus === 'DONE') return threadClosed; // 처리 완료(종료)
@@ -819,6 +835,7 @@ function ITMasterRequestContent() {
       latestId?: string;
       userLabel?: string;
       adminLabel?: string;
+      threadClosed?: boolean;
     }
   ) => {
     const isRoot = opts.depth === 0;
@@ -826,22 +843,18 @@ function ITMasterRequestContent() {
     const threadMembers = isRoot ? [req, ...relatedChildren] : [req];
     const latestRelated =
       [...threadMembers].sort((a, b) => reqTime(b) - reqTime(a))[0] || req;
-    const displayPending =
-      !isClosedStatus(String(latestRelated?.status || '')) &&
-      isUserPendingStatus(latestRelated?.status || req.status);
     const threadLatestId = opts.latestId || String(latestRelated?.id || req.id);
     const isLatestInThread = String(req.id) === threadLatestId;
     const isPastStep = opts.depth > 0 && !isLatestInThread;
     const childCount = opts.childCount || 0;
     const hasChildren = childCount > 0;
-    const threadClosed = isRoot
-      ? isThreadClosed(req, relatedChildren)
-      : isClosedStatus(String(req.status || ''));
-    // 대표 줄 + 종결: 상태칸에 종료 표기 / 그 외는 최초 질의 유형 유지
-    const rowStatusLabel =
-      isRoot && threadClosed
-        ? '처리 완료(종료)'
-        : historyStatusLabel(req.status, req, { isThreadRoot: isRoot });
+    // personal과 동일: 최신 행 종결이면 스레드 전체 상태 회색
+    const threadClosed =
+      typeof opts.threadClosed === 'boolean'
+        ? opts.threadClosed
+        : isThreadClosed(req, relatedChildren);
+    // 각 행은 자기 내용에 맞는 상태만 표기 — 대표 줄은 종결 후에도 최초 질의 유형 유지
+    const rowStatusLabel = historyStatusLabel(req.status, req, { isThreadRoot: isRoot });
     const rowIsAdminStart = rowStatusLabel === '관리자 문의/요청';
     const rowIsAdminReply = rowStatusLabel === '관리자 답변';
     const rowIsUserStart = rowStatusLabel === '사용자 문의/요청';
@@ -851,34 +864,14 @@ function ITMasterRequestContent() {
       isLatestInThread &&
       !threadClosed;
     const modelName = parseHistoryModel(req);
-    // 대표 줄: 스레드 최신 관리자 의견 반영 (하위 회신이 있어도 '-'로 보이지 않게)
-    const threadAdminText = (() => {
-      if (!isRoot) return String(req.adminOpinionText || '').trim();
-      const members = [req, ...relatedChildren].sort((a, b) => reqTime(b) - reqTime(a));
-      for (const m of members) {
-        const t = String(
-          m.adminOpinionText || parseAdminOpinion(m.adminOpinion).opinionText || ''
-        ).trim();
-        if (t) return t;
-      }
-      return '';
-    })();
-    const threadWaitingAdmin =
-      isRoot &&
-      !threadClosed &&
-      isUserPendingStatus(String(latestRelated?.status || req.status || ''));
+    // 행별 관리자 의견만 표시 (최신 회신을 대표 줄로 끌어오지 않음)
+    const rowAdminText = String(
+      req.adminOpinionText || parseAdminOpinion(req.adminOpinion).opinionText || ''
+    ).trim();
+    const waitingReply =
+      !threadClosed && isUserPendingStatus(req.status) && isLatestInThread && !rowAdminText;
     const rowDate =
-      getKSTDateString(
-        isRoot
-          ? latestRelated?.completedAt ||
-              latestRelated?.requestDate ||
-              latestRelated?.createdAt ||
-              req.completedAt ||
-              req.requestDate ||
-              req.createdAt
-          : req.completedAt || req.requestDate || req.createdAt
-      ) ||
-      (isRoot ? latestRelated?.requestDate : null) ||
+      getKSTDateString(req.completedAt || req.requestDate || req.createdAt) ||
       req.completedAt ||
       req.requestDate ||
       '-';
@@ -886,21 +879,9 @@ function ITMasterRequestContent() {
     const rootAdminLabel = opts.adminLabel || pickThreadAdminLabel([req, ...relatedChildren]);
     const thisUserLabel = threadUserLabel(req);
     const thisAdminLabel = rowAdminLabel(req);
-    const isAdminMsg = isAdminSideStatus(req.status);
-    const isUserMsg = isUserPendingStatus(req.status) || String(req.adminOpinion || '').includes(':::REPLY:::');
-    let userLabel = '';
-    let adminLabel = '';
-    if (isRoot) {
-      userLabel = rootUserLabel;
-      adminLabel = rootAdminLabel;
-    } else {
-      if (isUserMsg && thisUserLabel && !samePersonLabel(thisUserLabel, rootUserLabel)) userLabel = thisUserLabel;
-      if (isAdminMsg && thisAdminLabel && !samePersonLabel(thisAdminLabel, rootAdminLabel)) adminLabel = thisAdminLabel;
-      if (isClosedStatus(req.status)) {
-        if (thisUserLabel && !samePersonLabel(thisUserLabel, rootUserLabel)) userLabel = thisUserLabel;
-        if (thisAdminLabel && !samePersonLabel(thisAdminLabel, rootAdminLabel)) adminLabel = thisAdminLabel;
-      }
-    }
+    // 사용자·관리자 영역: 매 행마다 해당 행(없으면 스레드 루트) 부서/이름 표기
+    const userLabel = thisUserLabel || rootUserLabel;
+    const adminLabel = thisAdminLabel || rootAdminLabel;
 
     return (
       <tr
@@ -954,17 +935,11 @@ function ITMasterRequestContent() {
           {userRequestContent(req.content)}
         </td>
         <td className="px-2 border-l border-slate-200">
-          {isRoot && threadWaitingAdmin ? (
-            <span className="text-slate-400 italic font-bold">아직 답변이 없습니다.</span>
-          ) : isRoot ? (
-            <span className="text-slate-700 truncate block w-full" title={threadAdminText || ''}>
-              {threadAdminText ? `" ${threadAdminText} "` : '-'}
-            </span>
-          ) : isUserPendingStatus(req.status) && isLatestInThread && !req.adminOpinionText ? (
+          {waitingReply ? (
             <span className="text-slate-400 italic font-bold">아직 답변이 없습니다.</span>
           ) : (
-            <span className="text-slate-700 truncate block w-full" title={req.adminOpinionText || ''}>
-              {req.adminOpinionText ? `" ${req.adminOpinionText} "` : '-'}
+            <span className="text-slate-700 truncate block w-full" title={rowAdminText || ''}>
+              {rowAdminText ? `" ${rowAdminText} "` : '-'}
             </span>
           )}
         </td>
@@ -979,10 +954,12 @@ function ITMasterRequestContent() {
         <td className="px-2 text-center overflow-hidden border-l border-slate-200">
           <button
             type="button"
-            title={displayPending ? '클릭하여 답변/조치' : '클릭하여 내역 확인'}
-            onClick={() => {
-              openReqModal(latestRelated || req);
-            }}
+            title={
+              isLatestInThread && !isClosedStatus(String(latestRelated?.status || ''))
+                ? '클릭하여 답변/조치 (종료는 최신 행에서만)'
+                : '클릭하여 내역 확인'
+            }
+            onClick={() => openReqModal(req)}
             className={`inline-block max-w-full border px-1.5 py-0.5 rounded text-[10px] font-bold whitespace-nowrap ${
               threadClosed || rowStatusLabel === '처리 완료(종료)'
                 ? 'bg-slate-100 text-slate-500 border-slate-200'
@@ -1002,7 +979,7 @@ function ITMasterRequestContent() {
         </td>
         <td className="px-2 text-center border-l border-slate-200 overflow-hidden">
           <div className="inline-flex items-center justify-center gap-1.5 flex-nowrap">
-            {hasChildren && (
+            {hasChildren ? (
               <button
                 type="button"
                 title={opts.expanded ? '연관 회신 접기' : threadClosed ? '종료 내역 상세보기' : '연관 회신 상세보기'}
@@ -1012,7 +989,16 @@ function ITMasterRequestContent() {
                 {threadClosed ? '종료/상세보기' : '상세보기'}
                 <span className="text-[11px] leading-none">{opts.expanded ? '▲' : '▼'}</span>
               </button>
-            )}
+            ) : isRoot && threadClosed ? (
+              <button
+                type="button"
+                title="종료된 대화 · 클릭하여 내역 확인"
+                onClick={() => openReqModal(req)}
+                className="inline-flex items-center gap-0.5 px-1.5 py-1 bg-white text-slate-600 border border-slate-200 rounded-md text-[10px] font-black hover:bg-slate-50 whitespace-nowrap"
+              >
+                종료
+              </button>
+            ) : null}
             {canCancelAdminSend ? (
               <button
                 type="button"
@@ -1021,13 +1007,15 @@ function ITMasterRequestContent() {
                 title={!canEdit ? '편집 권한 필요' : '상대 답변이 오기 전에만 전송을 취소할 수 있습니다.'}
                 className={`px-1.5 py-1 border rounded-md text-[10px] font-black whitespace-nowrap ${
                   canEdit
-                    ? 'bg-slate-100 text-slate-500 border-slate-200 hover:text-red-500 hover:bg-red-50'
+                    ? 'bg-rose-50 text-rose-600 border-rose-200 hover:bg-rose-100 hover:text-rose-700'
                     : 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed opacity-70'
                 }`}
               >
                 전송 취소
               </button>
-            ) : !hasChildren ? (
+            ) : isRoot && !hasChildren && !threadClosed ? (
+              <span className="text-slate-300">-</span>
+            ) : !isRoot && !canCancelAdminSend ? (
               <span className="text-slate-300">-</span>
             ) : null}
           </div>
@@ -1040,7 +1028,7 @@ function ITMasterRequestContent() {
 
   return (
     <div className="w-full max-w-[1750px] mx-auto space-y-6 p-8 font-sans text-slate-900 pb-24 animate-fade-in">
-      <ItMasterPageChrome
+      <ItMasterPageBanner
         label="IT Asset Service Requests & History Log"
         title="전사 IT·업무자산 의견/요청 송수신 이력 아카이브"
         description="최초 요청만 목록에 올리고, 연관 회신은 상태 클릭 시 하위로 펼칩니다."
@@ -1276,6 +1264,7 @@ function ITMasterRequestContent() {
                   );
                   const userLabel = threadUserLabel(thread.root);
                   const adminLabel = pickThreadAdminLabel([thread.root, ...thread.children]);
+                  const threadClosed = isThreadClosed(thread.root, thread.children);
                   return (
                     <Fragment key={thread.root.id}>
                       {renderLedgerRow(thread.root, {
@@ -1287,6 +1276,7 @@ function ITMasterRequestContent() {
                         latestId,
                         userLabel,
                         adminLabel,
+                        threadClosed,
                       })}
                       {expanded &&
                         thread.children.map((child) =>
@@ -1296,6 +1286,7 @@ function ITMasterRequestContent() {
                             latestId,
                             userLabel,
                             adminLabel,
+                            threadClosed,
                           })
                         )}
                     </Fragment>
@@ -1345,12 +1336,10 @@ function ITMasterRequestContent() {
       {editingReq && (() => {
         const threadMsgs = collectThreadMessages(editingReq, requests);
         const latest = threadMsgs[threadMsgs.length - 1] || editingReq;
-        const threadClosed = isThreadClosed(
-          threadMsgs[0] || editingReq,
-          threadMsgs.slice(1)
-        );
-        const waitingForUser = !threadClosed && isWaitingForUser(latest.status);
-        const canAdminReply = canEdit && !threadClosed && !waitingForUser;
+        const openedIsLatest = String(editingReq.id) === String(latest.id);
+        const threadClosed = isClosedStatus(String(latest.status || ''));
+        const waitingForUser = openedIsLatest && !threadClosed && isWaitingForUser(latest.status);
+        const canAdminReply = canEdit && openedIsLatest && !threadClosed && !isWaitingForUser(latest.status);
         const turns = threadMsgs.flatMap(threadTurns);
         const assetModel = parseHistoryModel(editingReq);
 
@@ -1372,11 +1361,13 @@ function ITMasterRequestContent() {
               <p className="text-[10px] font-bold text-slate-400 mb-6 border-b-2 border-slate-900 pb-3">
                 {!canEdit
                   ? '주고받은 전체 이력을 확인할 수 있습니다 (조회 전용)'
-                  : threadClosed
-                    ? '주고받은 전체 이력을 확인할 수 있습니다'
-                    : waitingForUser
-                      ? '사용자 답변 전 · 전송 취소 또는 내용 수정 가능'
-                      : '답변을 작성하거나 처리 완료(종료)할 수 있습니다'}
+                  : !openedIsLatest
+                    ? '과거 이력 조회 · 답변/종료는 가장 최근 행의 상태를 눌러 주세요'
+                    : threadClosed
+                      ? '주고받은 전체 이력을 확인할 수 있습니다'
+                      : waitingForUser
+                        ? '사용자 답변 전 · 전송 취소 또는 내용 수정 가능'
+                        : '답변을 작성하거나 처리 완료(종료)할 수 있습니다'}
               </p>
 
               <div className="overflow-y-auto flex-1 pr-2 space-y-4 min-h-0">
@@ -1478,6 +1469,27 @@ function ITMasterRequestContent() {
                       className="flex-[2] py-3.5 bg-amber-500 text-white rounded-xl font-black text-[12px] shadow-md hover:bg-amber-600 active:scale-95 transition-all"
                     >
                       내용 저장
+                    </button>
+                  </>
+                ) : !openedIsLatest ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingReq(null);
+                        setEditOpinion('');
+                        setCommEditMode(false);
+                      }}
+                      className="flex-1 py-3.5 bg-slate-100 text-slate-600 rounded-xl font-black text-[11px] hover:bg-slate-200 transition-colors"
+                    >
+                      닫기
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => openReqModal(latest)}
+                      className="flex-[1.6] py-3.5 bg-slate-900 text-white rounded-xl font-black text-[12px] shadow-md hover:bg-black active:scale-95 transition-all"
+                    >
+                      최신 행에서 조치
                     </button>
                   </>
                 ) : (

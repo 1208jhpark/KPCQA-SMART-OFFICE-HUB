@@ -621,10 +621,11 @@ export function authErrorToResponse(error: unknown) {
 /**
  * 로그인 세션만 검증 (메뉴 권한 불문). units 등 공통 조회용.
  * 토큰 없으면 null (throw 안 함).
+ * @param bearerToken 쿠키 없을 때 Authorization Bearer / body accessToken 폴백 (모바일 HTTP)
  */
-export async function tryGetSessionUser() {
+export async function tryGetSessionUser(bearerToken?: string | null) {
   const cookieStore = await cookies();
-  const token = cookieStore.get('token')?.value;
+  const token = cookieStore.get('token')?.value || String(bearerToken || '').trim();
   if (!token) return null;
 
   let decoded: any;
@@ -634,8 +635,8 @@ export async function tryGetSessionUser() {
     return null;
   }
 
-  const user = await prisma.user.findUnique({
-    where: { email: decoded.email },
+  const user = await prisma.user.findFirst({
+    where: { email: { equals: String(decoded.email || ''), mode: 'insensitive' } },
     include: { unit: { include: { parent: true } } },
   });
   return user;

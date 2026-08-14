@@ -5,6 +5,7 @@ import jwt from 'jsonwebtoken';
 
 import { JWT_SECRET } from '@/lib/jwt';
 import { resolveCompanyEmail } from '@/utils/companyEmail';
+import { hubTokenCookieOptions } from '@/lib/auth-cookie';
 
 export async function POST(req: Request) {
   try {
@@ -46,14 +47,8 @@ export async function POST(req: Request) {
       mustReset,
     });
     
-    // 쿠키를 더 단순하고 확실하게 설정
-response.cookies.set('token', token, {
-  httpOnly: true,
-  secure: false, // 로컬 개발 환경에서는 false가 더 안정적입니다.
-  sameSite: 'lax',
-  path: '/', 
-  maxAge: 60 * 60 * 24
-});
+    // 쿠키를 더 단순하고 확실하게 설정 (HTTP 사내망이면 secure=false)
+    response.cookies.set('token', token, hubTokenCookieOptions());
     return response;
   } catch (error) {
     console.error("로그인 API 에러:", error);

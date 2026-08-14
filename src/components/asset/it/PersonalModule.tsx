@@ -85,8 +85,14 @@ function isUserReplyRow(req: any) {
   return s === '답변회신' || String(req.adminOpinion || '').includes(':::REPLY:::');
 }
 
+/** 동일 스레드: 자산번호 + 자산분류가 같을 때만 */
 function sameAssetCode(a: any, b: any) {
-  return String(a?.assetCode || '').trim() === String(b?.assetCode || '').trim();
+  const codeA = String(a?.assetCode || a?.code || '').trim();
+  const codeB = String(b?.assetCode || b?.code || '').trim();
+  if (!codeA || codeA !== codeB) return false;
+  const typeA = String(a?.assetType || a?.category || '').trim() || '일반';
+  const typeB = String(b?.assetType || b?.category || '').trim() || '일반';
+  return typeA === typeB;
 }
 
 function reqTime(r: any) {
@@ -286,14 +292,6 @@ function pickThreadAdminLabel(members: any[]) {
 
 function threadUserLabel(root: any) {
   return [root?.dept || root?.department, root?.requester || root?.name].filter(Boolean).join(' / ');
-}
-
-function samePersonLabel(a: string, b: string) {
-  return String(a || '').replace(/\s+/g, '') === String(b || '').replace(/\s+/g, '');
-}
-
-function isAdminSideStatus(status: string) {
-  return status === '관리자 의견발송' || status === '관리자 답변' || status === '사용자 확인완료';
 }
 
 function rowAdminLabel(req: any) {
@@ -1792,7 +1790,6 @@ const handleCancelRequest = async (id: string) => {
             }`}
           >
             🗂️ 업무자산 목록
-            <span className="ml-1.5 text-[10px] opacity-70">{filteredAssets.length}</span>
           </button>
           <button
             type="button"
@@ -1804,7 +1801,6 @@ const handleCancelRequest = async (id: string) => {
             }`}
           >
             💬 기타 의견/요청 송수신 대장
-            <span className="ml-1.5 text-[10px] opacity-70">{myBaseHistoryReqs.length}</span>
           </button>
         </div>
       </div>
@@ -2255,21 +2251,9 @@ const handleCancelRequest = async (id: string) => {
                     const isRoot = depth === 0;
                     const thisUserLabel = threadUserLabel(req);
                     const thisAdminLabel = rowAdminLabel(req);
-                    const isAdminMsg = isAdminSideStatus(req.status);
-                    const isUserMsg = isUserPendingStatus(req.status) || String(req.adminOpinion || '').includes(':::REPLY:::');
-                    let rowUserLabel = '';
-                    let rowAdminName = '';
-                    if (isRoot) {
-                      rowUserLabel = userLabel;
-                      rowAdminName = adminLabel;
-                    } else {
-                      if (isUserMsg && thisUserLabel && !samePersonLabel(thisUserLabel, userLabel)) rowUserLabel = thisUserLabel;
-                      if (isAdminMsg && thisAdminLabel && !samePersonLabel(thisAdminLabel, adminLabel)) rowAdminName = thisAdminLabel;
-                      if (isClosedStatus(req.status)) {
-                        if (thisUserLabel && !samePersonLabel(thisUserLabel, userLabel)) rowUserLabel = thisUserLabel;
-                        if (thisAdminLabel && !samePersonLabel(thisAdminLabel, adminLabel)) rowAdminName = thisAdminLabel;
-                      }
-                    }
+                    // 사용자·관리자 영역: 매 행마다 해당 행(없으면 스레드 루트) 부서/이름 표기
+                    const rowUserLabel = thisUserLabel || userLabel;
+                    const rowAdminName = thisAdminLabel || adminLabel;
                     const childCount = depth === 0 ? thread.children.length : 0;
                     const hasChildren = childCount > 0;
                     const threadLatest = thread.children[thread.children.length - 1] || thread.root;
@@ -2333,8 +2317,8 @@ const handleCancelRequest = async (id: string) => {
                             title="클릭하여 대화 내역 확인"
                             onClick={() => openCommModalFromRequest(req)}
                             className={`inline-block max-w-full border px-1.5 py-0.5 rounded text-[10px] font-bold whitespace-nowrap cursor-pointer hover:scale-105 transition-transform ${
-                              statusLabel === '처리 완료(종료)'
-                                ? 'bg-slate-100 text-slate-600 border-slate-200'
+                              threadClosed || statusLabel === '처리 완료(종료)'
+                                ? 'bg-slate-100 text-slate-500 border-slate-200'
                                 : isPastStep
                                   ? 'bg-slate-50 text-slate-500 border-slate-200'
                                   : rowIsUserReply
@@ -2351,7 +2335,7 @@ const handleCancelRequest = async (id: string) => {
                         </td>
                         <td className="px-2 text-center border-l border-slate-200 overflow-hidden">
                           <div className="inline-flex items-center justify-center gap-1.5 flex-nowrap">
-                            {hasChildren && (
+                            {hasChildren ? (
                               <button
                                 type="button"
                                 title={expanded ? '연관 회신 접기' : threadClosed ? '종료 내역 상세보기' : '연관 회신 상세보기'}
@@ -2361,17 +2345,28 @@ const handleCancelRequest = async (id: string) => {
                                 {threadClosed ? '종료/상세보기' : '상세보기'}
                                 <span className="text-[11px] leading-none">{expanded ? '▲' : '▼'}</span>
                               </button>
-                            )}
+                            ) : isRoot && threadClosed ? (
+                              <button
+                                type="button"
+                                title="종료된 대화 · 클릭하여 내역 확인"
+                                onClick={() => openCommModalFromRequest(req)}
+                                className="inline-flex items-center gap-0.5 px-1.5 py-1 bg-white text-slate-600 border border-slate-200 rounded-md text-[10px] font-black hover:bg-slate-50 whitespace-nowrap"
+                              >
+                                종료
+                              </button>
+                            ) : null}
                             {waitingReply ? (
                               <button
                                 type="button"
                                 onClick={() => handleCancelRequest(req.id)}
-                                className="px-1.5 py-1 bg-slate-100 text-slate-500 border border-slate-200 rounded-md text-[10px] font-black hover:text-red-500 hover:bg-red-50 whitespace-nowrap"
+                                className="px-1.5 py-1 bg-rose-50 text-rose-600 border border-rose-200 rounded-md text-[10px] font-black hover:bg-rose-100 hover:text-rose-700 whitespace-nowrap"
                                 title="답변이 오기 전에만 전송을 취소할 수 있습니다."
                               >
                                 전송 취소
                               </button>
-                            ) : !hasChildren ? (
+                            ) : isRoot && !hasChildren && !threadClosed ? (
+                              <span className="text-slate-300">-</span>
+                            ) : !isRoot && !waitingReply ? (
                               <span className="text-slate-300">-</span>
                             ) : null}
                           </div>

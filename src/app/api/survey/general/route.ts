@@ -8,6 +8,7 @@ import { authorizeAnyMenuPaths, authorizeApi } from '@/lib/server-auth-guard';
 
 import { JWT_SECRET } from '@/lib/jwt';
 import { buildInterfacePermissionSummary } from '@/lib/interface-permission-summary';
+import { hubTokenCookieOptions } from '@/lib/auth-cookie';
 
 const SURVEY_GENERAL_ADMIN_PATHS = [
   '/survey/general/admin/active-surveys',
@@ -227,12 +228,7 @@ export async function POST(req: NextRequest) {
       );
       
       const response = NextResponse.json({ success: true, user: { name: user.name, email: user.email } });
-      response.cookies.set('token', token, {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'lax',
-        maxAge: 60 * 60 * 24
-      });
+      response.cookies.set('token', token, hubTokenCookieOptions());
       return response;
     }
 

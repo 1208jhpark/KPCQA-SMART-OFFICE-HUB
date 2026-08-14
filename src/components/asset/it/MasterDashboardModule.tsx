@@ -4,10 +4,10 @@ import React, { useState, useMemo, useEffect, useRef, Suspense } from 'react';
 import * as XLSX from 'xlsx';
 import { getKSTDateString, addMonthsToKSTDateOnly, getKSTDaysUntil, parseExcelCellToKSTDateString, toSortableTime } from '@/utils/dateUtils';
 import { resolveTopOrgName } from '@/utils/orgUnits';
-import LocalQrImage from '@/components/common/LocalQrImage';
-import { getItAssetVerifyUrl } from '@/utils/equipmentQr';
+import ItAssetQrImage from '@/components/asset/it/ItAssetQrImage';
+import { generateItAssetQrDataUrls } from '@/utils/equipmentQr';
 import LoadingState from '@/components/common/LoadingState';
-import ItMasterPageChrome from '@/components/asset/it/ItMasterPageChrome';
+import ItMasterPageBanner from '@/components/asset/it/ItMasterPageBanner';
 import { resolveInterfaceEditState } from '@/lib/permission-utils';
 import {
   getCompletedAuditLabel,
@@ -60,8 +60,14 @@ function isWaitingForUser(status: string) {
   return status === '관리자 의견발송' || status === '관리자 답변';
 }
 
+/** 동일 스레드: 자산번호 + 자산분류가 같을 때만 */
 function sameAssetCode(a: any, b: any) {
-  return String(a?.assetCode || '').trim() === String(b?.assetCode || '').trim();
+  const codeA = String(a?.assetCode || a?.code || '').trim();
+  const codeB = String(b?.assetCode || b?.code || '').trim();
+  if (!codeA || codeA !== codeB) return false;
+  const typeA = String(a?.assetType || a?.category || '').trim() || '일반';
+  const typeB = String(b?.assetType || b?.category || '').trim() || '일반';
+  return typeA === typeB;
 }
 
 function reqTime(r: any) {
@@ -245,7 +251,9 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
   const itemsPerPage = 10;
   
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [bulkPrintAssets, setBulkPrintAssets] = useState<any[]>([]); 
+  const [bulkPrintAssets, setBulkPrintAssets] = useState<any[]>([]);
+  const [bulkQrMap, setBulkQrMap] = useState<Record<string, string>>({});
+  const [bulkQrReady, setBulkQrReady] = useState(false);
      
   const [showQrModal, setShowQrModal] = useState<any | null>(null);
      
@@ -1285,6 +1293,33 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
     if (targets.length === 0) return alert('출력할 자산을 체크박스로 선택해주세요.');
     setBulkPrintAssets(targets);
   };
+
+  // 일괄 인쇄: QR을 미리 생성해 빈칸 인쇄 방지 (대량 자산 대응)
+  useEffect(() => {
+    if (bulkPrintAssets.length === 0) {
+      setBulkQrMap({});
+      setBulkQrReady(false);
+      return;
+    }
+    let cancelled = false;
+    setBulkQrReady(false);
+    generateItAssetQrDataUrls(
+      bulkPrintAssets.map((a) => String(a.code || '')).filter(Boolean),
+      150
+    )
+      .then((map) => {
+        if (!cancelled) {
+          setBulkQrMap(map);
+          setBulkQrReady(true);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setBulkQrReady(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [bulkPrintAssets]);
   
   const selectedAssetsForNudge = useMemo(
     () => assets.filter((a) => selectedIds.has(a.id)),
@@ -1582,6 +1617,42 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
     }
   };
 
+  const syncOwnerDeptFromUnits = async () => {
+    if (!canEdit) return alertNoEditPermission();
+    if (
+      !confirm(
+        '담당자(User)의 현재 소속(admin/units)으로\n활성 자산의 「부서」를 재동기화할까요?\n\n· user_id / user_email이 있는 자산만 대상\n· 공용·담당자 없음·소속 없음은 건너뜀\n· 의도적으로 다른 부서로 둔 자산도 덮어씌워질 수 있습니다.'
+      )
+    ) {
+      return;
+    }
+    try {
+      const res = await fetch('/api/asset/it/sync-owner-dept', { method: 'POST' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        return alert(`❌ 동기화 실패\n${data.message || data.error || `HTTP ${res.status}`}`);
+      }
+      const sk = data.skipped || {};
+      const sampleLines = Array.isArray(data.samples)
+        ? data.samples
+            .slice(0, 8)
+            .map((s: any) => `· ${s.code}: ${s.from} → ${s.to}`)
+            .join('\n')
+        : '';
+      alert(
+        `✅ ${data.message || '완료'}\n\n갱신 ${data.updated ?? 0}건` +
+          `\n동일(스킵) ${sk.alreadySame ?? 0}` +
+          `\n담당자없음 ${sk.noOwner ?? 0}` +
+          `\n소속없음 ${sk.noUnit ?? 0}` +
+          `\n공용/미지정 ${sk.sharedOrEmpty ?? 0}` +
+          (sampleLines ? `\n\n변경 예시:\n${sampleLines}` : '')
+      );
+      await fetchAllDataFromServer();
+    } catch {
+      alert('서버 통신 오류로 동기화에 실패했습니다.');
+    }
+  };
+
   const openAdminCompose = (asset: any) => {
     if (!canEdit) return alertNoEditPermission();
     setEditingReq(null);
@@ -1777,7 +1848,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
      
   return (
     <div className="w-full max-w-[1750px] mx-auto space-y-6 p-8 font-sans text-slate-900 pb-24 animate-fade-in">
-      <ItMasterPageChrome
+      <ItMasterPageBanner
         label="IT ASSET MASTER CONTROL TOWER"
         title={moduleTitle || '전사 IT·업무자산 마스터 통제실'}
         description={moduleDescription || '전사 IT·업무자산의 보유 현황과 교체·실사·요청을 통합 모니터링하고 관리합니다.'}
@@ -2105,14 +2176,23 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
               </button>
             )}
           </div>
-          <div className="flex items-center gap-1.5 shrink-0 flex-wrap justify-end">
+          <div className="flex items-center gap-1.5 shrink-0 flex-nowrap justify-end">
+            <button
+              type="button"
+              onClick={handleExcelDownload}
+              className="px-3 py-2 bg-emerald-50 text-emerald-700 border border-emerald-200 text-[11px] font-black rounded-lg hover:bg-emerald-600 hover:text-white transition-all shadow-sm whitespace-nowrap"
+            >
+              {selectedIds.size > 0
+                ? `⬇️ 선택 엑셀(${selectedIds.size})`
+                : '⬇️ 엑셀 다운로드'}
+            </button>
             <div className="relative group/excel-upload">
               <button
                 type="button"
                 disabled={!canEdit}
                 title={!canEdit ? '편집 권한 필요' : undefined}
                 onClick={() => { if (!canEdit) return; fileInputRef.current?.click(); }}
-                className={`px-4 py-2 rounded-lg text-[11px] font-black transition-all flex items-center gap-1.5 border ${
+                className={`px-3 py-2 rounded-lg text-[11px] font-black transition-all flex items-center gap-1.5 border whitespace-nowrap ${
                   canEdit
                     ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-600 hover:text-white shadow-sm'
                     : DISABLED_ACTION_BTN
@@ -2143,7 +2223,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
               disabled={!canEdit}
               title={!canEdit ? '편집 권한 필요' : undefined}
               onClick={handleAdd}
-              className={`px-5 py-2 rounded-lg text-[11px] font-black transition-all flex items-center gap-1.5 border ${
+              className={`px-4 py-2 rounded-lg text-[11px] font-black transition-all flex items-center gap-1.5 border whitespace-nowrap ${
                 canEdit
                   ? 'bg-blue-600 text-white hover:bg-blue-700 shadow-sm border-blue-600'
                   : DISABLED_ACTION_BTN
@@ -2154,8 +2234,8 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
           </div>
         </div>
 
-        <div className="px-5 py-3 border-b border-slate-200 flex flex-wrap items-center gap-2 bg-white">
-            <div className="flex items-center gap-1.5 bg-white px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm shrink-0">
+        <div className="px-5 py-3 border-b border-slate-200 flex flex-nowrap items-center gap-2 bg-white overflow-x-auto">
+            <div className="flex items-center gap-1.5 bg-white px-2.5 py-1.5 rounded-lg border border-slate-200 shadow-sm shrink-0">
               <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">조직</span>
               <select
                 value={colFilters.dept}
@@ -2163,7 +2243,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                   setColFilters({ ...colFilters, dept: e.target.value });
                   setUserFilter('');
                 }}
-                className="bg-transparent text-[11px] font-black text-slate-800 outline-none cursor-pointer max-w-[160px]"
+                className="bg-transparent text-[11px] font-black text-slate-800 outline-none cursor-pointer max-w-[140px]"
               >
                 <option value={DEPT_FILTER_ALL}>전체</option>
                 {sortedOrgs.map((o) => (
@@ -2176,7 +2256,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                 value={userFilter}
                 onChange={(e) => setUserFilter(e.target.value)}
                 disabled={colFilters.dept === DEPT_FILTER_ALL}
-                className={`bg-transparent text-[11px] font-black text-slate-800 outline-none cursor-pointer max-w-[120px] ${
+                className={`bg-transparent text-[11px] font-black text-slate-800 outline-none cursor-pointer max-w-[110px] ${
                   colFilters.dept === DEPT_FILTER_ALL ? 'opacity-50 cursor-not-allowed' : ''
                 }`}
               >
@@ -2191,15 +2271,15 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
               </select>
             </div>
 
-            <div className="relative group/filter flex items-center gap-2 bg-white px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm">
+            <div className="relative group/filter flex items-center gap-1.5 bg-white px-2.5 py-1.5 rounded-lg border border-slate-200 shadow-sm shrink-0">
               <span className="text-[10px] font-black text-slate-400 uppercase">범주</span>
-              <select className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent max-w-[100px]" value={colFilters.category} onChange={(e) => setColFilters({ ...colFilters, category: e.target.value })}>
+              <select className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent max-w-[90px]" value={colFilters.category} onChange={(e) => setColFilters({ ...colFilters, category: e.target.value })}>
                 <option value="범주 (전체)">전체</option>
                 {masterFilters.categories.map(cat => <option key={cat} value={cat}>{cat}</option>)}
               </select>
               <div className="w-px h-3.5 bg-slate-300 mx-0.5" />
               <span className="text-[10px] font-black text-slate-400 uppercase whitespace-nowrap">{itMasterLabel}</span>
-              <select className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent max-w-[120px]" value={colFilters.it_type} onChange={(e) => setColFilters({ ...colFilters, it_type: e.target.value })}>
+              <select className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent max-w-[110px]" value={colFilters.it_type} onChange={(e) => setColFilters({ ...colFilters, it_type: e.target.value })}>
                 <option value="자산 분류 (전체)">전체</option>
                 {masterFilters.types.map(type => <option key={type} value={type}>{type}</option>)}
               </select>
@@ -2211,12 +2291,29 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
               </select>
             </div>
 
-            <div className="relative flex-1 min-w-[160px] max-w-[260px]">
+            <div className="relative w-[160px] shrink-0">
               <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-[10px]">🔍</span>
-              <input type="text" placeholder="자산번호 · 모델명 · S/N" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} className="w-full pl-7 pr-3 py-1.5 bg-white border border-slate-200 rounded-lg text-[11px] font-bold outline-none focus:border-indigo-500 shadow-sm" />
+              <input type="text" placeholder="자산번호 · 모델 · S/N" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} className="w-full pl-7 pr-3 py-1.5 bg-white border border-slate-200 rounded-lg text-[11px] font-bold outline-none focus:border-indigo-500 shadow-sm" />
             </div>
 
-            <div className="flex flex-wrap items-center gap-1.5 ml-auto">
+            <div className="flex items-center gap-1.5 ml-auto shrink-0">
+              <button
+                type="button"
+                onClick={syncOwnerDeptFromUnits}
+                disabled={!canEdit}
+                title={
+                  !canEdit
+                    ? '편집 권한 필요'
+                    : '담당자 User의 현재 소속(admin/units)으로 자산 부서를 맞춥니다.'
+                }
+                className={`px-3 py-1.5 rounded-lg text-[10px] font-black transition-all shadow-sm border whitespace-nowrap ${
+                  !canEdit
+                    ? DISABLED_ACTION_BTN
+                    : 'bg-sky-50 text-sky-800 border-sky-200 hover:bg-sky-600 hover:text-white'
+                }`}
+              >
+                🔄 담당자 소속→부서 동기화
+              </button>
               <button
                 type="button"
                 onClick={sendAuditRequest}
@@ -2228,7 +2325,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                       ? '실사 진행 중에만 독촉 전송/회수가 가능합니다.'
                       : undefined
                 }
-                className={`px-3 py-1.5 rounded-lg text-[10px] font-black transition-all shadow-sm border ${
+                className={`px-3 py-1.5 rounded-lg text-[10px] font-black transition-all shadow-sm border whitespace-nowrap ${
                   !canEdit || nudgeButtonMode === 'disabled'
                     ? DISABLED_ACTION_BTN
                     : nudgeButtonMode === 'recall'
@@ -2249,7 +2346,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                       ? '자산을 선택한 뒤 실사 확인을 초기화할 수 있습니다.'
                       : '선택 자산의 실사 완료/관리자 확인을 해제합니다.'
                 }
-                className={`px-3 py-1.5 rounded-lg text-[10px] font-black transition-all shadow-sm border ${
+                className={`px-3 py-1.5 rounded-lg text-[10px] font-black transition-all shadow-sm border whitespace-nowrap ${
                   !canEdit || selectedIds.size === 0
                     ? DISABLED_ACTION_BTN
                     : 'bg-slate-50 text-slate-700 border-slate-300 hover:bg-slate-800 hover:text-white'
@@ -2257,12 +2354,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
               >
                 ↩️ 선택 실사 확인 초기화
               </button>
-              <button type="button" onClick={openBulkQRPrint} className="px-3 py-1.5 bg-purple-50 text-purple-700 border border-purple-200 rounded-lg text-[10px] font-black hover:bg-purple-600 hover:text-white transition-all shadow-sm">🖨️ QR 라벨 인쇄</button>
-              <button type="button" onClick={handleExcelDownload} className="px-3 py-1.5 bg-emerald-50 text-emerald-700 border border-emerald-200 text-[10px] font-black rounded-lg hover:bg-emerald-600 hover:text-white transition-all shadow-sm">
-                {selectedIds.size > 0
-                  ? `⬇️ 선택 엑셀 다운로드(${selectedIds.size})`
-                  : '⬇️ 엑셀 다운로드'}
-              </button>
+              <button type="button" onClick={openBulkQRPrint} className="px-3 py-1.5 bg-purple-50 text-purple-700 border border-purple-200 rounded-lg text-[10px] font-black hover:bg-purple-600 hover:text-white transition-all shadow-sm whitespace-nowrap">🖨️ QR 라벨 인쇄</button>
             </div>
         </div>
 
@@ -2833,7 +2925,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
         <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-sm z-[500] flex items-center justify-center p-4" onClick={() => setShowQrModal(null)}>
           <div className="bg-white p-8 rounded-[2rem] flex flex-col items-center shadow-2xl animate-in zoom-in-95 duration-200" onClick={e => e.stopPropagation()}>
             <div className="w-full flex justify-between items-center mb-4">
-              <h3 className="font-black text-lg text-slate-800 tracking-tight">IT 자산 QR 라벨</h3>
+              <h3 className="font-black text-lg text-slate-800 tracking-tight">IT·업무자산 QR 라벨</h3>
               <span className="bg-indigo-100 text-indigo-700 px-2 py-1 rounded text-[10px] font-black">실제 출력 미리보기</span>
             </div>
 
@@ -2843,30 +2935,34 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
               style={{ width: '260px', height: '260px', padding: '14px 12px 12px 12px', boxSizing: 'border-box' }}
             >
               <div className="w-full space-y-1">
-                <div className="flex justify-center items-center gap-1.5">
-                  <span className="text-[11px] font-black bg-slate-900 text-white px-2 py-0.5 rounded-full leading-none">{showQrModal.category}</span>
-                  <span className="text-[12px] font-black text-slate-700 truncate max-w-[170px]">{showQrModal.it_type}</span>
-                </div>
-                <p className="text-[13px] font-black text-slate-900 truncate tracking-tight">{showQrModal.model || '모델명 미상'}</p>
+                <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider">자산 분류</p>
+                <p className="text-[13px] font-black text-slate-900 truncate tracking-tight">
+                  {showQrModal.it_type || showQrModal.category || '-'}
+                </p>
               </div>
               <div className="w-full flex justify-center items-center my-1">
-                <LocalQrImage
-                  payload={getItAssetVerifyUrl(showQrModal.code)}
+                <ItAssetQrImage
+                  assetCode={showQrModal.code}
                   size={150}
-                  alt="QR"
+                  alt="IT·업무자산 QR"
                   className="w-[130px] h-[130px] object-contain"
                 />
               </div>
               <div className="w-full">
-                <p className="text-[15px] font-black font-mono tracking-tighter text-indigo-700 leading-none">{showQrModal.code}</p>
-                <p className="text-[10px] font-bold text-slate-400 truncate mt-1">{showQrModal.dept || '-'} · <span className="text-amber-700 font-black">사내 Wi-Fi 스캔</span></p>
+                <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider mb-0.5">자산번호</p>
+                <p className="text-[14px] font-black font-mono tracking-tighter text-indigo-700 leading-none">
+                  {showQrModal.code}
+                </p>
+                <p className="text-[10px] font-bold text-slate-400 truncate mt-1">
+                  {showQrModal.dept || '-'} · <span className="text-amber-700 font-black">사내 Wi-Fi 스캔</span>
+                </p>
               </div>
             </div>
 
             <div className="w-full bg-amber-50 border border-amber-200 rounded-xl p-3 mb-4 text-center">
               <p className="text-[11px] font-black text-amber-800">📡 QR 스캔 안내</p>
               <p className="text-[10px] font-bold text-amber-700 mt-0.5 leading-relaxed">
-                스캔 시 <span className="underline decoration-2">로그인(이메일·비밀번호)</span> 후 자산 실사·인증이 가능합니다.
+                스캔 시 <span className="underline decoration-2">등록 정보(분류·번호·모델·S/N·제조사·사양)</span>를 확인합니다.
                 <br />
                 <span className="font-black">⚠ 반드시 사내 Wi-Fi 연결 후 스캔하세요.</span>
                 <br />
@@ -2892,8 +2988,19 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                 <p className="text-slate-500 text-xs font-bold mt-1">드림디포 구매 규격 [QR-3990] 적용 (40mm × 40mm 정사각형) | 총 {bulkPrintAssets.length}개의 라벨</p>
               </div>
               <div className="flex gap-2">
-                <button onClick={() => window.print()} className="px-6 py-2 bg-purple-600 text-white font-black rounded-xl shadow-md hover:bg-purple-700 flex items-center gap-2 text-xs"><span>🖨️</span> 라벨 인쇄 실행 (Ctrl+P)</button>
-                <button onClick={() => setBulkPrintAssets([])} className="px-6 py-2 bg-slate-100 text-slate-600 font-black rounded-xl hover:bg-slate-200 text-xs">닫기</button>
+                <button
+                  type="button"
+                  disabled={!bulkQrReady}
+                  onClick={() => window.print()}
+                  className={`px-6 py-2 font-black rounded-xl shadow-md flex items-center gap-2 text-xs transition-colors ${
+                    bulkQrReady
+                      ? 'bg-purple-600 text-white hover:bg-purple-700'
+                      : 'bg-slate-300 text-slate-500 cursor-not-allowed'
+                  }`}
+                >
+                  <span>🖨️</span> {bulkQrReady ? '라벨 인쇄 실행 (Ctrl+P)' : 'QR 생성 중…'}
+                </button>
+                <button type="button" onClick={() => setBulkPrintAssets([])} className="px-6 py-2 bg-slate-100 text-slate-600 font-black rounded-xl hover:bg-slate-200 text-xs">닫기</button>
               </div>
             </div>
             
@@ -2934,23 +3041,28 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                       style={{ width: '40mm', height: '40mm', padding: '2.5mm 2mm 2mm 2mm', boxSizing: 'border-box' }}
                     >
                       <div className="w-full space-y-0.5">
-                        <div className="flex justify-center items-center gap-1">
-                          <span className="text-[7px] font-black bg-slate-900 text-white px-1.5 py-0.5 rounded-full leading-none">{a.category}</span>
-                          <span className="text-[7px] font-black text-slate-700 truncate max-w-[26mm]">{a.it_type}</span>
-                        </div>
-                        <p className="text-[8px] font-black text-slate-900 truncate tracking-tight">{a.model || '모델명 미상'}</p>
+                        <p className="text-[6px] font-black text-slate-400 uppercase leading-none">자산 분류</p>
+                        <p className="text-[8px] font-black text-slate-900 truncate tracking-tight leading-tight">
+                          {a.it_type || a.category || '-'}
+                        </p>
                       </div>
                       <div className="w-full flex justify-center items-center my-0.5">
-                        <LocalQrImage
-                          payload={getItAssetVerifyUrl(a.code)}
-                          size={100}
-                          alt="QR"
-                          className="w-[20mm] h-[20mm] object-contain"
-                        />
+                        {bulkQrMap[a.code] ? (
+                          <img src={bulkQrMap[a.code]} alt="QR" className="w-[20mm] h-[20mm] object-contain" />
+                        ) : (
+                          <div className="w-[20mm] h-[20mm] flex items-center justify-center bg-slate-50 text-[6px] font-bold text-slate-400 animate-pulse">
+                            생성 중…
+                          </div>
+                        )}
                       </div>
                       <div className="w-full">
-                        <p className="text-[9px] font-black font-mono tracking-tighter text-indigo-700 leading-none">{a.code}</p>
-                        <p className="text-[6.5px] font-bold text-slate-400 truncate mt-0.5 scale-90">{a.dept} · <span className="text-amber-700 font-black">사내 Wi-Fi 스캔</span></p>
+                        <p className="text-[6px] font-black text-slate-400 uppercase leading-none">자산번호</p>
+                        <p className="text-[8px] font-black font-mono tracking-tighter text-indigo-700 leading-none truncate">
+                          {a.code}
+                        </p>
+                        <p className="text-[6px] font-bold text-slate-400 truncate mt-0.5 scale-90">
+                          <span className="text-amber-700 font-black">사내 Wi-Fi</span>
+                        </p>
                       </div>
                     </div>
                   );

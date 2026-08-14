@@ -2,7 +2,8 @@ import QRCode from 'qrcode';
 
 function appOrigin(): string {
   const raw =
-    (typeof process !== 'undefined' && process.env.NEXT_PUBLIC_BASE_URL) ||
+    (typeof process !== 'undefined' &&
+      (process.env.NEXT_PUBLIC_BASE_URL || process.env.NEXT_PUBLIC_SITE_URL)) ||
     (typeof window !== 'undefined' ? window.location.origin : '');
   let base = String(raw || '').trim().replace(/\/$/, '');
   if (!base) return '';
@@ -59,4 +60,15 @@ export function getItAssetVerifyUrl(assetCode: string): string {
 
 export async function generateItAssetQrDataUrl(assetCode: string, size = 250): Promise<string> {
   return generateQrDataUrl(getItAssetVerifyUrl(assetCode), size);
+}
+
+/** 일괄 라벨 인쇄용 — key = 자산번호(code) */
+export async function generateItAssetQrDataUrls(
+  assetCodes: string[],
+  size = 150
+): Promise<Record<string, string>> {
+  return generateQrDataUrlMap(
+    assetCodes.map((code) => ({ key: code, payload: getItAssetVerifyUrl(code) })),
+    size
+  );
 }
