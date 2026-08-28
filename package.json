@@ -9,6 +9,10 @@
     "lint": "next lint",
     "db:push": "prisma db push",
     "db:seed": "prisma db seed",
+    "db:seed:production": "tsx scripts/seed-production-masters.ts",
+    "db:seed:production:sync": "tsx scripts/seed-production-masters.ts --sync",
+    "db:seed:businesscard": "tsx scripts/seed-businesscard-masters.ts",
+    "db:seed:businesscard:sync": "tsx scripts/seed-businesscard-masters.ts --sync",
     "db:studio": "prisma studio"
   },
   "dependencies": {

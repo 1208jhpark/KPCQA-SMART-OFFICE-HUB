@@ -35,7 +35,7 @@ const BusinessCardArchivePanel = dynamic(() => import('../asset/businesscard/Bus
 const ProductionApplyForm = dynamic(() => import('../asset/production/ProductionApplyForm').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
 const ProductionApplyHistory = dynamic(() => import('../asset/production/ProductionApplyHistory').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
 const DeptOrderPanel = dynamic(() => import('../asset/production/DeptOrderPanel').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
-const DeptInvoiceVerifyPanel = dynamic(() => import('../asset/production/DeptInvoiceVerifyPanel').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
+const DeptInspectionPanel = dynamic(() => import('../asset/production/DeptInspectionPanel').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
 const DeptArchivePanel = dynamic(() => import('../asset/production/DeptArchivePanel').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
 
 
@@ -92,7 +92,7 @@ export const ModuleRegistry: Record<string, React.ComponentType<any>> = {
   '/asset/production/apply/request': ProductionApplyForm,
   '/asset/production/apply/history': ProductionApplyHistory,
   '/asset/production/dept-master/order': DeptOrderPanel,
-  '/asset/production/dept-master/verify': DeptInvoiceVerifyPanel,
+  '/asset/production/dept-master/inspection': DeptInspectionPanel,
   '/asset/production/dept-master/archive': DeptArchivePanel,
   
   // [마케팅]

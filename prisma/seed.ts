@@ -1,11 +1,15 @@
 import { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcryptjs';
+import { seedBusinessCardMasters } from './seed-businesscard-masters';
+import { seedProductionMasters } from './seed-production-masters';
 // 🚀 1분 컷으로 빼둔 메뉴 백업 데이터를 불러옵니다. (같은 prisma 폴더 안에 있어야 합니다)
 import menuData from './menu-backup.json';
   
 const prisma = new PrismaClient();
   
 async function main() {
+  // ⚠️ 전체 시드: 사용자·메뉴·조직 등을 deleteMany 후 재생성합니다.
+  //    개발 중 제작물 마스터만 채울 때는 `npm run db:seed:production` 을 사용하세요.
   console.log('🚀 [KPCQA] 시스템 통합 초기화 및 시딩을 시작합니다...');
   
   // 1. 기존 데이터 초기화 (삭제 순서: 자식 -> 부모)
@@ -60,36 +64,55 @@ async function main() {
       it_category_group: 'GRP_IT_CATEGORY',
       it_master_group: 'GRP_IT_TYPE',
       it_rental_group: 'GRP_PROCUREMENT',
+      // 외주 업무 서비스 (업체 / 품목 / 상세1 / 상세2)
+      outsourcing_vendor_group: 'GRP_OUT_VENDOR',
+      outsourcing_item_group: 'GRP_OUT_ITEM',
+      outsourcing_detail1_group: 'GRP_OUT_DETAIL1',
+      outsourcing_detail2_group: 'GRP_OUT_DETAIL2',
     },
   });
   
-  // 3. 조직 체계 생성 (💡 영문명 포함)
-  const createOrg = async (name: string, name_en: string, type: string, parentId: string | null, order: number) => {
+  // 3. 조직 체계 생성 (💡 영문명 · unit_code 포함)
+  const createOrg = async (
+    name: string,
+    name_en: string,
+    type: string,
+    parentId: string | null,
+    order: number,
+    unit_code: string
+  ) => {
     return await prisma.orgUnit.create({
-      data: { unit_name: name, unit_name_en: name_en, unit_type: type, parent_id: parentId, sort_order: order, is_active: true }
+      data: {
+        unit_name: name,
+        unit_name_en: name_en,
+        unit_type: type,
+        parent_id: parentId,
+        sort_order: order,
+        unit_code,
+        is_active: true,
+      },
     });
   };
-  
-  const rootOrg = await createOrg('KPCQA', 'KPCQA', 'ORGANIZATION', null, 1);
-  // 경영진 전용 유닛 (최상위 직속 대신 하위 HQ로 분리 → 부서 대장 범위 격리)
-  await createOrg('KPCQA[원장]', '', 'HQ', rootOrg.id, 5);
-  await createOrg('KPCQA[부원장]', '', 'HQ', rootOrg.id, 6);
-  await createOrg('KPCQA[상무]', '', 'HQ', rootOrg.id, 7);
-  const hqPlanning = await createOrg('경영기획본부', 'Planning and Management Division', 'HQ', rootOrg.id, 10);
-  const centerPlanning = await createOrg('경영기획센터', 'Planning and Management Center', 'CENTER', hqPlanning.id, 11);
-  const hqGreen = await createOrg('녹색건축본부', 'Green Building Division', 'HQ', rootOrg.id, 20);
-  await createOrg('녹색건축인증센터', 'Green Building Certification Center', 'CENTER', hqGreen.id, 21);
-  await createOrg('건축안전인증센터', 'Building Safety Certification Center', 'CENTER', hqGreen.id, 22);
-  const hqEnergy = await createOrg('건물에너지본부', 'Building Energy Division', 'HQ', rootOrg.id, 30);
-  await createOrg('제로에너지인증센터', 'Zero Energy Certification Center', 'CENTER', hqEnergy.id, 31);
-  await createOrg('에너지효율검토센터', 'Energy Efficiency Review Center', 'CENTER', hqEnergy.id, 32);
-  const hqStandard = await createOrg('표준인증본부', 'Standard Certification Division', 'HQ', rootOrg.id, 40);
-  await createOrg('적합성인증센터', 'Conformity Certification Center', 'CENTER', hqStandard.id, 41);
-  await createOrg('지속가능검증센터', 'Sustainability Verification Center', 'CENTER', hqStandard.id, 42);
-  await createOrg('ESG인증센터', 'ESG Certification Center', 'CENTER', hqStandard.id, 43);
-  const hqFuture = await createOrg('미래성장전략본부', 'Future Growth Strategy Division', 'HQ', rootOrg.id, 50);
-  await createOrg('ISMS인증센터', 'ISMS Certification Center', 'CENTER', hqFuture.id, 51);
-  await createOrg('AX혁신센터', 'AX Innovation Center', 'CENTER', hqFuture.id, 52);
+
+  const rootOrg = await createOrg('KPCQA', 'KPCQA', 'ORGANIZATION', null, 1, 'ORG');
+  await createOrg('KPCQA[원장]', '', 'HQ', rootOrg.id, 5, 'EX01');
+  await createOrg('KPCQA[부원장]', '', 'HQ', rootOrg.id, 6, 'EX02');
+  await createOrg('KPCQA[상무]', '', 'HQ', rootOrg.id, 7, 'EX03');
+  const hqPlanning = await createOrg('경영기획본부', 'Planning and Management Division', 'HQ', rootOrg.id, 10, 'PMD');
+  const centerPlanning = await createOrg('경영기획센터', 'Planning and Management Center', 'CENTER', hqPlanning.id, 11, 'PMC');
+  const hqGreen = await createOrg('녹색건축본부', 'Green Building Division', 'HQ', rootOrg.id, 20, 'GBD');
+  await createOrg('녹색건축인증센터', 'Green Building Certification Center', 'CENTER', hqGreen.id, 21, 'GBC');
+  await createOrg('건축안전인증센터', 'Building Safety Certification Center', 'CENTER', hqGreen.id, 22, 'BSC');
+  const hqEnergy = await createOrg('건물에너지본부', 'Building Energy Division', 'HQ', rootOrg.id, 30, 'BED');
+  await createOrg('제로에너지인증센터', 'Zero Energy Certification Center', 'CENTER', hqEnergy.id, 31, 'ZEC');
+  await createOrg('에너지효율검토센터', 'Energy Efficiency Review Center', 'CENTER', hqEnergy.id, 32, 'EERC');
+  const hqStandard = await createOrg('표준인증본부', 'Standard Certification Division', 'HQ', rootOrg.id, 40, 'SCD');
+  await createOrg('적합성인증센터', 'Conformity Certification Center', 'CENTER', hqStandard.id, 41, 'CCC');
+  await createOrg('지속가능검증센터', 'Sustainability Verification Center', 'CENTER', hqStandard.id, 42, 'SVC');
+  await createOrg('ESG인증센터', 'ESG Certification Center', 'CENTER', hqStandard.id, 43, 'ESGC');
+  const hqFuture = await createOrg('미래성장전략본부', 'Future Growth Strategy Division', 'HQ', rootOrg.id, 50, 'FGSD');
+  await createOrg('ISMS인증센터', 'ISMS Certification Center', 'CENTER', hqFuture.id, 51, 'ISMSC');
+  await createOrg('AX혁신센터', 'AX Innovation Center', 'CENTER', hqFuture.id, 52, 'AXIC');
   
   // 4. 사용자 생성 (가입 체계: 성명/영문명/사번/소속 필수 · 직책·직급은 관리자 배정)
   await prisma.user.create({
@@ -134,6 +157,23 @@ async function main() {
       employee_no: '100003',
       password: hashedPassword,
       roles: ['LV_3'],
+      unit_id: centerPlanning.id,
+      status: 'Active',
+      duty: '',
+      duty_en: '',
+      grade: '전문위원',
+      grade_en: 'Technical Expert',
+      must_reset_password: false,
+    },
+  });
+  await prisma.user.create({
+    data: {
+      email: 'jhpark1@kpcqa.or.kr',
+      name: '박지혜',
+      name_en: 'Ji-Hye Park',
+      employee_no: '2014101302',
+      password: hashedPassword,
+      roles: ['LV_1'],
       unit_id: centerPlanning.id,
       status: 'Active',
       duty: '',
@@ -201,7 +241,48 @@ async function main() {
         { label: '선임전문위원', value: 'Senior Technical Expert' }, { label: '전문위원', value: 'Technical Expert' },
         { label: '연구원', value: 'Researcher' }, { label: '사무원', value: 'Specialist' }, { label: '인턴', value: 'Intern' }
       ] 
-    }
+    },
+    {
+      id: 'GRP_OUT_VENDOR',
+      name: '외주 업체 마스터',
+      sort_order: 90,
+      codes: [
+        { label: '아트로릭', value: 'VENDOR_ARTROLIC' },
+        { label: '한생미디어', value: 'VENDOR_HANSAENG' },
+        { label: '드림디포', value: 'VENDOR_DREAMDEPO' },
+      ],
+    },
+    {
+      id: 'GRP_OUT_ITEM',
+      name: '외주 품목 리스트',
+      sort_order: 91,
+      codes: [
+        { label: '현판/명판/상패', value: 'ITEM_SIGN' },
+        { label: '제본', value: 'ITEM_JEBON' },
+        { label: '기타 제작물', value: 'ITEM_PRINT' },
+        { label: '사무문구류', value: 'ITEM_SUPPLIES' },
+      ],
+    },
+    {
+      id: 'GRP_OUT_DETAIL1',
+      name: '외주 품목 상세1',
+      sort_order: 92,
+      codes: [
+        { label: '표준', value: 'D1_STANDARD' },
+        { label: '긴급', value: 'D1_URGENT' },
+        { label: '재제작', value: 'D1_REMAKE' },
+      ],
+    },
+    {
+      id: 'GRP_OUT_DETAIL2',
+      name: '외주 품목 상세2',
+      sort_order: 93,
+      codes: [
+        { label: '컬러', value: 'D2_COLOR' },
+        { label: '흑백', value: 'D2_BW' },
+        { label: '혼합', value: 'D2_MIX' },
+      ],
+    },
   ];
   
   for (const group of masterGroups) {
@@ -223,89 +304,103 @@ async function main() {
     }
   }
 
-  // 6. 제작물(Production) 전용 마스터 데이터 시딩
-  console.log('🏭 제작물(Production) 전용 마스터 데이터 및 외주업체 연동 중...');
-  const vendors = [
+  // 5.5 (구) ASSET 공통 외주업체 — 사무용품·마케팅 구매(SupplyPurchase) 연동용
+  // ※ 제작 신청서 「외주 업체 관리 설정」은 ProductionVendorMaster(§6) 를 사용합니다.
+  console.log('📦 (구) ASSET 공통 Vendor 마스터 시딩 중...');
+  const legacyVendors = [
     { name: '아트로릭', services: ['인증서용지', '컬러대봉투', '현판'], category: '인쇄' },
     { name: '한생미디어', services: ['제본', '쇼핑백', '상장케이스'], category: '인쇄' },
     { name: '드림디포', services: ['경조사봉투', '사무문구'], category: '문구' },
   ];
-  for (const vendor of vendors) {
+  for (const vendor of legacyVendors) {
     const exist = await prisma.vendor.findFirst({ where: { name: vendor.name } });
     if (!exist) await prisma.vendor.create({ data: vendor });
   }
 
-  const plates = [
-    { code: 'CAST_IRON_300', label: '주물현판', price: 230000, size: '300*400' },
-    { code: 'TUNGSTEN_300', label: '텅스텐현판', price: 135000, size: '300*400' },
-    { code: 'BRASS_300', label: '신주현판', price: 160000, size: '300*400' },
-    { code: 'STAINLESS_300', label: '스텐현판', price: 120000, size: '300*400' },
-    { code: 'STAINLESS_90', label: '스텐현판', price: 120000, size: '90*55' },
-    { code: 'STAINLESS_450_A', label: 'ISO 실외 스텐현판_기업명표기', price: 120000, size: '450*300' },
-    { code: 'STAINLESS_450_B', label: 'ISO 실외 스텐현판_기업명 미표기', price: 120000, size: '450*300' },
-    { code: 'WOOD_240', label: 'ISO 실내 메탈목재상패(세로형)', price: 160000, size: '240*300' },
-    { code: 'WOOD_300', label: 'ISO 실내 메탈목재상패(가로형)', price: 160000, size: '300*240' },
-    { code: 'SILVER_220', label: 'ISO 실내 원형 은쟁반패', price: 160000, size: '220*220' },
-    { code: 'SILVER_260', label: 'ISO 실내 팔각형 은쟁반패', price: 160000, size: '260*260' },
-  ];
-  for (const plate of plates) {
-    await prisma.productionPlateMaster.upsert({ where: { code: plate.code }, update: {}, create: plate });
-  }
+  // 6. 제작물(Production) 전용 마스터 — 현판 품목 · 외주업체 · 인증 서식
+  await seedProductionMasters(prisma, 'sync');
 
-  const certs = [
-    { certId: 'GSEED', type: 'SIGN', label: '녹색건축인증', format: '(0000. 00. 00. ~ 0000. 00. 00.)', jebonFormat: '', grades: ['최우수 (그린1등급)', '우수 (그린2등급)', '우량 (그린3등급)', '일반 (그린4등급)'] },
-    { certId: 'BF', type: 'SIGN', label: 'BF 인증', format: '(0000. 00. 00 ~ 0000. 00. 00)', jebonFormat: '', grades: ['최우수', '우수', '일반'] },
-    { certId: 'EDUCATIONAL', type: 'SIGN', label: '교육시설안전인증', format: '0000.00.00.~0000.00.00.', jebonFormat: '', grades: ['최우수', '우수'] },
-    { certId: 'ENERGY', type: 'SIGN', label: '건축물에너지효율등급인증', format: '유효기간: 0000. 00. 00 ~ 0000. 00. 00', jebonFormat: '', grades: ['1+++', '1++', '1+', '1등급', '2등급', '3등급', '4등급', '5등급', '6등급', '7등급'] },
-    { certId: 'OLD_ZEB', type: 'SIGN', label: '(구) 제로에너지건축물인증', format: '유효기간: 0000. 00. 00 ~ 0000. 00. 00', jebonFormat: '', grades: ['ZEB 5', 'ZEB 4', 'ZEB 3', 'ZEB 2', 'ZEB 1'] },
-    { certId: 'INTEGRATED_ZEB', type: 'SIGN', label: '(통합) 제로에너지건축물인증', format: '유효기간: 0000. 00. 00 ~ 0000. 00. 00', jebonFormat: '', grades: ['ZEB 5', 'ZEB 4', 'ZEB 3', 'ZEB 2', 'ZEB 1', 'ZEB +'] },
-    { certId: 'ISO', type: 'SIGN', label: 'ISO 인증', format: '', jebonFormat: '', grades: ['ISO 9001', 'ISO 14001', 'ISO 45001', 'IATF16949', 'ISO 22000', 'TL 9000', 'ISO 50001', 'ISO 22301', 'ISO 37001', 'ISO 37301', 'ISO/IEC 27001', 'ISO 21001', 'ISO 10002', 'ISO/IEC 42001'] },
-    { certId: 'GSEED_JEBON', type: 'JEBON', label: '녹색건축인증', format: '', jebonFormat: '0000. 0. 0.', grades: ['기본 등급'] },
-    { certId: 'CONDENDSATION', type: 'JEBON', label: '결로방지 성능평가', format: '', jebonFormat: '0000. 0. 0.', grades: [] },
-    { certId: 'ENERGY_JEBON', type: 'JEBON', label: '건축물에너지효율등급인증', format: '', jebonFormat: '0000. 0. 0', grades: ['기본 등급'] },
-    { certId: 'OLD_ZEB_JEBON', type: 'JEBON', label: '(구) 제로에너지건축물인증', format: '', jebonFormat: '0000. 0. 0.', grades: ['기본 등급'] },
-    { certId: 'INTEGRATED_ZEB_JEBON', type: 'JEBON', label: '(통합) 제로에너지건축물인증', format: '', jebonFormat: '0000. 0. 0.', grades: ['기본 등급'] },
-    { certId: 'NORMAL', type: 'JEBON', label: '일반제본', format: '', jebonFormat: '', grades: [] },
-  ];
-  for (const cert of certs) {
-    await prisma.productionCertMaster.upsert({ where: { certId: cert.certId }, update: {}, create: cert });
-  }
+  // 6.5 명함 전용 마스터 — 자격사항 표준단어 (국/영문)
+  await seedBusinessCardMasters(prisma, 'sync');
 
-// 🚀 7. 인터페이스 메뉴 거버넌스 완벽 복구
+// 🚀 7. 인터페이스 메뉴 거버넌스 복구
+// menu-backup.json 은 구 스키마 필드가 섞일 수 있음 → 현재 InterfaceConfig 컬럼만 반영
 console.log('🖥️ 인터페이스 메뉴 풀버전 복구 중...');
-  
-// 부모 메뉴가 먼저 생겨야 자식 메뉴가 들어갈 수 있으므로 레벨(1->4) 순으로 정렬
+
+const INTERFACE_ALLOWED_KEYS = new Set([
+  'path',
+  'level',
+  'name',
+  'description',
+  'icon',
+  'sort_order',
+  'is_active',
+  'is_visible',
+  'parent_id',
+  'view_scopes',
+  'org_ids',
+  'edit_role_ids',
+  'edit_scopes',
+  'task_masters',
+  'view_role_ids',
+  'task_accesses',
+  'is_master',
+  'master_editor_id',
+  'entry_sidebar',
+  'entry_index_view',
+  'entry_l4_direct',
+  'l2_entry_mode',
+  'show_header',
+  'page_title',
+  'show_page_title',
+  'page_description',
+  'show_page_desc',
+]);
+const INTERFACE_JSON_FIELDS = [
+  'view_scopes',
+  'org_ids',
+  'edit_role_ids',
+  'edit_scopes',
+  'task_masters',
+  'view_role_ids',
+  'task_accesses',
+];
+
+// Access org 기본값: 시드에서 만든 최상위 ORGANIZATION (KPCQA)
+// 백업 JSON의 옛 org_ids 는 Prisma 오류가 아니라 링크 깨짐만 유발 → 여기서 현재 rootOrg.id 로 덮어씀
+const defaultAccessOrgIds = [rootOrg.id];
+
 const sortedMenus = [...menuData].sort((a: any, b: any) => a.level - b.level);
 
 for (const m of sortedMenus) {
-  // DB 충돌을 막기 위해 날짜 데이터는 제외
-  const { createdAt, updatedAt, id, ...rawSafeData } = m; 
+  const { createdAt, updatedAt, id, ...rawSafeData } = m;
 
-  // 💡 [에러 원인 해결] null 값 필터링 및 JSON 안전 변환
   const safeData: any = {};
   for (const [key, value] of Object.entries(rawSafeData)) {
+    if (!INTERFACE_ALLOWED_KEYS.has(key)) continue; // access_scope_coded 등 구버전 키 무시
     if (value === null) {
-      // Prisma에서 에러를 뱉는 JSON 배열 필드들은 null 대신 빈 배열로 처리
-      const jsonFields = ['view_scopes', 'org_ids', 'edit_role_ids', 'edit_scopes', 'task_masters', 'view_role_ids', 'task_accesses'];
-      if (jsonFields.includes(key)) {
-        safeData[key] = []; 
-      }
+      if (INTERFACE_JSON_FIELDS.includes(key)) safeData[key] = [];
     } else {
       safeData[key] = value;
     }
   }
 
+  // Access 조직 = ORGANIZATION (LV_1이 이후 admin/interface에서 수정)
+  safeData.org_ids = defaultAccessOrgIds;
+
   await prisma.interfaceConfig.upsert({
-    where: { path: m.path }, 
+    where: { path: m.path },
     update: safeData,
     create: {
-      id: m.id, // 기존 아이디 유지
-      ...safeData
-    }
+      id: m.id,
+      ...safeData,
+    },
   });
 }
 
-console.log('✅ 마스터 데이터 및 메뉴 세팅까지 완벽하게 박제되었습니다!');
+console.log(
+  `✅ 마스터/메뉴 시드 완료 (Access org → ORGANIZATION id=${rootOrg.id})`
+);
 }
 
 main()

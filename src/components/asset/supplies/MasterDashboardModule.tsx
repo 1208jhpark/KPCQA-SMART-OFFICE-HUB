@@ -8,11 +8,16 @@ import { getKSTDateString } from '@/utils/dateUtils';
 import { resolveInterfaceEditState } from '@/lib/permission-utils';
 import { parseSupplyOwnerDepts, resolveTopOrgName } from '@/utils/orgUnits';
 import LoadingState from '@/components/common/LoadingState';
+import {
+  SUPPLIES_MASTER_TABS,
+  useInterfaceStepTabs,
+} from '@/lib/interface-step-tabs';
 
 const MENU_PATH = '/asset/supplies/master/dashboard';
      
 function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser?: any }) {
   const pathname = usePathname();
+  const tabs = useInterfaceStepTabs(SUPPLIES_MASTER_TABS, '/asset/supplies/master');
   
   const [items, setItems] = useState<any[]>([]);
   const [pendingCount, setPendingCount] = useState(0);
@@ -38,13 +43,6 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
   const [statFilter, setStatFilter] = useState<'ALL' | 'PENDING' | 'WARNING' | 'OUT'>('ALL'); 
   
   const fileInputRef = useRef<HTMLInputElement>(null);
-     
-  const tabItems = [
-    { id: 'dashboard', name: '🗂️ 소모품 마스터 대시보드', path: '/asset/supplies/master/dashboard' },
-    { id: 'requests', name: '📋 사용자 신청현황 관리', path: '/asset/supplies/master/requests' },
-    { id: 'purchase', name: '💰 입고/구매 내역 대장', path: '/asset/supplies/master/purchase' },
-    { id: 'archive', name: '📁 폐기자산 아카이브', path: '/asset/supplies/master/archive' },
-  ];
      
   const fetchDashboardData = async () => {
     setLoading(true);
@@ -457,12 +455,8 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
       {/* 탭 네비게이션 — client-search / distribution 스위처 규격 */}
       <div className="flex items-center justify-between bg-white p-2 rounded-xl border border-slate-200 shadow-sm">
         <div className="flex items-center gap-1.5 bg-slate-100/80 p-1 rounded-lg flex-wrap">
-          {tabItems.map((tab) => {
+          {tabs.map((tab) => {
             const isActive = pathname.startsWith(tab.path);
-            const activeColor =
-              tab.id === 'purchase' ? 'text-emerald-600' :
-              tab.id === 'archive' ? 'text-slate-800' :
-              'text-indigo-600';
             const showPendingBadge = tab.id === 'requests' && stats.pendingReqs > 0;
             return (
               <Link
@@ -470,11 +464,11 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
                 href={tab.path}
                 className={`px-5 py-2 rounded-md text-xs font-black transition-all flex items-center gap-2 ${
                   isActive
-                    ? `bg-white ${activeColor} shadow-sm border border-slate-200/80`
+                    ? `bg-white ${tab.activeColor || 'text-indigo-600'} shadow-sm border border-slate-200/80`
                     : 'text-slate-500 hover:text-slate-800'
                 } ${showPendingBadge && !isActive ? 'ring-1 ring-red-300/80' : ''}`}
               >
-                <span>{tab.name}</span>
+                <span>{tab.label}</span>
                 {showPendingBadge && (
                   <span className="inline-flex items-center justify-center min-w-[1.35rem] h-5 px-1.5 rounded-full bg-red-600 text-white text-[10px] font-black font-mono shadow-sm animate-pulse">
                     {stats.pendingReqs}

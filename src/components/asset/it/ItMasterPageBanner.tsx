@@ -3,6 +3,10 @@
 import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import {
+  IT_MASTER_TABS,
+  useInterfaceStepTabs,
+} from '@/lib/interface-step-tabs';
 
 type PermissionSummary = {
   masterName: string;
@@ -12,13 +16,6 @@ type PermissionSummary = {
   editDesignate: string;
   editLevel: string;
 };
-
-const TAB_ITEMS = [
-  { id: 'dashboard', name: '📊 전사 IT·업무자산 대시보드', path: '/asset/it/master/dashboard' },
-  { id: 'audit', name: '🔍 정기 자산 실사 관리', path: '/asset/it/master/audit' },
-  { id: 'requests', name: '📋 기타 의견/요청 송수신 대장', path: '/asset/it/master/requests' },
-  { id: 'archive', name: '📁 종료 처리 아카이브', path: '/asset/it/master/archive' },
-] as const;
 
 export default function ItMasterPageBanner({
   label,
@@ -37,6 +34,7 @@ export default function ItMasterPageBanner({
   canEdit?: boolean;
 }) {
   const pathname = usePathname() || '';
+  const tabs = useInterfaceStepTabs(IT_MASTER_TABS, '/asset/it/master');
   const [permissionSummary, setPermissionSummary] = useState<PermissionSummary | null>(null);
 
   useEffect(() => {
@@ -108,24 +106,19 @@ export default function ItMasterPageBanner({
 
       <div className="flex items-center justify-between bg-white p-2 rounded-xl border border-slate-200 shadow-sm">
         <div className="flex items-center gap-1.5 bg-slate-100/80 p-1 rounded-lg flex-wrap">
-          {TAB_ITEMS.map((tab) => {
+          {tabs.map((tab) => {
             const isActive = pathname === tab.path || pathname.startsWith(`${tab.path}/`);
-            const activeColor =
-              tab.id === 'audit' ? 'text-teal-700' :
-              tab.id === 'requests' ? 'text-pink-600' :
-              tab.id === 'archive' ? 'text-slate-800' :
-              'text-indigo-600';
             return (
               <Link
                 key={tab.id}
                 href={tab.path}
                 className={`px-5 py-2 rounded-md text-xs font-black transition-all flex items-center gap-2 ${
                   isActive
-                    ? `bg-white ${activeColor} shadow-sm border border-slate-200/80`
+                    ? `bg-white ${tab.activeColor || 'text-indigo-600'} shadow-sm border border-slate-200/80`
                     : 'text-slate-500 hover:text-slate-800'
                 }`}
               >
-                <span>{tab.name}</span>
+                <span>{tab.label}</span>
               </Link>
             );
           })}

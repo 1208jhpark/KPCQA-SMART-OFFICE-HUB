@@ -1,10 +1,15 @@
 'use client';
 
 import React, { useState, useEffect, useMemo } from 'react';
-import Link from 'next/navigation';
+import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { getKSTDateString } from '@/utils/dateUtils';
+import { getKSTDateString, getKSTNowYearMonth, getKSTYearMonth } from '@/utils/dateUtils';
 import LoadingState from '@/components/common/LoadingState';
+import ProductionRequestDetailModal from '@/components/asset/production/ProductionRequestDetailModal';
+import {
+  getProductionCategoryBadgeClass,
+  getProductionCategoryFolderTabClasses,
+} from '@/lib/production-category-theme';
 
 // 🚀 [신청 페이지 CATEGORIES와 1:1 싱크 통일 + 전체내역 탭 추가]
 const HISTORY_CATEGORIES = [
@@ -15,23 +20,51 @@ const HISTORY_CATEGORIES = [
   { id: 'OFFICE_SUPPLIES', label: '사무문구류', icon: '📎' },
 ];
 
-const ITEMS_PER_PAGE = 20;
+const ITEMS_PER_PAGE = 10;
+
+/** 신청 수량 단위: 제본=부, 기타제작=마스터 단위, 그 외=EA */
+function formatQuantityUnit(item: {
+  category?: string;
+  options?: { printItemMasterInfo?: { unitLabel?: string; unitValue?: string } };
+}) {
+  if (item.category === 'JEBON') return '부';
+  if (item.category === 'PRINT') {
+    const label = item.options?.printItemMasterInfo?.unitLabel;
+    if (label) return String(label);
+  }
+  return 'EA';
+}
+
+function getKSTYearMonthParts(dateInput: Date | string | number | null | undefined) {
+  if (dateInput == null) return null;
+  const ym = getKSTYearMonth(dateInput);
+  if (!ym) return null;
+  return {
+    year: String(ym.year),
+    month: String(ym.month).padStart(2, '0'),
+  };
+}
 
 export default function ProductionApplyHistory() {
   const [histories, setHistories] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [cancellingId, setCancellingId] = useState<string | null>(null);
   const pathname = usePathname();
+  const [currentUser, setCurrentUser] = useState<any>(null);
 
   const [activeCategory, setActiveCategory] = useState('ALL');
-  const [selectedYear, setSelectedYear] = useState('ALL');
+  const [selectedYear, setSelectedYear] = useState(() => String(getKSTNowYearMonth().year));
   const [selectedMonth, setSelectedMonth] = useState('ALL');
   const [currentPage, setCurrentPage] = useState(1);
 
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [detailItem, setDetailItem] = useState<any>(null);
 
-  // 🎯 본인(scope=OWN) 자료만 가져오도록 명확하게 필터 벨트 바인딩
-  useEffect(() => {
+  const openDetail = (item: any) => {
+    setDetailItem(item);
+  };
+
+  const loadHistories = () => {
     setLoading(true);
     fetch('/api/asset/production/apply/history?scope=OWN', { cache: 'no-store' })
       .then((res) => res.json())
@@ -44,6 +77,18 @@ export default function ProductionApplyHistory() {
       })
       .catch((err) => console.error('히스토리 로드 실패:', err))
       .finally(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    fetch('/api/auth/me', { cache: 'no-store' })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((user) => setCurrentUser(user))
+      .catch(() => setCurrentUser(null));
+  }, []);
+
+  // 🎯 본인(scope=OWN) 자료만 가져오도록 명확하게 필터 벨트 바인딩
+  useEffect(() => {
+    loadHistories();
   }, []);
 
   useEffect(() => {
@@ -57,25 +102,68 @@ export default function ProductionApplyHistory() {
     return found ? found.label : catId;
   };
 
+  const kstYear = String(getKSTNowYearMonth().year);
+
+  const availableYears = useMemo(() => {
+    const years = histories
+      .map((item) => getKSTYearMonthParts(item.createdAt)?.year)
+      .filter((y): y is string => Boolean(y));
+    const unique = Array.from(new Set(years)).sort((a, b) => b.localeCompare(a));
+    if (!unique.includes(kstYear)) unique.unshift(kstYear);
+    return unique;
+  }, [histories, kstYear]);
+
+  const afterYearList = useMemo(() => {
+    if (selectedYear === 'ALL') return histories;
+    return histories.filter(
+      (item) => getKSTYearMonthParts(item.createdAt)?.year === selectedYear
+    );
+  }, [histories, selectedYear]);
+
+  const availableMonths = useMemo(() => {
+    const months = afterYearList
+      .map((item) => getKSTYearMonthParts(item.createdAt)?.month)
+      .filter((m): m is string => Boolean(m));
+    return Array.from(new Set(months)).sort((a, b) => a.localeCompare(b));
+  }, [afterYearList]);
+
+  useEffect(() => {
+    if (
+      selectedYear !== 'ALL' &&
+      availableYears.length > 0 &&
+      !availableYears.includes(selectedYear)
+    ) {
+      setSelectedYear(kstYear);
+    }
+  }, [availableYears, selectedYear, kstYear]);
+
+  useEffect(() => {
+    if (selectedMonth !== 'ALL' && !availableMonths.includes(selectedMonth)) {
+      setSelectedMonth('ALL');
+    }
+  }, [availableMonths, selectedMonth]);
+
   const filteredHistories = useMemo(() => {
     return histories.filter((item) => {
-      const date = new Date(item.createdAt);
-      const itemYear = date.getFullYear().toString();
-      const itemMonth = (date.getMonth() + 1).toString().padStart(2, '0');
-
+      // 예전 soft-cancel(CANCELLED) 잔여분 숨김 — 발주대기 취소는 이제 DB 삭제
+      if (item.status === 'CANCELLED') return false;
+      const ym = getKSTYearMonthParts(item.createdAt);
       const matchCategory = activeCategory === 'ALL' || item.category === activeCategory;
-      const matchYear = selectedYear === 'ALL' || itemYear === selectedYear;
-      const matchMonth = selectedMonth === 'ALL' || itemMonth === selectedMonth;
-
+      const matchYear = selectedYear === 'ALL' || ym?.year === selectedYear;
+      const matchMonth = selectedMonth === 'ALL' || ym?.month === selectedMonth;
       return matchCategory && matchYear && matchMonth;
     });
   }, [histories, activeCategory, selectedYear, selectedMonth]);
 
-  const totalPages = Math.ceil(filteredHistories.length / ITEMS_PER_PAGE);
+  const totalPages = Math.max(1, Math.ceil(filteredHistories.length / ITEMS_PER_PAGE));
   const paginatedHistories = useMemo(() => {
     const startIndex = (currentPage - 1) * ITEMS_PER_PAGE;
     return filteredHistories.slice(startIndex, startIndex + ITEMS_PER_PAGE);
   }, [filteredHistories, currentPage]);
+
+  useEffect(() => {
+    if (currentPage > totalPages) setCurrentPage(totalPages);
+  }, [currentPage, totalPages]);
 
   const handleSelectAll = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.checked) setSelectedIds(paginatedHistories.map((item) => item.id));
@@ -86,6 +174,40 @@ export default function ProductionApplyHistory() {
     setSelectedIds((prev) =>
       prev.includes(id) ? prev.filter((i) => i !== id) : [...prev, id]
     );
+  };
+
+  const handleCancel = async (item: any) => {
+    if (item.status !== 'PENDING') return;
+    if (
+      !confirm(
+        `[${item.postNumber}] 신청을 취소하시겠습니까?\n대기중(미접수) 건은 목록에서 삭제되며, 복구할 수 없습니다.`
+      )
+    ) {
+      return;
+    }
+    setCancellingId(item.id);
+    try {
+      const res = await fetch('/api/asset/production/apply/history', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: item.id, action: 'cancel' }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(data.message || '취소에 실패했습니다.');
+        return;
+      }
+      setHistories((prev) => prev.filter((h) => h.id !== item.id));
+      setSelectedIds((prev) => prev.filter((id) => id !== item.id));
+      if (detailItem?.id === item.id) {
+        setDetailItem(null);
+      }
+      alert('신청이 취소되어 목록에서 삭제되었습니다.');
+    } catch {
+      alert('취소 처리 중 오류가 발생했습니다.');
+    } finally {
+      setCancellingId(null);
+    }
   };
 
   // 🚀 [지침 완벽 반영]: 시스템 내부 보조 서식을 철저히 배제하고 순서대로 엑셀(CSV) 추출
@@ -119,13 +241,18 @@ export default function ProductionApplyHistory() {
       // 카테고리별 옵션 명세 문자열 가공
       let detailSpec = '';
       if (item.category === 'SIGN') {
-        detailSpec = `사양: ${opt.plateMasterInfo?.label || ''}(${opt.plateMasterInfo?.size || ''}) / 인증: ${opt.certType || ''} / 등급: ${opt.certLevel || ''} / 유효기간: ${opt.formattedValidPeriod || '해당없음'}`;
+        detailSpec = (() => {
+          const digits = String(opt.formattedValidPeriod || '').replace(/\D/g, '');
+          const period =
+            !digits || /^0+$/.test(digits) ? '해당없음' : opt.formattedValidPeriod;
+          return `사양: ${opt.plateMasterInfo?.label || ''}(${opt.plateMasterInfo?.size || ''}) / 인증: ${opt.certType || ''} / 등급: ${opt.certLevel || ''} / 유효기간: ${period}`;
+        })();
       } else if (item.category === 'JEBON') {
         detailSpec = `판형: ${opt.jebonSize || 'A4'} / 표지: ${opt.coverColor || ''}(${opt.coverPageCount || 0}p) / 본문: ${opt.innerColor || ''}(${opt.innerPageCount || 0}p) / 단계: ${opt.certPhase || ''} / 지정일: ${opt.formattedCompDate || '해당없음'}`;
       } else if (item.category === 'PRINT') {
         detailSpec = `품목: ${opt.printCustomName || opt.printItemType || ''} / 인쇄문구1: ${opt.printItemDetails || ''} / 인쇄문구2: ${opt.printDeliveryDetails || ''}`;
       } else if (item.category === 'OFFICE_SUPPLIES') {
-        detailSpec = `견적 원장 텍스트 키pping 내역 존재`;
+        detailSpec = `견적 텍스트 내역 존재`;
       }
 
       return [
@@ -152,38 +279,24 @@ export default function ProductionApplyHistory() {
     link.click();
   };
 
-  const DetailSectionTitle = ({ title }: { title: string }) => (
-    <h4 className="font-black text-slate-800 text-sm border-b pb-2 mb-3 mt-2 tracking-tight flex items-center gap-1.5">
-      <span className="w-1.5 h-3.5 bg-blue-600 rounded-sm"></span>
-      {title}
-    </h4>
-  );
-
-  const DetailRow = ({ label, value, highlight = false }: { label: string; value: React.ReactNode; highlight?: boolean }) => (
-    <div className="flex flex-col gap-1 border-b border-slate-100 pb-2.5">
-      <span className="text-[10px] font-black text-slate-400 uppercase tracking-tight">{label}</span>
-      <span className={`text-xs font-bold ${highlight ? 'text-blue-600' : 'text-slate-800'}`}>
-        {value || <span className="text-slate-300 font-medium">해당없음 / 미기입</span>}
-      </span>
-    </div>
-  );
-
   return (
     <div className="w-full max-w-[1600px] mx-auto space-y-6 p-8 font-sans text-slate-900 pb-24 animate-fade-in text-[11px]">
-      {/* 배너 영역 */}
-      <div className="w-full bg-slate-50 border-2 border-blue-500 p-6 rounded-[2.5rem] shadow-sm relative overflow-hidden flex flex-col justify-center min-h-[140px]">
-        <div className="relative z-10 flex justify-between items-end w-full">
-          <div>
-            <h3 className="text-[10px] font-black uppercase tracking-widest text-blue-500 mb-3">
-              APPLICATION ACCOUNTABILITY CENTER
-            </h3>
-            <h1 className="text-2xl font-black tracking-tight text-slate-800 leading-none flex items-center flex-wrap gap-2.5">
-              <span>나의 맞춤 제작물 신청 이력 관리</span>
-            </h1>
-            <p className="text-slate-500 text-xs font-semibold mt-4 opacity-95">
-              🔒 보완 완료: 본인 인증 계정 기반 데이터 엄격 격리 모드 (실시간 연동 완료)
-            </p>
-          </div>
+      {/* 마케팅 배너 공통 규격: label 10px / title 2xl / desc xs — survey/general/my-submissions와 동일 */}
+      <div className="w-full bg-gradient-to-r from-slate-950 via-slate-900 to-slate-800 rounded-3xl text-white shadow-lg relative overflow-hidden px-6 md:px-8 py-6">
+        <div className="absolute right-0 top-0 w-64 h-64 bg-indigo-500/12 rounded-full blur-3xl -translate-y-1/3 translate-x-1/4 pointer-events-none" />
+        <div className="absolute left-1/4 bottom-0 w-48 h-48 bg-slate-500/10 rounded-full blur-3xl translate-y-1/2 pointer-events-none" />
+        <div className="relative z-10">
+          <h3 className="text-[10px] font-black uppercase tracking-widest text-indigo-400 mb-2.5">
+            MY PRODUCTION REQUESTS & HISTORY
+          </h3>
+          <h1 className="text-2xl tracking-tight leading-none">
+            <span className="text-indigo-400 font-normal">{currentUser?.name || '임직원'} 님</span>
+            <span className="text-white/30 font-normal mx-2.5">|</span>
+            <span className="text-white font-extrabold">나의 신청 이력</span>
+          </h1>
+          <p className="text-slate-400 text-xs mt-3 leading-relaxed">
+            본인 계정으로 신청한 맞춤 제작물 이력을 조회합니다.
+          </p>
         </div>
       </div>
 
@@ -195,9 +308,9 @@ export default function ProductionApplyHistory() {
         ].map((tab) => {
           const isActive = pathname === tab.path;
           return (
-            <button
+            <Link
               key={tab.path}
-              onClick={() => (window.location.href = tab.path)}
+              href={tab.path}
               className={`flex-1 py-3 text-center text-[11px] font-black rounded-xl transition-all uppercase tracking-tight ${
                 isActive
                   ? 'bg-white text-blue-600 shadow-sm border border-blue-200/50 scale-[1.01]'
@@ -205,33 +318,37 @@ export default function ProductionApplyHistory() {
               }`}
             >
               {tab.name}
-            </button>
+            </Link>
           );
         })}
       </div>
 
-      {/* 🚀 상단 카테고리 탭 대장 스위치 (신청 페이지 CATEGORIES 배열과 완벽 매핑 동기화) */}
-      <div className="flex flex-wrap gap-3 pt-2 w-full">
-        {HISTORY_CATEGORIES.map((cat) => (
-          <button
-            key={cat.id}
-            type="button"
-            onClick={() => setActiveCategory(cat.id)}
-            className={`flex items-center gap-2.5 px-5 py-3.5 rounded-2xl font-black text-xs transition-all duration-200 shadow-sm
-              ${
-                activeCategory === cat.id
-                  ? 'bg-slate-900 text-white shadow-lg scale-[1.02] border-transparent'
-                  : 'bg-white text-slate-600 hover:bg-slate-50 border border-slate-200'
-              }`}
-          >
-            <span className="text-sm">{cat.icon}</span>
-            {cat.label}
-          </button>
-        ))}
-      </div>
+      {/* 카테고리 서류철 탭 + 테이블 — dept-master/order와 동일 */}
+      <div className="w-full pt-2">
+        <div
+          className="flex flex-wrap items-end gap-1 border-b border-slate-200"
+          role="tablist"
+          aria-label="제작 분류 필터"
+        >
+          {HISTORY_CATEGORIES.map((cat) => {
+            const active = activeCategory === cat.id;
+            return (
+              <button
+                key={cat.id}
+                type="button"
+                role="tab"
+                aria-selected={active}
+                onClick={() => setActiveCategory(cat.id)}
+                className={`relative flex items-center gap-1.5 px-4 py-2.5 text-xs font-black tracking-tight transition-colors rounded-t-lg border ${getProductionCategoryFolderTabClasses(cat.id, active)}`}
+              >
+                <span className="text-sm leading-none">{cat.icon}</span>
+                <span>{cat.label}</span>
+              </button>
+            );
+          })}
+        </div>
 
-      {/* 테이블 시트 구조부 */}
-      <div className="mt-4 bg-white border border-slate-200 rounded-[2.5rem] shadow-sm overflow-hidden">
+        <div className="bg-white border border-t-0 border-slate-200 rounded-b-[2.5rem] rounded-tr-2xl shadow-sm overflow-hidden">
         <div className="p-4 px-6 bg-slate-200/70 border-b border-slate-300 flex items-center justify-between flex-wrap gap-4">
           <div className="flex items-center gap-2">
             <div className="w-2.5 h-2.5 rounded-full bg-blue-600"></div>
@@ -246,35 +363,57 @@ export default function ProductionApplyHistory() {
             )}
           </div>
 
-          <div className="flex items-center gap-2">
-            <select
-              value={selectedYear}
-              onChange={(e) => setSelectedYear(e.target.value)}
-              className="text-[10px] font-bold bg-white border border-slate-300 rounded-lg px-3 py-1.5 outline-none focus:ring-1 focus:ring-slate-400"
-            >
-              <option value="ALL">전체 년도</option>
-              <option value="2026">2026년</option>
-              <option value="2025">2025년</option>
-            </select>
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="relative group/filter flex items-center gap-2 bg-white px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm">
+              <span
+                role="tooltip"
+                className="pointer-events-none absolute left-0 top-full mt-1.5 z-50 hidden group-hover/filter:block whitespace-nowrap rounded-lg bg-slate-800 px-2.5 py-1.5 text-[10px] font-bold text-white shadow-lg"
+              >
+                연도 → 월 · 연계필터
+              </span>
 
-            <select
-              value={selectedMonth}
-              onChange={(e) => setSelectedMonth(e.target.value)}
-              className="text-[10px] font-bold bg-white border border-slate-300 rounded-lg px-3 py-1.5 outline-none focus:ring-1 focus:ring-slate-400"
-            >
-              <option value="ALL">전체 월</option>
-              {Array.from({ length: 12 }, (_, i) => (i + 1).toString().padStart(2, '0')).map((m) => (
-                <option key={m} value={m}>
-                  {m}월
-                </option>
-              ))}
-            </select>
+              <span className="text-[10px] font-black text-slate-400 uppercase">연도</span>
+              <select
+                value={selectedYear}
+                onChange={(e) => {
+                  setSelectedYear(e.target.value);
+                  setSelectedMonth('ALL');
+                }}
+                className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent"
+              >
+                <option value="ALL">전체</option>
+                {availableYears.map((year) => (
+                  <option key={year} value={year}>
+                    {year}년
+                  </option>
+                ))}
+              </select>
+
+              <div className="w-px h-3.5 bg-slate-300 mx-0.5" />
+
+              <span className="text-[10px] font-black text-slate-400 uppercase">월별</span>
+              <select
+                value={selectedMonth}
+                onChange={(e) => setSelectedMonth(e.target.value)}
+                className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent"
+              >
+                <option value="ALL">전체</option>
+                {availableMonths.map((month) => (
+                  <option key={month} value={month}>
+                    {month}월
+                  </option>
+                ))}
+              </select>
+            </div>
 
             <button
+              type="button"
               onClick={handleExcelDownload}
-              className="ml-2 flex items-center gap-1.5 px-4 py-1.5 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-lg text-[10px] font-black hover:bg-emerald-100 transition-colors shadow-sm"
+              className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-[10px] font-black shadow-sm hover:bg-emerald-700 transition-all whitespace-nowrap"
             >
-              <span>📊</span> {selectedIds.length > 0 ? '선택외주 발주명세 추출' : '전체외주 발주명세 추출'}
+              {selectedIds.length > 0
+                ? `선택 EXCEL 다운로드(${selectedIds.length})`
+                : '화면 목록 EXCEL 다운로드'}
             </button>
           </div>
         </div>
@@ -286,10 +425,10 @@ export default function ProductionApplyHistory() {
             <table className="w-full text-left border-collapse">
               <thead className="bg-slate-100 text-slate-700 text-[10px] font-black uppercase tracking-widest border-b border-slate-200">
                 <tr>
-                  <th className="h-12 pl-6 w-12 text-center">
+                  <th className="h-12 pl-4 text-center">
                     <input
                       type="checkbox"
-                      className="w-3.5 h-3.5 accent-blue-600 rounded cursor-pointer"
+                      className="w-3 h-3 accent-blue-600 rounded cursor-pointer"
                       checked={
                         paginatedHistories.length > 0 &&
                         selectedIds.length === paginatedHistories.length
@@ -297,130 +436,196 @@ export default function ProductionApplyHistory() {
                       onChange={handleSelectAll}
                     />
                   </th>
-                  <th className="h-12 px-2">관리번호</th>
-                  {/* 🚀 영문 코드가 아닌 한글 매핑 카테고리명이 뜨도록 완벽 조치 */}
-                  <th className="h-12 px-3 text-center">분류</th>
-                  {/* 🚀 프로젝트 명칭을 '관리용 제목' 헤더로 치환 맵핑 */}
-                  <th className="h-12 px-4">관리용 제목</th>
-                  <th className="h-12 px-3 text-center">수량</th>
-                  <th className="h-12 px-3 text-center">신청일</th>
-                  {/* 🚀 본인 데이터 식별을 직관적으로 보조하는 소속 및 이름 배치 */}
-                  <th className="h-12 px-4">소속 부서</th>
-                  <th className="h-12 px-4">신청자</th>
-                  <th className="h-12 pr-6 Regal-center text-center">액션 및 상태</th>
+                  <th className="h-12 px-2 text-center">No</th>
+                  <th className="h-12 px-2 text-center whitespace-nowrap">관리번호</th>
+                  <th className="h-12 px-2 text-center whitespace-nowrap">신청일</th>
+                  <th className="h-12 px-2">소속 부서</th>
+                  <th className="h-12 px-2">신청자</th>
+                  <th className="h-12 px-2 text-center whitespace-nowrap">분류</th>
+                  <th className="h-12 px-2">관리용 제목</th>
+                  <th className="h-12 px-2 text-center whitespace-nowrap">신청내역</th>
+                  <th className="h-12 px-2 text-center whitespace-nowrap">수량</th>
+                  <th className="h-12 px-2 text-center whitespace-nowrap">외주업체</th>
+                  <th className="h-12 px-2 text-center whitespace-nowrap">공정상태</th>
+                  <th className="h-12 px-2 text-center whitespace-nowrap">액션</th>
                 </tr>
               </thead>
-              <tbody className="bg-white divide-y divide-slate-100 text-xs font-bold text-slate-700">
+              <tbody className="bg-white divide-y divide-slate-100 text-[11px] font-bold text-slate-700">
                 {paginatedHistories.length === 0 ? (
                   <tr>
-                    <td colSpan={9} className="text-center p-10 text-slate-400">
+                    <td colSpan={12} className="p-16 text-center text-slate-400 text-xs">
                       신청 가드 범위 내에 해당하는 내역이 존재하지 않습니다.
                     </td>
                   </tr>
                 ) : (
-                  paginatedHistories.map((item: any) => (
+                  paginatedHistories.map((item: any, idx: number) => {
+                    const rowNo =
+                      filteredHistories.length - ((currentPage - 1) * ITEMS_PER_PAGE + idx);
+                    const isPending = item.status === 'PENDING';
+                    const statusLabel =
+                      item.status === 'PENDING'
+                        ? '대기중'
+                        : item.status === 'ACCEPTED'
+                          ? '발주대기'
+                          : item.status === 'ORDERED'
+                            ? '발주완료'
+                            : item.status === 'VERIFIED'
+                              ? '정산승인'
+                              : item.status === 'REJECTED'
+                                ? '반려'
+                                : item.status === 'CANCELLED'
+                                  ? '취소됨'
+                                  : item.status;
+                    // businesscard/master/requests 공정상태 색상 톤과 통일
+                    const statusClass =
+                      item.status === 'PENDING'
+                        ? 'text-orange-600'
+                        : item.status === 'ACCEPTED'
+                          ? 'text-blue-600'
+                          : item.status === 'ORDERED'
+                            ? 'text-emerald-600'
+                            : item.status === 'VERIFIED'
+                              ? 'text-purple-700'
+                              : item.status === 'REJECTED'
+                                ? 'text-red-600'
+                                : item.status === 'CANCELLED'
+                                  ? 'text-slate-400'
+                                  : 'text-slate-500';
+                    const actionHint =
+                      item.status === 'ACCEPTED'
+                        ? '발주 대기'
+                        : item.status === 'ORDERED'
+                          ? '명세 검수 대기'
+                          : item.status === 'VERIFIED'
+                            ? '완료'
+                            : item.status === 'REJECTED'
+                              ? '반려됨'
+                              : item.status === 'CANCELLED'
+                                ? '취소됨'
+                                : '-';
+                    return (
                     <tr
                       key={item.id}
-                      className={`h-16 transition-colors group ${
+                      className={`h-12 transition-colors group ${
                         selectedIds.includes(item.id) ? 'bg-blue-50/30' : 'hover:bg-slate-50/50'
                       }`}
                     >
-                      <td className="pl-6 text-center">
+                      <td className="pl-4 text-center">
                         <input
                           type="checkbox"
-                          className="w-3.5 h-3.5 accent-blue-600 rounded cursor-pointer"
+                          className="w-3 h-3 accent-blue-600 rounded cursor-pointer"
                           checked={selectedIds.includes(item.id)}
                           onChange={() => handleSelectOne(item.id)}
                         />
                       </td>
-                      <td className="px-2 text-slate-500 font-mono text-[10px] group-hover:text-blue-600 transition-colors">
+                      <td className="px-2 text-center font-mono text-slate-500 tabular-nums">
+                        {rowNo}
+                      </td>
+                      <td className="px-2 text-center font-mono text-slate-900 tabular-nums truncate">
                         {item.postNumber}
                       </td>
-                      <td className="px-3 text-center">
-                        <span className="bg-slate-800 text-slate-100 px-2.5 py-1 rounded text-[10px] font-black tracking-tight">
+                      <td className="px-2 text-center whitespace-nowrap tabular-nums text-slate-800">
+                        {getKSTDateString(item.createdAt)}
+                      </td>
+                      <td className="px-2 truncate" title={item.deptName || ''}>
+                        {item.deptName || <span className="text-slate-300">-</span>}
+                      </td>
+                      <td className="px-2 text-slate-800 truncate">{item.userName || '-'}</td>
+                      <td className="px-2 text-center">
+                        <span
+                          className={`px-2.5 py-1 rounded text-[10px] font-bold tracking-tight border ${getProductionCategoryBadgeClass(item.category)}`}
+                        >
                           {getCategoryLabel(item.category)}
                         </span>
                       </td>
-                      <td className="px-4">
-                        <div className="font-black text-slate-900 line-clamp-1">{item.title || '-'}</div>
-                        <div className="text-[10px] text-slate-400 font-normal mt-0.5 line-clamp-1">
-                          옵션: {item.options?.plateMasterInfo?.label || item.options?.printItemType || '지정 명세'} / 발주처: {item.options?.vendor || '기본'}
-                        </div>
+                      <td className="px-2 text-slate-800 truncate" title={item.title || ''}>
+                        {item.title || '-'}
                       </td>
-                      <td className="px-3 text-center text-slate-500 font-mono">
-                        {item.quantity}EA
+                      <td className="px-2 text-center">
+                        {isPending ? (
+                          <button
+                            type="button"
+                            onClick={() => openDetail(item)}
+                            className="px-2.5 py-1 text-[10px] font-bold rounded-lg shadow-sm transition-colors bg-rose-600 text-white hover:bg-rose-700"
+                          >
+                            원문 검수
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => openDetail(item)}
+                            className="px-2.5 py-1 text-[10px] font-bold rounded-lg transition-colors bg-slate-200 text-slate-600 hover:bg-slate-300 border border-slate-300"
+                          >
+                            원문 확인
+                          </button>
+                        )}
                       </td>
-                      <td className="px-3 text-center text-slate-500 text-[10px]">
-                        {getKSTDateString(item.createdAt)}
-                      </td>
-                      {/* 🚀 추가된 컬럼 데이터 바인딩 */}
-                      <td className="px-4 text-slate-600 font-black">{item.deptName || '-'}</td>
-                      <td className="px-4 text-blue-600 font-black">{item.userName || '-'}</td>
-                      
-                      <td className="pr-6 text-center space-x-2 flex items-center justify-center h-16">
-                        <button
-                          onClick={() => setDetailItem(item)}
-                          className="px-3 py-1.5 bg-white border border-slate-200 text-slate-700 rounded-xl text-[10px] font-black hover:bg-slate-50 hover:text-blue-600 transition-all shadow-sm active:scale-95"
-                        >
-                          🔍 내용보기
-                        </button>
-                        <span
-                          className={`inline-block w-[68px] px-1 py-1 rounded-xl text-[9px] font-black tracking-tight border text-center shadow-sm
-                            ${
-                              item.status === 'PENDING'
-                                ? 'bg-amber-50 text-amber-600 border-amber-200'
-                                : item.status === 'ORDERED'
-                                ? 'bg-blue-50 text-blue-600 border-blue-200'
-                                : item.status === 'VERIFIED'
-                                ? 'bg-green-50 text-green-600 border-green-200'
-                                : 'bg-slate-100 text-slate-500 border-slate-200'
-                            }`}
-                        >
-                          {item.status === 'PENDING'
-                            ? '⏳ 발주대기'
-                            : item.status === 'ORDERED'
-                            ? '🚚 제작중'
-                            : item.status === 'VERIFIED'
-                            ? '✅ 정산승인'
-                            : item.status}
+                      <td className="px-2 text-center tabular-nums text-slate-900">
+                        <span className="font-mono">{item.quantity}</span>
+                        <span className="ml-0.5 text-[10px] font-medium text-slate-500">
+                          {formatQuantityUnit(item)}
                         </span>
                       </td>
+                      <td className="px-2 text-center text-slate-800 truncate">
+                        {item.options?.vendor || '-'}
+                      </td>
+                      <td className="px-2 text-center">
+                        <span className={`text-[10px] font-bold whitespace-nowrap ${statusClass}`}>
+                          {statusLabel}
+                        </span>
+                      </td>
+                      <td className="px-2 text-center">
+                        {isPending ? (
+                          <button
+                            type="button"
+                            disabled={cancellingId === item.id}
+                            onClick={() => handleCancel(item)}
+                            className="px-2 py-1 text-[10px] font-black rounded-lg transition-colors bg-rose-50 border border-rose-200 hover:bg-rose-100 text-rose-600 disabled:opacity-50"
+                          >
+                            {cancellingId === item.id ? '처리중…' : '신청취소'}
+                          </button>
+                        ) : (
+                          <span className="text-[10px] text-slate-500 font-bold whitespace-nowrap">
+                            {actionHint}
+                          </span>
+                        )}
+                      </td>
                     </tr>
-                  ))
+                    );
+                  })
                 )}
               </tbody>
             </table>
           )}
         </div>
 
-        {/* 페이징 패널 */}
-        {!loading && totalPages > 1 && (
-          <div className="flex justify-center items-center gap-1.5 pt-6 pb-6 border-t border-slate-100 bg-white">
+        {/* 페이징 패널 — 일반소모품 부서 페이지와 동일 스타일 */}
+        {!loading && filteredHistories.length > 0 && (
+          <div className="flex justify-center items-center gap-1.5 py-3 border-t border-slate-100 bg-white">
             <button
+              type="button"
               disabled={currentPage === 1}
               onClick={() => setCurrentPage((p) => p - 1)}
               className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors"
             >
               이전
             </button>
-            {Array.from({ length: totalPages }).map((_, i) => {
-              const pageNum = i + 1;
-              if (pageNum < currentPage - 2 || pageNum > currentPage + 2) return null;
-              return (
-                <button
-                  key={i}
-                  onClick={() => setCurrentPage(pageNum)}
-                  className={`w-8 h-8 rounded-xl font-black text-xs transition-all ${
-                    currentPage === pageNum
-                      ? 'bg-slate-800 text-white shadow-sm scale-105'
-                      : 'bg-white border border-slate-200 text-slate-500 hover:bg-slate-50'
-                  }`}
-                >
-                  {pageNum}
-                </button>
-              );
-            })}
+            {Array.from({ length: totalPages }).map((_, i) => (
+              <button
+                key={i}
+                type="button"
+                onClick={() => setCurrentPage(i + 1)}
+                className={`w-8 h-8 rounded-xl font-black text-xs transition-all ${
+                  currentPage === i + 1
+                    ? 'bg-slate-800 text-white shadow-sm scale-105'
+                    : 'bg-white border border-slate-200 text-slate-500 hover:bg-slate-50'
+                }`}
+              >
+                {i + 1}
+              </button>
+            ))}
             <button
+              type="button"
               disabled={currentPage === totalPages}
               onClick={() => setCurrentPage((p) => p + 1)}
               className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors"
@@ -430,206 +635,22 @@ export default function ProductionApplyHistory() {
           </div>
         )}
       </div>
+      </div>
 
-      {/* 🚀 [내용보기 모달의 다이나믹 격리 뷰 조립] */}
       {detailItem && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fade-in">
-          <div className="bg-white rounded-[2.5rem] w-full max-w-4xl shadow-2xl border border-slate-200 overflow-hidden flex flex-col max-h-[90vh]">
-            <div className="bg-slate-900 p-6 text-white flex justify-between items-center px-8 shrink-0">
-              <div>
-                <h3 className="text-[10px] font-black tracking-widest text-blue-400 uppercase">
-                  DEPARTMENTAL PRODUCTION SPECIFICATION LEDGER
-                </h3>
-                <h2 className="text-xl font-black mt-0.5">제작 신청서 상세 내역 원장 ({detailItem.postNumber})</h2>
-              </div>
-              <button
-                type="button"
-                onClick={() => setDetailItem(null)}
-                className="bg-slate-800 hover:bg-slate-700 text-white font-black px-4 py-2 rounded-xl text-xs transition-all active:scale-95"
-              >
-                닫기 ✕
-              </button>
-            </div>
-
-            <div className="p-8 overflow-y-auto bg-slate-50 space-y-6 flex-1">
-              
-              {/* 블록 1. 공통 신청 및 소속 담당 정보 */}
-              <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-3">
-                <DetailSectionTitle title="기본 정보 및 계정 연동 상태" />
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                  <DetailRow label="관리번호" value={detailItem.postNumber} highlight />
-                  <DetailRow label="업무 분류" value={getCategoryLabel(detailItem.category)} />
-                  <DetailRow label="외주 처리사 배정" value={detailItem.options?.vendor} highlight />
-                  <DetailRow label="원장 신청일자" value={getKSTDateString(detailItem.createdAt)} />
-                  <DetailRow label="소속 본부/부서" value={detailItem.deptName} />
-                  <DetailRow label="원장 담당요청자" value={detailItem.userName} />
-                  <DetailRow label="신청 총 수량" value={`${detailItem.quantity} EA`} />
-                  <DetailRow label="조율 확정 금액" value={detailItem.finalPrice > 0 ? `${detailItem.finalPrice.toLocaleString()} 원` : '대조대기 (월말 확정)'} highlight />
-                </div>
-              </div>
-
-              {/* 블록 2. 💥 카테고리별 다이나믹 전용 스펙 분기 렌더링 구역 */}
-              <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
-                
-                {/* CASE A: 현판 / 명판 / 상패 (SIGN) 전용 화면 */}
-                {detailItem.category === 'SIGN' && (
-                  <div className="animate-fade-in space-y-4">
-                    <DetailSectionTitle title="📛 현판 / 명판 / 상패 제작 및 인증 세부 명세" />
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      <DetailRow label="관리용 제목" value={detailItem.title} highlight />
-                      <DetailRow label="품목 사양 및 규격" value={detailItem.options?.plateMasterInfo ? `${detailItem.options.plateMasterInfo.label} (${detailItem.options.plateMasterInfo.size})` : null} />
-                      <DetailRow label="인증 마스터 대장 종류" value={detailItem.options?.certType} />
-                      <DetailRow label="인증 등급/자격" value={detailItem.options?.certLevel} />
-                    </div>
-                    
-                    <div className="p-4 bg-blue-50/40 rounded-xl border border-blue-100 grid grid-cols-1 md:grid-cols-3 gap-4 mt-2">
-                      {detailItem.options?.certType === 'ISO 인증' ? (
-                        <>
-                          <DetailRow label="[ISO] 표기 기업명" value={detailItem.options?.isoCompanyName} highlight />
-                          <DetailRow label="[ISO] 국문 메인문구" value={detailItem.options?.certNumber} />
-                          <DetailRow label="[ISO] 영문 메인문구" value={detailItem.options?.isoEngPhrase} />
-                        </>
-                      ) : (
-                        <>
-                          <DetailRow label="인쇄용 프로젝트(건물)명" value={detailItem.options?.projectName} highlight />
-                          <DetailRow label="인증번호 명세" value={detailItem.options?.certNumber} />
-                          <DetailRow label="명판 출력 유효기간 양식" value={detailItem.options?.formattedValidPeriod} highlight />
-                        </>
-                      )}
-                    </div>
-                  </div>
-                )}
-
-                {/* CASE B: 제본 (JEBON) 전용 화면 */}
-                {detailItem.category === 'JEBON' && (
-                  <div className="animate-fade-in space-y-4">
-                    <DetailSectionTitle title="📚 제본 인쇄 도서 제작 명세" />
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      <DetailRow label="관리용 제목" value={detailItem.title} highlight />
-                      <DetailRow label="지정 제본 판형" value={detailItem.options?.jebonSize} highlight />
-                      <DetailRow label="제본 마스터 종류" value={detailItem.options?.certType} />
-                      <DetailRow label="인증 단계 구분" value={detailItem.options?.certPhase} />
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 bg-slate-50 p-4 rounded-xl border mt-2">
-                      <div className="p-3 bg-white rounded-lg border shadow-sm">
-                        <div className="text-[10px] font-black text-blue-500 mb-2">📘 표지 (Cover) 스펙</div>
-                        <div className="grid grid-cols-2 gap-2">
-                          <DetailRow label="인쇄 컬러" value={detailItem.options?.coverColor} />
-                          <DetailRow label="표지 면수" value={`${detailItem.options?.coverPageCount || 0} 면`} />
-                        </div>
-                      </div>
-                      <div className="p-3 bg-white rounded-lg border shadow-sm">
-                        <div className="text-[10px] font-black text-purple-500 mb-2">📄 본문 (Inner) 스펙</div>
-                        <div className="grid grid-cols-2 gap-2">
-                          <DetailRow label="인쇄 컬러" value={detailItem.options?.innerColor} />
-                          <DetailRow label="본문 면수" value={`${detailItem.options?.innerPageCount || 0} 면`} />
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="p-4 bg-yellow-50/40 border border-yellow-200 rounded-xl grid grid-cols-1 md:grid-cols-2 gap-4 mt-2">
-                      {detailItem.options?.certType === '일반제본' ? (
-                        <>
-                          <DetailRow label="표지 메인 제목" value={detailItem.options?.coverName} highlight />
-                          <DetailRow label="표지 서브 부제목" value={detailItem.options?.jebonSubtitle} />
-                        </>
-                      ) : (
-                        <DetailRow label="대상 프로젝트명(건물명)" value={detailItem.options?.jebonBuildingName} highlight />
-                      )}
-                      <div className="col-span-1 md:col-span-2">
-                        <DetailRow label="완료/지정 일자 포맷 출력" value={detailItem.options?.formattedCompDate} highlight />
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {/* CASE C: 기성품 / 기타 제작물 (PRINT) 전용 화면 */}
-                {detailItem.category === 'PRINT' && (
-                  <div className="animate-fade-in space-y-4">
-                    <DetailSectionTitle title="📜 기성서식 및 제작성 소모품 청구 명세" />
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      <DetailRow label="관리용 제목" value={detailItem.title} highlight />
-                      <DetailRow label="주문 기성 물품 종류" value={detailItem.options?.printItemType} highlight />
-                      <DetailRow label="인쇄 제작 문구1" value={detailItem.options?.printItemDetails} />
-                      <DetailRow label="인쇄 제작 문구2" value={detailItem.options?.printDeliveryDetails} />
-                    </div>
-                  </div>
-                )}
-
-                {/* CASE D: 사무문구류 정산 (OFFICE_SUPPLIES) 전용 화면 */}
-                {detailItem.category === 'OFFICE_SUPPLIES' && (
-                  <div className="animate-fade-in space-y-4">
-                    <DetailSectionTitle title="📎 외부 문구사 견적 파일 텍스트 캡처 본문" />
-                    <DetailRow label="관리용 제목" value={detailItem.title} highlight />
-                    <div className="bg-slate-900 text-emerald-400 p-4 rounded-xl font-mono text-[11px] leading-relaxed whitespace-pre-wrap max-h-60 overflow-y-auto shadow-inner border border-slate-800">
-                      {detailItem.options?.suppliesQuoteRawText || '저장된 원장 텍스트 데이터가 비어 있습니다.'}
-                    </div>
-                  </div>
-                )}
-
-              </div>
-
-              {/* 블록 3. 배송지 주소 명세 (사무문구류 정산 탭 제외 노출) */}
-              {detailItem.category !== 'OFFICE_SUPPLIES' && (
-                <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-3">
-                  <DetailSectionTitle title="🚚 최종 제작 사양 배송 주소지" />
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    <DetailRow label="수령인 이름" value={detailItem.options?.receiverName} />
-                    <DetailRow label="수령인 연락처" value={detailItem.options?.receiverPhone} />
-                    <div className="col-span-1 md:col-span-3">
-                      <DetailRow label="배송지 도로명 상세주소" value={detailItem.options?.shippingAddress} highlight />
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* 블록 4. 추가 자유 기재사항 스펙 로그 */}
-              {detailItem.category !== 'OFFICE_SUPPLIES' && detailItem.options?.customRequests?.length > 0 && (
-                <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
-                  <DetailSectionTitle title="➕ 추가 변수 요청사항 리스트" />
-                  <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 space-y-1.5 font-bold text-slate-700">
-                    {detailItem.options.customRequests.map((req: string, i: number) => (
-                      <div key={i} className="flex gap-2">
-                        <span className="text-blue-500 font-mono">{i + 1}.</span>
-                        <span>{req}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* 🚀 시스템 내부 보조 서식 명세 블록은 UI 상세 모달 하단에 명확히 격리 배치 */}
-              {['SIGN', 'JEBON'].includes(detailItem.category) && (
-                <div className="bg-slate-200/50 p-6 rounded-2xl border border-slate-300 shadow-inner space-y-3">
-                  <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest">INTERNAL SYSTEM ONLY</div>
-                  <div className="text-xs font-black text-slate-700">🔒 시스템 내부 참고용 보조 데이터 (외주서 제외 항목)</div>
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-2">
-                    <DetailRow label="신청 회사 법인명" value={detailItem.options?.companyName} />
-                    <DetailRow label="신청인 성명" value={detailItem.options?.applicantName} />
-                    <DetailRow label="신청인 연락처" value={detailItem.options?.applicantPhone} />
-                    {detailItem.category === 'SIGN' && detailItem.options?.certType === 'ISO 인증' && (
-                      <div className="col-span-1 md:col-span-3 pt-2">
-                        <DetailRow label="신청 현판 일련번호 (ISO 내부 보관)" value={detailItem.options?.internalSystemSerial} highlight />
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
-
-            </div>
-            
-            <div className="p-5 bg-white border-t border-slate-200 mt-auto shrink-0 flex justify-end">
-              <button
-                type="button"
-                onClick={() => setDetailItem(null)}
-                className="px-8 py-3 bg-slate-900 hover:bg-slate-800 text-white rounded-xl font-black text-xs transition-colors shadow-md"
-              >
-                원장 확인 완료
-              </button>
-            </div>
-          </div>
-        </div>
+        <ProductionRequestDetailModal
+          item={detailItem}
+          onClose={() => setDetailItem(null)}
+          allowEdit
+          onSaved={(updated) => {
+            setHistories((prev) =>
+              prev.map((h) => (h.id === updated.id ? { ...h, ...updated } : h))
+            );
+            setDetailItem((prev: any) =>
+              prev && prev.id === updated.id ? { ...prev, ...updated } : prev
+            );
+          }}
+        />
       )}
     </div>
   );

@@ -5,6 +5,7 @@ import {
   requireLv1SessionUser,
   authErrorToResponse,
 } from '@/lib/server-auth-guard';
+import { isValidOrgUnitCode, normalizeOrgUnitCode } from '@/lib/org-unit-code';
 
 export const dynamic = 'force-dynamic';
 
@@ -14,6 +15,7 @@ function toPublicUnit(u: any) {
     id: u.id,
     unit_name: u.unit_name,
     unit_name_en: u.unit_name_en,
+    unit_code: u.unit_code,
     unit_type: u.unit_type,
     parent_id: u.parent_id,
     sort_order: u.sort_order,
@@ -26,6 +28,34 @@ function toPublicUnit(u: any) {
         }
       : null,
   };
+}
+
+async function assertUniqueUnitCode(code: string, excludeId?: string) {
+  const existing = await prisma.orgUnit.findFirst({
+    where: {
+      unit_code: code,
+      is_deleted: false,
+      ...(excludeId ? { id: { not: excludeId } } : {}),
+    },
+    select: { id: true, unit_name: true },
+  });
+  if (existing) {
+    const err = new Error(`조직코드 "${code}"는 이미 사용 중입니다. (${existing.unit_name})`);
+    (err as Error & { code: string }).code = 'DUPLICATE_UNIT_CODE';
+    throw err;
+  }
+}
+
+function parseUnitCodeInput(raw: unknown, required = false): string {
+  const code = normalizeOrgUnitCode(String(raw ?? ''));
+  if (!code) {
+    if (required) throw new Error('조직코드(unit_code)는 필수입니다.');
+    return '';
+  }
+  if (!isValidOrgUnitCode(code)) {
+    throw new Error('조직코드는 영문·숫자 2~8자로 입력해 주세요. (예: PMD, PMC)');
+  }
+  return code;
 }
 
 // [GET] 조직 목록
@@ -83,10 +113,14 @@ export async function POST(req: Request) {
 
   try {
     const body = await req.json();
+    const unit_code = parseUnitCodeInput(body.unit_code, true);
+    await assertUniqueUnitCode(unit_code);
+
     const newUnit = await prisma.orgUnit.create({
       data: {
         unit_name: body.unit_name,
         unit_name_en: body.unit_name_en || '',
+        unit_code,
         unit_type: body.unit_type,
         parent_id: body.parent_id || null,
         sort_order: Number(body.sort_order) || 0,
@@ -95,6 +129,9 @@ export async function POST(req: Request) {
     return NextResponse.json(newUnit);
   } catch (error: any) {
     console.error('조직 생성 실패:', error);
+    if (error?.code === 'DUPLICATE_UNIT_CODE' || error?.message?.includes('조직코드')) {
+      return NextResponse.json({ message: error.message }, { status: 400 });
+    }
     return NextResponse.json({ message: '조직 생성 실패' }, { status: 500 });
   }
 }
@@ -114,6 +151,12 @@ export async function PATCH(req: Request) {
       updateData.sort_order = Number(updateData.sort_order);
     }
 
+    if (updateData.unit_code !== undefined) {
+      const unit_code = parseUnitCodeInput(updateData.unit_code, true);
+      await assertUniqueUnitCode(unit_code, id);
+      updateData.unit_code = unit_code;
+    }
+
     const updated = await prisma.orgUnit.update({
       where: { id },
       data: updateData,
@@ -121,6 +164,9 @@ export async function PATCH(req: Request) {
     return NextResponse.json(updated);
   } catch (error: any) {
     console.error('수정 실패:', error);
+    if (error?.code === 'DUPLICATE_UNIT_CODE' || error?.message?.includes('조직코드')) {
+      return NextResponse.json({ message: error.message }, { status: 400 });
+    }
     return NextResponse.json({ message: '수정 실패' }, { status: 500 });
   }
 }

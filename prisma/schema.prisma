@@ -27,6 +27,15 @@ model SystemConfig {
   it_master_group         String   @default("") // IT·업무자산 > 품목
   job_duty_group          String   @default("")
   job_grade_group         String   @default("")
+  bc_sheets_per_pack      Int      @default(200) // 명함 1통당 장수 (업체별 상이)
+  bc_statement_col_map    Json?    // 거래명세표 칼럼 제목(이름/소속/수량/공급가액)
+  bc_mail_shortcut_url    String   @default("")
+  mkt_groupware_shortcut_url String @default("https://ep.kpcqa.or.kr/ea/edoc/eapproval/docCommonDrafWrite.do?template_key=8")
+  // 🤝 외주 업무 서비스 — /admin/settings 마스터 그룹 매핑
+  outsourcing_vendor_group  String @default("") // 외주 업체 마스터 그룹
+  outsourcing_item_group    String @default("") // 외주 품목 리스트 그룹
+  outsourcing_detail1_group String @default("") // 외주 품목 상세1 그룹
+  outsourcing_detail2_group String @default("") // 외주 품목 상세2 그룹
   updatedAt               DateTime @updatedAt
 }
      
@@ -73,7 +82,10 @@ model OrgUnit {
   
   // 💡 [신설] 명함 시스템 자동 링크용 영문 조직명 필드 추가
   unit_name_en String    @default("") // 영문 부서명 (예: Management & Asset Team)
-  
+
+  /// 제작물 관리번호용 조직 고정 코드 (본부=D · 센터=C, 예: PMD, PMC, GBC)
+  unit_code    String    @unique @default("")
+
   unit_type    String
   sort_order   Int       @default(0)
   parent_id    String?
@@ -760,7 +772,12 @@ model BusinessCardRequest {
   isModifiedByAdmin Boolean                 @default(false)
   adminMemo         String?   
   adminModifierName String?   
-  adminModifiedAt   DateTime? 
+  adminModifiedAt   DateTime?
+
+  // 신청 주체: 본인(/my-page) | 관리자대행(/requests)
+  applicantType     String                  @default("본인")
+  applicantName     String?
+  applicantEmail    String? 
 
   @@index([userEmail])
   @@index([orderGroupId])
@@ -769,12 +786,16 @@ model BusinessCardRequest {
 
 // 📦 [교정 완료] 명함 외주 발주 묶음(Batch) 마스터 통제 테이블
 model BusinessCardOrderBatch {
-  id            String                @id // 묶음 관리번호 (예: BATCH-20260707-01)
+  id            String                @id // 묶음 관리번호 (예: PO-BC-20260707-01)
   orderDate     String                // 발주 확정 일자 (YYYY-MM-DD)
   totalCount    Int                   // 묶음에 포함된 명함 총 건수
   deptHeadGroup String                // 기준 소속 (필터링용 대표 조직명)
   status        String                @default("발주완료") // 발주완료 / 지급완료 등
   isArchived    Boolean               @default(false) // 🚀 보관함 숨김 스위치 완벽 장착
+  inspectStatus   String              @default("idle") // idle / match / mismatch
+  inspectFileName String?
+  inspectResult   Json?               // 거래명세표 교차 검증 스냅샷 (새로고침 유지)
+  inspectedAt     DateTime?
   
   createdAt     DateTime              @default(now())
   updatedAt     DateTime              @updatedAt
@@ -814,6 +835,7 @@ model OutsourcingVendor {
   companyName String
   managerName String
   email       String
+  memo        String   @default("") // 자유 기재 비고
   isActive    Boolean  @default(true)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
@@ -821,7 +843,7 @@ model OutsourcingVendor {
 
 model ProductionRequest {
   id              String   @id @default(cuid())
-  postNumber      String   @unique // 예: PROD-20260709-001 (정산을 위한 마스터 코드)
+  postNumber      String   @unique // 예: P-SUP-PMD-260825-001
   category        String   // 품목 분류: "JEBON"(제본), "SIGN"(현판), "BANNER"(현수막), "MEDAL"(상패)
   
   // 🏢 부서 족보 데이터 (부서별 대조 및 조회 성능 최적화를 위한 인덱스 필드)
@@ -842,9 +864,12 @@ model ProductionRequest {
   options         Json     @default("{}")
   
   // 🚚 공정 통제 및 정산 라이프사이클 상태 플래그
-  // - "PENDING" (부서원 신청완료 / 발주대기)
-  // - "ORDERED" (부서 담당자가 업체에 묶음 발주 완료 / 대조대기)
-  // - "VERIFIED" (월말 거래명세서 업로드 후 1:1 검증 및 승인 완료)
+  // - "PENDING"   신청 접수 전 (대기중)
+  // - "ACCEPTED"  부서 접수 완료 · 묶음 발주 대기
+  // - "ORDERED"   묶음 발주 완료 · 명세서 검수(inspection)
+  // - "VERIFIED"  명세 대조·정산 승인
+  // - "REJECTED"  부서 반려
+  // - "CANCELLED" 대기중(미접수) 중 신청자 취소
   status          String   @default("PENDING") 
   
   // 🔗 묶음 정산 추적 벨트
@@ -875,14 +900,55 @@ model ProductionPlateMaster {
 }
 
 model ProductionCertMaster {
-  id          String   @id @default(cuid())
-  certId      String   @unique // 예: GSEED, BF, CONDENDSATION, ISO, NORMAL
-  type        String   // 소속 분류: "SIGN"(명판 전용) 또는 "JEBON"(제본 전용)
-  label       String   // 예: 녹색건축인증, 결로방지 성능평가
-  format      String   @default("") // 명판용 유효기간 출력 서식
-  jebonFormat String   @default("") // 제본용 완료일자 출력 서식
-  grades      Json     @default("[]") // 등급 구조화 데이터 (예: ["최우수", "우수", "일반"])
-  isActive    Boolean  @default(true)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id             String   @id @default(cuid())
+  certId         String   @unique // 예: GSEED, BF, CONDENDSATION, ISO, NORMAL
+  type           String   // 소속 분류: "SIGN"(명판 전용) 또는 "JEBON"(제본 전용)
+  label          String   // 예: 녹색건축인증, 결로방지 성능평가
+  format         String   @default("") // 명판용 유효기간 출력 서식
+  jebonFormat    String   @default("") // 제본용 완료일자 출력 서식
+  grades         Json     @default("[]") // 등급 구조화 데이터 (예: ["최우수", "우수", "일반"])
+  useCertNumber       Boolean  @default(true) // 신청폼 인증번호 입력 활성화
+  useValidPeriod      Boolean  @default(true) // 신청폼 명판 유효기간 입력 활성화
+  useMultiGradeSelect Boolean  @default(false) // 신청폼 등급 체크박스 복수 선택 (false=셀렉트 단일)
+  // 📚 제본(JEBON) 신청폼 기본값 · 표지 활성화
+  jebonDefaultSizeType String  @default("A4") // 판형 기본값 (A4/B5/…)
+  jebonDefaultQuantity Int     @default(1) // 부수(수량) 기본값
+  useJebonCover        Boolean @default(true) // 표지(Cover) 스펙 입력 활성화
+  jebonCoverColor      String  @default("컬러") // 표지 인쇄 방식 기본값
+  jebonCoverPageCount  String  @default("1") // 표지 면수 기본값
+  jebonInnerColor      String  @default("흑백") // 본문 인쇄 방식 기본값
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
+
+model ProductionVendorMaster {
+  id           String   @id @default(cuid())
+  label        String // 업체명
+  managerName  String   @default("")
+  contact      String   @default("")
+  email        String   @default("")
+  items        String   @default("") // 주요 제작 품목/비고
+  /// 우선 연결 품목 (SIGN/JEBON/PRINT/OFFICE_SUPPLIES) — 품목당 1개 업체만 지정
+  priorityCategory String @default("")
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+// 기타제작물(PRINT) 주문 물품 마스터
+// supplier = 최근 공급처(참고), orderQty = 제작 기본 수량(참고)
+// unitValue = /admin/master-data 단위 그룹(unit_category_group) 코드 value
+model ProductionPrintItemMaster {
+  id         String   @id @default(cuid())
+  name       String   // 제품명
+  size       String   @default("") // 규격
+  supplier   String   @default("") // 최근 공급처 (참고용)
+  orderQty   Int      @default(1) // 제작 기본 수량 (참고용)
+  unitValue  String   @default("VAL_1") // 단위 마스터 코드 value (예: VAL_1=개(EA))
+  isCustom   Boolean  @default(false) // 기타소모품(직접입력) 여부
+  sortOrder  Int      @default(0)
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
 }

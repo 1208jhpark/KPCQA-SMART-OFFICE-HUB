@@ -55,6 +55,10 @@ function normalizeRoles(roles: unknown): string[] {
   });
 }
 
+const DEFAULT_GROUPWARE_SHORTCUT_URL =
+  'https://ep.kpcqa.or.kr/ea/edoc/eapproval/docCommonDrafWrite.do?template_key=8';
+const GROUPWARE_SHORTCUT_STORAGE_KEY = 'mkt_groupware_shortcut_url';
+
 function RegisterContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -99,6 +103,8 @@ function RegisterContent() {
   const [selectedMonth, setSelectedMonth] = useState('ALL'); 
   const [itemOwnerFilter, setItemOwnerFilter] = useState('ALL');
   const [selectedClientFilter, setSelectedClientFilter] = useState<string | null>(null);
+  const [groupwareShortcutUrl, setGroupwareShortcutUrl] = useState(DEFAULT_GROUPWARE_SHORTCUT_URL);
+  const [groupwareShortcutEditor, setGroupwareShortcutEditor] = useState<string | null>(null);
 
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 10;
@@ -165,6 +171,22 @@ function RegisterContent() {
       setLoading(false);
     };
     initData();
+  }, []);
+
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem(GROUPWARE_SHORTCUT_STORAGE_KEY);
+      if (stored) setGroupwareShortcutUrl(stored);
+    } catch {}
+    fetch(`/api/marketing/settings?t=${Date.now()}`, { cache: 'no-store' })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        const url = String(data?.groupwareShortcutUrl || '').trim();
+        if (!url) return;
+        setGroupwareShortcutUrl(url);
+        try { localStorage.setItem(GROUPWARE_SHORTCUT_STORAGE_KEY, url); } catch {}
+      })
+      .catch(() => {});
   }, []);
 
   const topOrgName = useMemo(() => resolveTopOrgName(units), [units]);
@@ -253,7 +275,6 @@ function RegisterContent() {
   );
   const needsApprovalRequest = itemNeedsApprovalRequest(selectedItemData);
   const totalPrice = selectedItemData ? selectedItemData.unit_price * formData.qty : 0;
-  const GROUPWARE_URL = 'https://ep.kpcqa.or.kr/ea/edoc/eapproval/docCommonDrafWrite.do?template_key=8';
 
   const selectedClientData = useMemo(
     () => clients.find((c) => c.name === formData.client_name),
@@ -406,6 +427,27 @@ function RegisterContent() {
     } catch {
       alert('복사에 실패했습니다.');
     }
+  };
+
+  const handleSaveGroupwareShortcut = async () => {
+    if (groupwareShortcutEditor == null) return;
+    const next = groupwareShortcutEditor.trim() || DEFAULT_GROUPWARE_SHORTCUT_URL;
+    setGroupwareShortcutUrl(next);
+    try { localStorage.setItem(GROUPWARE_SHORTCUT_STORAGE_KEY, next); } catch {}
+    try {
+      const res = await fetch('/api/marketing/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ groupwareShortcutUrl: next }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.message || '서버 저장 실패');
+      }
+    } catch (error: any) {
+      alert(`이 PC에는 저장했습니다. 서버 반영은 실패했습니다.\n${error.message || ''}`);
+    }
+    setGroupwareShortcutEditor(null);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -635,16 +677,6 @@ function RegisterContent() {
               센터·본부 재고 내에서 고객사 기념품 지급을 등록·관리합니다.
             </p>
           </div>
-          <a
-            href={GROUPWARE_URL}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="shrink-0 self-start md:self-end inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-[10px] font-black tracking-tight bg-white/10 border border-white/20 text-slate-200 shadow-sm hover:bg-white/15 hover:border-white/30 hover:text-white transition-colors"
-          >
-            <span>⚠️</span>
-            <span>재고 확보 후 그룹웨어 별도 신청 필요</span>
-            <span className="opacity-80">↗</span>
-          </a>
         </div>
       </div>
 
@@ -860,14 +892,24 @@ function RegisterContent() {
                 >
                   {needsApprovalRequest ? '2. 승인요청 등록' : '2. 재고 확보 신청등록'}
                 </button>
-                <a
-                  href={GROUPWARE_URL}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex-1 h-10 px-2 inline-flex items-center justify-center bg-slate-700 text-slate-100 rounded-xl font-black text-[12px] shadow-md hover:bg-slate-800 transition-all whitespace-nowrap"
-                >
-                  3. 그룹웨어 바로가기 ↗
-                </a>
+                <div className="flex-1 flex flex-col items-stretch gap-1">
+                  <button
+                    type="button"
+                    onClick={() => setGroupwareShortcutEditor(groupwareShortcutUrl)}
+                    title="그룹웨어 바로가기 경로 설정"
+                    className="self-end w-7 h-7 inline-flex items-center justify-center rounded-lg bg-slate-100 text-slate-600 text-[12px] font-black hover:bg-slate-200 border border-slate-200"
+                  >
+                    ⚙
+                  </button>
+                  <a
+                    href={groupwareShortcutUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="h-10 px-2 inline-flex items-center justify-center bg-slate-700 text-slate-100 rounded-xl font-black text-[12px] shadow-md hover:bg-slate-800 transition-all whitespace-nowrap"
+                  >
+                    3. 그룹웨어 바로가기 ↗
+                  </a>
+                </div>
               </div>
             </div>
           </div>
@@ -1523,6 +1565,27 @@ function RegisterContent() {
           </div>
         </div>
       )}
+    {groupwareShortcutEditor != null && (
+      <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-900/50 p-4">
+        <div className="w-full max-w-lg rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl">
+          <h3 className="text-base font-black text-slate-900">메일 바로가기 경로 설정</h3>
+          <p className="mt-2 text-[11px] font-bold leading-relaxed text-slate-500">
+            그룹웨어 결재 작성 화면 주소를 붙여넣으세요. 경로가 바뀌면 여기만 수정하면 됩니다.
+          </p>
+          <input
+            type="text"
+            value={groupwareShortcutEditor}
+            onChange={(e) => setGroupwareShortcutEditor(e.target.value)}
+            className="mt-3 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm font-bold text-slate-800 outline-none focus:border-indigo-400"
+            placeholder={DEFAULT_GROUPWARE_SHORTCUT_URL}
+          />
+          <div className="mt-4 flex justify-end gap-2">
+            <button type="button" onClick={() => setGroupwareShortcutEditor(null)} className="rounded-xl bg-slate-100 px-4 py-2 text-xs font-black text-slate-600">취소</button>
+            <button type="button" onClick={handleSaveGroupwareShortcut} className="rounded-xl bg-indigo-600 px-4 py-2 text-xs font-black text-white">저장</button>
+          </div>
+        </div>
+      </div>
+    )}
     </div>
   );
 }

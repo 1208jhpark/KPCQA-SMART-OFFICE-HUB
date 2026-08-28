@@ -58,6 +58,7 @@ export async function PATCH(req: Request) {
       'linked_sites',
       // 🤝 [신설] 인사 관리 및 명함 연동 필드 가드 통과
       'job_duty_group', 'job_grade_group',
+      'bc_sheets_per_pack',
       // 🤝 [신설] 외주 업무 서비스 연동 필드 가드 통과
       'outsourcing_vendor_group', 'outsourcing_item_group', 
       'outsourcing_detail1_group', 'outsourcing_detail2_group'

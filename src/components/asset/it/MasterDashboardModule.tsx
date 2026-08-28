@@ -29,6 +29,34 @@ const DEPT_FILTER_ALL = '조직 (전체)';
 const DISABLED_ACTION_BTN =
   'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed opacity-70 shadow-none';
 
+function isBoldOrgType(unitType?: string | null) {
+  const t = String(unitType || '').trim().toUpperCase();
+  return t === 'ORGANIZATION' || t === 'HQ';
+}
+
+function flattenUnitsInSortOrder<T extends { id: string; parent_id?: string | null; sort_order?: number | null; unit_name?: string | null }>(units: T[]) {
+  const byId = new Map(units.map((u) => [u.id, u]));
+  const depthOf = (unit: T) => {
+    let depth = 0;
+    let current: T | undefined = unit;
+    const seen = new Set<string>();
+    while (current?.parent_id && byId.has(current.parent_id) && !seen.has(current.id)) {
+      seen.add(current.id);
+      depth += 1;
+      current = byId.get(current.parent_id);
+    }
+    return depth;
+  };
+  return [...units]
+    .sort((a, b) => {
+      const ao = Number(a.sort_order) || 0;
+      const bo = Number(b.sort_order) || 0;
+      if (ao !== bo) return ao - bo;
+      return String(a.unit_name || '').localeCompare(String(b.unit_name || ''), 'ko');
+    })
+    .map((unit) => ({ ...unit, depth: depthOf(unit) }));
+}
+
 /** 이메일 @ 앞자리 — 동명이인 구분용 */
 function emailLocalPart(email: string | null | undefined) {
   const e = String(email || '').trim();
@@ -251,6 +279,8 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
   const itemsPerPage = 10;
   
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const orgMenuRef = useRef<HTMLDivElement>(null);
+  const [orgMenuOpen, setOrgMenuOpen] = useState(false);
   const [bulkPrintAssets, setBulkPrintAssets] = useState<any[]>([]);
   const [bulkQrMap, setBulkQrMap] = useState<Record<string, string>>({});
   const [bulkQrReady, setBulkQrReady] = useState(false);
@@ -768,14 +798,30 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
      
   const topOrgName = useMemo(() => resolveTopOrgName(orgs), [orgs]);
 
-  const sortedOrgs = useMemo(() => {
-    return [...orgs].sort((a, b) => {
-      const ao = Number(a.sort_order) || 0;
-      const bo = Number(b.sort_order) || 0;
-      if (ao !== bo) return ao - bo;
-      return String(a.unit_name || '').localeCompare(String(b.unit_name || ''), 'ko');
-    });
-  }, [orgs]);
+  const sortedOrgs = useMemo(() => flattenUnitsInSortOrder(orgs), [orgs]);
+  const selectedOrgUnit = useMemo(
+    () =>
+      colFilters.dept === DEPT_FILTER_ALL
+        ? null
+        : sortedOrgs.find((o) => o.unit_name === colFilters.dept) || null,
+    [sortedOrgs, colFilters.dept]
+  );
+
+  useEffect(() => {
+    if (!orgMenuOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (orgMenuRef.current && !orgMenuRef.current.contains(e.target as Node)) setOrgMenuOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOrgMenuOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [orgMenuOpen]);
 
   const runningAudits = useMemo(
     () =>
@@ -2123,7 +2169,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
       </div>
   
       {/* 전사 IT·업무자산 목록 */}
-      <div className="bg-white border border-slate-200 rounded-[2.5rem] shadow-sm overflow-hidden animate-in fade-in slide-in-from-top-4 duration-300">
+      <div className={`bg-white border border-slate-200 rounded-[2.5rem] shadow-sm animate-in fade-in slide-in-from-top-4 duration-300 ${orgMenuOpen ? 'overflow-visible' : 'overflow-hidden'}`}>
         <div className="p-4 px-6 bg-slate-200/70 border-b border-slate-300 flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-2 flex-wrap min-w-0">
             <div className="w-2.5 h-2.5 rounded-full bg-blue-600 shrink-0" />
@@ -2234,22 +2280,61 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
           </div>
         </div>
 
-        <div className="px-5 py-3 border-b border-slate-200 flex flex-nowrap items-center gap-2 bg-white overflow-x-auto">
-            <div className="flex items-center gap-1.5 bg-white px-2.5 py-1.5 rounded-lg border border-slate-200 shadow-sm shrink-0">
+        <div className={`px-5 py-3 border-b border-slate-200 flex flex-nowrap items-center gap-2 bg-white relative ${orgMenuOpen ? 'z-[80] overflow-visible' : 'overflow-x-auto'}`}>
+            <div className={`flex items-center gap-1.5 bg-white px-2.5 py-1.5 rounded-lg border border-slate-200 shadow-sm shrink-0 ${orgMenuOpen ? 'relative z-[90]' : ''}`}>
               <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">조직</span>
-              <select
-                value={colFilters.dept}
-                onChange={(e) => {
-                  setColFilters({ ...colFilters, dept: e.target.value });
-                  setUserFilter('');
-                }}
-                className="bg-transparent text-[11px] font-black text-slate-800 outline-none cursor-pointer max-w-[140px]"
-              >
-                <option value={DEPT_FILTER_ALL}>전체</option>
-                {sortedOrgs.map((o) => (
-                  <option key={o.id} value={o.unit_name}>{o.unit_name}</option>
-                ))}
-              </select>
+              <div className="relative" ref={orgMenuRef}>
+                <button
+                  type="button"
+                  onClick={() => setOrgMenuOpen((open) => !open)}
+                  className={`max-w-[160px] truncate text-left text-[11px] leading-none p-0 m-0 outline-none cursor-pointer bg-transparent ${
+                    selectedOrgUnit && isBoldOrgType(selectedOrgUnit.unit_type)
+                      ? 'font-black text-slate-900'
+                      : 'font-bold text-slate-800'
+                  }`}
+                >
+                  {selectedOrgUnit ? selectedOrgUnit.unit_name : '전체'}
+                </button>
+                {orgMenuOpen && (
+                  <div className="absolute left-0 top-full mt-1.5 z-[100] min-w-[240px] max-h-72 overflow-y-auto bg-white border border-slate-200 rounded-lg shadow-xl py-1">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setColFilters({ ...colFilters, dept: DEPT_FILTER_ALL });
+                        setUserFilter('');
+                        setOrgMenuOpen(false);
+                      }}
+                      className={`w-full text-left px-3 py-1.5 text-[11px] font-bold ${
+                        colFilters.dept === DEPT_FILTER_ALL
+                          ? 'bg-slate-100 text-slate-900'
+                          : 'text-slate-700 hover:bg-slate-50'
+                      }`}
+                    >
+                      전체
+                    </button>
+                    {sortedOrgs.map((o) => {
+                      const bold = isBoldOrgType(o.unit_type);
+                      return (
+                        <button
+                          key={o.id}
+                          type="button"
+                          onClick={() => {
+                            setColFilters({ ...colFilters, dept: o.unit_name });
+                            setUserFilter('');
+                            setOrgMenuOpen(false);
+                          }}
+                          className={`w-full text-left pr-3 py-1.5 text-[11px] ${
+                            bold ? 'font-black text-slate-900' : 'font-medium text-slate-600'
+                          } ${colFilters.dept === o.unit_name ? 'bg-slate-100' : 'hover:bg-slate-50'}`}
+                          style={{ paddingLeft: `${12 + o.depth * 12}px` }}
+                        >
+                          {o.unit_name}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
               <div className="w-px h-3.5 bg-slate-300 mx-0.5" />
               <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest whitespace-nowrap">사용자</span>
               <select

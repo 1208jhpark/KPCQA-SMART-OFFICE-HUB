@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useMemo, Suspense } from 'react';
+import { useState, useEffect, useMemo, useRef, Suspense } from 'react';
 import * as XLSX from 'xlsx';
 import { getKSTDateString, getKSTNowYearMonth, getKSTYearMonth } from '@/utils/dateUtils';
 import { resolveInterfaceEditState } from '@/lib/permission-utils';
@@ -8,6 +8,53 @@ import LoadingState from '@/components/common/LoadingState';
 import ItMasterPageBanner from '@/components/asset/it/ItMasterPageBanner';
 
 const MENU_PATH = '/asset/it/master/archive';
+
+function isBoldOrgType(unitType?: string | null) {
+  const t = String(unitType || '').trim().toUpperCase();
+  return t === 'ORGANIZATION' || t === 'HQ';
+}
+
+function flattenUnitsInSortOrder<T extends { id: string; parent_id?: string | null; sort_order?: number | null; unit_name?: string | null }>(units: T[]) {
+  const byId = new Map(units.map((u) => [u.id, u]));
+  const depthOf = (unit: T) => {
+    let depth = 0;
+    let current: T | undefined = unit;
+    const seen = new Set<string>();
+    while (current?.parent_id && byId.has(current.parent_id) && !seen.has(current.id)) {
+      seen.add(current.id);
+      depth += 1;
+      current = byId.get(current.parent_id);
+    }
+    return depth;
+  };
+  return [...units]
+    .sort((a, b) => {
+      const ao = Number(a.sort_order) || 0;
+      const bo = Number(b.sort_order) || 0;
+      if (ao !== bo) return ao - bo;
+      return String(a.unit_name || '').localeCompare(String(b.unit_name || ''), 'ko');
+    })
+    .map((unit) => ({ ...unit, depth: depthOf(unit) }));
+}
+
+function descendantUnitNames(unitName: string, units: Array<{ id: string; unit_name?: string | null; parent_id?: string | null }>) {
+  const names = new Set<string>();
+  const selected = units.find((u) => String(u.unit_name || '').trim() === unitName);
+  if (!selected) {
+    if (unitName) names.add(unitName);
+    return names;
+  }
+  if (selected.unit_name) names.add(String(selected.unit_name).trim());
+  const walk = (parentId: string) => {
+    for (const child of units.filter((u) => u.parent_id === parentId)) {
+      const n = String(child.unit_name || '').trim();
+      if (n) names.add(n);
+      walk(child.id);
+    }
+  };
+  walk(selected.id);
+  return names;
+}
 
 function getKSTYearMonthParts(dateInput: Date | string | number | null | undefined) {
   if (dateInput === null || dateInput === undefined || dateInput === '') return null;
@@ -38,6 +85,9 @@ function MasterArchiveContent() {
   const [selectedMonth, setSelectedMonth] = useState('ALL');
   const [codeQuery, setCodeQuery] = useState('');
   const [modelQuery, setModelQuery] = useState('');
+  const [orgUnits, setOrgUnits] = useState<any[]>([]);
+  const [orgMenuOpen, setOrgMenuOpen] = useState(false);
+  const orgMenuRef = useRef<HTMLDivElement>(null);
 
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 10;
@@ -72,9 +122,10 @@ function MasterArchiveContent() {
       setLoading(true);
       try {
         const ts = Date.now();
-        const [userRes, ifRes] = await Promise.all([
+        const [userRes, ifRes, unitsRes] = await Promise.all([
           fetch(`/api/auth/me?t=${ts}`, { cache: 'no-store' }),
           fetch(`/api/admin/interface?t=${ts}`, { cache: 'no-store' }).catch(() => null),
+          fetch(`/api/admin/units?active=true&t=${ts}`, { cache: 'no-store' }).catch(() => null),
         ]);
         if (userRes.ok) {
           const userData = await userRes.json();
@@ -103,6 +154,10 @@ function MasterArchiveContent() {
         } else {
           setInterfaceConfig(null);
         }
+        if (unitsRes && unitsRes.ok) {
+          const raw = await unitsRes.json();
+          setOrgUnits(Array.isArray(raw) ? raw : []);
+        } else setOrgUnits([]);
       } catch (e) {
         console.error('User fetch error', e);
       }
@@ -126,13 +181,6 @@ function MasterArchiveContent() {
     return unique.sort((a, b) => b.localeCompare(a));
   }, [history]);
 
-  const uniqueDepts = useMemo(
-    () =>
-      Array.from(new Set(history.map((h) => String(h.dept || '').trim() || '-')))
-        .sort((a, b) => String(a).localeCompare(String(b), 'ko')),
-    [history]
-  );
-
   const uniqueTypes = useMemo(() => {
     const counts: Record<string, number> = {};
     history.forEach((h) => {
@@ -145,6 +193,65 @@ function MasterArchiveContent() {
       .map(([k]) => k);
   }, [history]);
 
+  const sortedOrgs = useMemo(() => flattenUnitsInSortOrder(orgUnits), [orgUnits]);
+  const organizationUnit = useMemo(
+    () =>
+      sortedOrgs.find((u) => String(u.unit_type || '').trim().toUpperCase() === 'ORGANIZATION') ||
+      sortedOrgs.find((u) => !u.parent_id) ||
+      null,
+    [sortedOrgs]
+  );
+  const isOrgWideFilter = useMemo(() => {
+    if (filterDept === 'ALL') return true;
+    if (!filterDept) return true;
+    if (organizationUnit && filterDept === organizationUnit.unit_name) return true;
+    const unit = sortedOrgs.find((u) => u.unit_name === filterDept);
+    return String(unit?.unit_type || '').trim().toUpperCase() === 'ORGANIZATION';
+  }, [filterDept, organizationUnit, sortedOrgs]);
+
+  const selectedOrgUnit = useMemo(
+    () =>
+      isOrgWideFilter
+        ? organizationUnit
+        : sortedOrgs.find((o) => o.unit_name === filterDept) || null,
+    [sortedOrgs, filterDept, isOrgWideFilter, organizationUnit]
+  );
+  const selectedDeptNames = useMemo(() => {
+    if (isOrgWideFilter || !filterDept) return null;
+    return descendantUnitNames(filterDept, orgUnits);
+  }, [filterDept, orgUnits, isOrgWideFilter]);
+
+  useEffect(() => {
+    if (!organizationUnit?.unit_name) return;
+    if (filterDept === 'ALL' || !filterDept) {
+      setFilterDept(String(organizationUnit.unit_name));
+    }
+  }, [organizationUnit, filterDept]);
+
+  useEffect(() => {
+    if (!orgMenuOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (orgMenuRef.current && !orgMenuRef.current.contains(e.target as Node)) setOrgMenuOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOrgMenuOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [orgMenuOpen]);
+
+  const matchesDeptFilter = (deptName: string | null | undefined) => {
+    if (isOrgWideFilter) return true;
+    const name = String(deptName || '').trim();
+    if (!name || name === '-') return false;
+    if (name === filterDept) return true;
+    return selectedDeptNames ? selectedDeptNames.has(name) : false;
+  };
+
   const filteredHistory = useMemo(() => {
     const codeQ = codeQuery.toLowerCase().trim();
     const modelQ = modelQuery.toLowerCase().trim();
@@ -153,15 +260,14 @@ function MasterArchiveContent() {
       const matchYear = selectedYear === 'ALL' || ym?.year === selectedYear;
       const matchMonth = selectedMonth === 'ALL' || ym?.month === selectedMonth;
       const matchStatus = filterStatus === 'ALL' || h.status === filterStatus;
-      const rDept = String(h.dept || '').trim() || '-';
-      const matchDept = filterDept === 'ALL' || rDept === filterDept;
+      const matchDept = matchesDeptFilter(h.dept);
       const rType = h.it_type || '일반';
       const matchType = filterType === 'ALL' || rType === filterType;
       const matchCode = !codeQ || String(h.code || '').toLowerCase().includes(codeQ);
       const matchModel = !modelQ || String(h.model || '').toLowerCase().includes(modelQ);
       return matchYear && matchMonth && matchStatus && matchDept && matchType && matchCode && matchModel;
     });
-  }, [history, selectedYear, selectedMonth, filterStatus, filterDept, filterType, codeQuery, modelQuery]);
+  }, [history, selectedYear, selectedMonth, filterStatus, filterDept, filterType, codeQuery, modelQuery, selectedDeptNames, isOrgWideFilter]);
 
   const totalPages = Math.max(1, Math.ceil(filteredHistory.length / itemsPerPage));
   const currentData = filteredHistory.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
@@ -310,8 +416,8 @@ function MasterArchiveContent() {
         canEdit={canEdit}
       />
 
-      <div className="bg-white border border-slate-200 rounded-[2.5rem] shadow-sm overflow-hidden animate-in fade-in duration-300 slide-in-from-top-4">
-        <div className="p-3 px-4 bg-slate-200/70 border-b border-slate-300 flex items-center gap-2 min-w-0">
+      <div className={`bg-white border border-slate-200 rounded-[2.5rem] shadow-sm animate-in fade-in duration-300 slide-in-from-top-4 ${orgMenuOpen ? 'overflow-visible' : 'overflow-hidden'}`}>
+        <div className={`p-3 px-4 bg-slate-200/70 border-b border-slate-300 flex items-center gap-2 min-w-0 relative ${orgMenuOpen ? 'z-[80] overflow-visible' : ''}`}>
           <div className="flex items-center gap-1.5 shrink-0">
             <div className="w-2.5 h-2.5 rounded-full bg-blue-600 shrink-0" />
             <h2 className="text-sm font-black text-slate-800 tracking-tight whitespace-nowrap">종료 자산 데이터 대장</h2>
@@ -320,12 +426,12 @@ function MasterArchiveContent() {
             </span>
           </div>
 
-          <div className="flex items-center gap-1.5 flex-nowrap overflow-x-auto min-w-0 ml-auto scrollbar-hide">
-            <div className="flex items-center gap-0.5 bg-white p-0.5 rounded-lg border border-slate-200 shadow-sm shrink-0">
+          <div className={`flex items-center gap-1.5 flex-nowrap min-w-0 ml-auto ${orgMenuOpen ? 'overflow-visible relative z-[90]' : 'overflow-x-auto scrollbar-hide'}`}>
+            <div className="flex items-center gap-0.5 bg-white p-0.5 rounded-lg border border-slate-200 shadow-sm shrink-0 h-7 box-border">
               <button
                 type="button"
                 onClick={() => setFilterStatus('ALL')}
-                className={`px-2 py-1 rounded-md text-[10px] font-black transition-all whitespace-nowrap ${
+                className={`px-2 h-full rounded-md text-[10px] font-black transition-all whitespace-nowrap leading-none ${
                   filterStatus === 'ALL' ? 'bg-slate-800 text-white' : 'text-slate-500 hover:bg-slate-50'
                 }`}
               >
@@ -334,7 +440,7 @@ function MasterArchiveContent() {
               <button
                 type="button"
                 onClick={() => setFilterStatus('반납')}
-                className={`px-2 py-1 rounded-md text-[10px] font-black transition-all whitespace-nowrap ${
+                className={`px-2 h-full rounded-md text-[10px] font-black transition-all whitespace-nowrap leading-none ${
                   filterStatus === '반납' ? 'bg-amber-500 text-white' : 'text-slate-500 hover:bg-slate-50'
                 }`}
               >
@@ -343,7 +449,7 @@ function MasterArchiveContent() {
               <button
                 type="button"
                 onClick={() => setFilterStatus('폐기')}
-                className={`px-2 py-1 rounded-md text-[10px] font-black transition-all whitespace-nowrap ${
+                className={`px-2 h-full rounded-md text-[10px] font-black transition-all whitespace-nowrap leading-none ${
                   filterStatus === '폐기' ? 'bg-rose-600 text-white' : 'text-slate-500 hover:bg-slate-50'
                 }`}
               >
@@ -352,7 +458,7 @@ function MasterArchiveContent() {
               <button
                 type="button"
                 onClick={() => setFilterStatus('재판매')}
-                className={`px-2 py-1 rounded-md text-[10px] font-black transition-all whitespace-nowrap ${
+                className={`px-2 h-full rounded-md text-[10px] font-black transition-all whitespace-nowrap leading-none ${
                   filterStatus === '재판매' ? 'bg-emerald-600 text-white' : 'text-slate-500 hover:bg-slate-50'
                 }`}
               >
@@ -360,26 +466,55 @@ function MasterArchiveContent() {
               </button>
             </div>
 
-            <div className="flex items-center gap-1.5 bg-white px-2 py-1 rounded-lg border border-slate-200 shadow-sm shrink-0">
-              <span className="text-[10px] font-black text-slate-400 uppercase whitespace-nowrap">조직</span>
-              <select
-                value={filterDept}
-                onChange={(e) => setFilterDept(e.target.value)}
-                className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent max-w-[88px]"
-              >
-                <option value="ALL">전체</option>
-                {uniqueDepts.map((d) => (
-                  <option key={d} value={d}>{d}</option>
-                ))}
-              </select>
+            <div className={`flex items-center gap-1.5 bg-white px-2.5 rounded-lg border border-slate-200 shadow-sm shrink-0 h-7 box-border ${orgMenuOpen ? 'relative z-[90]' : ''}`}>
+              <span className="text-[10px] font-black text-slate-400 uppercase whitespace-nowrap leading-none">조직</span>
+              <div className="relative inline-flex items-center" ref={orgMenuRef}>
+                <button
+                  type="button"
+                  onClick={() => setOrgMenuOpen((open) => !open)}
+                  className={`max-w-[120px] truncate text-left text-[11px] leading-none py-0 px-0 m-0 h-4 inline-flex items-center border-0 appearance-none outline-none cursor-pointer bg-transparent ${
+                    selectedOrgUnit && isBoldOrgType(selectedOrgUnit.unit_type)
+                      ? 'font-black text-slate-900'
+                      : 'font-bold text-slate-800'
+                  }`}
+                >
+                  {selectedOrgUnit?.unit_name || organizationUnit?.unit_name || '조직 선택'}
+                </button>
+                {orgMenuOpen && (
+                  <div className="absolute right-0 top-full mt-1.5 z-[100] min-w-[240px] max-h-72 overflow-y-auto bg-white border border-slate-200 rounded-lg shadow-xl py-1">
+                    {sortedOrgs.map((o) => {
+                      const bold = isBoldOrgType(o.unit_type);
+                      const active =
+                        filterDept === o.unit_name ||
+                        (isOrgWideFilter && o.id === organizationUnit?.id);
+                      return (
+                        <button
+                          key={o.id}
+                          type="button"
+                          onClick={() => {
+                            setFilterDept(String(o.unit_name || ''));
+                            setOrgMenuOpen(false);
+                          }}
+                          className={`w-full text-left pr-3 py-1.5 text-[11px] ${
+                            bold ? 'font-black text-slate-900' : 'font-medium text-slate-600'
+                          } ${active ? 'bg-slate-100' : 'hover:bg-slate-50'}`}
+                          style={{ paddingLeft: `${12 + o.depth * 12}px` }}
+                        >
+                          {o.unit_name}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
 
-              <div className="w-px h-3.5 bg-slate-300" />
+              <div className="w-px h-3 bg-slate-300 shrink-0" />
 
-              <span className="text-[10px] font-black text-slate-400 uppercase whitespace-nowrap">분류</span>
+              <span className="text-[10px] font-black text-slate-400 uppercase whitespace-nowrap leading-none">분류</span>
               <select
                 value={filterType}
                 onChange={(e) => setFilterType(e.target.value)}
-                className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent max-w-[88px]"
+                className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent max-w-[88px] h-4 leading-none py-0"
               >
                 <option value="ALL">전체</option>
                 {uniqueTypes.map((t) => (
@@ -387,16 +522,16 @@ function MasterArchiveContent() {
                 ))}
               </select>
 
-              <div className="w-px h-3.5 bg-slate-300" />
+              <div className="w-px h-3 bg-slate-300 shrink-0" />
 
-              <span className="text-[10px] font-black text-slate-400 uppercase whitespace-nowrap">연도</span>
+              <span className="text-[10px] font-black text-slate-400 uppercase whitespace-nowrap leading-none">연도</span>
               <select
                 value={selectedYear}
                 onChange={(e) => {
                   setSelectedYear(e.target.value);
                   setSelectedMonth('ALL');
                 }}
-                className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent"
+                className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent h-4 leading-none py-0"
               >
                 <option value="ALL">전체</option>
                 {availableYears.map((year) => (
@@ -404,13 +539,13 @@ function MasterArchiveContent() {
                 ))}
               </select>
 
-              <div className="w-px h-3.5 bg-slate-300" />
+              <div className="w-px h-3 bg-slate-300 shrink-0" />
 
-              <span className="text-[10px] font-black text-slate-400 uppercase whitespace-nowrap">월</span>
+              <span className="text-[10px] font-black text-slate-400 uppercase whitespace-nowrap leading-none">월</span>
               <select
                 value={selectedMonth}
                 onChange={(e) => setSelectedMonth(e.target.value)}
-                className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent"
+                className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent h-4 leading-none py-0"
               >
                 <option value="ALL">전체</option>
                 {HISTORY_MONTHS.map((month) => (

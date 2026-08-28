@@ -56,14 +56,14 @@ export function computeItAssetTurnDisplay(asset: {
   first_bill?: string | null;
   rental_months?: number | string | null;
 }): string {
-  const startYm = getKSTYearMonth(asset.in_date);
-  const endYm = getKSTYearMonth(asset.end_date);
+  const startYm = asset.in_date ? getKSTYearMonth(asset.in_date) : null;
+  const endYm = asset.end_date ? getKSTYearMonth(asset.end_date) : null;
   if (!startYm || !endYm) return '-';
   const total =
     (endYm.year - startYm.year) * 12 + (endYm.month - startYm.month);
   const totalLabel = total > 0 ? total : 0;
 
-  const firstYm = getKSTYearMonth(asset.first_bill);
+  const firstYm = asset.first_bill ? getKSTYearMonth(asset.first_bill) : null;
   if (!firstYm) return `0 / ${totalLabel}`;
 
   const nowYm = getKSTYearMonth(getKSTDateString());

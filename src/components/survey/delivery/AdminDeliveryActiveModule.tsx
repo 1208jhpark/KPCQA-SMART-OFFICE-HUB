@@ -8,6 +8,10 @@ import * as XLSX from 'xlsx';
 import { usePathname, useRouter } from 'next/navigation'; // 🚀 내비게이션 도구 통합
 import { getKSTDateString, isPastKSTDeadline } from '@/utils/dateUtils';
 import LoadingState from '@/components/common/LoadingState';
+import {
+  useInterfaceStepTabs,
+  SURVEY_DELIVERY_ADMIN_TABS,
+} from '@/lib/interface-step-tabs';
      
 const getStatusBadge = (status: string) => {
   switch (status) {
@@ -22,6 +26,7 @@ const getStatusBadge = (status: string) => {
 export default function AdminDeliveryActiveModule() {
   const pathname = usePathname(); // 🚀 추가
   const router = useRouter();     // 🚀 추가
+  const tabs = useInterfaceStepTabs(SURVEY_DELIVERY_ADMIN_TABS, '/survey/delivery/admin');
   const [surveys, setSurveys] = useState<any[]>([]);
   const [users, setUsers] = useState<any[]>([]);
   const [deptList, setDeptList] = useState<string[]>([]);
@@ -1034,20 +1039,17 @@ const handleDownloadZipAll = async () => {
       {/* 탭 네비게이션 — equipment inventory 스위처 규격 */}
       <div className="flex items-center justify-between bg-white p-2 rounded-xl border border-slate-200 shadow-sm">
         <div className="flex items-center gap-1.5 bg-slate-100/80 p-1 rounded-lg">
-          {[
-            { name: '📋 상시/기간 배달 신청 현황', path: '/survey/delivery/admin/active-surveys', exact: true, activeClass: 'bg-white text-emerald-700 shadow-sm border border-slate-200/80' },
-            { name: '🗂️ 배송조사 결과 이력 관리', path: '/survey/delivery/admin/history', exact: false, activeClass: 'bg-white text-slate-800 shadow-sm border border-slate-200/80' },
-          ].map((tab) => {
+          {tabs.map((tab) => {
             const isActive = tab.exact ? pathname === tab.path : pathname.startsWith(tab.path);
             return (
               <Link
-                key={tab.path}
+                key={tab.id}
                 href={tab.path}
                 className={`px-5 py-2 rounded-md text-xs font-black transition-all flex items-center gap-2 ${
                   isActive ? tab.activeClass : 'text-slate-500 hover:text-slate-800'
                 }`}
               >
-                <span>{tab.name}</span>
+                <span>{tab.label}</span>
               </Link>
             );
           })}

@@ -1,43 +1,60 @@
 import { NextResponse } from 'next/server';
 import prisma from '@/lib/prisma';
 import { getKSTDateString } from '@/utils/dateUtils';
+import { authorizeApi, authorizeAnyMenuPaths, authErrorToResponse } from '@/lib/server-auth-guard';
 
-// 🚀 1. 발주 완료된 묶음(Batch) 대장 목록 불러오기 (GET) - [원본 유지]
+export const dynamic = 'force-dynamic';
+
+const MENU_PATH = '/asset/businesscard/master/order';
+const READ_PATHS = [
+  '/asset/businesscard/master/order',
+  '/asset/businesscard/master/archive',
+  '/asset/businesscard/master/requests',
+];
+
+/** 발주 완료된 묶음(Batch) 대장 목록 */
 export async function GET(req: Request) {
   try {
+    await authorizeAnyMenuPaths(READ_PATHS);
     const { searchParams } = new URL(req.url);
     const isArchivedParam = searchParams.get('isArchived');
 
-    let whereCondition: any = { isArchived: false };
-    if (isArchivedParam === 'true') {
-      whereCondition = { isArchived: true };
-    }
+    const whereCondition =
+      isArchivedParam === 'true' ? { isArchived: true } : { isArchived: false };
 
     const batches = await prisma.businessCardOrderBatch.findMany({
       where: whereCondition,
-      include: {
-        items: true 
-      },
-      orderBy: {
-        id: 'desc'
-      }
+      include: { items: true },
+      orderBy: { id: 'desc' },
     });
 
-    return NextResponse.json(batches, {
-      headers: { 'Cache-Control': 'no-store, max-age=0' }
+    const merged = batches.map((b) => ({
+      ...b,
+      inspectStatus: b.inspectStatus || 'idle',
+      items: (b.items || []).map((item) => ({
+        ...item,
+        applicantType: item.applicantType || '본인',
+        applicantName: item.applicantName || null,
+      })),
+    }));
+
+    return NextResponse.json(merged, {
+      headers: { 'Cache-Control': 'no-store, max-age=0' },
     });
   } catch (error: any) {
-    console.error("Batch GET Error:", error);
+    const authRes = authErrorToResponse(error);
+    if (authRes.status !== 500) return authRes;
+    console.error('Batch GET Error:', error);
     return NextResponse.json({ message: '묶음 대장 로드 실패', error: error.message }, { status: 500 });
   }
 }
 
-// 🚀 2. 신규 묶음(Batch) 발주 생성하기 (POST) - [안전 매핑 및 트랜잭션 보강]
+/** 신규 묶음(Batch) 발주 생성 */
 export async function POST(req: Request) {
   try {
+    await authorizeApi(MENU_PATH, { requireEditor: true });
     const body = await req.json();
-    
-    // 프론트엔드 파라미터 변수명 미스매치 방지 가드
+
     const batchId = body.batchId || body.id;
     const targetRequestIds = body.targetRequestIds || body.itemIds;
     const { deptHeadGroup } = body;
@@ -46,9 +63,8 @@ export async function POST(req: Request) {
       return NextResponse.json({ message: '발주할 명함이 선택되지 않았습니다.' }, { status: 400 });
     }
 
-    // 동일 ID 중복 생성 요청 방어 가드
     const isExist = await prisma.businessCardOrderBatch.findUnique({
-      where: { id: batchId }
+      where: { id: batchId },
     });
     if (isExist) {
       return NextResponse.json({ message: '이미 존재하는 발주 번호입니다. 잠시 후 다시 시도하세요.' }, { status: 400 });
@@ -57,7 +73,6 @@ export async function POST(req: Request) {
     const todayStr = getKSTDateString();
 
     const result = await prisma.$transaction(async (tx) => {
-      // 부모(묶음) 대장 선행 생성
       const newBatch = await tx.businessCardOrderBatch.create({
         data: {
           id: batchId,
@@ -65,18 +80,16 @@ export async function POST(req: Request) {
           totalCount: targetRequestIds.length,
           deptHeadGroup: deptHeadGroup || '전사종합',
           status: '발주완료',
-          isArchived: false
-        }
+          isArchived: false,
+        },
       });
 
-      // 선택된 개별 명함들의 상태를 '발주완료'로 변경하고 orderGroupId 족보 연결
-      // 💡 schema.prisma에 processedAt 필드가 없을 경우를 대비해 안전하게 제외하고 매핑
       await tx.businessCardRequest.updateMany({
         where: { id: { in: targetRequestIds } },
         data: {
           adminStatus: '발주완료',
-          orderGroupId: batchId
-        }
+          orderGroupId: batchId,
+        },
       });
 
       return newBatch;
@@ -84,14 +97,17 @@ export async function POST(req: Request) {
 
     return NextResponse.json(result);
   } catch (error: any) {
-    console.error("Batch POST Error:", error);
+    const authRes = authErrorToResponse(error);
+    if (authRes.status !== 500) return authRes;
+    console.error('Batch POST Error:', error);
     return NextResponse.json({ message: '묶음 발주 생성 실패', error: error.message }, { status: 500 });
   }
 }
 
-// 🚀 3. 선택된 묶음(Batch)을 보관함(지급완료 + 숨김처리)으로 일괄 이관 처리 (PUT) - [원본 유지]
+/** 보관함 이관 */
 export async function PUT(req: Request) {
   try {
+    await authorizeApi(MENU_PATH, { requireEditor: true });
     const body = await req.json();
     const { batchIds } = body;
 
@@ -99,21 +115,38 @@ export async function PUT(req: Request) {
       return NextResponse.json({ message: '이관할 묶음 ID가 없습니다.' }, { status: 400 });
     }
 
+    const unpaid = await prisma.businessCardOrderBatch.findMany({
+      where: { id: { in: batchIds }, NOT: { status: '지급완료' } },
+      select: { id: true },
+    });
+    if (unpaid.length > 0) {
+      return NextResponse.json(
+        { message: '지급완료 처리된 묶음만 보관함으로 이관할 수 있습니다.' },
+        { status: 400 }
+      );
+    }
+
+    const inspectRows = await prisma.businessCardOrderBatch.findMany({
+      where: { id: { in: batchIds } },
+      select: { id: true, inspectStatus: true },
+    });
+    const notMatched = inspectRows.filter((row) => row.inspectStatus !== 'match');
+    if (notMatched.length > 0) {
+      return NextResponse.json(
+        { message: '명세서 검수가 일치한 묶음만 보관함으로 이관할 수 있습니다.' },
+        { status: 400 }
+      );
+    }
+
     const result = await prisma.$transaction(async (tx) => {
       await tx.businessCardOrderBatch.updateMany({
-        where: { id: { in: batchIds } },
-        data: { 
-          status: '지급완료',
-          isArchived: true 
-        }
+        where: { id: { in: batchIds }, status: '지급완료' },
+        data: { isArchived: true },
       });
 
       await tx.businessCardRequest.updateMany({
         where: { orderGroupId: { in: batchIds } },
-        data: { 
-          adminStatus: '지급완료',
-          isArchived: true
-        }
+        data: { isArchived: true },
       });
 
       return { success: true, count: batchIds.length };
@@ -121,14 +154,17 @@ export async function PUT(req: Request) {
 
     return NextResponse.json(result);
   } catch (error: any) {
-    console.error("Batch PUT Error:", error);
+    const authRes = authErrorToResponse(error);
+    if (authRes.status !== 500) return authRes;
+    console.error('Batch PUT Error:', error);
     return NextResponse.json({ message: '보관함 이관 처리 실패', error: error.message }, { status: 500 });
   }
 }
 
-// 🚀 4. 개별 묶음 현물 지급 완료 처리 (PATCH - 보관함 이동 없이 상태만 변경) - [원본 유지]
+/** 지급 완료 */
 export async function PATCH(req: Request) {
   try {
+    await authorizeApi(MENU_PATH, { requireEditor: true });
     const { batchId } = await req.json();
 
     if (!batchId) {
@@ -138,12 +174,12 @@ export async function PATCH(req: Request) {
     const result = await prisma.$transaction(async (tx) => {
       await tx.businessCardOrderBatch.update({
         where: { id: batchId },
-        data: { status: '지급완료' }
+        data: { status: '지급완료' },
       });
 
       await tx.businessCardRequest.updateMany({
         where: { orderGroupId: batchId },
-        data: { adminStatus: '지급완료' }
+        data: { adminStatus: '지급완료' },
       });
 
       return { success: true };
@@ -151,7 +187,50 @@ export async function PATCH(req: Request) {
 
     return NextResponse.json(result);
   } catch (error: any) {
-    console.error("Batch PATCH Error:", error);
+    const authRes = authErrorToResponse(error);
+    if (authRes.status !== 500) return authRes;
+    console.error('Batch PATCH Error:', error);
     return NextResponse.json({ message: '지급 완료 처리 실패', error: error.message }, { status: 500 });
+  }
+}
+
+/** 발주 묶음 취소 → 접수완료 대기열 복귀 */
+export async function DELETE(req: Request) {
+  try {
+    await authorizeApi(MENU_PATH, { requireEditor: true });
+    const { searchParams } = new URL(req.url);
+    const batchId = searchParams.get('batchId');
+    if (!batchId) {
+      return NextResponse.json({ message: '묶음 ID가 없습니다.' }, { status: 400 });
+    }
+
+    const batch = await prisma.businessCardOrderBatch.findUnique({ where: { id: batchId } });
+    if (!batch) {
+      return NextResponse.json({ message: '묶음을 찾을 수 없습니다.' }, { status: 404 });
+    }
+    if (batch.isArchived) {
+      return NextResponse.json({ message: '보관된 묶음은 발주 취소할 수 없습니다.' }, { status: 400 });
+    }
+    if (batch.status === '지급완료') {
+      return NextResponse.json({ message: '지급 처리된 묶음은 발주 취소할 수 없습니다.' }, { status: 400 });
+    }
+
+    await prisma.$transaction(async (tx) => {
+      await tx.businessCardRequest.updateMany({
+        where: { orderGroupId: batchId },
+        data: {
+          adminStatus: '접수완료',
+          orderGroupId: null,
+        },
+      });
+      await tx.businessCardOrderBatch.delete({ where: { id: batchId } });
+    });
+
+    return NextResponse.json({ success: true });
+  } catch (error: any) {
+    const authRes = authErrorToResponse(error);
+    if (authRes.status !== 500) return authRes;
+    console.error('[businesscard/master/order DELETE]', error);
+    return NextResponse.json({ message: '발주 취소 실패', error: error.message }, { status: 500 });
   }
 }

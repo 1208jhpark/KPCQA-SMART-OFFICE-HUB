@@ -1,5 +1,5 @@
 'use client';
-import React, { useState, useEffect, useMemo, Suspense } from 'react';
+import React, { useState, useEffect, useMemo, useRef, Suspense } from 'react';
 import { usePathname } from 'next/navigation';
 import Link from 'next/link';
 import { getKSTDateString, getKSTNowYearMonth, getKSTYearMonth, formatKSTDateTime } from '@/utils/dateUtils';
@@ -12,6 +12,10 @@ import {
 } from '@/utils/supplyRequestStatus';
 import LoadingState from '@/components/common/LoadingState';
 import { resolveInterfaceEditState } from '@/lib/permission-utils';
+import {
+  SUPPLIES_MASTER_TABS,
+  useInterfaceStepTabs,
+} from '@/lib/interface-step-tabs';
 import * as XLSX from 'xlsx';
 import {
   BarChart,
@@ -27,6 +31,53 @@ import {
 
 const MENU_PATH = '/asset/supplies/master/requests';
 
+function isBoldOrgType(unitType?: string | null) {
+  const t = String(unitType || '').trim().toUpperCase();
+  return t === 'ORGANIZATION' || t === 'HQ';
+}
+
+function flattenUnitsInSortOrder<T extends { id: string; parent_id?: string | null; sort_order?: number | null; unit_name?: string | null }>(units: T[]) {
+  const byId = new Map(units.map((u) => [u.id, u]));
+  const depthOf = (unit: T) => {
+    let depth = 0;
+    let current: T | undefined = unit;
+    const seen = new Set<string>();
+    while (current?.parent_id && byId.has(current.parent_id) && !seen.has(current.id)) {
+      seen.add(current.id);
+      depth += 1;
+      current = byId.get(current.parent_id);
+    }
+    return depth;
+  };
+  return [...units]
+    .sort((a, b) => {
+      const ao = Number(a.sort_order) || 0;
+      const bo = Number(b.sort_order) || 0;
+      if (ao !== bo) return ao - bo;
+      return String(a.unit_name || '').localeCompare(String(b.unit_name || ''), 'ko');
+    })
+    .map((unit) => ({ ...unit, depth: depthOf(unit) }));
+}
+
+function descendantUnitNames(unitName: string, units: Array<{ id: string; unit_name?: string | null; parent_id?: string | null }>) {
+  const names = new Set<string>();
+  const selected = units.find((u) => String(u.unit_name || '').trim() === unitName);
+  if (!selected) {
+    if (unitName) names.add(unitName);
+    return names;
+  }
+  if (selected.unit_name) names.add(String(selected.unit_name).trim());
+  const walk = (parentId: string) => {
+    for (const child of units.filter((u) => u.parent_id === parentId)) {
+      const n = String(child.unit_name || '').trim();
+      if (n) names.add(n);
+      walk(child.id);
+    }
+  };
+  walk(selected.id);
+  return names;
+}
+
 /** KST 기준 연·월 문자열 (year: '2026', month: '07') — 파싱 실패 시 null */
 function getKSTYearMonthParts(dateInput: Date | string | number | null | undefined) {
   if (dateInput === null || dateInput === undefined || dateInput === '') return null;
@@ -40,6 +91,7 @@ function getKSTYearMonthParts(dateInput: Date | string | number | null | undefin
      
 function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) {
   const pathname = usePathname();
+  const tabs = useInterfaceStepTabs(SUPPLIES_MASTER_TABS, '/asset/supplies/master');
   
   // 데이터 상태 관리
   const [requests, setRequests] = useState<any[]>([]);
@@ -63,18 +115,14 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
   const [selectedYear, setSelectedYear] = useState(() => String(getKSTNowYearMonth().year));
   const [selectedMonth, setSelectedMonth] = useState('ALL');
   const [selectedDept, setSelectedDept] = useState('ALL');
+  const [orgUnits, setOrgUnits] = useState<any[]>([]);
+  const [orgMenuOpen, setOrgMenuOpen] = useState(false);
+  const orgMenuRef = useRef<HTMLDivElement>(null);
   const [selectedStatus, setSelectedStatus] = useState('ALL'); 
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 10;
   const [processOpinion, setProcessOpinion] = useState<{ [key: string]: string }>({});
   const [processingId, setProcessingId] = useState<string | null>(null);
-     
-  const tabItems = [
-    { id: 'dashboard', name: '🗂️ 소모품 마스터 대시보드', path: '/asset/supplies/master/dashboard' },
-    { id: 'requests', name: '📋 사용자 신청현황 관리', path: '/asset/supplies/master/requests' },
-    { id: 'purchase', name: '💰 입고/구매 내역 대장', path: '/asset/supplies/master/purchase' },
-    { id: 'archive', name: '📁 폐기자산 아카이브', path: '/asset/supplies/master/archive' },
-  ];
      
   useEffect(() => { 
     fetchRequestsData(); 
@@ -84,13 +132,14 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
     setLoading(true);
     try { 
       const ts = Date.now();
-      const [reqRes, userRes, summaryRes, ifRes] = await Promise.all([
+      const [reqRes, userRes, summaryRes, ifRes, unitsRes] = await Promise.all([
         fetch(`/api/asset/supplies/master/requests?t=${ts}`, { cache: 'no-store' }),
         !propUser ? fetch(`/api/auth/me?t=${ts}`, { cache: 'no-store' }) : Promise.resolve(null),
         fetch(`/api/admin/interface/summary?path=${encodeURIComponent(MENU_PATH)}&t=${ts}`, {
           cache: 'no-store',
         }).catch(() => null),
         fetch(`/api/admin/interface?t=${ts}`, { cache: 'no-store' }).catch(() => null),
+        fetch(`/api/admin/units?active=true&t=${ts}`, { cache: 'no-store' }).catch(() => null),
       ]);
       
       if (reqRes.ok) {
@@ -112,6 +161,10 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
       } else {
         setInterfaceConfig(null);
       }
+      if (unitsRes && unitsRes.ok) {
+        const raw = await unitsRes.json();
+        setOrgUnits(Array.isArray(raw) ? raw : []);
+      } else setOrgUnits([]);
     } catch(e) {
       console.error("Requests Sync Error", e);
       alert('서버와 통신할 수 없습니다.');
@@ -144,10 +197,68 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
     return unique;
   }, [requests]);
   const availableMonths = ['01','02','03','04','05','06','07','08','09','10','11','12'];
-  const availableDepts = useMemo(() => {
-    const depts = requests.map(r => r.dept_name).filter(Boolean);
-    return Array.from(new Set(depts)).sort((a, b) => a.localeCompare(b, 'ko'));
-  }, [requests]);
+  const sortedOrgs = useMemo(() => flattenUnitsInSortOrder(orgUnits), [orgUnits]);
+  const organizationUnit = useMemo(
+    () =>
+      sortedOrgs.find((u) => String(u.unit_type || '').trim().toUpperCase() === 'ORGANIZATION') ||
+      sortedOrgs.find((u) => !u.parent_id) ||
+      null,
+    [sortedOrgs]
+  );
+  const isOrgWideFilter = useMemo(() => {
+    if (selectedDept === 'ALL') return true;
+    if (!selectedDept) return true;
+    if (organizationUnit && selectedDept === organizationUnit.unit_name) return true;
+    const unit = sortedOrgs.find((u) => u.unit_name === selectedDept);
+    return String(unit?.unit_type || '').trim().toUpperCase() === 'ORGANIZATION';
+  }, [selectedDept, organizationUnit, sortedOrgs]);
+
+  const selectedOrgUnit = useMemo(
+    () =>
+      isOrgWideFilter
+        ? organizationUnit
+        : sortedOrgs.find((o) => o.unit_name === selectedDept) || null,
+    [sortedOrgs, selectedDept, isOrgWideFilter, organizationUnit]
+  );
+  const selectedDeptNames = useMemo(() => {
+    if (isOrgWideFilter || !selectedDept) return null;
+    return descendantUnitNames(selectedDept, orgUnits);
+  }, [selectedDept, orgUnits, isOrgWideFilter]);
+
+  useEffect(() => {
+    if (!organizationUnit?.unit_name) return;
+    if (selectedDept === 'ALL' || !selectedDept) {
+      setSelectedDept(String(organizationUnit.unit_name));
+    }
+  }, [organizationUnit, selectedDept]);
+
+  useEffect(() => {
+    if (!orgMenuOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (orgMenuRef.current && !orgMenuRef.current.contains(e.target as Node)) setOrgMenuOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOrgMenuOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [orgMenuOpen]);
+
+  const matchesDeptFilter = (deptName: string | null | undefined) => {
+    if (isOrgWideFilter) return true;
+    const name = String(deptName || '').trim();
+    if (!name) return false;
+    if (name === selectedDept) return true;
+    return selectedDeptNames ? selectedDeptNames.has(name) : false;
+  };
+
+  const resetOrgFilter = () => {
+    setSelectedDept(String(organizationUnit?.unit_name || 'ALL'));
+  };
 
   const availableItems = useMemo(() => {
     const names = requests
@@ -180,38 +291,89 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
   const filteredRequests = useMemo(() => {
     return requests
       .filter((r) => {
-        const deptMatch = selectedDept === 'ALL' || r.dept_name === selectedDept;
+        const deptMatch = matchesDeptFilter(r.dept_name);
         return matchesSharedFilters(r) && deptMatch;
       })
       .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-  }, [requests, selectedYear, selectedMonth, selectedDept, selectedStatus, selectedItem, searchUserQuery]);
+  }, [requests, selectedYear, selectedMonth, selectedDept, selectedStatus, selectedItem, searchUserQuery, selectedDeptNames, orgUnits, isOrgWideFilter]);
 
-  /** 하단 필터(조직 제외) 기준 · 모든 센터별 수량 집계 */
-  const deptChartData = useMemo(() => {
-    const byDept = new Map<string, number>();
+  /** 차트용 공통 필터 — 물품·조직은 차트 모드에서 따로 적용 */
+  const matchesChartBaseFilters = (r: any) => {
+    const ym = getKSTYearMonthParts(r.createdAt);
+    const yearMatch = selectedYear === 'ALL' || ym?.year === selectedYear;
+    const monthMatch = selectedMonth === 'ALL' || ym?.month === selectedMonth;
+    const isPending = isPendingSupplyRequest(r.status);
+    const isCompleted = isCompletedSupplyRequest(r.status);
+    const isRejected = isRejectedSupplyRequest(r.status);
+    const statusMatch =
+      selectedStatus === 'ALL' ||
+      (selectedStatus === 'PENDING' && isPending) ||
+      (selectedStatus === 'COMPLETED' && isCompleted) ||
+      (selectedStatus === 'REJECTED' && isRejected);
+    const userMatch =
+      !searchUserQuery ||
+      (r.user_name || '').toLowerCase().includes(searchUserQuery.toLowerCase());
+    return yearMatch && monthMatch && statusMatch && userMatch;
+  };
+
+  /** 물품별 신청 수량 (개요) · 조직 필터 반영 · 수량 내림차순 */
+  const itemChartData = useMemo(() => {
+    const byItem = new Map<string, number>();
     requests.forEach((r) => {
-      if (!matchesSharedFilters(r)) return;
-      const dept = r.dept_name || '미지정';
-      byDept.set(dept, (byDept.get(dept) || 0) + (Number(r.qty) || 0));
+      if (!matchesChartBaseFilters(r)) return;
+      if (!matchesDeptFilter(r.dept_name)) return;
+      const item = String(r.item_name || r.item?.name || '').trim() || '미지정';
+      byItem.set(item, (byItem.get(item) || 0) + (Number(r.qty) || 0));
     });
-    const rows = Array.from(byDept.entries()).map(([dept, qty]) => ({ dept, qty }));
+    const rows = Array.from(byItem.entries()).map(([item, qty]) => ({ name: item, qty }));
     const total = rows.reduce((sum, row) => sum + row.qty, 0);
     return rows
       .map((row) => ({
         ...row,
         percent: total > 0 ? (row.qty / total) * 100 : 0,
         label: `${row.qty.toLocaleString()} · ${total > 0 ? ((row.qty / total) * 100).toFixed(1) : '0.0'}%`,
-        isSelected: selectedDept !== 'ALL' && selectedDept === row.dept,
+        isSelected: selectedItem !== 'ALL' && selectedItem === row.name,
       }))
-      .sort((a, b) => b.qty - a.qty || a.dept.localeCompare(b.dept, 'ko'));
-  }, [requests, selectedYear, selectedMonth, selectedStatus, selectedItem, searchUserQuery, selectedDept]);
+      .sort((a, b) => b.qty - a.qty || a.name.localeCompare(b.name, 'ko'));
+  }, [requests, selectedYear, selectedMonth, selectedStatus, searchUserQuery, selectedDept, selectedDeptNames, orgUnits, isOrgWideFilter, selectedItem]);
+
+  /** 선택한 물품의 조직별 신청 수량 (드릴다운) */
+  const itemOrgChartData = useMemo(() => {
+    if (selectedItem === 'ALL') return [];
+    const byDept = new Map<string, number>();
+    requests.forEach((r) => {
+      if (!matchesChartBaseFilters(r)) return;
+      const item = String(r.item_name || r.item?.name || '').trim();
+      if (item !== selectedItem) return;
+      if (!matchesDeptFilter(r.dept_name)) return;
+      const dept = r.dept_name || '미지정';
+      byDept.set(dept, (byDept.get(dept) || 0) + (Number(r.qty) || 0));
+    });
+    const rows = Array.from(byDept.entries()).map(([dept, qty]) => ({ name: dept, qty }));
+    const total = rows.reduce((sum, row) => sum + row.qty, 0);
+    const orderOf = (name: string) => {
+      const unit = orgUnits.find((u) => String(u.unit_name || '').trim() === name);
+      return unit?.sort_order != null ? Number(unit.sort_order) : Number.MAX_SAFE_INTEGER;
+    };
+    return rows
+      .map((row) => ({
+        ...row,
+        percent: total > 0 ? (row.qty / total) * 100 : 0,
+        label: `${row.qty.toLocaleString()} · ${total > 0 ? ((row.qty / total) * 100).toFixed(1) : '0.0'}%`,
+        isSelected: !isOrgWideFilter && matchesDeptFilter(row.name),
+      }))
+      .sort((a, b) => b.qty - a.qty || orderOf(a.name) - orderOf(b.name) || a.name.localeCompare(b.name, 'ko'));
+  }, [requests, selectedYear, selectedMonth, selectedStatus, searchUserQuery, selectedItem, selectedDept, selectedDeptNames, orgUnits, isOrgWideFilter]);
+
+  const isItemDrillDown = selectedItem !== 'ALL';
+  const chartRows = isItemDrillDown ? itemOrgChartData : itemChartData;
 
   const chartTotalQty = useMemo(
-    () => deptChartData.reduce((sum, row) => sum + row.qty, 0),
-    [deptChartData]
+    () => chartRows.reduce((sum, row) => sum + row.qty, 0),
+    [chartRows]
   );
 
-  const chartHeight = Math.max(140, deptChartData.length * 22 + 28);
+  const chartHeight = Math.max(140, chartRows.length * 22 + 28);
      
   const totalPages = Math.max(1, Math.ceil(filteredRequests.length / itemsPerPage));
   const paginatedRequests = filteredRequests.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
@@ -260,7 +422,7 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
     XLSX.utils.book_append_sheet(wb, ws, '사용자신청내역');
 
     const monthStr = selectedMonth !== 'ALL' ? `_${selectedMonth}월` : '';
-    const deptStr = selectedDept !== 'ALL' ? `_${selectedDept}` : '';
+    const deptStr = !isOrgWideFilter && selectedDept ? `_${selectedDept}` : '';
     const statusStr = selectedStatus !== 'ALL' ? `_${selectedStatus}` : '';
     XLSX.writeFile(
       wb,
@@ -359,7 +521,7 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
     const ym = getKSTYearMonthParts(r.createdAt);
     const yearMatch = selectedYear === 'ALL' || ym?.year === selectedYear;
     const monthMatch = selectedMonth === 'ALL' || ym?.month === selectedMonth;
-    const deptMatch = selectedDept === 'ALL' || r.dept_name === selectedDept;
+    const deptMatch = matchesDeptFilter(r.dept_name);
     const itemName = r.item_name || r.item?.name || '';
     const itemMatch = selectedItem === 'ALL' || itemName === selectedItem;
     return yearMatch && monthMatch && deptMatch && itemMatch;
@@ -421,12 +583,8 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
       {/* 탭 네비게이션 — client-search / distribution 스위처 규격 */}
       <div className="flex items-center justify-between bg-white p-2 rounded-xl border border-slate-200 shadow-sm">
         <div className="flex items-center gap-1.5 bg-slate-100/80 p-1 rounded-lg flex-wrap">
-          {tabItems.map((tab) => {
+          {tabs.map((tab) => {
             const isActive = pathname.startsWith(tab.path);
-            const activeColor =
-              tab.id === 'purchase' ? 'text-emerald-600' :
-              tab.id === 'archive' ? 'text-slate-800' :
-              'text-indigo-600';
             const showPendingBadge = tab.id === 'requests' && tabPendingCount > 0;
             return (
               <Link
@@ -434,11 +592,11 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
                 href={tab.path}
                 className={`px-5 py-2 rounded-md text-xs font-black transition-all flex items-center gap-2 ${
                   isActive
-                    ? `bg-white ${activeColor} shadow-sm border border-slate-200/80`
+                    ? `bg-white ${tab.activeColor || 'text-indigo-600'} shadow-sm border border-slate-200/80`
                     : 'text-slate-500 hover:text-slate-800'
                 } ${showPendingBadge && !isActive ? 'ring-1 ring-red-300/80' : ''}`}
               >
-                <span>{tab.name}</span>
+                <span>{tab.label}</span>
                 {showPendingBadge && (
                   <span className="inline-flex items-center justify-center min-w-[1.35rem] h-5 px-1.5 rounded-full bg-red-600 text-white text-[10px] font-black font-mono shadow-sm animate-pulse">
                     {tabPendingCount}
@@ -453,31 +611,42 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
         </p>
       </div>
      
-      {/* 하단 장부 필터와 동일 기준 · 센터별 수량 집계 차트 (조직 필터는 장부만) */}
+      {/* 물품별 신청 수량 · 클릭 시 조직별 드릴다운 */}
       <div className="bg-white border border-slate-200 rounded-[2.5rem] shadow-sm overflow-hidden mt-6">
         <div className="px-4 py-2.5 bg-slate-100/80 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
           <div className="flex items-center gap-2 min-w-0">
             <div className="w-2 h-2 rounded-full bg-emerald-500 shrink-0"></div>
             <div className="min-w-0">
               <h2 className="text-[12px] font-black text-slate-800 tracking-tight">
-                📊 센터별 신청 수량
+                {isItemDrillDown ? `📊 ${selectedItem} · 조직별 신청 수량` : '📊 물품별 신청 수량'}
                 <span className="ml-2 text-[9px] font-bold text-slate-500">
-                  하단 필터 기준 · 막대 클릭 시 조직 필터
+                  {isItemDrillDown
+                    ? '하단 필터 기준 · 막대 클릭 시 조직 필터'
+                    : '하단 필터 기준 · 막대 클릭 시 물품 드릴다운'}
                 </span>
               </h2>
             </div>
           </div>
           <div className="flex items-center gap-1.5 shrink-0">
             <span className="text-[10px] font-bold bg-slate-300/80 text-slate-700 px-1.5 py-0.5 rounded-md">
-              {deptChartData.length}개 조직
+              {isItemDrillDown ? `${chartRows.length}개 조직` : `${chartRows.length}개 물품`}
             </span>
             <span className="text-[10px] font-black text-indigo-600 bg-indigo-50 border border-indigo-100 px-1.5 py-0.5 rounded-md">
               합계 {chartTotalQty.toLocaleString()}
             </span>
-            {selectedDept !== 'ALL' && (
+            {isItemDrillDown && (
               <button
                 type="button"
-                onClick={() => setSelectedDept('ALL')}
+                onClick={() => setSelectedItem('ALL')}
+                className="text-[9px] font-black text-slate-500 hover:text-indigo-600 underline"
+              >
+                ← 물품 목록
+              </button>
+            )}
+            {!isOrgWideFilter && (
+              <button
+                type="button"
+                onClick={resetOrgFilter}
                 className="text-[9px] font-black text-slate-500 hover:text-indigo-600 underline"
               >
                 조직 필터 해제
@@ -486,7 +655,7 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
           </div>
         </div>
         <div className="px-3 py-2">
-          {deptChartData.length === 0 ? (
+          {chartRows.length === 0 ? (
             <div className="h-[100px] flex items-center justify-center rounded-xl border border-dashed border-slate-200 bg-slate-50/60">
               <p className="text-[10px] font-bold text-slate-400">조건에 맞는 집계 데이터가 없습니다.</p>
             </div>
@@ -495,7 +664,7 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart
                   layout="vertical"
-                  data={deptChartData}
+                  data={chartRows}
                   margin={{ top: 2, right: 72, left: 0, bottom: 0 }}
                   barCategoryGap="32%"
                 >
@@ -510,7 +679,7 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
                   />
                   <YAxis
                     type="category"
-                    dataKey="dept"
+                    dataKey="name"
                     width={148}
                     tick={{ fontSize: 9, fontWeight: 700, fill: '#334155' }}
                     tickLine={false}
@@ -522,17 +691,19 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
                     content={({ active, payload }) => {
                       if (!active || !payload?.length) return null;
                       const row = payload[0].payload as {
-                        dept: string;
+                        name: string;
                         qty: number;
                         percent: number;
                       };
                       return (
                         <div className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 shadow-md">
-                          <p className="text-[10px] font-black text-slate-800">{row.dept}</p>
+                          <p className="text-[10px] font-black text-slate-800">{row.name}</p>
                           <p className="text-[10px] font-bold text-indigo-600 mt-0.5">
                             {row.qty.toLocaleString()} · {row.percent.toFixed(1)}%
                           </p>
-                          <p className="text-[9px] font-bold text-slate-400 mt-0.5">클릭하면 장부 조직 필터</p>
+                          <p className="text-[9px] font-bold text-slate-400 mt-0.5">
+                            {isItemDrillDown ? '클릭하면 장부 조직 필터' : '클릭하면 조직별 드릴다운'}
+                          </p>
                         </div>
                       );
                     }}
@@ -543,15 +714,20 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
                     maxBarSize={12}
                     cursor="pointer"
                     onClick={(data: any) => {
-                      const dept = data?.dept || data?.payload?.dept;
-                      if (!dept) return;
-                      setSelectedDept((prev) => (prev === dept ? 'ALL' : dept));
+                      const name = data?.name || data?.payload?.name;
+                      if (!name) return;
+                      if (isItemDrillDown) {
+                        const orgWideName = String(organizationUnit?.unit_name || 'ALL');
+                        setSelectedDept((prev) => (prev === name ? orgWideName : name));
+                        return;
+                      }
+                      setSelectedItem(name);
                     }}
                   >
-                    {deptChartData.map((row) => (
+                    {chartRows.map((row) => (
                       <Cell
-                        key={row.dept}
-                        fill={row.isSelected ? '#4f46e5' : '#818cf8'}
+                        key={row.name}
+                        fill={row.isSelected ? '#4f46e5' : isItemDrillDown ? '#34d399' : '#818cf8'}
                       />
                     ))}
                     <LabelList
@@ -589,9 +765,9 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
         </div>
       </div>
      
-      <section className="bg-white rounded-[2.5rem] border border-slate-200 shadow-sm overflow-hidden animate-in fade-in duration-300 slide-in-from-top-4 mt-6">
+      <section className={`bg-white rounded-[2.5rem] border border-slate-200 shadow-sm animate-in fade-in duration-300 slide-in-from-top-4 mt-6 ${orgMenuOpen ? 'overflow-visible' : 'overflow-hidden'}`}>
           
-          <div className="p-4 px-6 bg-slate-200/70 border-b border-slate-300 flex flex-wrap items-center justify-between gap-4">
+          <div className={`p-4 px-6 bg-slate-200/70 border-b border-slate-300 flex flex-wrap items-center justify-between gap-4 relative ${orgMenuOpen ? 'z-[80] overflow-visible' : ''}`}>
             <div className="flex items-center gap-2 flex-wrap min-w-0">
               <div className="w-2.5 h-2.5 rounded-full bg-blue-600 shrink-0"></div>
               <h2 className="text-sm font-black text-slate-800 tracking-tight">
@@ -649,26 +825,55 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
             </div>
 
             <div className="flex items-center gap-2 flex-wrap">
-              <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm">
-                <span className="text-[10px] font-black text-slate-400 uppercase">조직</span>
-                <select
-                  value={selectedDept}
-                  onChange={(e) => setSelectedDept(e.target.value)}
-                  className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent max-w-[160px]"
-                >
-                  <option value="ALL">전체 부서</option>
-                  {availableDepts.map((dept) => (
-                    <option key={dept} value={dept}>{dept}</option>
-                  ))}
-                </select>
+              <div className={`flex items-center gap-1.5 bg-white px-2.5 rounded-lg border border-slate-200 shadow-sm h-7 box-border ${orgMenuOpen ? 'relative z-[90]' : ''}`}>
+                <span className="text-[10px] font-black text-slate-400 uppercase leading-none">조직</span>
+                <div className="relative inline-flex items-center" ref={orgMenuRef}>
+                  <button
+                    type="button"
+                    onClick={() => setOrgMenuOpen((open) => !open)}
+                    className={`max-w-[160px] truncate text-left text-[11px] leading-none py-0 px-0 m-0 h-4 inline-flex items-center border-0 appearance-none outline-none cursor-pointer bg-transparent ${
+                      selectedOrgUnit && isBoldOrgType(selectedOrgUnit.unit_type)
+                        ? 'font-black text-slate-900'
+                        : 'font-bold text-slate-800'
+                    }`}
+                  >
+                    {selectedOrgUnit?.unit_name || organizationUnit?.unit_name || '조직 선택'}
+                  </button>
+                  {orgMenuOpen && (
+                    <div className="absolute left-0 top-full mt-1.5 z-[100] min-w-[240px] max-h-72 overflow-y-auto bg-white border border-slate-200 rounded-lg shadow-xl py-1">
+                      {sortedOrgs.map((o) => {
+                        const bold = isBoldOrgType(o.unit_type);
+                        const active =
+                          selectedDept === o.unit_name ||
+                          (isOrgWideFilter && o.id === organizationUnit?.id);
+                        return (
+                          <button
+                            key={o.id}
+                            type="button"
+                            onClick={() => {
+                              setSelectedDept(String(o.unit_name || ''));
+                              setOrgMenuOpen(false);
+                            }}
+                            className={`w-full text-left pr-3 py-1.5 text-[11px] ${
+                              bold ? 'font-black text-slate-900' : 'font-medium text-slate-600'
+                            } ${active ? 'bg-slate-100' : 'hover:bg-slate-50'}`}
+                            style={{ paddingLeft: `${12 + o.depth * 12}px` }}
+                          >
+                            {o.unit_name}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
 
-                <div className="w-px h-3.5 bg-slate-300 mx-0.5"></div>
+                <div className="w-px h-3 bg-slate-300 shrink-0" />
 
-                <span className="text-[10px] font-black text-slate-400 uppercase">연도</span>
+                <span className="text-[10px] font-black text-slate-400 uppercase leading-none">연도</span>
                 <select
                   value={selectedYear}
                   onChange={(e) => setSelectedYear(e.target.value)}
-                  className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent"
+                  className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent h-4 leading-none py-0"
                 >
                   <option value="ALL">전체</option>
                   {availableYears.map((year) => (
@@ -676,13 +881,13 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
                   ))}
                 </select>
 
-                <div className="w-px h-3.5 bg-slate-300 mx-0.5"></div>
+                <div className="w-px h-3 bg-slate-300 shrink-0" />
 
-                <span className="text-[10px] font-black text-slate-400 uppercase">월별</span>
+                <span className="text-[10px] font-black text-slate-400 uppercase leading-none">월별</span>
                 <select
                   value={selectedMonth}
                   onChange={(e) => setSelectedMonth(e.target.value)}
-                  className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent"
+                  className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent h-4 leading-none py-0"
                 >
                   <option value="ALL">전체</option>
                   {availableMonths.map((month) => (
@@ -692,12 +897,12 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
               </div>
 
               <div className="flex items-center gap-2">
-                <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm">
-                  <span className="text-[10px] font-black text-slate-400 uppercase">물품</span>
+                <div className="flex items-center gap-1.5 bg-white px-2.5 rounded-lg border border-slate-200 shadow-sm h-7 box-border">
+                  <span className="text-[10px] font-black text-slate-400 uppercase leading-none">물품</span>
                   <select
                     value={selectedItem}
                     onChange={(e) => setSelectedItem(e.target.value)}
-                    className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent max-w-[160px]"
+                    className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent max-w-[160px] h-4 leading-none py-0"
                   >
                     <option value="ALL">전체 물품</option>
                     {availableItems.map((name) => (
@@ -705,14 +910,14 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
                     ))}
                   </select>
                 </div>
-                <div className="relative w-32">
-                  <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-[10px]">👤</span>
+                <div className="relative w-32 h-7">
+                  <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-[10px] leading-none pointer-events-none">👤</span>
                   <input
                     type="text"
                     placeholder="신청자 검색..."
                     value={searchUserQuery}
                     onChange={(e) => setSearchUserQuery(e.target.value)}
-                    className="w-full pl-7 pr-3 py-1.5 bg-white border border-slate-200 rounded-lg text-[11px] font-bold outline-none focus:border-indigo-500 shadow-sm transition-colors"
+                    className="w-full h-7 box-border pl-7 pr-3 py-0 bg-white border border-slate-200 rounded-lg text-[11px] font-bold outline-none focus:border-indigo-500 shadow-sm transition-colors"
                   />
                 </div>
               </div>
@@ -720,7 +925,7 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
               <button
                 type="button"
                 onClick={handleExportExcel}
-                className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-[10px] font-black shadow-sm hover:bg-emerald-700 transition-all whitespace-nowrap"
+                className="h-7 px-3 bg-emerald-600 text-white rounded-lg text-[10px] font-black shadow-sm hover:bg-emerald-700 transition-all whitespace-nowrap leading-none"
               >
                 {selectedIds.size > 0
                   ? `선택 EXCEL 다운로드(${selectedIds.size})`

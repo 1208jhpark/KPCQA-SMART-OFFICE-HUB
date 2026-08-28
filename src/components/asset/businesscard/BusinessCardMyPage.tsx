@@ -1,7 +1,14 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
+import * as XLSX from 'xlsx';
 import LoadingState from '@/components/common/LoadingState';
+import { resolveInterfaceEditState } from '@/lib/permission-utils';
+import { getKSTNowYearMonth, formatKSTDateTime } from '@/utils/dateUtils';
+
+const MENU_PATH = '/asset/businesscard/my-page';
+const DISABLED_ACTION_BTN =
+  'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed opacity-70 shadow-none';
 
 interface CurrentUserProps {
   currentUser?: {
@@ -64,6 +71,7 @@ interface RequestHistory {
   adminStatus: '대기중' | '접수완료' | '발주완료' | '지급완료' | string; // 🚀 '수령' 제거 완료
   isModifiedByAdmin?: boolean;
   adminMemo?: string | null;
+  applicantType?: string | null;
   adminModifierName?: string | null;
   adminModifiedAt?: string | null;
   quantity?: number;
@@ -99,6 +107,7 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
   });
   /** /api/auth/me + unit — admin/user와 동일 출처 */
   const [profile, setProfile] = useState<any>(null);
+  const [interfaceConfig, setInterfaceConfig] = useState<any>(null);
   /** 배너 아래 작성 폼: 기본 접힘 */
   const [isFormOpen, setIsFormOpen] = useState(false);
 
@@ -123,13 +132,20 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
   const [isHistoryOpen, setIsHistoryOpen] = useState(true);
   const itemsPerPage = 10;
 
-  // 🚀 년/월 필터 상태 추가
-  const [yearFilter, setYearFilter] = useState<string>('ALL');
+  // 연도: KST 접속 연도 기본, 월: 전체
+  const [yearFilter, setYearFilter] = useState<string>(() => String(getKSTNowYearMonth().year));
   const [monthFilter, setMonthFilter] = useState<string>('ALL');
 
   const [addresses, setAddresses] = useState<any[]>([]);
   const [qualifications, setQualifications] = useState<any[]>([]); 
-  const [memoPopupTarget, setMemoPopupTarget] = useState<RequestHistory | null>(null); 
+  const [memoPopupTarget, setMemoPopupTarget] = useState<RequestHistory | null>(null);
+  const [sheetsPerPack, setSheetsPerPack] = useState(200); 
+
+  const canEdit = useMemo(
+    () => resolveInterfaceEditState(profile || { email: activeUser.email }, interfaceConfig).isEditor,
+    [profile, interfaceConfig, activeUser.email]
+  );
+  const alertNoEditPermission = () => alert('편집 권한이 없습니다.');
 
   const [form, setForm] = useState({
     id: '', 
@@ -289,6 +305,7 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
     gradeList?: MasterCode[];
     addrList?: any[];
   }) => {
+    if (!canEdit) return alertNoEditPermission();
     let me = opts?.me ?? profile;
     // 동기화 직전 /api/auth/me 재조회 — name_en 등 최신 인사값 반영
     if (!opts?.me) {
@@ -355,16 +372,26 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
         return;
       }
 
-      const targetEmail = sessionEmail || currentUser?.email || '';
-
-      const [configRes, unitsRes, masterRes, historyRes, addrMasterRes, qualRes] = await Promise.all([
+      const [configRes, unitsRes, masterRes, historyRes, addrMasterRes, qualRes, settingsRes, ifRes] = await Promise.all([
         fetch(`/api/admin/config?t=${ts}`, { cache: 'no-store' }),
         fetch(`/api/admin/units?active=true&t=${ts}`, { cache: 'no-store' }),
         fetch(`/api/admin/master-data?t=${ts}`, { cache: 'no-store' }),
-        fetch(`/api/asset/businesscard/my-page?email=${encodeURIComponent(targetEmail)}&t=${ts}`, { cache: 'no-store' }),
+        fetch(`/api/asset/businesscard/my-page?t=${ts}`, { cache: 'no-store' }),
         fetch(`/api/asset/businesscard/master/addresses?t=${ts}`, { cache: 'no-store' }),
-        fetch(`/api/asset/businesscard/master/qualifications?t=${ts}`, { cache: 'no-store' }) 
+        fetch(`/api/asset/businesscard/master/qualifications?t=${ts}`, { cache: 'no-store' }),
+        fetch(`/api/asset/businesscard/master/settings?t=${ts}`, { cache: 'no-store' }),
+        fetch(`/api/admin/interface?t=${ts}`, { cache: 'no-store' }).catch(() => null),
       ]);
+
+      if (ifRes && ifRes.ok) {
+        const interfaces = await ifRes.json();
+        const menu = Array.isArray(interfaces)
+          ? interfaces.find((m: any) => m.path === MENU_PATH || m.path?.includes('/businesscard/my-page'))
+          : null;
+        setInterfaceConfig(menu || null);
+      } else {
+        setInterfaceConfig(null);
+      }
 
       let nextDuties: MasterCode[] = [];
       let nextGrades: MasterCode[] = [];
@@ -400,6 +427,12 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
       if (qualRes.ok) {
         const qualData = await qualRes.json();
         setQualifications(qualData.filter((q: any) => q.isActive));
+      }
+
+      if (settingsRes.ok) {
+        const settings = await settingsRes.json();
+        const n = Number(settings?.sheetsPerPack);
+        if (Number.isFinite(n) && n > 0) setSheetsPerPack(Math.round(n));
       }
       
     } catch (error) {
@@ -464,6 +497,7 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
   };
 
   const handleResetToNew = () => {
+    if (!canEdit) return alertNoEditPermission();
     openNewApplication();
   };
 
@@ -533,6 +567,7 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
   };
 
   const handleEnableEdit = () => {
+    if (!canEdit) return alertNoEditPermission();
     setBackupForm({ ...form });
     setFormMode('EDIT');
   };
@@ -543,8 +578,20 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
   };
 
   const handleHeadChange = (unitName: string) => {
-    const selected = units.find(u => u.unit_name === unitName);
-    setForm(p => ({ ...p, deptHead: unitName, deptHeadEn: selected?.unit_name_en || '' }));
+    const selected = units.find((u) => u.unit_name === unitName);
+    const childNames = new Set(
+      selected ? units.filter((u) => u.parent_id === selected.id).map((u) => u.unit_name) : []
+    );
+    setForm((p) => {
+      const keepCenter = !!p.deptName && childNames.has(p.deptName);
+      return {
+        ...p,
+        deptHead: unitName,
+        deptHeadEn: selected?.unit_name_en || '',
+        deptName: keepCenter ? p.deptName : '',
+        deptNameEn: keepCenter ? p.deptNameEn : '',
+      };
+    });
   };
 
   const handleSubChange = (unitName: string) => {
@@ -617,6 +664,7 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
 
   const handleFormSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!canEdit) return alertNoEditPermission();
     if (!form.userName || !form.deptHead || !form.title || !form.mobile || !form.phone) {
       alert('⚠️ 필수 필드 항목들이 누락되었습니다.');
       return;
@@ -650,7 +698,6 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
       fax: form.fax, faxEn: form.faxEn,
       addressId: form.addressId, zipCode: form.zipCode, addressKo: form.addressKo, addressEn: form.addressEn,
       email: form.email, emailEn: form.emailEn,
-      userEmail: activeUser.email,
       quantity: form.quantity
     };
 
@@ -668,7 +715,8 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
         setIsFormOpen(false);
         initPortalData(); 
       } else {
-        alert('처리 중 오류가 발생했습니다.');
+        const err = await res.json().catch(() => ({}));
+        alert(err.message || err.error || '처리 중 오류가 발생했습니다.');
       }
     } catch (err) {
       alert('데이터베이스 트랜잭션 처리 중 오류가 발생했습니다.');
@@ -676,6 +724,7 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
   };
 
   const handleCancelRequest = async (id: string, postNo: string) => {
+    if (!canEdit) return alert('편집 권한이 없습니다.');
     if (!confirm(`⚠️ [${postNo}] 명함 발급 신청을 취소하시겠습니까?\n취소 후에는 복구할 수 없습니다.`)) return;
     try {
       const res = await fetch(`/api/asset/businesscard/my-page?id=${id}`, { method: 'DELETE' });
@@ -685,15 +734,32 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
         setBackupForm(null);
         setIsFormOpen(false);
         initPortalData();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        alert(err.message || err.error || '신청 취소에 실패했습니다.');
       }
     } catch (err) {
       alert("서버 통신 오류가 발생했습니다.");
     }
   };
 
-  // 🚀 필터링 옵션 추출
-  const availableYears = Array.from(new Set(history.map(h => h.applyDate?.substring(0, 4) || ''))).filter(Boolean).sort((a, b) => b.localeCompare(a));
-  const availableMonths = Array.from(new Set(history.map(h => h.applyDate?.substring(5, 7) || ''))).filter(Boolean).sort();
+  // KST 접속 연도는 내역이 없어도 목록에 포함
+  const currentYear = String(getKSTNowYearMonth().year);
+  const availableYears = useMemo(
+    () =>
+      Array.from(new Set([currentYear, ...history.map((h) => h.applyDate?.substring(0, 4) || '')]))
+        .filter(Boolean)
+        .sort((a, b) => b.localeCompare(a)),
+    [history, currentYear]
+  );
+  const availableMonths = useMemo(() => {
+    const inYear = history.filter(
+      (h) => yearFilter === 'ALL' || h.applyDate?.startsWith(yearFilter)
+    );
+    return Array.from(new Set(inYear.map((h) => h.applyDate?.substring(5, 7) || '')))
+      .filter(Boolean)
+      .sort();
+  }, [history, yearFilter]);
 
   // 🚀 조건부 필터 적용
   const filteredHistory = history.filter(h => {
@@ -702,15 +768,64 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
     return matchYear && matchMonth;
   });
 
+  const handleExportExcel = () => {
+    if (filteredHistory.length === 0) return alert('다운로드할 데이터가 없습니다.');
+    const exportData = filteredHistory.map((row, idx) => ({
+      NO: filteredHistory.length - idx,
+      신청일자: row.applyDate || '',
+      관리번호: row.postNumber || '',
+      본부: row.deptHead || '',
+      센터: row.deptName || '',
+      이름: row.userName || '',
+      수량통: row.quantity || 1,
+      관리자의견: row.adminMemo || '',
+      공정상태: row.adminStatus || '',
+      신청주체: row.applicantType || '본인',
+      처리일자: row.processDate || '',
+    }));
+    const ws = XLSX.utils.json_to_sheet(exportData);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, '명함신청내역');
+    const monthStr = monthFilter !== 'ALL' ? `_${monthFilter}월` : '';
+    XLSX.writeFile(
+      wb,
+      `명함_나의신청내역_${yearFilter === 'ALL' ? '전체' : yearFilter}년${monthStr}.xlsx`
+    );
+  };
+
   // 🚀 필터 변경 시 페이지 리셋
   useEffect(() => {
     setHistoryPage(1);
   }, [yearFilter, monthFilter]);
 
+  useEffect(() => {
+    if (monthFilter === 'ALL') return;
+    if (!availableMonths.includes(monthFilter)) setMonthFilter('ALL');
+  }, [availableMonths, monthFilter]);
+
   const totalHistoryPages = Math.ceil(filteredHistory.length / itemsPerPage) || 1;
   const paginatedHistory = filteredHistory.slice((historyPage - 1) * itemsPerPage, historyPage * itemsPerPage);
   
   const isReadOnly = formMode === 'VIEW';
+  const hqUnits = useMemo(() => {
+    const hqs = units.filter((u) => isBusinessCardHqUnit(u) || !u.parent_id);
+    if (form.deptHead && !hqs.some((u) => u.unit_name === form.deptHead)) {
+      const extra = units.find((u) => u.unit_name === form.deptHead);
+      if (extra) return [...hqs, extra];
+    }
+    return hqs;
+  }, [units, form.deptHead]);
+  const selectedHeadUnit = units.find((u) => u.unit_name === form.deptHead);
+  const childCenterUnits = useMemo(() => {
+    const children = selectedHeadUnit
+      ? units.filter((u) => u.parent_id === selectedHeadUnit.id && !isBusinessCardHqUnit(u))
+      : [];
+    if (form.deptName && !children.some((u) => u.unit_name === form.deptName)) {
+      const extra = units.find((u) => u.unit_name === form.deptName);
+      if (extra) return [...children, extra];
+    }
+    return children;
+  }, [units, selectedHeadUnit, form.deptName]);
   /** 인사 연동 칸(수정 가능하되 회색 바탕) */
   const syncedFieldCls =
     'w-full p-2 border border-slate-200 rounded-lg text-xs font-bold bg-slate-50 text-slate-800 disabled:opacity-60 outline-slate-400';
@@ -737,37 +852,45 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
               <span className="text-white/30 font-normal mx-2.5">|</span>
               <span className="text-white font-extrabold">명함 발급 신청 허브</span>
             </h1>
-            <p className="text-white/70 text-xs mt-3 leading-relaxed">
-              Hub 인사정보(성명·영문성명·소속·직책·직급·이메일)를 불러와 명함 신청에 맞춥니다. 휴대전화 등 없는 항목만 직접 입력하세요.
+            <p className="text-white/70 text-xs mt-3 leading-relaxed max-w-xl">
+              Hub 인사정보(성명·소속·직책·직급·이메일)를 불러와 명함 신청에 맞춥니다.
             </p>
           </div>
-          {isFormOpen && formMode !== 'NEW' && (
-            <button
-              type="button"
-              onClick={handleResetToNew}
-              className="shrink-0 self-start md:self-end inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-[10px] font-black tracking-tight bg-white/15 border border-white/25 text-white shadow-sm hover:bg-white/25 hover:border-white/40 transition-colors"
-            >
-              <span>+</span>
-              <span>신규 신청 / 정보 동기화</span>
-            </button>
-          )}
+          <div className="shrink-0 self-start md:self-end">
+            {!isFormOpen ? (
+              <button
+                type="button"
+                disabled={!canEdit}
+                title={!canEdit ? '편집 권한 필요' : undefined}
+                onClick={() => openNewApplication()}
+                className={`group inline-flex items-center justify-center gap-1.5 px-5 py-2.5 rounded-xl font-black text-[12px] transition-all duration-200 ${
+                  canEdit
+                    ? 'bg-white text-indigo-700 shadow-lg shadow-indigo-950/25 ring-1 ring-white/60 hover:bg-indigo-50 hover:text-indigo-800 hover:shadow-xl hover:-translate-y-0.5 active:translate-y-0'
+                    : DISABLED_ACTION_BTN
+                }`}
+              >
+                <span className="text-indigo-500 group-hover:text-indigo-700 transition-colors">+</span>
+                명함신청하기
+              </button>
+            ) : formMode !== 'NEW' ? (
+              <button
+                type="button"
+                disabled={!canEdit}
+                title={!canEdit ? '편집 권한 필요' : undefined}
+                onClick={handleResetToNew}
+                className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-[10px] font-black tracking-tight border shadow-sm transition-colors ${
+                  canEdit
+                    ? 'bg-white/15 border-white/25 text-white hover:bg-white/25 hover:border-white/40'
+                    : DISABLED_ACTION_BTN
+                }`}
+              >
+                <span>+</span>
+                <span>신규 신청 / 정보 동기화</span>
+              </button>
+            ) : null}
+          </div>
         </div>
       </div>
-
-      {!isFormOpen && (
-        <div className="flex justify-center">
-          <button
-            type="button"
-            onClick={() => openNewApplication()}
-            className="inline-flex items-center justify-center gap-2 px-8 py-3 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-700 text-white font-black text-sm shadow-md shadow-indigo-900/20 hover:from-blue-500 hover:to-indigo-600 hover:shadow-lg hover:-translate-y-0.5 transition-all"
-          >
-            <span>명함신청하기</span>
-            <span className="text-[10px] font-black tracking-tight px-2 py-0.5 rounded-md bg-white/20 border border-white/30 text-white">
-              인사정보 동기화
-            </span>
-          </button>
-        </div>
-      )}
 
       {isFormOpen && (
       <form onSubmit={handleFormSubmit} className="bg-white border border-slate-200 rounded-[2.5rem] p-6 shadow-sm space-y-5">
@@ -812,8 +935,18 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
           </div>
         </div>
         
+        {formMode === 'VIEW' && form.adminStatus === '반려' && (
+          <div className="p-4 bg-rose-50 border border-rose-200 rounded-2xl flex items-start gap-3">
+            <span className="text-lg leading-none mt-0.5">⛔</span>
+            <div>
+              <p className="text-rose-900 text-xs font-black mb-1">신청이 반려되었습니다. 사유를 확인한 뒤 수정하여 다시 신청해 주세요.</p>
+              <p className="text-[11px] font-bold text-rose-700/90">반려 사유: {form.adminMemo || '-'}</p>
+            </div>
+          </div>
+        )}
+
         {/* 관리자 직접 수정 이력 감지 배너 */}
-        {formMode === 'VIEW' && form.isModifiedByAdmin && (
+        {formMode === 'VIEW' && form.isModifiedByAdmin && form.adminStatus !== '반려' && (
           <div className="p-4 bg-amber-50 border border-amber-200 rounded-2xl flex items-start gap-3">
             <span className="text-lg leading-none mt-0.5">⚠️</span>
             <div>
@@ -839,27 +972,25 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
             {/* 1행: 이름 > 본부 > 소속(센터) > 직책/직급 */}
             <div className="grid grid-cols-1 md:grid-cols-4 gap-x-4 gap-y-3">
               <div>
-                <label className="block text-[10px] font-black text-slate-500 mb-1">성명 *</label>
+                <label className="block text-[10px] font-black text-blue-600 mb-1">성명 *</label>
                 <input type="text" required disabled={isReadOnly} value={form.userName} onChange={(e) => handleTextChange('userName', e.target.value)} className={syncedFieldCls} />
               </div>
               <div>
-                <label className="block text-[10px] font-black text-slate-500 mb-1">본부 *</label>
+                <label className="block text-[10px] font-black text-blue-600 mb-1">본부 (상위 조직) *</label>
                 <select required disabled={isReadOnly} value={form.deptHead} onChange={(e) => handleHeadChange(e.target.value)} className={syncedFieldCls}>
                   <option value="">선택</option>
-                  {units.map(u => <option key={`h-${u.id}`} value={u.unit_name}>{u.unit_name}</option>)}
+                  {hqUnits.map(u => <option key={`h-${u.id}`} value={u.unit_name}>{u.unit_name}</option>)}
                 </select>
               </div>
               <div>
-                <label className="block text-[10px] font-black text-slate-500 mb-1">
-                  소속 <span className="text-slate-400 font-bold">(센터)</span>
-                </label>
-                <select disabled={isReadOnly} value={form.deptName} onChange={(e) => handleSubChange(e.target.value)} className={syncedFieldCls}>
-                  <option value="">(센터소속일때만 선택)</option>
-                  {units.map(u => <option key={`s-${u.id}`} value={u.unit_name}>{u.unit_name}</option>)}
+                <label className="block text-[10px] font-black text-blue-600 mb-1">센터 (하위 조직)</label>
+                <select disabled={isReadOnly || !form.deptHead} value={form.deptName} onChange={(e) => handleSubChange(e.target.value)} className={syncedFieldCls}>
+                  <option value="">(본부의 하위 센터만 선택)</option>
+                  {childCenterUnits.map(u => <option key={`s-${u.id}`} value={u.unit_name}>{u.unit_name}</option>)}
                 </select>
               </div>
               <div>
-                <label className="block text-[10px] font-black text-slate-500 mb-1">직책 / 직급 *</label>
+                <label className="block text-[10px] font-black text-blue-600 mb-1">직책 / 직급 *</label>
                 <select
                   required
                   disabled={isReadOnly}
@@ -890,7 +1021,7 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
             {/* 2행: 추가사항(자격증) — 직접 입력 */}
             <div className="space-y-2 border border-sky-100 rounded-xl p-3 bg-sky-50/40">
               <div className="flex items-center justify-between">
-                <label className="block text-[10px] font-black text-slate-500">추가사항 (자격증 선택)</label>
+                <label className="block text-[10px] font-black text-blue-600">추가사항 (자격증 선택)</label>
                 {!isReadOnly && (
                   <button
                     type="button"
@@ -1006,17 +1137,17 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
             {/* 3행: 주소지 · 우편번호 · 국문주소 */}
             <div className="grid grid-cols-1 md:grid-cols-4 gap-x-4 gap-y-3">
               <div>
-                <label className="block text-[10px] font-black text-slate-500 mb-1">주소지 선택 *</label>
+                <label className="block text-[10px] font-black text-blue-600 mb-1">주소지 선택 *</label>
                 <select disabled={isReadOnly} value={form.addressId} onChange={(e) => handleAddressChange(e.target.value)} className={manualFieldCls}>
                   {addresses.map(a => <option key={a.id} value={a.id}>{a.label}</option>)}
                 </select>
               </div>
               <div>
-                <label className="block text-[10px] font-black text-slate-400 mb-1">우편번호</label>
+                <label className="block text-[10px] font-black text-slate-400 mb-1">우편번호(주소지 선택 연동)🔒</label>
                 <input type="text" readOnly value={form.zipCode} className={`${syncedFieldCls} text-slate-500 cursor-not-allowed`} />
               </div>
               <div className="md:col-span-2">
-                <label className="block text-[10px] font-black text-slate-400 mb-1">국문 주소</label>
+                <label className="block text-[10px] font-black text-slate-400 mb-1">국문 주소(주소지 선택 연동)🔒</label>
                 <input type="text" readOnly value={form.addressKo} className={`${syncedFieldCls} text-slate-500 cursor-not-allowed`} />
               </div>
             </div>
@@ -1024,19 +1155,19 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
             {/* 4행: 휴대전화 · 내선 · 팩스 · 이메일 */}
             <div className="grid grid-cols-1 md:grid-cols-4 gap-x-4 gap-y-3">
               <div>
-                <label className="block text-[10px] font-black text-slate-500 mb-1">휴대전화 *</label>
-                <input type="text" required disabled={isReadOnly} value={form.mobile} onChange={(e) => handleTextChange('mobile', e.target.value)} placeholder="010-0000-0000" className={manualFieldCls} />
+                <label className="block text-[10px] font-black text-blue-600 mb-1">휴대전화 *</label>
+                <input type="text" required disabled={isReadOnly} value={form.mobile} onChange={(e) => handleTextChange('mobile', e.target.value)} placeholder="ex. 010-0000-0000" className={manualFieldCls} />
               </div>
               <div>
-                <label className="block text-[10px] font-black text-slate-500 mb-1">전화번호 (내선) *</label>
-                <input type="text" required disabled={isReadOnly} value={form.phone} onChange={(e) => handleTextChange('phone', e.target.value)} placeholder="02-0000-0000" className={manualFieldCls} />
+                <label className="block text-[10px] font-black text-blue-600 mb-1">전화번호 (내선) *</label>
+                <input type="text" required disabled={isReadOnly} value={form.phone} onChange={(e) => handleTextChange('phone', e.target.value)} placeholder="ex. 02-6973-0000" className={manualFieldCls} />
               </div>
               <div>
-                <label className="block text-[10px] font-black text-slate-400 mb-1">팩스 번호 🔒</label>
+                <label className="block text-[10px] font-black text-slate-400 mb-1">팩스 번호(주소지 선택 연동)🔒</label>
                 <input type="text" readOnly value={form.fax} className={`${syncedFieldCls} text-slate-500 cursor-not-allowed font-mono`} />
               </div>
               <div>
-                <label className="block text-[10px] font-black text-slate-500 mb-1">이메일 *</label>
+                <label className="block text-[10px] font-black text-blue-600 mb-1">이메일 *</label>
                 <input type="email" required disabled={isReadOnly} value={form.email} onChange={(e) => handleTextChange('email', e.target.value)} className={syncedFieldCls} />
               </div>
             </div>
@@ -1052,27 +1183,27 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
           <div className="space-y-3">
             <div className="grid grid-cols-1 md:grid-cols-4 gap-x-4 gap-y-3">
               <div>
-                <label className="block text-[10px] font-black text-slate-500 mb-1">영문 성명</label>
+                <label className="block text-[10px] font-black text-blue-600 mb-1">영문 성명</label>
                 <input type="text" disabled={isReadOnly} value={form.userNameEn} onChange={(e) => setForm({ ...form, userNameEn: e.target.value })} className={syncedFieldCls} />
               </div>
               <div>
-                <label className="block text-[10px] font-black text-slate-400 mb-1">영문 본부 🔒</label>
+                <label className="block text-[10px] font-black text-slate-400 mb-1">영문 본부 (상위 조직)🔒</label>
                 <input type="text" readOnly value={form.deptHeadEn} className="w-full p-2 bg-slate-50 text-slate-500 border border-slate-100 rounded-lg text-xs font-bold cursor-not-allowed" />
               </div>
               <div>
-                <label className="block text-[10px] font-black text-slate-400 mb-1">영문 소속 🔒 <span className="font-bold">(센터)</span></label>
+                <label className="block text-[10px] font-black text-slate-400 mb-1">영문 센터 (하위 조직)🔒</label>
                 <input type="text" readOnly value={form.deptNameEn} className="w-full p-2 bg-slate-50 text-slate-500 border border-slate-100 rounded-lg text-xs font-bold cursor-not-allowed" />
               </div>
               <div>
-                <label className="block text-[10px] font-black text-slate-400 mb-1">영문 직책/직급 🔒</label>
+                <label className="block text-[10px] font-black text-slate-400 mb-1">영문 직책/직급🔒</label>
                 <input type="text" readOnly value={form.titleEn || form.dutyEn || form.gradeEn} className="w-full p-2 bg-slate-50 text-slate-500 border border-slate-100 rounded-lg text-xs font-bold cursor-not-allowed" />
               </div>
             </div>
 
             <div className="space-y-2 border border-slate-100 rounded-xl p-3 bg-slate-50/40">
-              <label className="block text-[10px] font-black text-slate-500">
+              <label className="block text-[10px] font-black text-blue-600">
                 영문 추가사항{' '}
-                <span className="text-slate-400 font-bold">(마스터는 자동 · 수동 기재는 직접 입력)</span>
+                <span className="font-bold">(마스터는 자동 · 수동 기재는 직접 입력)</span>
               </label>
               {form.additionalQuals.length === 0 && (
                 <p className="text-[11px] text-slate-400 italic py-1">추가된 영문 자격사항이 없습니다.</p>
@@ -1116,26 +1247,26 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
 
             <div className="grid grid-cols-1 md:grid-cols-4 gap-x-4 gap-y-3">
               <div className="md:col-span-4">
-                <label className="block text-[10px] font-black text-slate-400 mb-1">영문 주소 🔒</label>
+                <label className="block text-[10px] font-black text-slate-400 mb-1">영문 주소🔒</label>
                 <input type="text" readOnly value={form.addressEn} className="w-full p-2 bg-slate-50 text-slate-400 border border-slate-100 rounded-lg text-xs font-mono cursor-not-allowed" />
               </div>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-4 gap-x-4 gap-y-3">
               <div>
-                <label className="block text-[10px] font-black text-slate-400 mb-1">영문 휴대전화 🔒</label>
+                <label className="block text-[10px] font-black text-slate-400 mb-1">영문 휴대전화🔒</label>
                 <input type="text" readOnly value={form.mobileEn} className="w-full p-2 bg-slate-50 text-slate-500 border border-slate-100 rounded-lg text-xs font-mono cursor-not-allowed" />
               </div>
               <div>
-                <label className="block text-[10px] font-black text-slate-400 mb-1">영문 전화 🔒</label>
+                <label className="block text-[10px] font-black text-slate-400 mb-1">영문 전화🔒</label>
                 <input type="text" readOnly value={form.phoneEn} className="w-full p-2 bg-slate-50 text-slate-500 border border-slate-100 rounded-lg text-xs font-mono cursor-not-allowed" />
               </div>
               <div>
-                <label className="block text-[10px] font-black text-slate-400 mb-1">영문 팩스 🔒</label>
+                <label className="block text-[10px] font-black text-slate-400 mb-1">영문 팩스🔒</label>
                 <input type="text" readOnly value={form.faxEn} className="w-full p-2 bg-slate-50 text-slate-500 border border-slate-100 rounded-lg text-xs font-mono cursor-not-allowed" />
               </div>
               <div>
-                <label className="block text-[10px] font-black text-slate-400 mb-1">영문 이메일 🔒</label>
+                <label className="block text-[10px] font-black text-slate-400 mb-1">영문 이메일🔒</label>
                 <input type="text" readOnly value={form.emailEn} className="w-full p-2 bg-slate-50 text-slate-500 border border-slate-100 rounded-lg text-xs font-mono cursor-not-allowed" />
               </div>
             </div>
@@ -1152,7 +1283,7 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
             >
               <p className="text-[10px] font-black text-indigo-900 whitespace-nowrap">
                 발주 수량
-                <span className="ml-1.5 font-bold text-indigo-400">1통=200장</span>
+                <span className="ml-1.5 font-bold text-indigo-400">1통={sheetsPerPack}장</span>
               </p>
               <div className="flex items-center gap-1 bg-white px-1 py-0.5 rounded-lg border border-indigo-200">
                 <button
@@ -1182,29 +1313,41 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
               {formMode === 'NEW' && (
                 <button
                   type="submit"
-                  className="w-full py-2.5 bg-gradient-to-r from-blue-500 to-indigo-600 text-white font-black text-[11px] rounded-lg shadow-sm hover:from-blue-600 hover:to-indigo-700 transition-all tracking-widest uppercase"
+                  disabled={!canEdit}
+                  title={!canEdit ? '편집 권한 필요' : undefined}
+                  className={`w-full py-2.5 font-black text-[11px] rounded-lg shadow-sm transition-all tracking-widest uppercase ${
+                    canEdit
+                      ? 'bg-gradient-to-r from-blue-500 to-indigo-600 text-white hover:from-blue-600 hover:to-indigo-700'
+                      : DISABLED_ACTION_BTN
+                  }`}
                 >
                   🚀 명함 원본 데이터 발주 신청
                 </button>
               )}
 
-              {formMode === 'VIEW' && form.adminStatus === '대기중' && (
+              {formMode === 'VIEW' && (form.adminStatus === '대기중' || form.adminStatus === '반려') && (
                 <button
                   type="button"
+                  disabled={!canEdit}
+                  title={!canEdit ? '편집 권한 필요' : undefined}
                   onClick={handleEnableEdit}
-                  className="w-full py-2.5 bg-indigo-600 text-white font-black text-[11px] rounded-lg shadow-sm hover:bg-indigo-700 transition-colors tracking-widest uppercase"
+                  className={`w-full py-2.5 font-black text-[11px] rounded-lg shadow-sm transition-colors tracking-widest uppercase ${
+                    canEdit
+                      ? 'bg-indigo-600 text-white hover:bg-indigo-700'
+                      : DISABLED_ACTION_BTN
+                  }`}
                 >
                   📝 신청 정보 수정하기
                 </button>
               )}
 
-              {formMode === 'VIEW' && form.adminStatus !== '대기중' && (
+              {formMode === 'VIEW' && form.adminStatus !== '대기중' && form.adminStatus !== '반려' && (
                 <button
                   type="button"
                   disabled
                   className="w-full py-2.5 bg-slate-200 text-slate-500 font-black text-[11px] rounded-lg shadow-inner cursor-not-allowed tracking-widest uppercase"
                 >
-                  🔒 공정 진행 중 (수정 불가)
+                  정보 확인
                 </button>
               )}
 
@@ -1219,7 +1362,13 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
                   </button>
                   <button
                     type="submit"
-                    className="py-2.5 bg-emerald-600 text-white font-black text-[11px] rounded-lg shadow-sm hover:bg-emerald-700 transition-colors tracking-widest uppercase"
+                    disabled={!canEdit}
+                    title={!canEdit ? '편집 권한 필요' : undefined}
+                    className={`py-2.5 font-black text-[11px] rounded-lg shadow-sm transition-colors tracking-widest uppercase ${
+                      canEdit
+                        ? 'bg-emerald-600 text-white hover:bg-emerald-700'
+                        : DISABLED_ACTION_BTN
+                    }`}
                   >
                     💾 변경사항 저장하기
                   </button>
@@ -1232,7 +1381,7 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
       )}
 
       {/* 내역 보관함 테이블 — supplies/dept 동일 헤더·표 스타일 */}
-      <div className="mt-6 bg-white border border-slate-200 rounded-[2.5rem] shadow-sm overflow-hidden animate-in fade-in duration-300 slide-in-from-top-4">
+      <div className="bg-white border border-slate-200 rounded-[2.5rem] shadow-sm overflow-hidden animate-in fade-in duration-300 slide-in-from-top-4">
         <div className="p-4 px-6 bg-slate-200/70 border-b border-slate-300 flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-2">
             <div className="w-2.5 h-2.5 rounded-full bg-blue-600" />
@@ -1253,7 +1402,10 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
               <span className="text-[10px] font-black text-slate-400 uppercase">연도</span>
               <select
                 value={yearFilter}
-                onChange={(e) => setYearFilter(e.target.value)}
+                onChange={(e) => {
+                  setYearFilter(e.target.value);
+                  setMonthFilter('ALL');
+                }}
                 className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent"
               >
                 <option value="ALL">전체</option>
@@ -1276,6 +1428,13 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
             </div>
             <button
               type="button"
+              onClick={handleExportExcel}
+              className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-[10px] font-black shadow-sm hover:bg-emerald-700 transition-all whitespace-nowrap"
+            >
+              화면 목록 EXCEL 다운로드
+            </button>
+            <button
+              type="button"
               onClick={() => setIsHistoryOpen(!isHistoryOpen)}
               className="text-[11px] font-black bg-white text-slate-900 border border-slate-200 rounded-lg px-4 py-1.5 hover:bg-slate-100 transition-colors shadow-sm shrink-0"
             >
@@ -1291,9 +1450,10 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
                 <colgroup>
                   <col className="w-[56px]" />
                   <col className="w-[110px]" />
-                  <col className="w-[180px]" />
-                  <col className="w-[100px]" />
                   <col className="w-[140px]" />
+                  <col className="w-[140px]" />
+                  <col className="w-[88px]" />
+                  <col className="w-[120px]" />
                   <col className="w-[72px]" />
                   <col className="w-[100px]" />
                   <col className="w-[100px]" />
@@ -1304,7 +1464,8 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
                   <tr>
                     <th className="h-12 px-2 text-center">NO</th>
                     <th className="h-12 px-2 text-center whitespace-nowrap">신청일자</th>
-                    <th className="h-12 px-2">조직</th>
+                    <th className="h-12 px-2">본부 (상위 조직)</th>
+                    <th className="h-12 px-2">센터 (하위 조직)</th>
                     <th className="h-12 px-2">이름</th>
                     <th className="h-12 px-2 text-center whitespace-nowrap">신청내역</th>
                     <th className="h-12 px-2 text-center whitespace-nowrap">수량(통)</th>
@@ -1317,39 +1478,43 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
                 <tbody className="bg-white divide-y divide-slate-100 text-[11px] font-bold text-slate-700">
                   {paginatedHistory.length === 0 ? (
                     <tr>
-                      <td colSpan={10} className="p-16 text-center text-slate-400 text-xs">
+                      <td colSpan={11} className="p-16 text-center text-slate-400 text-xs">
                         조건에 일치하는 신청 내역이 없습니다.
                       </td>
                     </tr>
                   ) : (
                     paginatedHistory.map((row, index) => {
-                      const globalIndex = (historyPage - 1) * itemsPerPage + index + 1;
-                      const isModifiable = row.adminStatus === '대기중';
+                      const rowNo = filteredHistory.length - ((historyPage - 1) * itemsPerPage + index);
+                      const isModifiable = row.adminStatus === '대기중' || row.adminStatus === '반려';
                       const statusClass =
                         row.adminStatus === '지급완료'
-                          ? 'bg-purple-50 text-purple-700 border-purple-200'
+                          ? 'text-violet-700'
                           : row.adminStatus === '발주완료'
-                            ? 'bg-emerald-50 text-emerald-600 border-emerald-200'
+                            ? 'text-emerald-600'
                             : row.adminStatus === '접수완료'
-                              ? 'bg-blue-50 text-blue-600 border-blue-200'
-                              : 'bg-orange-50 text-orange-600 border-orange-200';
+                              ? 'text-blue-600'
+                              : row.adminStatus === '반려'
+                                ? 'text-red-600'
+                                : 'text-orange-600';
 
                       return (
                         <tr key={row.id} className="hover:bg-slate-50/50 h-12 transition-colors">
-                          <td className="px-2 text-center font-mono text-slate-500 tabular-nums">{globalIndex}</td>
+                          <td className="px-2 text-center font-mono text-slate-500 tabular-nums">{rowNo}</td>
                           <td className="px-2 text-center whitespace-nowrap tabular-nums text-slate-800">{row.applyDate}</td>
-                          <td className="px-2 truncate" title={`${row.deptHead || ''}${row.deptName ? ` / ${row.deptName}` : ''}`}>
-                            <span className="text-[10px] text-slate-500 block truncate">{row.deptHead || '-'}</span>
-                            <span className="text-slate-800 truncate">{row.deptName || ''}</span>
-                          </td>
+                          <td className="px-2 truncate" title={row.deptHead || ''}>{row.deptHead || '-'}</td>
+                          <td className="px-2 truncate" title={row.deptName || ''}>{row.deptName || <span className="text-slate-300">-</span>}</td>
                           <td className="px-2 text-slate-800 truncate">{row.userName}</td>
                           <td className="px-2 text-center">
                             <button
                               type="button"
                               onClick={() => handleDetailView(row)}
-                              className="px-2.5 py-1 bg-slate-800 text-white text-[10px] font-bold rounded-lg hover:bg-slate-700 shadow-sm transition-colors"
+                              className={`px-2.5 py-1 text-[10px] font-bold rounded-lg shadow-sm transition-colors ${
+                                isModifiable
+                                  ? 'bg-slate-800 text-white hover:bg-slate-700'
+                                  : 'bg-slate-200 text-slate-600 hover:bg-slate-300 border border-slate-300'
+                              }`}
                             >
-                              상세보기 🔎
+                              상세보기
                             </button>
                           </td>
                           <td className="px-2 text-center font-mono tabular-nums text-indigo-600">{row.quantity || 1}</td>
@@ -1367,9 +1532,14 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
                             )}
                           </td>
                           <td className="px-2 text-center">
-                            <span className={`inline-block border px-1.5 py-0.5 rounded text-[10px] font-bold whitespace-nowrap ${statusClass}`}>
+                            <span className={`text-[10px] font-bold whitespace-nowrap ${statusClass}`}>
                               {row.adminStatus}
                             </span>
+                            {row.applicantType === '관리자대행' && (
+                              <span className="ml-1 text-[10px] font-bold whitespace-nowrap text-indigo-700">
+                                관리자대행
+                              </span>
+                            )}
                           </td>
                           <td className="px-2 text-center whitespace-nowrap tabular-nums text-slate-800">
                             {row.processDate || <span className="text-slate-300">-</span>}
@@ -1378,8 +1548,14 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
                             {isModifiable ? (
                               <button
                                 type="button"
+                                disabled={!canEdit}
+                                title={!canEdit ? '편집 권한 필요' : undefined}
                                 onClick={() => handleCancelRequest(row.id, row.postNumber)}
-                                className="px-2 py-1 bg-rose-50 border border-rose-200 text-[10px] font-black rounded-lg hover:bg-rose-100 text-rose-600 transition-colors"
+                                className={`px-2 py-1 text-[10px] font-black rounded-lg transition-colors ${
+                                  canEdit
+                                    ? 'bg-rose-50 border border-rose-200 hover:bg-rose-100 text-rose-600'
+                                    : DISABLED_ACTION_BTN
+                                }`}
                               >
                                 신청취소
                               </button>
@@ -1448,10 +1624,10 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
               </p>
               
               <div className="mt-4 pt-3 border-t border-slate-100 flex justify-between items-center text-[10px] text-slate-500 font-black">
-                <span>수정자: {memoPopupTarget.adminModifierName || '관리자'}</span>
+                <span>수정자: {memoPopupTarget.adminModifierName || '-'}</span>
                 <span>
-                  {memoPopupTarget.adminModifiedAt 
-                    ? new Date(memoPopupTarget.adminModifiedAt).toLocaleString('ko-KR', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) 
+                  {memoPopupTarget.adminModifiedAt
+                    ? formatKSTDateTime(memoPopupTarget.adminModifiedAt)
                     : '-'}
                 </span>
               </div>
@@ -1459,7 +1635,7 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
 
             <div className="p-3 bg-slate-50 border-t border-slate-100">
                <button onClick={() => setMemoPopupTarget(null)} className="w-full py-2.5 bg-slate-800 text-white text-xs font-black rounded-lg hover:bg-slate-900 transition-colors">
-                 확인했습니다
+                 닫기
                </button>
             </div>
           </div>

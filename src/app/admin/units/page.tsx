@@ -6,7 +6,8 @@ export default function AdminUnitsPage() {
   const [units, setUnits] = useState<any[]>([]);
   const [newUnit, setNewUnit] = useState({ 
     unit_name: '', 
-    unit_name_en: '', // 💡 [신설] 영문 부서명 상태값 추가
+    unit_name_en: '',
+    unit_code: '',
     unit_type: 'CENTER', 
     parent_id: '', 
     sort_order: 0 
@@ -25,25 +26,39 @@ export default function AdminUnitsPage() {
 
   const handleLiveUpdate = async (id: string, payload: any) => {
     try {
-      const res = await fetch('/api/admin/units', { 
-        method: 'PATCH', 
-        body: JSON.stringify({ id, ...payload }) 
+      const res = await fetch('/api/admin/units', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, ...payload }),
       });
-      if (res.ok) await fetchUnits();
+      if (res.ok) {
+        await fetchUnits();
+        return true;
+      }
+      const data = await res.json().catch(() => ({}));
+      alert(data.message || '조직 정보 저장에 실패했습니다.');
+      await fetchUnits();
+      return false;
     } catch (error) {
-      alert("수정 오류 발생");
+      alert('수정 오류 발생');
+      return false;
     }
   };
 
   const handleAdd = async () => {
     if (!newUnit.unit_name.trim()) return alert("조직 명칭(국문)을 입력해 주세요.");
-    const res = await fetch('/api/admin/units', { 
-      method: 'POST', 
-      body: JSON.stringify(newUnit) 
+    if (!newUnit.unit_code.trim()) return alert("조직코드(unit_code)를 입력해 주세요. (예: PMD, PMC)");
+    const res = await fetch('/api/admin/units', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(newUnit),
     });
     if (res.ok) {
-      setNewUnit({ unit_name: '', unit_name_en: '', unit_type: 'CENTER', parent_id: '', sort_order: 0 });
+      setNewUnit({ unit_name: '', unit_name_en: '', unit_code: '', unit_type: 'CENTER', parent_id: '', sort_order: 0 });
       fetchUnits();
+    } else {
+      const data = await res.json().catch(() => ({}));
+      alert(data.message || '조직 추가에 실패했습니다.');
     }
   };
 
@@ -79,6 +94,14 @@ export default function AdminUnitsPage() {
           {/* 💡 [신설] 영문 조직명 입력란 */}
           <input 
             type="text" 
+            placeholder="조직코드 (예: PMD, PMC)" 
+            value={newUnit.unit_code} 
+            onChange={e => setNewUnit({...newUnit, unit_code: e.target.value.toUpperCase()})} 
+            className="p-2 border-0 rounded-xl text-xs w-28 outline-none font-black uppercase" 
+          />
+
+          <input 
+            type="text" 
             placeholder="조직 명칭 (영문)" 
             value={newUnit.unit_name_en} 
             onChange={e => setNewUnit({...newUnit, unit_name_en: e.target.value})} 
@@ -105,6 +128,7 @@ export default function AdminUnitsPage() {
             <tr>
               <th className="p-6">유형</th>
               <th className="p-6">조직 명칭 (수정 가능)</th>
+              <th className="p-6">조직코드</th>
               <th className="p-6">상위 조직 (이동 가능)</th>
               <th className="p-6">관리자(LV.2)</th>
               <th className="p-6 text-center">정렬</th>
@@ -151,6 +175,24 @@ export default function AdminUnitsPage() {
                       className="p-1 border-b border-transparent focus:border-blue-500 focus:outline-none bg-transparent font-bold text-slate-400 w-full transition-all disabled:text-gray-300 text-[10px]"
                     />
                   </div>
+                </td>
+
+                <td className="p-6">
+                  <input
+                    key={`${u.id}-${u.unit_code || ''}`}
+                    disabled={!u.is_active}
+                    type="text"
+                    placeholder="PMD"
+                    defaultValue={u.unit_code || ''}
+                    onBlur={(e) => {
+                      const next = e.target.value.trim().toUpperCase();
+                      if (next !== (u.unit_code || '')) {
+                        handleLiveUpdate(u.id, { unit_code: next });
+                      }
+                    }}
+                    className="w-24 p-1.5 border border-slate-200 rounded-lg text-[11px] font-black font-mono text-indigo-700 bg-indigo-50/50 outline-none focus:border-indigo-400 disabled:opacity-40 uppercase"
+                    title="제작물 관리번호용 고정 코드 (변경 시 신규 번호에만 반영)"
+                  />
                 </td>
 
                 {/* 3. 상위 조직 선택 (비활성 시 잠금) */}
