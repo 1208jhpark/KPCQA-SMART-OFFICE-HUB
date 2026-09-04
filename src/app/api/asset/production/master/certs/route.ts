@@ -17,7 +17,8 @@ const READ_PATHS = [
   '/asset/production/dept-master/archive',
 ];
 
-const CORE_CERT_IDS = [
+/** 시드 인증 — 삭제 시 LV_1/메뉴 Master 필요 */
+const SEED_CERT_IDS = new Set([
   'GSEED',
   'BF',
   'CONDENDSATION',
@@ -31,15 +32,17 @@ const CORE_CERT_IDS = [
   'ENERGY_JEBON',
   'OLD_ZEB_JEBON',
   'INTEGRATED_ZEB_JEBON',
-];
+]);
 
 type MultiGradeRow = { certId: string; useMultiGradeSelect: boolean };
+type LinkedPlatesRow = { certId: string; linkedPlateCodes: unknown };
 
 type JebonFormRow = {
   certId: string;
   jebonDefaultSizeType: string;
   jebonDefaultQuantity: number;
   useJebonCover: boolean;
+  useJebonCoverDate: boolean;
   jebonCoverColor: string;
   jebonCoverPageCount: string;
   jebonInnerColor: string;
@@ -72,47 +75,139 @@ async function saveMultiGradeFlag(certId: string, useMultiGradeSelect: boolean) 
   `;
 }
 
+function normalizeLinkedPlateCodes(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const item of raw) {
+    const code = String(item || '').trim();
+    if (!code || seen.has(code)) continue;
+    seen.add(code);
+    out.push(code);
+  }
+  return out;
+}
+
+async function loadLinkedPlatesMap() {
+  try {
+    const rows = await prisma.$queryRaw<LinkedPlatesRow[]>`
+      SELECT "certId", "linkedPlateCodes"
+      FROM "ProductionCertMaster"
+      WHERE "isActive" = true
+    `;
+    return new Map(
+      rows.map((row) => [row.certId, normalizeLinkedPlateCodes(row.linkedPlateCodes)])
+    );
+  } catch {
+    return new Map<string, string[]>();
+  }
+}
+
+async function loadLinkedPlateCodes(certId: string): Promise<string[]> {
+  try {
+    const rows = await prisma.$queryRaw<LinkedPlatesRow[]>`
+      SELECT "certId", "linkedPlateCodes"
+      FROM "ProductionCertMaster"
+      WHERE "certId" = ${certId}
+      LIMIT 1
+    `;
+    return normalizeLinkedPlateCodes(rows[0]?.linkedPlateCodes);
+  } catch {
+    return [];
+  }
+}
+
+async function saveLinkedPlateCodes(certId: string, codes: string[]) {
+  const payload = JSON.stringify(normalizeLinkedPlateCodes(codes));
+  await prisma.$executeRawUnsafe(
+    `UPDATE "ProductionCertMaster" SET "linkedPlateCodes" = $1::jsonb WHERE "certId" = $2`,
+    payload,
+    certId
+  );
+}
+
 async function loadJebonFormMap() {
-  const rows = await prisma.$queryRaw<JebonFormRow[]>`
-    SELECT
-      "certId",
-      "jebonDefaultSizeType",
-      "jebonDefaultQuantity",
-      "useJebonCover",
-      "jebonCoverColor",
-      "jebonCoverPageCount",
-      "jebonInnerColor"
-    FROM "ProductionCertMaster"
-    WHERE "isActive" = true
-  `;
-  return new Map(rows.map((row) => [row.certId, row]));
+  try {
+    const rows = await prisma.$queryRaw<JebonFormRow[]>`
+      SELECT
+        "certId",
+        "jebonDefaultSizeType",
+        "jebonDefaultQuantity",
+        "useJebonCover",
+        "useJebonCoverDate",
+        "jebonCoverColor",
+        "jebonCoverPageCount",
+        "jebonInnerColor"
+      FROM "ProductionCertMaster"
+      WHERE "isActive" = true
+    `;
+    return new Map(rows.map((row) => [row.certId, row]));
+  } catch {
+    const rows = await prisma.$queryRaw<
+      Omit<JebonFormRow, 'useJebonCoverDate'>[]
+    >`
+      SELECT
+        "certId",
+        "jebonDefaultSizeType",
+        "jebonDefaultQuantity",
+        "useJebonCover",
+        "jebonCoverColor",
+        "jebonCoverPageCount",
+        "jebonInnerColor"
+      FROM "ProductionCertMaster"
+      WHERE "isActive" = true
+    `;
+    return new Map(
+      rows.map((row) => [row.certId, { ...row, useJebonCoverDate: true }])
+    );
+  }
 }
 
 async function loadJebonFormFlags(certId: string): Promise<JebonFormRow> {
-  const rows = await prisma.$queryRaw<JebonFormRow[]>`
-    SELECT
-      "certId",
-      "jebonDefaultSizeType",
-      "jebonDefaultQuantity",
-      "useJebonCover",
-      "jebonCoverColor",
-      "jebonCoverPageCount",
-      "jebonInnerColor"
-    FROM "ProductionCertMaster"
-    WHERE "certId" = ${certId}
-    LIMIT 1
-  `;
-  return (
-    rows[0] ?? {
-      certId,
-      jebonDefaultSizeType: 'A4',
-      jebonDefaultQuantity: 1,
-      useJebonCover: true,
-      jebonCoverColor: '컬러',
-      jebonCoverPageCount: '1',
-      jebonInnerColor: '흑백',
-    }
-  );
+  try {
+    const rows = await prisma.$queryRaw<JebonFormRow[]>`
+      SELECT
+        "certId",
+        "jebonDefaultSizeType",
+        "jebonDefaultQuantity",
+        "useJebonCover",
+        "useJebonCoverDate",
+        "jebonCoverColor",
+        "jebonCoverPageCount",
+        "jebonInnerColor"
+      FROM "ProductionCertMaster"
+      WHERE "certId" = ${certId}
+      LIMIT 1
+    `;
+    if (rows[0]) return rows[0];
+  } catch {
+    const rows = await prisma.$queryRaw<
+      Omit<JebonFormRow, 'useJebonCoverDate'>[]
+    >`
+      SELECT
+        "certId",
+        "jebonDefaultSizeType",
+        "jebonDefaultQuantity",
+        "useJebonCover",
+        "jebonCoverColor",
+        "jebonCoverPageCount",
+        "jebonInnerColor"
+      FROM "ProductionCertMaster"
+      WHERE "certId" = ${certId}
+      LIMIT 1
+    `;
+    if (rows[0]) return { ...rows[0], useJebonCoverDate: true };
+  }
+  return {
+    certId,
+    jebonDefaultSizeType: 'A4',
+    jebonDefaultQuantity: 1,
+    useJebonCover: true,
+    useJebonCoverDate: true,
+    jebonCoverColor: '컬러',
+    jebonCoverPageCount: '1',
+    jebonInnerColor: '흑백',
+  };
 }
 
 async function saveJebonFormFlags(
@@ -125,6 +220,7 @@ async function saveJebonFormFlags(
       "jebonDefaultSizeType" = ${flags.jebonDefaultSizeType},
       "jebonDefaultQuantity" = ${flags.jebonDefaultQuantity},
       "useJebonCover" = ${flags.useJebonCover},
+      "useJebonCoverDate" = ${flags.useJebonCoverDate},
       "jebonCoverColor" = ${flags.jebonCoverColor},
       "jebonCoverPageCount" = ${flags.jebonCoverPageCount},
       "jebonInnerColor" = ${flags.jebonInnerColor}
@@ -141,15 +237,18 @@ export async function GET() {
     });
     const multiMap = await loadMultiGradeMap();
     const jebonMap = await loadJebonFormMap();
+    const plateMap = await loadLinkedPlatesMap();
     return NextResponse.json(
       certs.map((cert) => {
         const jebon = jebonMap.get(cert.certId);
         return {
           ...cert,
           useMultiGradeSelect: multiMap.get(cert.certId) ?? false,
+          linkedPlateCodes: plateMap.get(cert.certId) ?? [],
           jebonDefaultSizeType: jebon?.jebonDefaultSizeType ?? 'A4',
           jebonDefaultQuantity: Number(jebon?.jebonDefaultQuantity) || 1,
           useJebonCover: jebon?.useJebonCover ?? true,
+          useJebonCoverDate: jebon?.useJebonCoverDate ?? true,
           jebonCoverColor: jebon?.jebonCoverColor ?? '컬러',
           jebonCoverPageCount: jebon?.jebonCoverPageCount ?? '1',
           jebonInnerColor: jebon?.jebonInnerColor ?? '흑백',
@@ -177,9 +276,9 @@ export async function POST(req: Request) {
       return NextResponse.json({ message: 'type은 SIGN 또는 JEBON 이어야 합니다.' }, { status: 400 });
     }
 
-    // 신규 등록은 메뉴 접근만, 서식/등급 수정은 Edit 권한 필요
+    // 신규 등록·수정 모두 Edit 권한 필요
     const existing = await prisma.productionCertMaster.findUnique({ where: { certId } });
-    await authorizeApi(MENU_PATH, { requireEditor: !!existing });
+    await authorizeApi(MENU_PATH, { requireEditor: true });
 
     const grades = Array.isArray(body.grades)
       ? body.grades.map((g: unknown) => String(g))
@@ -205,6 +304,11 @@ export async function POST(req: Request) {
       body.useMultiGradeSelect !== undefined
         ? Boolean(body.useMultiGradeSelect)
         : existingMultiGrade;
+    const existingLinkedPlates = existing ? await loadLinkedPlateCodes(certId) : [];
+    const linkedPlateCodes =
+      body.linkedPlateCodes !== undefined
+        ? normalizeLinkedPlateCodes(body.linkedPlateCodes)
+        : existingLinkedPlates;
     const format =
       body.format !== undefined ? String(body.format) : existing?.format ?? '';
     const jebonFormat =
@@ -219,6 +323,7 @@ export async function POST(req: Request) {
           jebonDefaultSizeType: 'A4',
           jebonDefaultQuantity: 1,
           useJebonCover: true,
+          useJebonCoverDate: true,
           jebonCoverColor: '컬러',
           jebonCoverPageCount: '1',
           jebonInnerColor: '흑백',
@@ -236,6 +341,10 @@ export async function POST(req: Request) {
         body.useJebonCover !== undefined
           ? Boolean(body.useJebonCover)
           : existingJebon.useJebonCover,
+      useJebonCoverDate:
+        body.useJebonCoverDate !== undefined
+          ? Boolean(body.useJebonCoverDate)
+          : existingJebon.useJebonCoverDate,
       jebonCoverColor:
         body.jebonCoverColor !== undefined
           ? String(body.jebonCoverColor)
@@ -277,11 +386,12 @@ export async function POST(req: Request) {
     });
 
     await saveMultiGradeFlag(certId, useMultiGradeSelect);
+    await saveLinkedPlateCodes(certId, linkedPlateCodes);
     await saveJebonFormFlags(certId, jebonFlags);
 
     return NextResponse.json({
       message: '저장 완료',
-      data: { ...cert, useMultiGradeSelect, ...jebonFlags },
+      data: { ...cert, useMultiGradeSelect, linkedPlateCodes, ...jebonFlags },
     });
   } catch (error) {
     const authRes = authErrorToResponse(error);
@@ -295,16 +405,20 @@ export async function POST(req: Request) {
 
 export async function DELETE(req: Request) {
   try {
-    await authorizeAnyMenuPaths(READ_PATHS, { requireEditor: true });
+    const auth = await authorizeAnyMenuPaths(READ_PATHS, { requireEditor: true });
     const { searchParams } = new URL(req.url);
     const certId = searchParams.get('certId');
     if (!certId) return NextResponse.json({ message: 'ID가 필요합니다.' }, { status: 400 });
 
-    if (CORE_CERT_IDS.includes(certId)) {
-      return NextResponse.json(
-        { message: '시스템 핵심 기본값은 삭제할 수 없습니다.' },
-        { status: 403 }
-      );
+    if (SEED_CERT_IDS.has(certId)) {
+      const isLv1OrMaster =
+        auth.permission.isMaster || auth.permission.myRole === 'LV_1';
+      if (!isLv1OrMaster) {
+        return NextResponse.json(
+          { message: '시드 인증 삭제는 LV_1(마스터) 권한이 필요합니다.' },
+          { status: 403 }
+        );
+      }
     }
 
     const row = await prisma.productionCertMaster.findUnique({ where: { certId } });

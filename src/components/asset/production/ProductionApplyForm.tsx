@@ -21,6 +21,30 @@ type CompanyAddressRow = {
   isActive: boolean;
 };
 
+type JebonSizeMasterRow = {
+  code: string;
+  label: string;
+  size: string;
+  description: string;
+};
+
+const isJebonCustomSizeCode = (code: string) => code === '비규격' || code === 'CUSTOM';
+
+const formatJebonSizeSelectLabel = (row: JebonSizeMasterRow) => {
+  const spec = row.size?.trim();
+  const desc = row.description?.trim();
+  if (spec && desc) return `${row.label} (${spec}) — ${desc}`;
+  if (spec) return `${row.label} (${spec})`;
+  if (desc) return `${row.label} — ${desc}`;
+  return row.label;
+};
+
+const resolveJebonSizeSpec = (code: string, rows: JebonSizeMasterRow[]) => {
+  if (isJebonCustomSizeCode(code)) return '';
+  const row = rows.find((r) => r.code === code);
+  return row?.size?.trim() || code;
+};
+
 type JebonCertMasterRow = {
   id: string;
   label: string;
@@ -28,19 +52,37 @@ type JebonCertMasterRow = {
   jebonDefaultSizeType: string;
   jebonDefaultQuantity: number;
   useJebonCover: boolean;
+  useJebonCoverDate: boolean;
   jebonCoverColor: string;
   jebonCoverPageCount: string;
   jebonInnerColor: string;
 };
 
-const JEBON_SIZE_OPTIONS = [
-  { value: 'A4', label: 'A4 (210 × 297mm) - 표준 기본' },
-  { value: 'B5', label: 'B5 (182 × 257mm)' },
-  { value: 'A5', label: 'A5 (148 × 210mm)' },
-  { value: 'B6', label: 'B6  (128 × 182mm)' },
-  { value: '16절', label: '16절 (197 × 272mm)' },
-  { value: '비규격', label: '기타 비규격 (직접 입력)' },
+const JEBON_SIZE_FALLBACK: JebonSizeMasterRow[] = [
+  { code: 'A4', label: 'A4', size: '210 × 297mm', description: '표준 기본' },
+  { code: 'B5', label: 'B5', size: '182 × 257mm', description: '' },
+  { code: 'A5', label: 'A5', size: '148 × 210mm', description: '' },
+  { code: 'B6', label: 'B6', size: '128 × 182mm', description: '' },
+  { code: '16절', label: '16절', size: '197 × 272mm', description: '' },
+  { code: '비규격', label: '비규격', size: '', description: '직접 입력' },
+];
+
+/** 시드 판형 — 삭제(LV_1) 라벨·권한 구분용 */
+const SEED_JEBON_SIZE_IDS = [
+  'A4',
+  'B5',
+  'A5',
+  'B6',
+  '16절',
+  '비규격',
 ] as const;
+
+const isSeedJebonSizeCode = (code: string) =>
+  SEED_JEBON_SIZE_IDS.includes(code as (typeof SEED_JEBON_SIZE_IDS)[number]);
+
+/** 종류·규격·설명·버튼 열 너비 고정 (행마다 flex 밀림 방지) */
+const JEBON_SIZE_MASTER_GRID =
+  'grid grid-cols-1 md:grid-cols-[minmax(4rem,0.85fr)_minmax(7rem,1.5fr)_minmax(4rem,1fr)_7.25rem] gap-x-3 gap-y-2 items-end';
 
 const buildProductionShippingAddress = (data: {
   shippingZipCode?: string;
@@ -59,7 +101,9 @@ const buildProductionShippingAddress = (data: {
 
 const DISABLED_ACTION_BTN =
   'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed opacity-70 shadow-none';
-const CORE_CERT_IDS = [
+
+/** 시드 인증 — 버튼 라벨·삭제 권한(LV_1) 구분용 */
+const SEED_CERT_IDS = [
   'GSEED',
   'BF',
   'CONDENDSATION',
@@ -73,16 +117,9 @@ const CORE_CERT_IDS = [
   'ENERGY_JEBON',
   'OLD_ZEB_JEBON',
   'INTEGRATED_ZEB_JEBON',
-];
+] as const;
 
-type CustomRequestLabel = '메인문구(한글)' | '메인문구(영문)' | '기타';
-const CUSTOM_REQUEST_LABELS: CustomRequestLabel[] = ['메인문구(한글)', '메인문구(영문)', '기타'];
-
-const customRequestPlaceholder = (label: CustomRequestLabel) => {
-  if (label === '메인문구(한글)') return '예) 품질경영시스템 인증기업';
-  if (label === '메인문구(영문)') return '예) The Company in Integrated...';
-  return '요청 사항 혹은 하단 프리뷰 문구 보조 제어 스펙 자유 기재란';
-};
+type CustomRequestRow = { id: number; value: string };
 
 // 카테고리 마스터 탭 설정
 const CATEGORIES = [
@@ -110,11 +147,15 @@ export default function ProductionApplyForm() {
     editLevel: string;
   } | null>(null);
 
-  const canEdit = useMemo(
-    () => resolveInterfaceEditState(currentUser, interfaceConfig).isEditor,
+  const editState = useMemo(
+    () => resolveInterfaceEditState(currentUser, interfaceConfig),
     [currentUser, interfaceConfig]
   );
+  const canEdit = editState.isEditor;
+  /** 시드 인증 삭제(LV_1) — 시스템 LV_1 또는 메뉴 Master만 */
+  const canDeleteLv1Cert = editState.isMaster;
   const alertNoEditPermission = () => alert('편집 권한이 없습니다.');
+  const alertNoLv1Permission = () => alert('시드 항목 삭제는 LV_1(마스터) 권한이 필요합니다.');
 
   const handleVendorPriorityChange = async (
     vendor: {
@@ -233,12 +274,25 @@ export default function ProductionApplyForm() {
       useCertNumber: boolean;
       useValidPeriod: boolean;
       useMultiGradeSelect: boolean;
+      linkedPlateCodes: string[];
     }[]
   >([]);
   const [jebonCertMasterList, setJebonCertMasterList] = useState<JebonCertMasterRow[]>([]);
 
   // ⚙️ 모달 및 에디터 제어 변수 정의
   const [popSubTab, setPopSubTab] = useState<'SIGN_SUB' | 'JEBON_SUB'>('SIGN_SUB');
+  const [jebonSettingsTab, setJebonSettingsTab] = useState<'CERT' | 'SIZE'>('CERT');
+  const [jebonSizeMasterList, setJebonSizeMasterList] =
+    useState<JebonSizeMasterRow[]>(JEBON_SIZE_FALLBACK);
+  const [newJebonSize, setNewJebonSize] = useState({
+    label: '',
+    size: '',
+    description: '',
+  });
+  const [editingJebonSizeCode, setEditingJebonSizeCode] = useState<string | null>(null);
+  const [editingJebonSizeDraft, setEditingJebonSizeDraft] = useState<JebonSizeMasterRow | null>(
+    null
+  );
   const [editingCertId, setEditingCertId] = useState<string | null>(null);
   const [editingCertForm, setEditingCertForm] = useState({ label: '', format: '', jebonFormat: '' });
   const [editingJebonDraft, setEditingJebonDraft] = useState<{
@@ -250,6 +304,7 @@ export default function ProductionApplyForm() {
     jebonCoverPageCount: string;
     jebonInnerColor: string;
     jebonFormat: string;
+    useJebonCoverDate: boolean;
   } | null>(null);
   const [editingSignDraft, setEditingSignDraft] = useState<{
     label: string;
@@ -316,7 +371,7 @@ const [signData, setSignData] = useState({
   coverPageCount: '', 
   innerPageCount: '',
   coverPageFromAttachment: false,
-  innerPageFromAttachment: false,
+  innerPageFromAttachment: true,
   jebonSizeType: 'A4', 
   jebonSize: 'A4', 
   internalSystemSerial: '', 
@@ -390,6 +445,9 @@ const [signData, setSignData] = useState({
         useCertNumber: c.useCertNumber !== false,
         useValidPeriod: c.useValidPeriod !== false,
         useMultiGradeSelect: c.useMultiGradeSelect === true,
+        linkedPlateCodes: Array.isArray(c.linkedPlateCodes)
+          ? c.linkedPlateCodes.map(String)
+          : [],
       }));
     const jebonRows = list
       .filter((c) => c.type === 'JEBON')
@@ -400,6 +458,7 @@ const [signData, setSignData] = useState({
         jebonDefaultSizeType: c.jebonDefaultSizeType || 'A4',
         jebonDefaultQuantity: Math.max(1, Number(c.jebonDefaultQuantity) || 1),
         useJebonCover: c.useJebonCover !== false,
+        useJebonCoverDate: c.useJebonCoverDate !== false,
         jebonCoverColor: c.jebonCoverColor || '컬러',
         jebonCoverPageCount: c.jebonCoverPageCount || '1',
         jebonInnerColor: c.jebonInnerColor || '흑백',
@@ -477,10 +536,12 @@ const [signData, setSignData] = useState({
 
   const reloadMasters = async () => {
     const ts = Date.now();
-    const [vendorsRes, platesRes, certsRes, addressesRes, printItemsRes] = await Promise.all([
+    const [vendorsRes, platesRes, certsRes, jebonSizesRes, addressesRes, printItemsRes] =
+      await Promise.all([
       fetch(`/api/asset/production/master/vendors?t=${ts}`, { cache: 'no-store' }),
       fetch(`/api/asset/production/master/plates?t=${ts}`, { cache: 'no-store' }),
       fetch(`/api/asset/production/master/certs?t=${ts}`, { cache: 'no-store' }),
+      fetch(`/api/asset/production/master/jebon-sizes?t=${ts}`, { cache: 'no-store' }),
       fetch(`/api/asset/businesscard/master/addresses?t=${ts}`, { cache: 'no-store' }),
       fetch(`/api/asset/production/master/print-items?t=${ts}`, { cache: 'no-store' }),
     ]);
@@ -523,6 +584,18 @@ const [signData, setSignData] = useState({
     }
     if (certsRes.ok) {
       applyCertRows(await certsRes.json());
+    }
+    if (jebonSizesRes.ok) {
+      const sizes = await jebonSizesRes.json();
+      const rows = Array.isArray(sizes)
+        ? sizes.map((s: any) => ({
+            code: String(s.code || ''),
+            label: String(s.label || s.code || ''),
+            size: String(s.size || ''),
+            description: String(s.description || ''),
+          }))
+        : [];
+      setJebonSizeMasterList(rows.length > 0 ? rows : JEBON_SIZE_FALLBACK);
     }
     if (addressesRes.ok) {
       const rows = await addressesRes.json();
@@ -573,12 +646,18 @@ const [signData, setSignData] = useState({
 
     if (activeTab === 'PRINT') {
       if (tabChanged) {
+        setDeliveryMode('HQ_RECEIVE');
         setSignData((prev) => ({ ...prev, vendor: '' }));
       }
       return;
     }
 
     if (tabChanged) {
+      setDeliveryMode(
+        activeTab === 'JEBON' || activeTab === 'OFFICE_SUPPLIES'
+          ? 'HQ_RECEIVE'
+          : 'CUSTOMER_DIRECT'
+      );
       const priority = vendorMasterList.find((v) => v.priorityCategory === activeTab);
       if (priority) {
         setSignData((prev) => ({ ...prev, vendor: priority.id }));
@@ -645,9 +724,11 @@ const [signData, setSignData] = useState({
     useCertNumber?: boolean;
     useValidPeriod?: boolean;
     useMultiGradeSelect?: boolean;
+    linkedPlateCodes?: string[];
     jebonDefaultSizeType?: string;
     jebonDefaultQuantity?: number;
     useJebonCover?: boolean;
+    useJebonCoverDate?: boolean;
     jebonCoverColor?: string;
     jebonCoverPageCount?: string;
     jebonInnerColor?: string;
@@ -694,8 +775,8 @@ useEffect(() => {
 
 // 🚀 달력 팝업(type="date") 방식에 맞춘 제본 완료일자 포맷팅
 const formattedCompDate = useMemo(() => {
-  // 일반제본은 표지 일자 양식 없음 → 미리보기 공란
-  if (signData.certType === 'NORMAL') return '';
+  const targetCert = jebonCertMasterList.find((c) => c.id === signData.certType);
+  if (targetCert?.useJebonCoverDate === false) return '';
   // 값이 없으면 빈 칸 반환
   if (!signData.compDateRaw) return '';
 
@@ -707,7 +788,6 @@ const formattedCompDate = useMemo(() => {
   const m = String(parseInt(mRaw, 10));
   const d = String(parseInt(dRaw, 10));
 
-  const targetCert = jebonCertMasterList.find(c => c.id === signData.certType);
   const format = (targetCert?.jebonFormat || '').trim();
   // 양식 미설정 시 공란 (기본값으로 임의 포맷하지 않음)
   if (!format) return '';
@@ -757,13 +837,15 @@ const formattedValidPeriod = useMemo(() => {
   const [editingGradeValue, setEditingGradeValue] = useState<string>('');
   const [newGradeName, setNewGradeName] = useState('');
 
-  const [customRequests, setCustomRequests] = useState<
-    { id: number; label: CustomRequestLabel; value: string }[]
-  >([]);
+  const [customRequests, setCustomRequests] = useState<CustomRequestRow[]>([]);
   const [companyAddresses, setCompanyAddresses] = useState<CompanyAddressRow[]>([]);
   const [selectedCompanyAddressId, setSelectedCompanyAddressId] = useState('');
-  /** 제본: 묶음 발주 시 배송지 입력(기본 체크 → 실배송지 접힘) */
-  const [jebonBatchShipping, setJebonBatchShipping] = useState(true);
+  /** 실배송지 모드: 고객사 직발송 | 인증원 수령(부서 대장에서 입력) */
+  const [deliveryMode, setDeliveryMode] = useState<'CUSTOMER_DIRECT' | 'HQ_RECEIVE'>('CUSTOMER_DIRECT');
+  /** 제본 레거시 호환 — HQ_RECEIVE 와 동기 */
+  const jebonBatchShipping = deliveryMode === 'HQ_RECEIVE';
+  const setJebonBatchShipping = (checked: boolean) =>
+    setDeliveryMode(checked ? 'HQ_RECEIVE' : 'CUSTOMER_DIRECT');
 
   const currentSelectedInfo = useMemo(() => {
     const target = plateMasterList.find(p => p.code === signData.plateType);
@@ -782,11 +864,37 @@ const formattedValidPeriod = useMemo(() => {
   const useValidPeriodField = selectedSignCert?.useValidPeriod !== false;
   const useMultiGradeField = selectedSignCert?.useMultiGradeSelect === true;
 
+  /** 선택 인증에 연결된 현판 품목 (미연결 시 전체 — 설정 전 호환) */
+  const availableSignPlates = useMemo(() => {
+    const linked = selectedSignCert?.linkedPlateCodes || [];
+    if (linked.length === 0) return plateMasterList;
+    const set = new Set(linked);
+    return plateMasterList.filter((p) => set.has(p.code));
+  }, [selectedSignCert?.linkedPlateCodes, plateMasterList]);
+
+  // 인증 변경 시 연결되지 않은 품목이면 첫 연결 품목으로 맞춤
+  useEffect(() => {
+    if (activeTab !== 'SIGN') return;
+    if (availableSignPlates.length === 0) {
+      if (signData.plateType) {
+        setSignData((prev) => ({ ...prev, plateType: '' }));
+      }
+      return;
+    }
+    if (!availableSignPlates.some((p) => p.code === signData.plateType)) {
+      setSignData((prev) => ({
+        ...prev,
+        plateType: availableSignPlates[0].code,
+      }));
+    }
+  }, [activeTab, availableSignPlates, signData.plateType]);
+
   const selectedJebonCert = useMemo(
     () => jebonCertMasterList.find((c) => c.id === signData.certType),
     [jebonCertMasterList, signData.certType]
   );
   const useJebonCoverField = selectedJebonCert?.useJebonCover !== false;
+  const useJebonCoverDateField = selectedJebonCert?.useJebonCoverDate !== false;
 
   const selectedPrintItem = useMemo(
     () => printItemMasterList.find((p) => p.id === signData.printItemId),
@@ -802,41 +910,25 @@ const formattedValidPeriod = useMemo(() => {
     return 'EA';
   }, [activeTab, signData.printUnitValue, unitOptions]);
 
-  /** 제본 탭: 일반제본(NORMAL)은 인증 단계·표지 일자 생략 → 번호 연속 재매김 */
-  const jebonFormSteps = useMemo(() => {
-    const isNormal = signData.certType === 'NORMAL';
-    if (isNormal) {
-      return {
-        certType: 1,
-        certPhase: null as number | null,
-        size: 2,
-        cover: 3,
-        inner: 4,
-        coverMainTitle: 5,
-        subtitle: 6,
-        building: null as number | null,
-        coverDate: null as number | null,
-        customRequest: 7,
-      };
-    }
-    return {
+  /** 제본 탭: 필드 번호 고정 (인증 종류 무관) */
+  const jebonFormSteps = useMemo(
+    () => ({
       certType: 1,
       certPhase: 2,
       size: 3,
       cover: 4,
       inner: 5,
-      coverMainTitle: null as number | null,
-      subtitle: null as number | null,
       building: 6,
       coverDate: 7,
       customRequest: 8,
-    };
-  }, [signData.certType]);
+    }),
+    []
+  );
 
   const customRequestStepNumber = useMemo(() => {
     if (activeTab === 'SIGN') return 7;
     if (activeTab === 'JEBON') return jebonFormSteps.customRequest;
-    if (activeTab === 'PRINT') return 5;
+    if (activeTab === 'PRINT') return 4;
     return 7;
   }, [activeTab, jebonFormSteps.customRequest]);
 
@@ -893,21 +985,27 @@ const formattedValidPeriod = useMemo(() => {
     if (!cert) return;
     if (lastAppliedJebonDefaultsRef.current === cert.id) return;
     lastAppliedJebonDefaultsRef.current = cert.id;
-    const size = cert.jebonDefaultSizeType || 'A4';
+    const sizeCode = cert.jebonDefaultSizeType || jebonSizeMasterList[0]?.code || 'A4';
     setSignData((prev) => ({
       ...prev,
-      jebonSizeType: size,
-      jebonSize: size === '비규격' ? '' : size,
+      jebonSizeType: sizeCode,
+      jebonSize: resolveJebonSizeSpec(sizeCode, jebonSizeMasterList),
       quantity: Math.max(1, Number(cert.jebonDefaultQuantity) || 1),
       coverColor: cert.jebonCoverColor || '컬러',
       coverPageCount: cert.useJebonCover ? cert.jebonCoverPageCount || '1' : '',
       innerColor: cert.jebonInnerColor || '흑백',
       coverPageFromAttachment: false,
-      innerPageFromAttachment: false,
-      // 일반제본: 표지 일자 양식 없음 → 입력값 초기화
-      ...(cert.id === 'NORMAL' ? { compDateRaw: '' } : {}),
+      innerPageFromAttachment: true,
+      innerPageCount: '',
+      // 일반제본: 인증 단계 해당없음 · 표지 일자 비활성 시 입력 초기화
+      ...(cert.id === 'NORMAL'
+        ? { certPhase: '해당없음' }
+        : {
+            certPhase: prev.certPhase === '해당없음' ? '예비인증' : prev.certPhase,
+          }),
+      ...(cert.useJebonCoverDate === false ? { compDateRaw: '' } : {}),
     }));
-  }, [activeTab, signData.certType, jebonCertMasterList]);
+  }, [activeTab, signData.certType, jebonCertMasterList, jebonSizeMasterList]);
 
   const persistJebonCertRow = async (
     c: JebonCertMasterRow,
@@ -923,6 +1021,7 @@ const formattedValidPeriod = useMemo(() => {
       jebonDefaultSizeType: patch.jebonDefaultSizeType ?? c.jebonDefaultSizeType,
       jebonDefaultQuantity: patch.jebonDefaultQuantity ?? c.jebonDefaultQuantity,
       useJebonCover: patch.useJebonCover ?? c.useJebonCover,
+      useJebonCoverDate: patch.useJebonCoverDate ?? c.useJebonCoverDate,
       jebonCoverColor: patch.jebonCoverColor ?? c.jebonCoverColor,
       jebonCoverPageCount: patch.jebonCoverPageCount ?? c.jebonCoverPageCount,
       jebonInnerColor: patch.jebonInnerColor ?? c.jebonInnerColor,
@@ -937,6 +1036,7 @@ const formattedValidPeriod = useMemo(() => {
       jebonDefaultSizeType: c.jebonDefaultSizeType || 'A4',
       jebonDefaultQuantity: Math.max(1, Number(c.jebonDefaultQuantity) || 1),
       useJebonCover: c.useJebonCover !== false,
+      useJebonCoverDate: c.useJebonCoverDate !== false,
       jebonCoverColor: c.jebonCoverColor || '컬러',
       jebonCoverPageCount: c.jebonCoverPageCount || '1',
       jebonInnerColor: c.jebonInnerColor || '흑백',
@@ -959,10 +1059,11 @@ const formattedValidPeriod = useMemo(() => {
         jebonDefaultSizeType: editingJebonDraft.jebonDefaultSizeType,
         jebonDefaultQuantity: Math.max(1, Number(editingJebonDraft.jebonDefaultQuantity) || 1),
         useJebonCover: editingJebonDraft.useJebonCover,
+        useJebonCoverDate: editingJebonDraft.useJebonCoverDate,
         jebonCoverColor: editingJebonDraft.jebonCoverColor,
         jebonCoverPageCount: editingJebonDraft.jebonCoverPageCount || '1',
         jebonInnerColor: editingJebonDraft.jebonInnerColor,
-        jebonFormat: c.id === 'NORMAL' ? '' : editingJebonDraft.jebonFormat,
+        jebonFormat: editingJebonDraft.jebonFormat,
       });
       cancelJebonRowEdit();
     } catch (err: any) {
@@ -1086,7 +1187,79 @@ const formattedValidPeriod = useMemo(() => {
     }
   };
 
+  const handleAddJebonSizeMaster = async () => {
+    if (!newJebonSize.label.trim()) return alert('종류를 입력하세요.');
+    const code = `JSIZE_${Date.now()}`;
+    try {
+      const res = await fetch('/api/asset/production/master/jebon-sizes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          code,
+          label: newJebonSize.label.trim(),
+          size: newJebonSize.size.trim(),
+          description: newJebonSize.description.trim(),
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        return alert(err.error || err.message || '판형 저장 실패');
+      }
+      setNewJebonSize({ label: '', size: '', description: '' });
+      await reloadMasters();
+    } catch {
+      alert('판형 저장 중 오류가 발생했습니다.');
+    }
+  };
+
+  const handleSaveJebonSizeRow = async (row: JebonSizeMasterRow) => {
+    if (!canEdit) return alertNoEditPermission();
+    if (!row.label.trim()) return alert('종류를 입력하세요.');
+    try {
+      const res = await fetch('/api/asset/production/master/jebon-sizes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(row),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        return alert(err.error || err.message || '판형 저장 실패');
+      }
+      setEditingJebonSizeCode(null);
+      setEditingJebonSizeDraft(null);
+      await reloadMasters();
+    } catch {
+      alert('판형 저장 중 오류가 발생했습니다.');
+    }
+  };
+
+  const handleDeleteJebonSize = async (code: string) => {
+    if (isSeedJebonSizeCode(code)) {
+      if (!canDeleteLv1Cert) return alertNoLv1Permission();
+    } else if (!canEdit) {
+      return alertNoEditPermission();
+    }
+    if (jebonSizeMasterList.length <= 1) {
+      return alert('최소 한 개 이상의 판형이 존재해야 합니다.');
+    }
+    if (!confirm('해당 판형을 마스터에서 삭제(비활성)하시겠습니까?')) return;
+    try {
+      const res = await fetch(
+        `/api/asset/production/master/jebon-sizes?code=${encodeURIComponent(code)}`,
+        { method: 'DELETE' }
+      );
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        return alert(err.error || err.message || '삭제 실패');
+      }
+      await reloadMasters();
+    } catch {
+      alert('삭제 중 오류가 발생했습니다.');
+    }
+  };
+
   const handleAddCertMaster = async () => {
+    if (!canEdit) return alertNoEditPermission();
     if (!newCertName.trim()) return alert('인증 명칭을 기재해 주세요.');
     const type = popSubTab === 'SIGN_SUB' ? 'SIGN' : 'JEBON';
     const certId = `CERT_${Date.now()}`;
@@ -1104,6 +1277,7 @@ const formattedValidPeriod = useMemo(() => {
         jebonDefaultSizeType: 'A4',
         jebonDefaultQuantity: 1,
         useJebonCover: true,
+        useJebonCoverDate: true,
         jebonCoverColor: '컬러',
         jebonCoverPageCount: '1',
         jebonInnerColor: '흑백',
@@ -1115,12 +1289,14 @@ const formattedValidPeriod = useMemo(() => {
     }
   };
 
+  const isSeedCertId = (id: string) =>
+    SEED_CERT_IDS.includes(id as (typeof SEED_CERT_IDS)[number]);
+
   const handleIdDeleteCert = async (id: string) => {
-    if (!canEdit) return alertNoEditPermission();
-    if (CORE_CERT_IDS.includes(id)) {
-      return alert(
-        '⚠️ 시스템 핵심 기준 데이터입니다. 삭제할 수 없으며, 필요시 명칭(라벨) 수정만 가능합니다.'
-      );
+    if (isSeedCertId(id)) {
+      if (!canDeleteLv1Cert) return alertNoLv1Permission();
+    } else if (!canEdit) {
+      return alertNoEditPermission();
     }
     if (!confirm('이 인증 종류를 리스트에서 마스터 삭제하시겠습니까?')) return;
     try {
@@ -1155,10 +1331,20 @@ const handleSubmit = async () => {
 // [가드 2] 각 탭별 전용 필수 사양 검사
 if (activeTab === 'SIGN') {
   if (!signData.signFormTitle.trim()) return alert("관리용 제목을 입력해 주세요.");
+  if (!signData.plateType || availableSignPlates.length === 0) {
+    return alert('현판 품목을 선택해 주세요. (인증별 서식 설정에서 품목 연결 필요)');
+  }
+  const projectOrOrg =
+    signData.certType === 'ISO'
+      ? String(signData.isoCompanyName || '').trim()
+      : String(signData.projectName || '').trim();
+  if (!projectOrOrg) {
+    return alert('프로젝트명/건물명/경영시스템 조직명을 입력해 주세요.');
+  }
 } else if (activeTab === 'JEBON') {
     // 📚 jebonProjectName 대신 신설된 jebonFormTitle로 필수값 체크!
-    if (!signData.jebonFormTitle.trim() && !signData.coverName.trim()) {
-      return alert("관리용 제목 또는 별도 표지 명칭 중 최소 하나는 반드시 입력하셔야 합니다.");
+    if (!signData.jebonFormTitle.trim() && !signData.jebonBuildingName.trim() && !signData.coverName.trim()) {
+      return alert("관리용 제목 또는 프로젝트명/건물명/표지제목 중 최소 하나는 반드시 입력하셔야 합니다.");
     }
   } else if (activeTab === 'PRINT') {
     // 📜 printProjectName 대신 신설된 printFormTitle로 필수값 체크!
@@ -1173,10 +1359,10 @@ if (activeTab === 'SIGN') {
     if (!signData.suppliesQuoteRawText.trim()) return alert("견적서 텍스트 내용을 붙여넣어 주세요.");
   }
 
-// [가드 3] 실배송지 및 수량 필수 검사 (사무문구류 제외)
-// 제본 + 「묶음 발주시 입력」체크 시 배송지 필수 검사 스킵
-if (activeTab !== 'OFFICE_SUPPLIES') {
-  const skipShippingRequired = activeTab === 'JEBON' && jebonBatchShipping;
+// [가드 3] 실배송지 및 수량 필수 검사
+// 「인증원 수령/묶음 발주」선택 시 배송지 필수 검사 스킵 → 부서 대장에서 입력
+{
+  const skipShippingRequired = deliveryMode === 'HQ_RECEIVE';
   if (!skipShippingRequired) {
     if (!signData.receiverName.trim() || !signData.receiverPhone.trim()) {
       return alert('수령인 성명과 연락처를 입력해 주세요.');
@@ -1188,7 +1374,9 @@ if (activeTab !== 'OFFICE_SUPPLIES') {
       return alert('배송지 상세주소(동·호수 등)를 입력해 주세요.');
     }
   }
-  if (signData.quantity < 1) return alert('수량은 1개 이상이어야 합니다.');
+  if (activeTab !== 'OFFICE_SUPPLIES' && signData.quantity < 1) {
+    return alert('수량은 1개 이상이어야 합니다.');
+  }
 }
 
   const selectedPlate = plateMasterList.find(p => p.code === signData.plateType);
@@ -1205,17 +1393,30 @@ if (activeTab !== 'OFFICE_SUPPLIES') {
     category: activeTab,
     projectName: 
       activeTab === 'SIGN'            ? signData.signFormTitle :
-      activeTab === 'JEBON'           ? (signData.jebonFormTitle || signData.coverName) : // 👈 교체 (둘 중 있는 값 전송!)
+      activeTab === 'JEBON'           ? (signData.jebonFormTitle || signData.jebonBuildingName || signData.coverName) :
       activeTab === 'PRINT'           ? signData.printFormTitle : 
                                         signData.suppliesProjectName,
     quantity: activeTab === 'OFFICE_SUPPLIES' ? 1 : signData.quantity,
     estimatedPrice: activeTab === 'OFFICE_SUPPLIES' ? 0 : estimatedPrice,
     options: {
       ...signData,
-      shippingAddress: composedShippingAddress,
-      jebonBatchShipping: activeTab === 'JEBON' ? jebonBatchShipping : false,
-      companyAddressLabel:
-        companyAddresses.find((a) => a.id === selectedCompanyAddressId)?.label || '',
+      ...(deliveryMode === 'HQ_RECEIVE'
+        ? {
+            receiverName: '',
+            receiverPhone: '',
+            shippingZipCode: '',
+            shippingAddressRoad: '',
+            shippingAddressDetail: '',
+            shippingAddress: '',
+            companyAddressLabel: '',
+          }
+        : {
+            shippingAddress: composedShippingAddress,
+            companyAddressLabel:
+              companyAddresses.find((a) => a.id === selectedCompanyAddressId)?.label || '',
+          }),
+      deliveryMode,
+      jebonBatchShipping: deliveryMode === 'HQ_RECEIVE',
       isoCompanyName: signData.isoCompanyName, // 👈 백엔드로 데이터 무사히 넘기기 위해 추가
       vendor: selectedVendorInfo ? selectedVendorInfo.label : signData.vendor,
       certType: selectedCertInfo ? selectedCertInfo.label : signData.certType,
@@ -1225,7 +1426,12 @@ if (activeTab !== 'OFFICE_SUPPLIES') {
         signData.validPeriodRaw.replace(/\D/g, '').length > 0
           ? formattedValidPeriod
           : '',
-      formattedCompDate: formattedCompDate,
+      formattedCompDate:
+        activeTab === 'JEBON' &&
+        useJebonCoverDateField &&
+        signData.compDateRaw
+          ? formattedCompDate
+          : '',
       plateMasterInfo: currentSelectedInfo,
       printItemMasterInfo: selectedPrintItem
         ? {
@@ -1243,7 +1449,7 @@ if (activeTab !== 'OFFICE_SUPPLIES') {
         : null,
       customRequests: customRequests
         .filter((req) => req.value.trim() !== '')
-        .map((req) => ({ label: req.label, value: req.value.trim() })),
+        .map((req) => ({ value: req.value.trim() })),
     }
   };
 
@@ -1406,6 +1612,7 @@ return (
                   title="MASTER CRITERIA · 인증별 제본 서식"
                   onClick={() => {
                     setPopSubTab('JEBON_SUB');
+                    setJebonSettingsTab('CERT');
                     setEditingCertId(null);
                     setEditingJebonDraft(null);
                     setEditingSignDraft(null);
@@ -1478,16 +1685,92 @@ return (
 
                 <div className="p-6 bg-white rounded-2xl border border-yellow-200 space-y-6 shadow-sm">
 
-                  {/* 🚀 1행: 품목 선택 오른쪽에 견적명세 실시간 1:1 표출 */}
+                  {/* 1~2: 인증의 종류 | 등급/경영시스템 (좌우) */}
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-8 items-start">
                     <div>
-                      <label className="block text-[10px] font-black text-slate-500 tracking-widest uppercase mb-2">1. 품목 및 기본 사양 매핑 선택 <span className="text-red-500">*</span></label>
-                      <select value={signData.plateType} onChange={(e) => setSignData({ ...signData, plateType: e.target.value })} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-xs font-bold focus:ring-2 focus:ring-blue-500 outline-none cursor-pointer hover:bg-white">
-                        {plateMasterList.map(p => <option key={p.code} value={p.code}>{p.label} ({p.size})</option>)}
+                      <label className="block text-[10px] font-black text-slate-500 tracking-widest uppercase mb-2">1. 인증의 종류 <span className="text-red-500">*</span></label>
+                      <select value={signData.certType} onChange={(e) => setSignData({ ...signData, certType: e.target.value, certLevel: '' })} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-xs font-semibold focus:ring-2 focus:ring-blue-500 outline-none cursor-pointer hover:bg-white">
+                        {signCertMasterList.map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
                       </select>
                     </div>
-                    
-                    {/* 우측 바로 이동된 실시간 명세정보 테이블 */}
+
+                    <div>
+                      <label className="block text-[10px] font-black text-slate-500 tracking-widest uppercase mb-2">2. 인증 등급/종류 설정 <span className="text-red-500">*</span></label>
+
+                      {useMultiGradeField ? (
+                        <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-3">
+                          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5">
+                            {(gradeMasterMap[signData.certType] || []).map((grade) => {
+                              const checked = signData.certLevel.includes(grade);
+                              return (
+                                <label key={grade} className="flex items-start gap-2 text-[11px] font-bold text-slate-700 cursor-pointer select-none hover:text-blue-600 transition-colors p-1.5 bg-white border border-slate-100 rounded-lg shadow-sm min-w-0">
+                                  <input
+                                    type="checkbox"
+                                    checked={checked}
+                                    className="mt-0.5 w-3.5 h-3.5 accent-blue-600 rounded cursor-pointer shrink-0"
+                                    onChange={() => {
+                                      let currentList = signData.certLevel ? signData.certLevel.split(', ') : [];
+                                      if (checked) currentList = currentList.filter(x => x !== grade);
+                                      else currentList = [...currentList, grade];
+                                      setSignData({ ...signData, certLevel: currentList.join(', ') });
+                                    }}
+                                  />
+                                  <span className="leading-snug break-keep">{grade}</span>
+                                </label>
+                              );
+                            })}
+                          </div>
+
+                          {signData.certLevel && (
+                            <div className="flex flex-wrap gap-1 border-t border-slate-200 pt-3 mt-1">
+                              {signData.certLevel.split(', ').map(tag => (
+                                <span key={tag} className="px-2 py-0.5 bg-blue-600 text-white text-[9px] font-black rounded-md shadow-sm animate-fade-in">✓ {tag}</span>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      ) : signData.certType === 'CONDENDSATION' ? (
+                        <div className="w-full bg-slate-100 text-slate-400 font-medium rounded-xl px-4 py-3 text-xs border border-slate-200 select-none">
+                          🚫 결로방지 성능평가는 별도의 마스터 등급 표기 사항이 없습니다.
+                        </div>
+                      ) : (
+                        <select value={signData.certLevel} onChange={(e) => setSignData({ ...signData, certLevel: e.target.value })} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-xs font-semibold focus:ring-2 focus:ring-blue-500 outline-none cursor-pointer hover:bg-white">
+                          {(gradeMasterMap[signData.certType] || []).map(g => <option key={g} value={g}>{g}</option>)}
+                        </select>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* 3: 현판 품목 — 선택 인증에 연결된 품목만 */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-8 items-start border-t border-slate-100 pt-4">
+                    <div>
+                      <label className="block text-[10px] font-black text-slate-500 tracking-widest uppercase mb-2">
+                        3. 현판 품목 설정 <span className="text-red-500">*</span>
+                      </label>
+                      {availableSignPlates.length === 0 ? (
+                        <div className="w-full bg-amber-50 text-amber-800 font-bold rounded-xl px-4 py-3 text-xs border border-amber-200">
+                          이 인증에 연결된 현판 품목이 없습니다. 「인증별 현판 서식 설정」에서 품목을 체크해 주세요.
+                        </div>
+                      ) : (
+                        <select
+                          value={signData.plateType}
+                          onChange={(e) => setSignData({ ...signData, plateType: e.target.value })}
+                          className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-xs font-bold focus:ring-2 focus:ring-blue-500 outline-none cursor-pointer hover:bg-white"
+                        >
+                          {availableSignPlates.map((p) => (
+                            <option key={p.code} value={p.code}>
+                              {p.label} ({p.size})
+                            </option>
+                          ))}
+                        </select>
+                      )}
+                      {(selectedSignCert?.linkedPlateCodes?.length || 0) === 0 && plateMasterList.length > 0 && (
+                        <p className="mt-1.5 text-[9px] font-bold text-slate-400">
+                          ※ 아직 품목 미연결 — 전체 품목이 표시됩니다. 서식 설정에서 연결하면 해당 품목만 남습니다.
+                        </p>
+                      )}
+                    </div>
+
                     <div className="bg-slate-50/50 rounded-xl border border-slate-200 overflow-hidden shadow-sm">
                       <table className="w-full text-left border-collapse text-[10px]">
                         <thead>
@@ -1508,73 +1791,12 @@ return (
                     </div>
                   </div>
 
-                  {/* 🚀 2행: 인증의 종류 & 인증상세/등급 조건부 가변 나열 행 */}
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-8 items-start border-t border-slate-100 pt-4">
-                    <div>
-                      <label className="block text-[10px] font-black text-slate-500 tracking-widest uppercase mb-2">2. 인증의 종류 <span className="text-red-500">*</span></label>
-                      <select value={signData.certType} onChange={(e) => setSignData({ ...signData, certType: e.target.value, certLevel: '' })} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-xs font-semibold focus:ring-2 focus:ring-blue-500 outline-none cursor-pointer hover:bg-white">
-                        {signCertMasterList.map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
-                      </select>
-                    </div>
-
-                    {/* 다이나믹 복합 인젝션 디스플레이 칸 */}
-                    <div>
-                      <label className="block text-[10px] font-black text-slate-500 tracking-widest uppercase mb-2">3. 인증상세 또는 등급 설정 <span className="text-red-500">*</span></label>
-                      
-                    
-                      {/* 케이스 A: 마스터에서 복수 선택으로 지정된 인증 */}
-                      {useMultiGradeField ? (
-                        <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-3">
-                          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2.5">
-                            {(gradeMasterMap[signData.certType] || []).map((grade) => {
-                              const checked = signData.certLevel.includes(grade);
-                              return (
-                                <label key={grade} className="flex items-center gap-2 text-[11px] font-bold text-slate-700 cursor-pointer select-none hover:text-blue-600 transition-colors p-1 bg-white border border-slate-100 rounded-lg shadow-sm">
-                                  <input 
-                                    type="checkbox" 
-                                    checked={checked} 
-                                    className="w-3.5 h-3.5 accent-blue-600 rounded cursor-pointer"
-                                    onChange={() => {
-                                      let currentList = signData.certLevel ? signData.certLevel.split(', ') : [];
-                                      if (checked) currentList = currentList.filter(x => x !== grade);
-                                      else currentList = [...currentList, grade];
-                                      setSignData({ ...signData, certLevel: currentList.join(', ') });
-                                    }}
-                                  />
-                                  <span className="truncate">{grade}</span>
-                                </label>
-                              );
-                            })}
-                          </div>
-                          
-                          {signData.certLevel && (
-                            <div className="flex flex-wrap gap-1 border-t border-slate-200 pt-3 mt-1">
-                              {signData.certLevel.split(', ').map(tag => (
-                                <span key={tag} className="px-2 py-0.5 bg-blue-600 text-white text-[9px] font-black rounded-md shadow-sm animate-fade-in">✓ {tag}</span>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      ) : signData.certType === 'CONDENDSATION' ? (
-                        /* 케이스 B: 결로방지 성능평가일 때 (선택 필재 요소 불필요 방어막) */
-                        <div className="w-full bg-slate-100 text-slate-400 font-medium rounded-xl px-4 py-3 text-xs border border-slate-200 select-none">
-                          🚫 결로방지 성능평가는 별도의 마스터 등급 표기 사항이 없습니다.
-                        </div>
-                      ) : (
-                        /* 케이스 C: 일반 건물인증군일 때 (기존 단일 셀렉트 드롭다운) */
-                        <select value={signData.certLevel} onChange={(e) => setSignData({ ...signData, certLevel: e.target.value })} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-xs font-semibold focus:ring-2 focus:ring-blue-500 outline-none cursor-pointer hover:bg-white">
-                          {(gradeMasterMap[signData.certType] || []).map(g => <option key={g} value={g}>{g}</option>)}
-                        </select>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* 🚀 4~5행: 2~3행과 동일 5:5 그리드 */}
+                  {/* 4~5행: 기존과 동일 */}
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-8 items-start border-t border-slate-100 pt-4">
                     <div>
                       <label className="block text-[10px] font-black text-slate-500 tracking-widest uppercase mb-2">
-                        4. 프로젝트명/건물명/시설명/기업명{' '}
-                        <span className="text-slate-400 font-medium">(선택)</span>
+                        4. 프로젝트명/건물명/경영시스템 조직명{' '}
+                        <span className="text-red-500">*</span>
                       </label>
                       {signData.certType === 'ISO' ? (
                         <input
@@ -1626,7 +1848,7 @@ return (
                     </div>
                   </div>
 
-                  {/* 명판 유효기간 — 2~3행과 동일 5:5 그리드 */}
+                  {/* 명판 유효기간 — 기존과 동일 */}
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-8 items-start border-t border-slate-100 pt-4">
                     <div>
                       <label className="block text-[10px] font-black text-slate-500 tracking-widest uppercase mb-2">
@@ -1715,8 +1937,7 @@ return (
                       ))}
                     </select>
                   </div>
-                  {signData.certType !== 'NORMAL' ? (
-                    <div className="animate-fade-in">
+                  <div className="animate-fade-in">
                       <label className="block text-[10px] font-black text-slate-500 tracking-widest uppercase mb-2">
                         {jebonFormSteps.certPhase}. 인증의 단계 <span className="text-red-500">*</span>
                       </label>
@@ -1725,41 +1946,42 @@ return (
                         onChange={(e) => setSignData({ ...signData, certPhase: e.target.value })}
                         className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-xs font-semibold text-slate-800 focus:ring-2 focus:ring-blue-500 outline-none cursor-pointer hover:bg-white"
                       >
+                        <option value="해당없음">해당없음</option>
                         <option value="예비인증">예비인증</option>
                         <option value="본인증">본인증</option>
                       </select>
                     </div>
-                  ) : (
-                    <div className="hidden md:block" />
-                  )}
                 </div>
 
                 {/* 🚀 1·2·3: 판형 / 표지 / 본문 — 한 줄 */}
                 <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
                   {/* 1. 제본 판형 */}
                   <div className="bg-slate-50/50 p-4 rounded-2xl border border-slate-200 shadow-sm space-y-3">
-                    <label className="block text-[10px] font-black text-slate-500 tracking-widest uppercase flex items-center gap-2">
-                      <span>📏</span> {jebonFormSteps.size}. 제본 판형 지정 <span className="text-red-500">*</span>
+                    <label className="block text-[10px] font-black text-slate-500 tracking-widest uppercase">
+                      <span className="flex items-center gap-2">
+                        <span>📏</span> {jebonFormSteps.size}. 제본 판형 지정{' '}
+                        <span className="text-red-500">*</span>
+                      </span>
                     </label>
                     <select
-                      value={signData.jebonSizeType || 'A4'}
+                      value={signData.jebonSizeType || jebonSizeMasterList[0]?.code || 'A4'}
                       onChange={(e) => {
                         const selectedType = e.target.value;
                         setSignData({
                           ...signData,
                           jebonSizeType: selectedType,
-                          jebonSize: selectedType === '비규격' ? '' : selectedType,
+                          jebonSize: resolveJebonSizeSpec(selectedType, jebonSizeMasterList),
                         });
                       }}
                       className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2.5 text-xs font-black text-slate-700 focus:ring-2 focus:ring-blue-500 outline-none cursor-pointer"
                     >
-                      {JEBON_SIZE_OPTIONS.map((opt) => (
-                        <option key={opt.value} value={opt.value}>
-                          {opt.label}
+                      {jebonSizeMasterList.map((opt) => (
+                        <option key={opt.code} value={opt.code}>
+                          {formatJebonSizeSelectLabel(opt)}
                         </option>
                       ))}
                     </select>
-                    {signData.jebonSizeType === '비규격' ? (
+                    {isJebonCustomSizeCode(signData.jebonSizeType) ? (
                       <input
                         type="text"
                         placeholder="예: A3 (297 x 420mm)"
@@ -1931,82 +2153,67 @@ return (
                   </div>
                 </div>
 
-                  {/* 🚀 5번 행: 일반제본 분기 처리 가변형 서식 필드군 */}
-                  {signData.certType === 'NORMAL' ? (
-                    // 1) 일반제본일 때는 메인 제목과 서브 부제목 2단 분할 구조로 가시성 극대화
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-8 animate-fade-in">
-                      <div>
-                        <label className="block text-[10px] font-black text-slate-500 tracking-widest uppercase mb-2">{jebonFormSteps.coverMainTitle}. 📄 제본 표지 메인 제목 <span className="text-red-500">*</span></label>
-                        <input 
-                          type="text" 
-                          placeholder="예) 2026년도 하반기 업무 보고서" 
-                          value={signData.coverName || ''} 
-                          onChange={(e) => setSignData({ ...signData, coverName: e.target.value })} 
-                          className="w-full bg-white border border-slate-200 focus:ring-2 focus:ring-blue-500 rounded-xl px-4 py-3 text-xs font-semibold outline-none shadow-sm" 
-                        />
-                      </div>
-                      <div>
-      <label className="block text-[10px] font-black text-slate-500 tracking-widest uppercase mb-2">
-        {jebonFormSteps.subtitle}. 📝 표지 서브 부제목 <span className="text-slate-400 font-medium">(선택)</span>
-      </label>
-      <input 
-        type="text" 
-        placeholder="예) 경영기획부 제출용 (소제목 및 부제 기입)" 
-        // 🚀 기존 projectName ➡️ 신설된 jebonSubtitle로 완벽 격리!
-        value={signData.jebonSubtitle || ''} 
-        onChange={(e) => setSignData({ ...signData, jebonSubtitle: e.target.value })} 
-        className="w-full bg-white border border-slate-200 focus:ring-2 focus:ring-blue-500 rounded-xl px-4 py-3 text-xs font-semibold outline-none" 
-      />
-    </div>
-                    </div>
-                  ) : (
-                    // 2) 일반인증 건물 제본일 때는 기존 2분할 폼 작동
-                    <div>
-      <label className="block text-[10px] font-black text-slate-500 tracking-widest uppercase mb-2">{jebonFormSteps.building}. 프로젝트명(건물명)</label>
-      <input 
-        type="text" 
-        placeholder="프로젝트명 또는 건물명을 입력해 주세요" 
-        // 🚀 jebonBuildingName으로 격리!
-        value={signData.jebonBuildingName || ''} 
-        onChange={(e) => setSignData({ ...signData, jebonBuildingName: e.target.value })} 
-        className="w-full bg-white border border-slate-200 rounded-xl px-4 py-3 text-xs font-semibold focus:ring-2 focus:ring-blue-500 outline-none" 
-      />
-    </div>
-                  )}
+                <div>
+                  <label className="block text-[10px] font-black text-slate-500 tracking-widest uppercase mb-2">
+                    {jebonFormSteps.building}. 프로젝트명/건물명/표지제목
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="프로젝트명·건물명·표지 제목 등 해당 시 기재"
+                    value={signData.jebonBuildingName || signData.coverName || ''}
+                    onChange={(e) =>
+                      setSignData({
+                        ...signData,
+                        jebonBuildingName: e.target.value,
+                        coverName: e.target.value,
+                      })
+                    }
+                    className="w-full bg-white border border-slate-200 rounded-xl px-4 py-3 text-xs font-semibold focus:ring-2 focus:ring-blue-500 outline-none"
+                  />
+                </div>
 
-                  {/* 표지 일자 — 일반제본(NORMAL)은 해당 없음 → 숨김 */}
-                  {signData.certType !== 'NORMAL' && jebonFormSteps.coverDate != null && (
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-8 items-start border-t border-slate-100 pt-4">
-                    <div>
-                      <label className="block text-[10px] font-black text-slate-500 tracking-widest uppercase mb-2">
-                        {jebonFormSteps.coverDate}. 표지 일자(인증 완료일 등){' '}
-                        <span className="text-slate-400 font-medium">(선택)</span>
-                      </label>
-                      <input
-                        type="date"
-                        value={signData.compDateRaw || ''}
-                        onChange={(e) => setSignData({ ...signData, compDateRaw: e.target.value })}
-                        className="w-full border rounded-xl px-4 py-3 text-xs font-black tracking-widest font-mono outline-none transition-all bg-white border-slate-200 text-slate-800 focus:ring-2 focus:ring-blue-500 cursor-pointer"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-[10px] font-black text-slate-500 tracking-widest uppercase mb-2">
-                        출력 양식 미리보기
-                      </label>
-                      <div className="w-full min-h-[46px] flex items-center px-4 py-3 rounded-xl border text-xs font-mono font-black tracking-wider bg-yellow-100/50 border-yellow-200 shadow-inner">
-                        <span className="truncate">
-                          {formattedCompDate ? (
-                            formattedCompDate
-                          ) : (
-                            <span className="text-yellow-600/60 font-medium">
-                              달력 선택 시 실시간 반영
-                            </span>
-                          )}
-                        </span>
-                      </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-8 items-start border-t border-slate-100 pt-4">
+                  <div>
+                    <label className="block text-[10px] font-black text-slate-500 tracking-widest uppercase mb-2">
+                      {jebonFormSteps.coverDate}. 표지 일자(인증 완료일 등){' '}
+                      <span className="text-slate-400 font-medium">(선택)</span>
+                    </label>
+                    <input
+                      type="date"
+                      value={signData.compDateRaw || ''}
+                      disabled={!useJebonCoverDateField}
+                      title={
+                        !useJebonCoverDateField
+                          ? '인증별 제본 서식 설정에서 표지 일자가 비활성화되어 있습니다'
+                          : undefined
+                      }
+                      onChange={(e) => setSignData({ ...signData, compDateRaw: e.target.value })}
+                      className={`w-full border rounded-xl px-4 py-3 text-xs font-black tracking-widest font-mono outline-none transition-all ${
+                        useJebonCoverDateField
+                          ? 'bg-white border-slate-200 text-slate-800 focus:ring-2 focus:ring-blue-500 cursor-pointer'
+                          : 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'
+                      }`}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-black text-slate-500 tracking-widest uppercase mb-2">
+                      출력 양식 미리보기
+                    </label>
+                    <div className="w-full min-h-[46px] flex items-center px-4 py-3 rounded-xl border text-xs font-mono font-black tracking-wider bg-yellow-100/50 border-yellow-200 shadow-inner">
+                      <span className="truncate">
+                        {!useJebonCoverDateField ? (
+                          <span className="text-slate-400 font-medium">표지 일자 미적용</span>
+                        ) : formattedCompDate ? (
+                          formattedCompDate
+                        ) : (
+                          <span className="text-yellow-600/60 font-medium">
+                            달력 선택 시 실시간 반영
+                          </span>
+                        )}
+                      </span>
                     </div>
                   </div>
-                  )}
+                </div>
                 </div>
               </div>
             )}
@@ -2260,7 +2467,7 @@ return (
                     onClick={() =>
                       setCustomRequests([
                         ...customRequests,
-                        { id: Date.now(), label: '기타', value: '' },
+                        { id: Date.now(), value: '' },
                       ])
                     }
                     className="px-2 py-0.5 bg-yellow-100 hover:bg-yellow-200 text-yellow-700 border border-yellow-300 rounded-md font-black text-[10px] flex items-center gap-1 transition-all shrink-0"
@@ -2269,7 +2476,7 @@ return (
                   </button>
                 </div>
                 <p className="text-[9px] text-slate-400 font-bold leading-snug">
-                  「➕ 추가」로 행을 만든 뒤, <span className="text-slate-500">우측 내용을 입력한 항목만</span> 신청서에 포함됩니다. 좌측만 선택하고 우측이 비어 있으면 제출 시 자동으로 제외됩니다.
+                  「➕ 추가」로 행을 만든 뒤, <span className="text-slate-500">내용을 입력한 항목만</span> 신청서에 포함됩니다. 빈 행은 제출 시 자동으로 제외됩니다.
                 </p>
                 {customRequests.length === 0 ? (
                   <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50/80 px-3 py-2.5 text-center text-[10px] font-bold text-slate-400">
@@ -2281,39 +2488,19 @@ return (
                     <span className="text-slate-400 font-mono font-bold w-3.5 shrink-0 text-right text-[10px]">
                       {index + 1}.
                     </span>
-                    <div className="flex-1 grid grid-cols-1 md:grid-cols-4 gap-2 min-w-0">
-                      <select
-                        value={req.label}
-                        onChange={(e) => {
-                          const label = e.target.value as CustomRequestLabel;
-                          setCustomRequests(
-                            customRequests.map((c) =>
-                              c.id === req.id ? { ...c, label } : c
-                            )
-                          );
-                        }}
-                        className="w-full md:col-span-1 bg-white border border-slate-200 rounded-lg px-2.5 py-2 text-[11px] font-bold text-slate-700 focus:ring-2 focus:ring-blue-500 outline-none cursor-pointer"
-                      >
-                        {CUSTOM_REQUEST_LABELS.map((label) => (
-                          <option key={label} value={label}>
-                            {label}
-                          </option>
-                        ))}
-                      </select>
-                      <input
-                        type="text"
-                        placeholder={customRequestPlaceholder(req.label)}
-                        value={req.value}
-                        onChange={(e) => {
-                          setCustomRequests(
-                            customRequests.map((c) =>
-                              c.id === req.id ? { ...c, value: e.target.value } : c
-                            )
-                          );
-                        }}
-                        className="w-full md:col-span-3 bg-white border border-slate-200 rounded-lg px-3 py-2 text-[11px] font-semibold focus:ring-2 focus:ring-blue-500 outline-none"
-                      />
-                    </div>
+                    <input
+                      type="text"
+                      placeholder="요청 사항 혹은 프리뷰 문구 보조 제어 스펙 등 자유롭게 기재"
+                      value={req.value}
+                      onChange={(e) => {
+                        setCustomRequests(
+                          customRequests.map((c) =>
+                            c.id === req.id ? { ...c, value: e.target.value } : c
+                          )
+                        );
+                      }}
+                      className="flex-1 min-w-0 bg-white border border-slate-200 rounded-lg px-3 py-2 text-[11px] font-semibold focus:ring-2 focus:ring-blue-500 outline-none"
+                    />
                     <button
                       type="button"
                       onClick={() =>
@@ -2333,36 +2520,44 @@ return (
           </div>
           {/* 🚀 [동적 변환 영역 종료] */}
 
-  {/* 🚚 최종 제작물 실배송지 섹션 (사무문구류 정산 탭일 때는 숨김) */}
-  {activeTab !== 'OFFICE_SUPPLIES' && (
+  {/* 🚚 최종 제작물 실배송지 섹션 */}
         <div className="p-6 bg-white rounded-2xl border border-slate-200 shadow-sm space-y-4">
           <h3 className="text-sm font-black text-slate-800 flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
             <div className="flex flex-wrap items-center gap-2 min-w-0">
               <span>🚚 최종 제작물 실배송지</span>
-              {activeTab === 'SIGN' && (
+              {deliveryMode === 'CUSTOMER_DIRECT' && (
                 <span className="text-[11px] font-bold text-red-500 bg-red-50 px-2.5 py-1 rounded-lg border border-red-200">
-                  ⚠️ 현판: 고객사/현장 직발송 여부 확인 | 그 외: 인증원 수령시에도 주소 기재
+                  고객사/현장 직발송 — 아래 실배송지를 입력해 주세요
                 </span>
               )}
-              {activeTab === 'JEBON' && !jebonBatchShipping && (
+              {deliveryMode === 'HQ_RECEIVE' && (
                 <span className="text-[11px] font-bold text-amber-700 bg-amber-50 px-2.5 py-1 rounded-lg border border-amber-200">
-                  개별 배송지가 필요한 경우 아래에서 입력해 주세요
+                  인증원 수령 — 실배송지는 부서 대장(발주)에서 입력합니다
                 </span>
               )}
             </div>
-            {activeTab === 'JEBON' && (
-              <label className="flex items-center gap-2 cursor-pointer select-none shrink-0 ml-auto">
+            <div className="flex flex-wrap items-center gap-3 shrink-0 ml-auto">
+              <label className="flex items-center gap-2 cursor-pointer select-none">
                 <input
                   type="checkbox"
-                  checked={jebonBatchShipping}
-                  onChange={(e) => setJebonBatchShipping(e.target.checked)}
+                  checked={deliveryMode === 'CUSTOMER_DIRECT'}
+                  onChange={() => setDeliveryMode('CUSTOMER_DIRECT')}
                   className="w-3.5 h-3.5 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
                 />
-                <span className="text-[11px] font-black text-slate-600">묶음 발주시 체크/개별 발주시 체크 해제</span>
+                <span className="text-[11px] font-black text-slate-600">고객사 직발송</span>
               </label>
-            )}
+              <label className="flex items-center gap-2 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={deliveryMode === 'HQ_RECEIVE'}
+                  onChange={() => setDeliveryMode('HQ_RECEIVE')}
+                  className="w-3.5 h-3.5 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                />
+                <span className="text-[11px] font-black text-slate-600">인증원 수령/묶음 발주</span>
+              </label>
+            </div>
           </h3>
-          {(activeTab !== 'JEBON' || !jebonBatchShipping) && (
+          {deliveryMode === 'CUSTOMER_DIRECT' && (
           <div className="space-y-4 pt-2 animate-fade-in">
             <div className="grid grid-cols-1 md:grid-cols-12 gap-4 items-start">
               <div className="md:col-span-2">
@@ -2458,7 +2653,6 @@ return (
           </div>
           )}
         </div>
-      )}
 
 {/* 🗂️ 시스템 내부 보관 보조 서식 섹션 (현판 탭에서만 노출) */}
 {activeTab === 'SIGN' && (
@@ -2474,7 +2668,7 @@ return (
               </label>
               <input 
                 type="text" 
-                placeholder="신청 회사 법인명" 
+                placeholder="회사명" 
                 value={signData.companyName} 
                 onChange={(e) => setSignData({...signData, companyName: e.target.value})} 
                 className="w-full bg-white border border-slate-200 rounded-xl px-4 py-3 text-xs font-semibold focus:ring-2 focus:ring-blue-500 outline-none" 
@@ -2482,11 +2676,11 @@ return (
             </div>
             <div>
               <label className="block text-[10px] font-black text-slate-500 tracking-widest mb-2">
-                기타 설명1 <span className="text-slate-400 font-medium">(선택)</span>
+                신청인 정보 <span className="text-slate-400 font-medium">(선택)</span>
               </label>
               <input 
                 type="text" 
-                placeholder="기타 설명1" 
+                placeholder="신청인 정보" 
                 value={signData.applicantName} 
                 onChange={(e) => setSignData({...signData, applicantName: e.target.value})} 
                 className="w-full bg-white border border-slate-200 rounded-xl px-4 py-3 text-xs font-semibold focus:ring-2 focus:ring-blue-500 outline-none" 
@@ -2494,29 +2688,23 @@ return (
             </div>
             <div>
               <label className="block text-[10px] font-black text-slate-500 tracking-widest mb-2">
-                기타 설명2 <span className="text-slate-400 font-medium">(선택)</span>
+                기타 <span className="text-slate-400 font-medium">(선택)</span>
               </label>
               <input 
                 type="text" 
-                placeholder="기타 설명2" 
+                placeholder="기타" 
                 value={signData.applicantPhone} 
                 onChange={(e) => setSignData({...signData, applicantPhone: e.target.value})} 
                 className="w-full bg-white border border-slate-200 rounded-xl px-4 py-3 text-xs font-semibold focus:ring-2 focus:ring-blue-500 outline-none" 
               />
             </div>
-            {activeTab === 'SIGN' && signData.certType === 'ISO' && (
-              <div className="md:col-span-3 pt-4 border-t border-slate-200 mt-2 animate-fade-in">
-                <label className="block text-[10px] font-black text-blue-600 tracking-widest uppercase mb-2">신청 현판 번호 (ISO 전용 내부 보관)</label>
-                <input type="text" placeholder="시스템용 신청 현판 번호 기재" value={signData.internalSystemSerial || ''} onChange={(e) => setSignData({ ...signData, internalSystemSerial: e.target.value })} className="w-full bg-white border border-blue-200 rounded-xl px-4 py-3 text-xs font-semibold focus:ring-2 focus:ring-blue-500 outline-none shadow-sm" />
-              </div>
-            )}
           </div>
         </div>
       )}
 
       {/* ⚡ 현판·제본·기타제작: 관리용 제목 — 스펙 입력 후 · 부수 입력 전 */}
       {['SIGN', 'JEBON', 'PRINT'].includes(activeTab) && (
-        <div className="p-6 bg-white rounded-2xl border border-yellow-200 shadow-sm space-y-3">
+        <div className="p-6 bg-white rounded-2xl border border-blue-200 shadow-sm space-y-3">
           <div className="flex items-center gap-2">
             <label className="block text-[10px] font-black text-slate-500 tracking-widest uppercase">
               관리용 제목 설정 <span className="text-red-500">*</span>
@@ -2550,21 +2738,31 @@ return (
                   });
                 } else {
                   const projectPart =
-                    signData.certType === 'NORMAL'
-                      ? signData.coverName?.trim() || '프로젝트명'
-                      : signData.jebonBuildingName?.trim() || '프로젝트명';
+                    signData.jebonBuildingName?.trim() ||
+                    signData.coverName?.trim() ||
+                    '프로젝트명';
                   const certLabel =
                     jebonCertMasterList.find((c) => c.id === signData.certType)?.label ||
                     signData.certType ||
                     '제본종류';
+                  const phasePart =
+                    signData.certPhase && signData.certPhase !== '해당없음'
+                      ? signData.certPhase
+                      : null;
                   const jebonFormTitle =
-                    signData.certType !== 'NORMAL'
-                      ? `${projectPart}_${signData.certPhase || '인증단계'}_${certLabel}_${
+                    phasePart
+                      ? `${projectPart}_${phasePart}_${certLabel}_${
                           formattedCompDate ||
                           signData.compDateRaw?.replace(/-/g, '.') ||
                           '일자미정'
                         }`
-                      : `${projectPart}_${certLabel}`;
+                      : `${projectPart}_${certLabel}${
+                          formattedCompDate
+                            ? `_${formattedCompDate}`
+                            : signData.compDateRaw
+                              ? `_${signData.compDateRaw.replace(/-/g, '.')}`
+                              : ''
+                        }`;
                   setSignData({
                     ...signData,
                     jebonFormTitle,
@@ -2600,9 +2798,10 @@ return (
         </div>
       )}
 
-          {/* 제출 직전: 수량 → 외주 업체 → 제출 (동일 높이 · 테두리만 강조) */}
+          {/* 제출 직전: 좌측 50%(수량·외주·업체관리) / 우측 50%(제출) */}
           <div className="pt-6 mt-6 border-t border-slate-100">
-            <div className="flex flex-wrap gap-3 items-start">
+            <div className="flex flex-col lg:flex-row gap-3 items-stretch">
+              <div className="lg:w-1/2 min-w-0 flex flex-wrap gap-3 items-start">
               {activeTab !== 'OFFICE_SUPPLIES' && (
                 <div
                   className={`shrink-0 ${
@@ -2661,14 +2860,14 @@ return (
                 </div>
               )}
 
-              <div className="flex-1 min-w-[200px]">
+              <div className="flex-1 min-w-0">
                 <label className="block text-[10px] font-black text-slate-500 tracking-widest uppercase mb-1.5 h-4">
                   외주 업체 <span className="text-red-500">*</span>
                   <span className="ml-1.5 text-[9px] font-bold text-slate-400 normal-case tracking-normal">
                     제출 전 확인
                   </span>
                 </label>
-                <div className="flex gap-2 h-11">
+                <div className="flex gap-2 h-11 items-stretch">
                   <select
                     value={signData.vendor}
                     onChange={(e) => setSignData({ ...signData, vendor: e.target.value })}
@@ -2691,9 +2890,9 @@ return (
                   <button
                     type="button"
                     onClick={() => setIsVendorModalOpen(true)}
-                    className="shrink-0 h-full px-3 bg-slate-800 hover:bg-slate-900 text-white rounded-xl font-black text-[10px] shadow-sm active:scale-95 transition-all flex items-center gap-1.5"
+                    className="shrink-0 h-full px-3 bg-slate-800 hover:bg-slate-900 text-white rounded-xl font-black text-[10px] shadow-sm active:scale-95 transition-all flex items-center gap-1.5 whitespace-nowrap"
                   >
-                    <span>🏢</span> 관리
+                    <span>🏢</span> 업체관리 설정
                   </button>
                 </div>
                 {(() => {
@@ -2702,14 +2901,15 @@ return (
                     ?.items?.trim();
                   if (!memo) return null;
                   return (
-                    <p className="mt-1.5 text-[11px] font-semibold text-slate-600 leading-snug">
+                    <p className="mt-1.5 text-[11px] font-semibold text-slate-600 leading-snug truncate" title={memo}>
                       {memo}
                     </p>
                   );
                 })()}
               </div>
+              </div>
 
-              <div className="min-w-[200px] flex-[1.1]">
+              <div className="lg:w-1/2 min-w-0">
                 <div className="h-4 mb-1.5" aria-hidden />
                 <button
                   type="button"
@@ -3610,8 +3810,8 @@ return (
             {/* 팝업 본문 (선택된 서식만 단독 표시) */}
             <div className="px-10 py-8 overflow-y-auto flex-1 min-h-0 bg-slate-50/50">
               <div
-                className={`grid gap-10 items-start ${
-                  popSubTab === 'SIGN_SUB' ? 'grid-cols-1 lg:grid-cols-2' : 'grid-cols-1'
+                className={`grid gap-6 items-start ${
+                  popSubTab === 'SIGN_SUB' ? 'grid-cols-1 xl:grid-cols-3' : 'grid-cols-1'
                 }`}
               >
               
@@ -3619,6 +3819,260 @@ return (
              <div className="bg-white rounded-2xl p-6 border border-slate-200 shadow-sm flex flex-col min-w-0">
                 
                 <div className="space-y-4 flex flex-col">
+                  {popSubTab === 'JEBON_SUB' && (
+                    <div className="flex gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => setJebonSettingsTab('CERT')}
+                        className={`flex-1 px-3 py-2.5 rounded-xl text-xs font-black border transition-all ${
+                          jebonSettingsTab === 'CERT'
+                            ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm'
+                            : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-white'
+                        }`}
+                      >
+                        📋 인증별 서식
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setJebonSettingsTab('SIZE')}
+                        className={`flex-1 px-3 py-2.5 rounded-xl text-xs font-black border transition-all ${
+                          jebonSettingsTab === 'SIZE'
+                            ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm'
+                            : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-white'
+                        }`}
+                      >
+                        📏 제본 판형
+                      </button>
+                    </div>
+                  )}
+
+                  {popSubTab === 'JEBON_SUB' && jebonSettingsTab === 'SIZE' ? (
+                    <div className="space-y-4">
+                      <div className="border-b border-slate-100 pb-3">
+                        <h4 className="text-sm font-black text-slate-800">📏 제본 판형 마스터</h4>
+                        <p className="text-[10px] text-slate-400 mt-1">
+                          종류·규격·설명으로 관리합니다. 신청서 「제본 판형 지정」 콤보박스에 실시간 반영됩니다.
+                        </p>
+                        {!canEdit && (
+                          <p className="text-[10px] text-amber-600 mt-1.5 font-bold">
+                            ※ 신규 판형 수정·삭제는 편집 권한, 시드 판형 삭제는 LV_1(마스터) 권한이 필요합니다. 신규 등록은 메뉴 접근자 모두 가능합니다.
+                          </p>
+                        )}
+                      </div>
+
+                      <div className={`${JEBON_SIZE_MASTER_GRID} bg-slate-50 p-4 rounded-xl border border-slate-200`}>
+                        <div>
+                          <label className="text-[10px] font-black text-slate-400 block mb-1">종류</label>
+                          <input
+                            type="text"
+                            placeholder="예: A4"
+                            value={newJebonSize.label}
+                            onChange={(e) =>
+                              setNewJebonSize({ ...newJebonSize, label: e.target.value })
+                            }
+                            className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold outline-none focus:border-indigo-500"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-[10px] font-black text-slate-400 block mb-1">규격</label>
+                          <input
+                            type="text"
+                            placeholder="예: 210 × 297mm"
+                            value={newJebonSize.size}
+                            onChange={(e) =>
+                              setNewJebonSize({ ...newJebonSize, size: e.target.value })
+                            }
+                            className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-semibold outline-none focus:border-indigo-500"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-[10px] font-black text-slate-400 block mb-1">설명</label>
+                          <input
+                            type="text"
+                            placeholder="예: 표준 기본"
+                            value={newJebonSize.description}
+                            onChange={(e) =>
+                              setNewJebonSize({ ...newJebonSize, description: e.target.value })
+                            }
+                            className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-semibold outline-none focus:border-indigo-500"
+                          />
+                        </div>
+                        <button
+                          type="button"
+                          onClick={handleAddJebonSizeMaster}
+                          className="font-black px-3 py-2.5 text-xs rounded-xl transition-all shadow-md active:scale-95 w-full bg-indigo-600 hover:bg-indigo-500 text-white whitespace-nowrap"
+                        >
+                          + 신규 등록
+                        </button>
+                      </div>
+
+                      <div className={`${JEBON_SIZE_MASTER_GRID} px-3 hidden md:grid`}>
+                        <span className="text-[9px] font-black text-slate-400">종류</span>
+                        <span className="text-[9px] font-black text-slate-400">규격</span>
+                        <span className="text-[9px] font-black text-slate-400">설명</span>
+                        <span className="text-[9px] font-black text-slate-400 text-right">관리</span>
+                      </div>
+
+                      <div className="space-y-2 max-h-[420px] overflow-y-auto pr-1">
+                        {jebonSizeMasterList.map((row) => {
+                          const isEditing = editingJebonSizeCode === row.code && !!editingJebonSizeDraft;
+                          const draft = isEditing ? editingJebonSizeDraft! : row;
+                          return (
+                            <div
+                              key={row.code}
+                              className={`p-3 rounded-xl border ${
+                                isEditing
+                                  ? 'border-indigo-400 bg-indigo-50/40'
+                                  : 'border-slate-200 bg-slate-50/80'
+                              }`}
+                            >
+                              <div className={JEBON_SIZE_MASTER_GRID}>
+                                <div className="min-w-0">
+                                  <label className="text-[9px] font-black text-slate-400 block mb-1 md:sr-only">
+                                    종류
+                                  </label>
+                                  {isEditing ? (
+                                    <input
+                                      type="text"
+                                      value={draft.label}
+                                      onChange={(e) =>
+                                        setEditingJebonSizeDraft({
+                                          ...draft,
+                                          label: e.target.value,
+                                        })
+                                      }
+                                      className="w-full bg-white border border-slate-300 rounded-lg px-2 py-1.5 text-xs font-bold outline-none"
+                                    />
+                                  ) : (
+                                    <span className="text-xs font-black text-slate-800 block truncate">
+                                      {row.label}
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="min-w-0">
+                                  <label className="text-[9px] font-black text-slate-400 block mb-1 md:sr-only">
+                                    규격
+                                  </label>
+                                  {isEditing ? (
+                                    <input
+                                      type="text"
+                                      value={draft.size}
+                                      onChange={(e) =>
+                                        setEditingJebonSizeDraft({
+                                          ...draft,
+                                          size: e.target.value,
+                                        })
+                                      }
+                                      className="w-full bg-white border border-slate-300 rounded-lg px-2 py-1.5 text-xs font-semibold outline-none"
+                                    />
+                                  ) : (
+                                    <span className="text-xs font-semibold text-slate-700 block truncate">
+                                      {row.size || '—'}
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="min-w-0">
+                                  <label className="text-[9px] font-black text-slate-400 block mb-1 md:sr-only">
+                                    설명
+                                  </label>
+                                  {isEditing ? (
+                                    <input
+                                      type="text"
+                                      value={draft.description}
+                                      onChange={(e) =>
+                                        setEditingJebonSizeDraft({
+                                          ...draft,
+                                          description: e.target.value,
+                                        })
+                                      }
+                                      className="w-full bg-white border border-slate-300 rounded-lg px-2 py-1.5 text-xs font-semibold outline-none"
+                                    />
+                                  ) : (
+                                    <span className="text-xs text-slate-600 block truncate">
+                                      {row.description || '—'}
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="flex gap-1.5 justify-end w-full pb-0.5">
+                                  {isEditing ? (
+                                    <>
+                                      <button
+                                        type="button"
+                                        disabled={!canEdit}
+                                        onClick={() => handleSaveJebonSizeRow(draft)}
+                                        className={`text-[9px] font-black px-2 py-1 rounded-md border whitespace-nowrap ${
+                                          canEdit
+                                            ? 'bg-indigo-600 text-white border-indigo-600'
+                                            : DISABLED_ACTION_BTN
+                                        }`}
+                                      >
+                                        저장
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setEditingJebonSizeCode(null);
+                                          setEditingJebonSizeDraft(null);
+                                        }}
+                                        className="text-[9px] font-black px-2 py-1 rounded-md border bg-white text-slate-500 border-slate-200 whitespace-nowrap"
+                                      >
+                                        취소
+                                      </button>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <button
+                                        type="button"
+                                        disabled={!canEdit}
+                                        onClick={() => {
+                                          if (!canEdit) return alertNoEditPermission();
+                                          setEditingJebonSizeCode(row.code);
+                                          setEditingJebonSizeDraft({ ...row });
+                                        }}
+                                        className={`text-[9px] font-black px-2 py-1 rounded-md border whitespace-nowrap ${
+                                          canEdit
+                                            ? 'bg-white text-slate-600 border-slate-200 hover:border-indigo-300'
+                                            : DISABLED_ACTION_BTN
+                                        }`}
+                                      >
+                                        수정
+                                      </button>
+                                      <button
+                                        type="button"
+                                        disabled={
+                                          !(isSeedJebonSizeCode(row.code)
+                                            ? canDeleteLv1Cert
+                                            : canEdit)
+                                        }
+                                        title={
+                                          isSeedJebonSizeCode(row.code) && !canDeleteLv1Cert
+                                            ? '시드 판형 삭제는 LV_1 권한 필요'
+                                            : !canEdit
+                                              ? '편집 권한 필요'
+                                              : undefined
+                                        }
+                                        onClick={() => handleDeleteJebonSize(row.code)}
+                                        className={`text-[9px] font-black px-2 py-1 rounded-md border whitespace-nowrap ${
+                                          (isSeedJebonSizeCode(row.code)
+                                            ? canDeleteLv1Cert
+                                            : canEdit)
+                                            ? 'text-red-400 hover:text-red-600 bg-white border-slate-200'
+                                            : DISABLED_ACTION_BTN
+                                        }`}
+                                      >
+                                        {isSeedJebonSizeCode(row.code) ? '삭제(LV_1)' : '삭제'}
+                                      </button>
+                                    </>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ) : (
+                  <>
                   <div className="border-b border-slate-100 pb-3 shrink-0">
                     <h4 className="text-sm font-black text-slate-800">
                       {popSubTab === 'SIGN_SUB' ? '📋 인증별 설정' : '📋 인증별 제본 서식·기본값 설정'}
@@ -3672,11 +4126,6 @@ return (
                               ) : (
                                 <span className="font-black text-slate-800 text-xs block">
                                   📍 {c.label}
-                                  {CORE_CERT_IDS.includes(c.id) && (
-                                    <span className="ml-1.5 text-[9px] font-bold text-slate-400">
-                                      (고정)
-                                    </span>
-                                  )}
                                 </span>
                               )}
                             </div>
@@ -3723,25 +4172,27 @@ return (
                               <button
                                 type="button"
                                 disabled={
-                                  !canEdit || CORE_CERT_IDS.includes(c.id) || isRowEditing
+                                  !(isSeedCertId(c.id) ? canDeleteLv1Cert : canEdit) ||
+                                  isRowEditing
                                 }
                                 title={
-                                  CORE_CERT_IDS.includes(c.id)
-                                    ? '핵심 기준은 삭제 불가'
-                                    : isRowEditing
-                                      ? '편집 중에는 삭제할 수 없습니다'
+                                  isRowEditing
+                                    ? '편집 중에는 삭제할 수 없습니다'
+                                    : isSeedCertId(c.id) && !canDeleteLv1Cert
+                                      ? '시드 인증 삭제는 LV_1 권한 필요'
                                       : !canEdit
                                         ? '편집 권한 필요'
                                         : undefined
                                 }
                                 onClick={() => handleIdDeleteCert(c.id)}
                                 className={`text-[9px] font-black px-2 py-1 rounded-md border ${
-                                  canEdit && !CORE_CERT_IDS.includes(c.id) && !isRowEditing
+                                  (isSeedCertId(c.id) ? canDeleteLv1Cert : canEdit) &&
+                                  !isRowEditing
                                     ? 'text-red-400 hover:text-red-600 bg-white border-slate-200 hover:border-red-200'
                                     : DISABLED_ACTION_BTN
                                 }`}
                               >
-                                삭제
+                                {isSeedCertId(c.id) ? '삭제(LV_1)' : '삭제'}
                               </button>
                             </div>
                           </div>
@@ -3840,17 +4291,19 @@ return (
                             표지 (적용 · 색상 · 면수)
                           </span>
                           <span className="w-[5.5rem] shrink-0 pl-3 ml-1 border-l border-transparent">본문</span>
-                          <span className="w-[9.5rem] shrink-0 pl-3 ml-1 border-l border-transparent">
-                            표지 일자 양식
+                          <span className="w-[11rem] shrink-0 pl-3 ml-1 border-l border-transparent">
+                            표지 일자 양식 (적용 · 서식)
                           </span>
                           <span className="w-[5.75rem] shrink-0 pl-3 ml-1 border-l border-transparent text-right">
                             관리
                           </span>
                         </div>
                         {jebonCertMasterList.map((c) => {
-                          const isNormal = c.id === 'NORMAL';
                           const isRowEditing = editingCertId === c.id && !!editingJebonDraft;
                           const draft = isRowEditing ? editingJebonDraft! : null;
+                          const useCoverDate = isRowEditing
+                            ? draft!.useJebonCoverDate
+                            : c.useJebonCoverDate !== false;
                           const colDivider = 'pl-3 ml-1.5 border-l border-slate-300';
                           const lockedInput =
                             'bg-slate-100 border-slate-200 text-slate-500 cursor-not-allowed';
@@ -3886,11 +4339,6 @@ return (
                                   ) : (
                                     <span className="font-black text-slate-800 text-xs block leading-snug break-words">
                                       📍 {c.label}
-                                      {CORE_CERT_IDS.includes(c.id) && (
-                                        <span className="ml-1 text-[9px] font-bold text-slate-400">
-                                          (고정)
-                                        </span>
-                                      )}
                                     </span>
                                   )}
                                 </div>
@@ -3908,9 +4356,9 @@ return (
                                       isRowEditing ? editInput : lockedInput
                                     }`}
                                   >
-                                    {JEBON_SIZE_OPTIONS.map((opt) => (
-                                      <option key={opt.value} value={opt.value}>
-                                        {opt.value}
+                                    {jebonSizeMasterList.map((opt) => (
+                                      <option key={opt.code} value={opt.code}>
+                                        {opt.label}
                                       </option>
                                     ))}
                                   </select>
@@ -4048,24 +4496,49 @@ return (
                                 </div>
 
                                 {/* 표지 일자 양식 */}
-                                <div className={`w-[9.5rem] shrink-0 ${colDivider}`}>
-                                  {isNormal ? (
-                                    <span className="text-[9px] text-slate-300 font-bold">—</span>
-                                  ) : isRowEditing ? (
-                                    <input
-                                      type="text"
-                                      value={draft!.jebonFormat}
-                                      onChange={(e) =>
-                                        patchDraft({ jebonFormat: e.target.value })
-                                      }
-                                      className={`w-full rounded-lg px-1.5 py-1.5 text-[11px] font-mono font-bold outline-none border ${editInput}`}
-                                      placeholder="0000. 0. 0."
-                                    />
-                                  ) : (
-                                    <span className="block w-full truncate text-[11px] font-mono font-bold text-indigo-600 bg-slate-100 border border-slate-200 rounded-lg px-1.5 py-1.5">
-                                      {c.jebonFormat || '-'}
-                                    </span>
-                                  )}
+                                <div
+                                  className={`w-[11rem] shrink-0 ${colDivider} ${
+                                    !useCoverDate ? 'opacity-60' : ''
+                                  }`}
+                                >
+                                  <div className="flex items-center gap-1 rounded-lg bg-amber-50/70 border border-amber-100 px-1.5 py-1">
+                                    <label
+                                      className={`flex items-center gap-1 text-[10px] font-black text-slate-600 select-none shrink-0 ${
+                                        isRowEditing ? 'cursor-pointer' : 'cursor-not-allowed'
+                                      }`}
+                                    >
+                                      <input
+                                        type="checkbox"
+                                        checked={useCoverDate}
+                                        disabled={!isRowEditing}
+                                        onChange={(e) =>
+                                          patchDraft({ useJebonCoverDate: e.target.checked })
+                                        }
+                                        className="w-3.5 h-3.5 accent-amber-600 rounded disabled:cursor-not-allowed"
+                                      />
+                                      <span className="text-[9px] text-amber-600 font-bold">
+                                        {useCoverDate ? 'ON' : 'OFF'}
+                                      </span>
+                                    </label>
+                                    {isRowEditing ? (
+                                      <input
+                                        type="text"
+                                        value={draft!.jebonFormat}
+                                        disabled={!useCoverDate}
+                                        onChange={(e) =>
+                                          patchDraft({ jebonFormat: e.target.value })
+                                        }
+                                        className={`flex-1 min-w-0 rounded-lg px-1 py-1 text-[10px] font-mono font-bold outline-none border ${
+                                          useCoverDate ? editInput : lockedInput
+                                        }`}
+                                        placeholder="0000. 0. 0."
+                                      />
+                                    ) : (
+                                      <span className="block flex-1 min-w-0 truncate text-[10px] font-mono font-bold text-indigo-600 bg-slate-100 border border-slate-200 rounded-lg px-1 py-1">
+                                        {c.jebonFormat || '-'}
+                                      </span>
+                                    )}
+                                  </div>
                                 </div>
 
                                 {/* 관리: 수정/저장 · 삭제 — 맨 오른쪽 */}
@@ -4111,29 +4584,27 @@ return (
                                   <button
                                     type="button"
                                     disabled={
-                                      !canEdit ||
-                                      CORE_CERT_IDS.includes(c.id) ||
+                                      !(isSeedCertId(c.id) ? canDeleteLv1Cert : canEdit) ||
                                       isRowEditing
                                     }
                                     title={
-                                      CORE_CERT_IDS.includes(c.id)
-                                        ? '핵심 기준은 삭제 불가'
-                                        : isRowEditing
-                                          ? '편집 중에는 삭제할 수 없습니다'
+                                      isRowEditing
+                                        ? '편집 중에는 삭제할 수 없습니다'
+                                        : isSeedCertId(c.id) && !canDeleteLv1Cert
+                                          ? '시드 인증 삭제는 LV_1 권한 필요'
                                           : !canEdit
                                             ? '편집 권한 필요'
                                             : undefined
                                     }
                                     onClick={() => handleIdDeleteCert(c.id)}
                                     className={`text-[9px] font-black px-1.5 py-1 rounded-md border ${
-                                      canEdit &&
-                                      !CORE_CERT_IDS.includes(c.id) &&
+                                      (isSeedCertId(c.id) ? canDeleteLv1Cert : canEdit) &&
                                       !isRowEditing
                                         ? 'text-red-400 hover:text-red-600 bg-white border-slate-200 hover:border-red-200'
                                         : DISABLED_ACTION_BTN
                                     }`}
                                   >
-                                    삭제
+                                    {isSeedCertId(c.id) ? '삭제(LV_1)' : '삭제'}
                                   </button>
                                 </div>
                               </div>
@@ -4143,31 +4614,43 @@ return (
                       </>
                     )}
                   </div>
-                </div>
 
-                {/* 하단 신규 등록 — 메뉴 접근자 모두 가능 (서식 수정·삭제는 Edit) */}
+                {/* 하단 신규 등록 — Edit 권한 필요 */}
                 <div className="mt-4 pt-3 border-t border-slate-100 flex gap-2 shrink-0">
                   <input 
                     type="text" 
                     placeholder={popSubTab === 'SIGN_SUB' ? "➕ 새 명판 인증명 입력" : "➕ 새 제본 인증명 입력"} 
                     value={newCertName}
+                    disabled={!canEdit}
+                    title={!canEdit ? '편집 권한 필요' : undefined}
                     onChange={e => setNewCertName(e.target.value)} 
-                    className="flex-1 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2.5 text-xs font-semibold outline-none focus:bg-white focus:border-blue-500 transition-all" 
+                    className={`flex-1 border rounded-xl px-3 py-2.5 text-xs font-semibold outline-none transition-all ${
+                      canEdit
+                        ? 'bg-slate-50 border-slate-200 focus:bg-white focus:border-blue-500'
+                        : 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'
+                    }`}
                   />
                   <button 
                     type="button"
+                    disabled={!canEdit}
+                    title={!canEdit ? '편집 권한 필요' : undefined}
                     onClick={handleAddCertMaster} 
                     className={`px-4 py-2.5 rounded-xl font-black text-xs transition-all shadow-md active:scale-95 text-white ${
-                      popSubTab === 'SIGN_SUB'
-                        ? 'bg-blue-600 hover:bg-blue-500'
-                        : 'bg-indigo-600 hover:bg-indigo-500'
+                      !canEdit
+                        ? DISABLED_ACTION_BTN
+                        : popSubTab === 'SIGN_SUB'
+                          ? 'bg-blue-600 hover:bg-blue-500'
+                          : 'bg-indigo-600 hover:bg-indigo-500'
                     }`}
                   >
                     + 신규 등록
                   </button>
                 </div>
+                  </>
+                  )}
 
               </div>
+             </div>
 
               {/* 오른쪽 세부 등급 설정 패널 — 현판(SIGN) 전용 */}
               {popSubTab === 'SIGN_SUB' && (
@@ -4176,7 +4659,7 @@ return (
                   <div className="border-b border-slate-800 pb-3">
                     <div className="text-[10px] font-black text-blue-400 uppercase tracking-wider">GRADE INTERACTION PANEL</div>
                     <h4 className="text-sm font-black text-slate-200 mt-0.5">
-                      👑 [{signCertMasterList.find(c => c.id === selectedMasterCertId)?.label || '선택 없음'}] 인증상세 또는 등급 설정
+                      👑 [{signCertMasterList.find(c => c.id === selectedMasterCertId)?.label || '선택 없음'}] 인증 등급/종류 설정
                     </h4>
                     {!canEdit && (
                       <p className="text-[10px] text-amber-400/90 mt-1.5 font-bold">
@@ -4240,7 +4723,7 @@ return (
                           </button>
                         </div>
                         <p className="text-[9px] text-slate-500 font-bold leading-relaxed">
-                          클릭 즉시 저장됩니다. 신청서 「3. 인증상세 또는 등급 설정」 UI에 반영됩니다.
+                          클릭 즉시 저장됩니다. 신청서 「2. 인증 등급/종류 설정」 UI에 반영됩니다.
                         </p>
                       </div>
                     );
@@ -4406,6 +4889,107 @@ return (
 
                 <div className="pt-4 border-t border-slate-800 text-right">
                   <span className="text-[10px] text-slate-500 font-bold">※ 여기서 저장한 서식·등급은 신청서 본문과 즉시 동기화됩니다.</span>
+                </div>
+              </div>
+              )}
+
+              {/* 오른쪽 3열: 인증별 현판 품목 연동 — SIGN 전용 */}
+              {popSubTab === 'SIGN_SUB' && (
+              <div className="bg-emerald-950 text-white rounded-2xl p-6 border border-emerald-900 shadow-xl space-y-4 flex flex-col min-w-0 min-h-0">
+                <div className="border-b border-emerald-900 pb-3 shrink-0">
+                  <div className="text-[10px] font-black text-emerald-400 uppercase tracking-wider">
+                    PLATE LINK PANEL
+                  </div>
+                  <h4 className="text-sm font-black text-emerald-50 mt-0.5">
+                    📛 [{signCertMasterList.find((c) => c.id === selectedMasterCertId)?.label || '선택 없음'}] 현판 품목별 규격 및 단가 설정
+                  </h4>
+                  <p className="text-[10px] text-emerald-200/70 mt-1.5 font-bold leading-relaxed">
+                    체크한 품목만 해당 인증 선택 시 신청폼 「3. 현판 품목 설정」에 노출됩니다. 복수 선택 가능 · 클릭 즉시 저장.
+                  </p>
+                  {!canEdit && (
+                    <p className="text-[10px] text-amber-400/90 mt-1.5 font-bold">
+                      ※ 품목 연결 변경은 편집 권한이 필요합니다.
+                    </p>
+                  )}
+                </div>
+
+                {(() => {
+                  const row = signCertMasterList.find((c) => c.id === selectedMasterCertId);
+                  if (!row) {
+                    return (
+                      <div className="rounded-xl border border-dashed border-emerald-800 bg-emerald-900/40 px-3 py-6 text-center text-[11px] font-bold text-emerald-300/70">
+                        좌측에서 인증을 선택해 주세요.
+                      </div>
+                    );
+                  }
+                  const linked = new Set(row.linkedPlateCodes || []);
+                  const togglePlate = async (code: string, checked: boolean) => {
+                    if (!canEdit) return alertNoEditPermission();
+                    const next = checked
+                      ? [...linked, code]
+                      : [...linked].filter((c) => c !== code);
+                    try {
+                      await persistCert({
+                        certId: selectedMasterCertId,
+                        type: 'SIGN',
+                        label: row.label,
+                        format: row.format,
+                        grades: gradeMasterMap[selectedMasterCertId] || [],
+                        useCertNumber: row.useCertNumber,
+                        useValidPeriod: row.useValidPeriod,
+                        useMultiGradeSelect: row.useMultiGradeSelect,
+                        linkedPlateCodes: Array.from(new Set(next)),
+                      });
+                    } catch (err: any) {
+                      alert(err?.message || '품목 연결 저장 실패');
+                    }
+                  };
+                  if (plateMasterList.length === 0) {
+                    return (
+                      <div className="rounded-xl border border-dashed border-emerald-800 bg-emerald-900/40 px-3 py-6 text-center text-[11px] font-bold text-emerald-300/70">
+                        등록된 현판 품목이 없습니다. 「현판 품목별 규격 및 단가 설정」에서 품목을 먼저 등록해 주세요.
+                      </div>
+                    );
+                  }
+                  return (
+                    <div className="space-y-2 overflow-y-auto max-h-[28rem] pr-1">
+                      {plateMasterList.map((p) => {
+                        const checked = linked.has(p.code);
+                        return (
+                          <label
+                            key={p.code}
+                            className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-all ${
+                              checked
+                                ? 'bg-emerald-800/70 border-emerald-500 shadow-sm'
+                                : 'bg-emerald-900/50 border-emerald-800 hover:border-emerald-600'
+                            } ${!canEdit ? 'opacity-60 cursor-not-allowed' : ''}`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              disabled={!canEdit}
+                              onChange={(e) => togglePlate(p.code, e.target.checked)}
+                              className="mt-0.5 w-3.5 h-3.5 accent-emerald-400 rounded disabled:cursor-not-allowed shrink-0"
+                            />
+                            <span className="min-w-0 flex-1">
+                              <span className="block text-xs font-black text-emerald-50 truncate">
+                                {p.label}
+                              </span>
+                              <span className="block text-[10px] font-bold text-emerald-300/80 mt-0.5">
+                                {p.size || '자율 규격'} · {(Number(p.price) || 0).toLocaleString()}원
+                              </span>
+                            </span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
+
+                <div className="pt-3 border-t border-emerald-900 text-right shrink-0">
+                  <span className="text-[10px] text-emerald-500/80 font-bold">
+                    ※ 선택 {signCertMasterList.find((c) => c.id === selectedMasterCertId)?.linkedPlateCodes?.length || 0}개 / 전체 {plateMasterList.length}개
+                  </span>
                 </div>
               </div>
               )}

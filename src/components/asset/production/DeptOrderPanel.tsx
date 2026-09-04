@@ -18,7 +18,16 @@ import {
   productionStatusLabel,
   productionStatusTextClass,
 } from '@/lib/production-status';
-import { buildSignDetailExcelRows } from '@/lib/production-sign-excel';
+import {
+  buildSignDetailExcelRows,
+  buildJebonDetailExcelRows,
+  buildPrintDetailExcelRows,
+} from '@/lib/production-sign-excel';
+import { itemDeferredBatchShipping, itemNeedsBatchShipping } from '@/lib/production-shipping';
+import type { BatchShippingApplyScope, BatchShippingInput } from '@/lib/production-shipping';
+import ProductionBatchShippingModal, {
+  type BatchShippingSubmitPayload,
+} from '@/components/asset/production/ProductionBatchShippingModal';
 
 const MENU_PATH = '/asset/production/dept-master/order';
 const ITEMS_PER_PAGE = 10;
@@ -26,7 +35,7 @@ const DISABLED_ACTION_BTN =
   'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed';
 
 const HISTORY_CATEGORIES = [
-  { id: 'ALL', label: '전체 내역', icon: '📋' },
+  { id: 'ALL', label: '접수 대기', icon: '⏳' },
   { id: 'SIGN', label: '현판/명판/상패', icon: '📛' },
   { id: 'JEBON', label: '제본', icon: '📚' },
   { id: 'PRINT', label: '기타 제작물', icon: '📜' },
@@ -50,8 +59,6 @@ type ProductionRequestRow = {
   options?: Record<string, unknown>;
 };
 
-type ViewMode = 'ALL' | 'PENDING' | 'ACCEPTED' | 'ORDERED';
-
 function getKSTYearMonthParts(dateInput: Date | string | number | null | undefined) {
   if (dateInput == null) return null;
   const ym = getKSTYearMonth(dateInput);
@@ -68,6 +75,7 @@ function formatQuantityUnit(item: {
   options?: { printItemMasterInfo?: { unitLabel?: string } };
 }) {
   if (item.category === 'JEBON') return '부';
+  if (item.category === 'OFFICE_SUPPLIES') return '건';
   if (item.category === 'PRINT') {
     const label = item.options?.printItemMasterInfo?.unitLabel;
     if (label) return String(label);
@@ -83,7 +91,6 @@ export default function DeptOrderPanel() {
   const [interfaceConfig, setInterfaceConfig] = useState<any>(null);
   const [scopeUnits, setScopeUnits] = useState<{ id: string; unit_name: string }[]>([]);
 
-  const [viewMode, setViewMode] = useState<ViewMode>('ALL');
   const [activeCategory, setActiveCategory] = useState('ALL');
   const [selectedYear, setSelectedYear] = useState(() => String(getKSTNowYearMonth().year));
   const [selectedMonth, setSelectedMonth] = useState('ALL');
@@ -99,6 +106,8 @@ export default function DeptOrderPanel() {
   const [rejectTarget, setRejectTarget] = useState<ProductionRequestRow | null>(null);
   const [rejectReason, setRejectReason] = useState('');
   const [savingReject, setSavingReject] = useState(false);
+  const [batchShippingOpen, setBatchShippingOpen] = useState(false);
+  const [pendingOrderIds, setPendingOrderIds] = useState<string[]>([]);
 
   const canEdit = useMemo(
     () => resolveInterfaceEditState(currentUser, interfaceConfig).isEditor,
@@ -178,31 +187,57 @@ export default function DeptOrderPanel() {
     return Array.from(names).sort((a, b) => a.localeCompare(b, 'ko'));
   }, [scopeUnits, afterYearList]);
 
-  const counts = useMemo(() => {
-    const base = afterYearList.filter((r) => {
-      if (r.status === PRODUCTION_STATUS.CANCELLED || r.status === PRODUCTION_STATUS.REJECTED) {
-        return false;
-      }
+  const pendingScopeBase = useMemo(() => {
+    return afterYearList.filter((r) => {
+      if (r.status !== PRODUCTION_STATUS.PENDING) return false;
+      const ym = getKSTYearMonthParts(r.createdAt);
+      const matchYear = selectedYear === 'ALL' || ym?.year === selectedYear;
+      const matchMonth = selectedMonth === 'ALL' || ym?.month === selectedMonth;
       const matchUnit = selectedUnitId === 'ALL' || r.deptName === selectedUnitId;
       const matchUser =
         !searchUserQuery ||
         (r.userName || '').toLowerCase().includes(searchUserQuery.toLowerCase());
-      const matchCategory = activeCategory === 'ALL' || r.category === activeCategory;
-      return matchUnit && matchUser && matchCategory;
+      return matchYear && matchMonth && matchUnit && matchUser;
     });
-    return {
-      all: base.length,
-      pending: base.filter((r) => r.status === PRODUCTION_STATUS.PENDING).length,
-      accepted: base.filter((r) => r.status === PRODUCTION_STATUS.ACCEPTED).length,
-      ordered: base.filter((r) => r.status === PRODUCTION_STATUS.ORDERED).length,
-    };
-  }, [afterYearList, selectedUnitId, searchUserQuery, activeCategory]);
+  }, [afterYearList, selectedYear, selectedMonth, selectedUnitId, searchUserQuery]);
+
+  const pendingTabCounts = useMemo(
+    () => ({
+      ALL: pendingScopeBase.length,
+    }),
+    [pendingScopeBase]
+  );
+
+  const acceptedScopeBase = useMemo(() => {
+    return afterYearList.filter((r) => {
+      if (r.status !== PRODUCTION_STATUS.ACCEPTED) return false;
+      const ym = getKSTYearMonthParts(r.createdAt);
+      const matchYear = selectedYear === 'ALL' || ym?.year === selectedYear;
+      const matchMonth = selectedMonth === 'ALL' || ym?.month === selectedMonth;
+      const matchUnit = selectedUnitId === 'ALL' || r.deptName === selectedUnitId;
+      const matchUser =
+        !searchUserQuery ||
+        (r.userName || '').toLowerCase().includes(searchUserQuery.toLowerCase());
+      return matchYear && matchMonth && matchUnit && matchUser;
+    });
+  }, [afterYearList, selectedYear, selectedMonth, selectedUnitId, searchUserQuery]);
+
+  const acceptedTabCounts = useMemo(
+    () => ({
+      SIGN: acceptedScopeBase.filter((r) => r.category === 'SIGN').length,
+      JEBON: acceptedScopeBase.filter((r) => r.category === 'JEBON').length,
+      PRINT: acceptedScopeBase.filter((r) => r.category === 'PRINT').length,
+      OFFICE_SUPPLIES: acceptedScopeBase.filter((r) => r.category === 'OFFICE_SUPPLIES').length,
+    }),
+    [acceptedScopeBase]
+  );
 
   const filteredRequests = useMemo(() => {
     return afterYearList
       .filter((r) => {
-        if (r.status === PRODUCTION_STATUS.CANCELLED) return false;
-        if (r.status === PRODUCTION_STATUS.REJECTED && viewMode !== 'ALL') return false;
+        if (r.status === PRODUCTION_STATUS.CANCELLED || r.status === PRODUCTION_STATUS.REJECTED) {
+          return false;
+        }
         const ym = getKSTYearMonthParts(r.createdAt);
         const matchCategory = activeCategory === 'ALL' || r.category === activeCategory;
         const matchYear = selectedYear === 'ALL' || ym?.year === selectedYear;
@@ -211,12 +246,14 @@ export default function DeptOrderPanel() {
         const matchUser =
           !searchUserQuery ||
           (r.userName || '').toLowerCase().includes(searchUserQuery.toLowerCase());
-        const matchStatus =
-          viewMode === 'ALL' ||
-          (viewMode === 'PENDING' && r.status === PRODUCTION_STATUS.PENDING) ||
-          (viewMode === 'ACCEPTED' && r.status === PRODUCTION_STATUS.ACCEPTED) ||
-          (viewMode === 'ORDERED' && r.status === PRODUCTION_STATUS.ORDERED);
-        return matchCategory && matchYear && matchMonth && matchUnit && matchUser && matchStatus;
+
+        if (activeCategory === 'ALL') {
+          if (r.status !== PRODUCTION_STATUS.PENDING) return false;
+        } else if (r.status !== PRODUCTION_STATUS.ACCEPTED) {
+          return false;
+        }
+
+        return matchCategory && matchYear && matchMonth && matchUnit && matchUser;
       })
       .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   }, [
@@ -226,7 +263,6 @@ export default function DeptOrderPanel() {
     selectedMonth,
     selectedUnitId,
     searchUserQuery,
-    viewMode,
   ]);
 
   const totalPages = Math.max(1, Math.ceil(filteredRequests.length / ITEMS_PER_PAGE));
@@ -238,7 +274,7 @@ export default function DeptOrderPanel() {
   useEffect(() => {
     setCurrentPage(1);
     setSelectedIds(new Set());
-  }, [viewMode, activeCategory, selectedYear, selectedMonth, selectedUnitId, searchUserQuery]);
+  }, [activeCategory, selectedYear, selectedMonth, selectedUnitId, searchUserQuery]);
 
   const toggleSelectAll = () => {
     const pageIds = paginatedRequests
@@ -261,7 +297,11 @@ export default function DeptOrderPanel() {
 
   const handleApprove = async (row: ProductionRequestRow) => {
     if (!canEdit) return alert('접수 권한(Edit)이 없습니다.');
-    if (!confirm(`[${row.postNumber}] 접수 완료 처리하시겠습니까?\n접수 후 이 화면의 발주대기열에 남습니다.`)) {
+    if (
+      !confirm(
+        `[${row.postNumber}] 접수 완료 처리하시겠습니까?\n접수 후 ${getCategoryLabel(row.category)} 탭(발주대기)에서 확인·발주할 수 있습니다.`
+      )
+    ) {
       return;
     }
     setActionBusyId(row.id);
@@ -331,15 +371,32 @@ export default function DeptOrderPanel() {
     }
   };
 
-  const handleBatchOrder = async () => {
-    if (!canEdit) return alert('묶음 발주 권한(Edit)이 없습니다.');
-    const ids = Array.from(selectedIds);
-    if (ids.length === 0) return alert('발주대기(접수완료) 건을 선택해 주세요.');
-    if (
-      !confirm(
-        `선택한 ${ids.length}건을 묶음 발주 처리하시겠습니까?\n발주 후 명세서 검수 탭의 외주 발주 묶음 관리 대장으로 이동합니다.`
-      )
-    ) {
+  const selectedRequests = useMemo(
+    () => requests.filter((r) => selectedIds.has(r.id)),
+    [requests, selectedIds]
+  );
+
+  /** 묶음/개별 발주 직전 배송지 모달 — pendingOrderIds 우선 (개별 발주는 체크 없이 열림) */
+  const pendingOrderRequests = useMemo(() => {
+    const ids = pendingOrderIds.length > 0 ? pendingOrderIds : Array.from(selectedIds);
+    if (ids.length === 0) return [];
+    const idSet = new Set(ids);
+    return requests.filter((r) => idSet.has(r.id));
+  }, [requests, pendingOrderIds, selectedIds]);
+
+  const batchShippingDeferredCount = useMemo(
+    () => pendingOrderRequests.filter((r) => itemDeferredBatchShipping(r)).length,
+    [pendingOrderRequests]
+  );
+
+  const executeBatchOrder = async (
+    orderIds: string[],
+    batchShipping?: BatchShippingInput,
+    batchShippingScope?: BatchShippingApplyScope
+  ) => {
+    const ids = orderIds.filter(Boolean);
+    if (ids.length === 0) {
+      alert('발주할 항목을 선택해주세요.');
       return;
     }
     setOrdering(true);
@@ -347,7 +404,12 @@ export default function DeptOrderPanel() {
       const res = await fetch('/api/asset/production/dept-master/order', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ requestIds: ids }),
+        body: JSON.stringify({
+          requestIds: ids,
+          ...(batchShipping
+            ? { batchShipping, batchShippingScope: batchShippingScope || 'deferred' }
+            : {}),
+        }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -356,6 +418,8 @@ export default function DeptOrderPanel() {
       }
       alert(data.message || '묶음 발주가 완료되었습니다.');
       setSelectedIds(new Set());
+      setPendingOrderIds([]);
+      setBatchShippingOpen(false);
       const redirectTo =
         typeof data.redirectTo === 'string'
           ? data.redirectTo
@@ -368,11 +432,138 @@ export default function DeptOrderPanel() {
     }
   };
 
+  const handleBatchOrder = async () => {
+    if (!canEdit) return alert('묶음 발주 권한(Edit)이 없습니다.');
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0) return alert('발주대기(접수완료) 건을 선택해 주세요.');
+
+    const needsBatchShipping = selectedRequests.some((r) => itemNeedsBatchShipping(r));
+    if (needsBatchShipping) {
+      setPendingOrderIds(ids);
+      setBatchShippingOpen(true);
+      return;
+    }
+
+    const allPrint = selectedRequests.every((r) => r.category === 'PRINT');
+    const hasPrint = selectedRequests.some((r) => r.category === 'PRINT');
+
+    if (allPrint) {
+      if (
+        !confirm(
+          `선택한 기타 제작물 ${ids.length}건을 각각 개별 발주하시겠습니까?\n발주/수령 검수 탭에는 건별로 별도 묶음이 생성됩니다.`
+        )
+      ) {
+        return;
+      }
+    } else if (hasPrint) {
+      if (
+        !confirm(
+          `선택 ${ids.length}건 중 기타 제작물은 건별 개별 발주, 나머지는 한 묶음으로 발주됩니다.\n계속하시겠습니까?`
+        )
+      ) {
+        return;
+      }
+    } else if (
+      !confirm(
+        `선택한 ${ids.length}건을 묶음 발주 처리하시겠습니까?\n발주 후 발주/수령 검수 탭의 외주 발주 묶음 관리 대장으로 이동합니다.`
+      )
+    ) {
+      return;
+    }
+    setPendingOrderIds(ids);
+    await executeBatchOrder(ids);
+  };
+
+  const handleSingleOrder = async (item: ProductionRequestRow) => {
+    if (!canEdit) return alert('발주 권한(Edit)이 없습니다.');
+    if (item.status !== PRODUCTION_STATUS.ACCEPTED) return;
+
+    if (itemNeedsBatchShipping(item)) {
+      setPendingOrderIds([item.id]);
+      setBatchShippingOpen(true);
+      return;
+    }
+
+    const isPrint = item.category === 'PRINT';
+    if (
+      !confirm(
+        isPrint
+          ? `[${item.postNumber}] 기타 제작물을 개별 발주하시겠습니까?\n발주/수령 검수 탭에 단독 묶음으로 생성됩니다.`
+          : `[${item.postNumber}] 발주 처리하시겠습니까?\n발주 후 발주/수령 검수 탭에서 확인합니다.`
+      )
+    ) {
+      return;
+    }
+
+    setPendingOrderIds([item.id]);
+    await executeBatchOrder([item.id]);
+  };
+
+  const handleRevertAccept = async (item: ProductionRequestRow) => {
+    if (!canEdit) return alert('접수 취소 권한(Edit)이 없습니다.');
+    if (item.status !== PRODUCTION_STATUS.ACCEPTED) return;
+    if (
+      !confirm(
+        `[${item.postNumber}] 접수를 취소하고 신청(접수 대기) 탭으로 되돌릴까요?`
+      )
+    ) {
+      return;
+    }
+    setActionBusyId(item.id);
+    try {
+      const res = await fetch('/api/asset/production/dept-master/order', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: item.id, action: 'revert' }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(data.message || '접수 취소에 실패했습니다.');
+        return;
+      }
+      setRequests((prev) =>
+        prev.map((r) => (r.id === item.id ? { ...r, status: PRODUCTION_STATUS.PENDING } : r))
+      );
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        next.delete(item.id);
+        return next;
+      });
+    } catch {
+      alert('서버와 통신할 수 없습니다.');
+    } finally {
+      setActionBusyId(null);
+    }
+  };
+
+  const handleBatchShippingBeforeOrder = async ({ shipping, scope }: BatchShippingSubmitPayload) => {
+    const ids = pendingOrderRequests.map((r) => r.id);
+    if (ids.length === 0) {
+      alert('발주 대상 건을 확인할 수 없습니다. 다시 선택해 주세요.');
+      return;
+    }
+    const applyCount =
+      scope === 'all' ? pendingOrderRequests.length : batchShippingDeferredCount;
+    if (applyCount <= 0) {
+      alert('선택한 적용 범위에 해당하는 건이 없습니다.');
+      return;
+    }
+    const scopeLabel =
+      scope === 'all'
+        ? `배송지 적용 대상 전체 ${applyCount}건`
+        : `「인증원 수령」 미입력 ${applyCount}건`;
+    if (
+      !confirm(
+        `선택한 ${ids.length}건을 묶음 발주합니다.\n${scopeLabel}에 입력한 배송지를 일괄 적용합니다.`
+      )
+    ) {
+      return;
+    }
+    await executeBatchOrder(ids, shipping, scope);
+  };
+
   const handleExcelDownload = () => {
-    const target =
-      selectedIds.size > 0
-        ? filteredRequests.filter((r) => selectedIds.has(r.id))
-        : filteredRequests;
+    const target = filteredRequests;
     if (target.length === 0) return alert('다운로드할 데이터가 없습니다.');
 
     const yearLabel = selectedYear === 'ALL' ? '전체' : `${selectedYear}년`;
@@ -384,6 +575,26 @@ export default function DeptOrderPanel() {
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, '현판상세');
       XLSX.writeFile(wb, `현판_신청상세_${yearLabel}.xlsx`);
+      return;
+    }
+
+    if (activeCategory === 'JEBON') {
+      const rows = buildJebonDetailExcelRows(target);
+      if (rows.length === 0) return alert('다운로드할 제본(JEBON) 데이터가 없습니다.');
+      const ws = XLSX.utils.json_to_sheet(rows);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, '제본상세');
+      XLSX.writeFile(wb, `제본_신청상세_${yearLabel}.xlsx`);
+      return;
+    }
+
+    if (activeCategory === 'PRINT') {
+      const rows = buildPrintDetailExcelRows(target);
+      if (rows.length === 0) return alert('다운로드할 기타 제작물(PRINT) 데이터가 없습니다.');
+      const ws = XLSX.utils.json_to_sheet(rows);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, '기타제작상세');
+      XLSX.writeFile(wb, `기타제작_신청상세_${yearLabel}.xlsx`);
       return;
     }
 
@@ -413,49 +624,24 @@ export default function DeptOrderPanel() {
     acceptedSelectableOnPage.every((r) => selectedIds.has(r.id));
 
   const tableTitle =
-    viewMode === 'PENDING'
-      ? '신규 신청 · 접수 대기 대장'
-      : viewMode === 'ACCEPTED'
-        ? '접수완료 · 발주대기 대장'
-        : viewMode === 'ORDERED'
-          ? '묶음 발주 완료 목록 (검수는 명세서 검수 탭)'
-          : '부서 제작 신청 전체 대장';
+    activeCategory === 'ALL'
+      ? '신규 신청/접수 대기 목록'
+      : `${getCategoryLabel(activeCategory)} · 발주대기`;
+
+  const getTabBadgeCount = (catId: string) => {
+    if (catId === 'ALL') return pendingTabCounts.ALL;
+    return acceptedTabCounts[catId as keyof typeof acceptedTabCounts] ?? 0;
+  };
+
+  const tabCountTitle = (catId: string) => {
+    const n = getTabBadgeCount(catId);
+    if (n <= 0) return undefined;
+    return catId === 'ALL' ? `접수 대기 ${n}건` : `발주대기 ${n}건`;
+  };
 
   return (
-    <ProductionDeptShell pageHint="신청 건을 접수·반려한 뒤, 발주대기열에서 선택해 외주 묶음 발주합니다. 발주 완료 건은 명세서 검수 탭에서 관리합니다.">
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        {(
-          [
-            { id: 'ALL' as const, label: '전체건', count: counts.all, bg: '#0f172a' },
-            { id: 'PENDING' as const, label: '대기중', count: counts.pending, bg: '#f59e0b' },
-            { id: 'ACCEPTED' as const, label: '발주대기', count: counts.accepted, bg: '#4f46e5' },
-            { id: 'ORDERED' as const, label: '발주완료', count: counts.ordered, bg: '#2563eb' },
-          ] as const
-        ).map((card) => {
-          const active = viewMode === card.id;
-          return (
-            <button
-              key={card.id}
-              type="button"
-              onClick={() => setViewMode(card.id)}
-              className={`p-5 rounded-[2rem] text-left transition-all border border-slate-200 flex flex-col justify-center ${
-                active ? 'text-white shadow-md scale-[1.02]' : 'bg-white text-slate-600 hover:bg-slate-50'
-              }`}
-              style={active ? { backgroundColor: card.bg, color: '#fff' } : undefined}
-            >
-              <span className="text-[9px] font-black tracking-widest uppercase opacity-60">
-                {card.id}
-              </span>
-              <div className="flex justify-between items-baseline mt-1">
-                <span className="text-xl font-black">{card.count}</span>
-                <span className="text-[11px] font-bold">{card.label}</span>
-              </div>
-            </button>
-          );
-        })}
-      </div>
-
-      {/* 카테고리 서류철 탭 + 테이블 — 간격 없이 물리적으로 부착 */}
+    <ProductionDeptShell pageHint="⏳ 접수 대기중 탭에서 접수·반려 후, 분류 탭(현판/제본 등)에서 발주대기 건을 선택해 묶음 발주합니다. 발주 완료 건은 발주/수령 검수 탭에서 관리합니다.">
+      {/* 카테고리 서류철 탭 + 테이블 */}
       <div className="w-full">
         <div
           className="flex flex-wrap items-end gap-1 border-b border-slate-200"
@@ -464,6 +650,7 @@ export default function DeptOrderPanel() {
         >
           {HISTORY_CATEGORIES.map((cat) => {
             const active = activeCategory === cat.id;
+            const badgeCount = getTabBadgeCount(cat.id);
             return (
               <button
                 key={cat.id}
@@ -471,10 +658,22 @@ export default function DeptOrderPanel() {
                 role="tab"
                 aria-selected={active}
                 onClick={() => setActiveCategory(cat.id)}
+                title={tabCountTitle(cat.id)}
                 className={`relative flex items-center gap-1.5 px-4 py-2.5 text-xs font-black tracking-tight transition-colors rounded-t-lg border ${getProductionCategoryFolderTabClasses(cat.id, active)}`}
               >
                 <span className="text-sm leading-none">{cat.icon}</span>
-                <span>{cat.label}</span>
+                <span className="flex items-center gap-1">
+                  <span>{cat.label}</span>
+                  {badgeCount > 0 ? (
+                    <span
+                      className={`tabular-nums ${
+                        active ? 'opacity-95' : 'text-indigo-600'
+                      }`}
+                    >
+                      ({badgeCount})
+                    </span>
+                  ) : null}
+                </span>
               </button>
             );
           })}
@@ -496,24 +695,26 @@ export default function DeptOrderPanel() {
           </div>
 
           <div className="flex items-center gap-2 flex-wrap">
-            <button
-              type="button"
-              onClick={handleBatchOrder}
-              disabled={!canEdit || ordering || selectedIds.size === 0}
-              title={!canEdit ? '편집 권한 필요' : undefined}
-              className={`inline-flex items-center gap-1 text-[10px] font-black rounded-lg px-4 py-1.5 transition-colors shadow-sm ${
-                canEdit
-                  ? 'bg-indigo-600 text-white border border-indigo-600 hover:bg-indigo-700 disabled:opacity-50'
-                  : DISABLED_ACTION_BTN
-              }`}
-            >
-              <span>→</span>
-              <span>
-                {ordering
-                  ? '발주 처리 중…'
-                  : `선택된 ${selectedIds.size}건 묶음 발주 생성 🚀`}
-              </span>
-            </button>
+            {activeCategory !== 'ALL' && (
+              <button
+                type="button"
+                onClick={handleBatchOrder}
+                disabled={!canEdit || ordering || selectedIds.size === 0}
+                title={!canEdit ? '편집 권한 필요' : undefined}
+                className={`inline-flex items-center gap-1 text-[10px] font-black rounded-lg px-4 py-1.5 transition-colors shadow-sm ${
+                  canEdit
+                    ? 'bg-indigo-600 text-white border border-indigo-600 hover:bg-indigo-700 disabled:opacity-50'
+                    : DISABLED_ACTION_BTN
+                }`}
+              >
+                <span>→</span>
+                <span>
+                  {ordering
+                    ? '발주 처리 중…'
+                    : `선택된 ${selectedIds.size}건 묶음발주 이동 🚀`}
+                </span>
+              </button>
+            )}
             <input
               type="text"
               placeholder="신청자 검색"
@@ -565,13 +766,15 @@ export default function DeptOrderPanel() {
                 ))}
               </select>
             </div>
-            <button
-              type="button"
-              onClick={handleExcelDownload}
-              className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-[10px] font-black shadow-sm hover:bg-emerald-700"
-            >
-              EXCEL
-            </button>
+            {activeCategory !== 'ALL' && (
+              <button
+                type="button"
+                onClick={handleExcelDownload}
+                className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-[10px] font-black shadow-sm hover:bg-emerald-700 transition-all whitespace-nowrap"
+              >
+                화면 목록 EXCEL 다운로드
+              </button>
+            )}
           </div>
         </div>
 
@@ -599,7 +802,9 @@ export default function DeptOrderPanel() {
                   <th className="h-12 px-2 text-center whitespace-nowrap">분류</th>
                   <th className="h-12 px-2">관리용 제목</th>
                   <th className="h-12 px-2 text-center whitespace-nowrap">신청내역</th>
-                  <th className="h-12 px-2 text-center whitespace-nowrap">수량</th>
+                  <th className="h-12 px-2 text-center whitespace-nowrap">
+                    {activeCategory === 'OFFICE_SUPPLIES' ? '건' : '수량'}
+                  </th>
                   <th className="h-12 px-2 text-center whitespace-nowrap">외주업체</th>
                   <th className="h-12 px-2 text-center whitespace-nowrap">공정상태</th>
                   <th className="h-12 px-2 text-center whitespace-nowrap">액션</th>
@@ -609,7 +814,9 @@ export default function DeptOrderPanel() {
                 {paginatedRequests.length === 0 ? (
                   <tr>
                     <td colSpan={13} className="p-16 text-center text-slate-400 text-xs">
-                      조회 범위 내 신청 내역이 없습니다.
+                      {activeCategory === 'ALL'
+                        ? '접수 대기 중인 신규 신청이 없습니다.'
+                        : '발주대기(접수완료) 건이 없습니다. ⏳ 접수 대기중 탭에서 접수 후 이 분류 탭을 확인해 주세요.'}
                     </td>
                   </tr>
                 ) : (
@@ -661,7 +868,7 @@ export default function DeptOrderPanel() {
                             <button
                               type="button"
                               onClick={() => setDetailItem(item)}
-                              className="px-2.5 py-1 text-[10px] font-bold rounded-lg transition-colors bg-slate-100 text-slate-700 border border-slate-300 hover:bg-slate-200"
+                              className="px-2.5 py-1 text-[10px] font-bold rounded-lg transition-colors bg-blue-600 text-white border border-blue-600 hover:bg-blue-700"
                             >
                               원문 검수
                             </button>
@@ -724,6 +931,39 @@ export default function DeptOrderPanel() {
                                 }`}
                               >
                                 반려
+                              </button>
+                            </div>
+                          ) : item.status === PRODUCTION_STATUS.ACCEPTED && activeCategory !== 'ALL' ? (
+                            <div className="flex items-center justify-center gap-1">
+                              <button
+                                type="button"
+                                disabled={!canEdit || ordering || actionBusyId === item.id}
+                                title={!canEdit ? '편집 권한 필요' : undefined}
+                                onClick={() => handleSingleOrder(item)}
+                                className={`inline-flex items-center gap-1 px-2 py-1 text-[10px] font-black rounded-lg transition-colors ${
+                                  canEdit
+                                    ? 'bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50'
+                                    : DISABLED_ACTION_BTN
+                                }`}
+                              >
+                                <span>→</span>
+                                <span>
+                                  {ordering || actionBusyId === item.id ? '처리중' : '개별 발주 이동'}
+                                </span>
+                              </button>
+                              <button
+                                type="button"
+                                disabled={!canEdit || ordering || actionBusyId === item.id}
+                                title={!canEdit ? '편집 권한 필요' : '신청(접수 대기)로 되돌리기'}
+                                onClick={() => handleRevertAccept(item)}
+                                className={`inline-flex items-center gap-1 px-2 py-1 text-[10px] font-black rounded-lg transition-colors ${
+                                  canEdit
+                                    ? 'bg-slate-100 border border-slate-200 text-slate-600 hover:bg-slate-200 disabled:opacity-50'
+                                    : DISABLED_ACTION_BTN
+                                }`}
+                              >
+                                <span>←</span>
+                                <span>{actionBusyId === item.id ? '처리중' : '접수 취소'}</span>
                               </button>
                             </div>
                           ) : (
@@ -833,6 +1073,26 @@ export default function DeptOrderPanel() {
             </div>
           </div>
         </div>
+      )}
+
+      {batchShippingOpen && (
+        <ProductionBatchShippingModal
+          open
+          showApplyScope
+          totalJebonCount={pendingOrderRequests.length}
+          deferredCount={batchShippingDeferredCount}
+          saving={ordering}
+          title="묶음 배송지 입력 후 발주"
+          description="인증원 수령(배송지 미입력) 건에 동일한 실배송지를 적용한 뒤 묶음 발주합니다."
+          submitLabel="배송지 적용 후 발주"
+          onClose={() => {
+            if (!ordering) {
+              setBatchShippingOpen(false);
+              setPendingOrderIds([]);
+            }
+          }}
+          onSubmit={handleBatchShippingBeforeOrder}
+        />
       )}
 
       {detailItem && (

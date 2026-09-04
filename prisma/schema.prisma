@@ -899,6 +899,18 @@ model ProductionPlateMaster {
   updatedAt  DateTime @updatedAt
 }
 
+/// 제본(JEBON) 판형 마스터 — 종류·규격·설명
+model ProductionJebonSizeMaster {
+  id          String   @id @default(cuid())
+  code        String   @unique // 예: A4, B5, 16절, 비규격
+  label       String   // 종류 (표시명)
+  size        String   @default("") // 규격 (예: 210 × 297mm)
+  description String   @default("") // 설명
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
 model ProductionCertMaster {
   id             String   @id @default(cuid())
   certId         String   @unique // 예: GSEED, BF, CONDENDSATION, ISO, NORMAL
@@ -907,6 +919,8 @@ model ProductionCertMaster {
   format         String   @default("") // 명판용 유효기간 출력 서식
   jebonFormat    String   @default("") // 제본용 완료일자 출력 서식
   grades         Json     @default("[]") // 등급 구조화 데이터 (예: ["최우수", "우수", "일반"])
+  /// 인증에 연결할 현판 품목 코드 목록 (ProductionPlateMaster.code[])
+  linkedPlateCodes    Json     @default("[]")
   useCertNumber       Boolean  @default(true) // 신청폼 인증번호 입력 활성화
   useValidPeriod      Boolean  @default(true) // 신청폼 명판 유효기간 입력 활성화
   useMultiGradeSelect Boolean  @default(false) // 신청폼 등급 체크박스 복수 선택 (false=셀렉트 단일)
@@ -914,6 +928,7 @@ model ProductionCertMaster {
   jebonDefaultSizeType String  @default("A4") // 판형 기본값 (A4/B5/…)
   jebonDefaultQuantity Int     @default(1) // 부수(수량) 기본값
   useJebonCover        Boolean @default(true) // 표지(Cover) 스펙 입력 활성화
+  useJebonCoverDate    Boolean @default(true) // 표지 일자(완료일) 입력 활성화
   jebonCoverColor      String  @default("컬러") // 표지 인쇄 방식 기본값
   jebonCoverPageCount  String  @default("1") // 표지 면수 기본값
   jebonInnerColor      String  @default("흑백") // 본문 인쇄 방식 기본값
@@ -934,6 +949,17 @@ model ProductionVendorMaster {
   isActive     Boolean  @default(true)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
+}
+
+/// 부서별 제작 외주 메일 양식 (검수 화면 업체 메일 발송)
+model ProductionDeptMailSettings {
+  id              String   @id @default(cuid())
+  unitId          String   @unique // 부서(Unit) id
+  mailShortcutUrl String   @default("")
+  subjectTemplate String   @default("") // 비어 있으면 기본 제목 사용
+  bodyTemplate    String   @default("") // 비어 있으면 기본 본문 사용
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 }
 
 // 기타제작물(PRINT) 주문 물품 마스터

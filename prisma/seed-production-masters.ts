@@ -19,9 +19,9 @@ export async function seedProductionMasters(
     { code: 'STAINLESS_300', label: '스텐현판', price: 120000, size: '300*400' },
     { code: 'STAINLESS_90', label: '스텐현판', price: 120000, size: '90*55' },
     { code: 'STAINLESS_450_A', label: 'ISO 실외 스텐현판_기업명표기', price: 120000, size: '450*300' },
+    { code: 'STAINLESS_450_IMS', label: 'ISO 실외 스텐현판_통합경영', price: 120000, size: '450*300' },
     { code: 'STAINLESS_450_B', label: 'ISO 실외 스텐현판_기업명 미표기', price: 120000, size: '450*300' },
-    { code: 'WOOD_240', label: 'ISO 실내 메탈목재상패(세로형)', price: 160000, size: '240*300' },
-    { code: 'WOOD_300', label: 'ISO 실내 메탈목재상패(가로형)', price: 160000, size: '300*240' },
+    { code: 'WOOD_240', label: 'ISO 실내 메탈목재상패', price: 160000, size: '240*300' },
     { code: 'SILVER_220', label: 'ISO 실내 원형 은쟁반패', price: 160000, size: '220*220' },
     { code: 'SILVER_260', label: 'ISO 실내 팔각형 은쟁반패', price: 160000, size: '260*260' },
   ];
@@ -44,6 +44,37 @@ export async function seedProductionMasters(
         create: plate,
       });
     }
+  }
+
+  const jebonSizes = [
+    { code: 'A4', label: 'A4', size: '210 × 297mm', description: '표준 기본' },
+    { code: 'B5', label: 'B5', size: '182 × 257mm', description: '' },
+    { code: 'A5', label: 'A5', size: '148 × 210mm', description: '' },
+    { code: 'B6', label: 'B6', size: '128 × 182mm', description: '' },
+    { code: '16절', label: '16절', size: '197 × 272mm', description: '' },
+    { code: '비규격', label: '비규격', size: '', description: '직접 입력' },
+  ];
+
+  for (const row of jebonSizes) {
+    if (mode === 'fill') {
+      const exist = await prisma.productionJebonSizeMaster.findUnique({
+        where: { code: row.code },
+      });
+      if (!exist) {
+        await prisma.productionJebonSizeMaster.create({ data: row });
+      }
+      continue;
+    }
+    await prisma.productionJebonSizeMaster.upsert({
+      where: { code: row.code },
+      update: {
+        label: row.label,
+        size: row.size,
+        description: row.description,
+        isActive: true,
+      },
+      create: row,
+    });
   }
 
   const productionVendors = [
@@ -132,7 +163,7 @@ export async function seedProductionMasters(
       certId: 'ENERGY',
       type: 'SIGN',
       label: '건축물에너지효율등급인증',
-      format: '유효기간: 0000. 00. 00 ~ 0000. 00. 00',
+      format: '0000. 00. 00 ~ 0000. 00. 00',
       jebonFormat: '',
       grades: ['1+++', '1++', '1+', '1등급', '2등급', '3등급', '4등급', '5등급', '6등급', '7등급'],
       useCertNumber: true,
@@ -143,7 +174,7 @@ export async function seedProductionMasters(
       certId: 'OLD_ZEB',
       type: 'SIGN',
       label: '(구) 제로에너지건축물인증',
-      format: '유효기간: 0000. 00. 00 ~ 0000. 00. 00',
+      format: '0000. 00. 00 ~ 0000. 00. 00',
       jebonFormat: '',
       grades: ['ZEB 5', 'ZEB 4', 'ZEB 3', 'ZEB 2', 'ZEB 1'],
       useCertNumber: true,
@@ -154,7 +185,7 @@ export async function seedProductionMasters(
       certId: 'INTEGRATED_ZEB',
       type: 'SIGN',
       label: '(통합) 제로에너지건축물인증',
-      format: '유효기간: 0000. 00. 00 ~ 0000. 00. 00',
+      format: '0000. 00. 00 ~ 0000. 00. 00',
       jebonFormat: '',
       grades: ['ZEB 5', 'ZEB 4', 'ZEB 3', 'ZEB 2', 'ZEB 1', 'ZEB +'],
       useCertNumber: true,
@@ -168,20 +199,20 @@ export async function seedProductionMasters(
       format: '',
       jebonFormat: '',
       grades: [
-        'ISO 9001',
-        'ISO 14001',
-        'ISO 45001',
-        'IATF16949',
-        'ISO 22000',
+        'KS Q ISO 9001 (품질경영시스템)',
+        'KS I ISO 14001 (환경경영시스템)',
+        'KS Q ISO 45001 (안전보건경영시스템)',
+        'IATF 16949',
+        'KS Q ISO 22000 (식품안전경영시스템)',
         'TL 9000',
-        'ISO 50001',
-        'ISO 22301',
-        'ISO 37001',
-        'ISO 37301',
-        'ISO/IEC 27001',
-        'ISO 21001',
-        'ISO 10002',
-        'ISO/IEC 42001',
+        'KS A ISO 50001 (에너지경영시스템)',
+        'KS A ISO 22301 (비즈니스연속성경영시스템)',
+        'KS A ISO 37001 (부패방지경영시스템)',
+        'KS A ISO 37301 (준법경영시스템)',
+        'KS X ISO/IEC 27001 (정보보안경영시스템)',
+        'KS S ISO 21001 (교육기관경영시스템)',
+        'KS Q ISO 10002 (고객만족경영시스템)',
+        'KS X ISO/IEC 42001 (인공지능경영시스템)',
       ],
       useCertNumber: true,
       useValidPeriod: false,
@@ -193,6 +224,7 @@ export async function seedProductionMasters(
     jebonDefaultSizeType: 'A4',
     jebonDefaultQuantity: 1,
     useJebonCover: true,
+    useJebonCoverDate: true,
     jebonCoverColor: '컬러',
     jebonCoverPageCount: '1',
     jebonInnerColor: '흑백',
@@ -204,7 +236,7 @@ export async function seedProductionMasters(
       type: 'JEBON',
       label: '일반제본',
       format: '',
-      jebonFormat: '',
+      jebonFormat: '0000. 0. 0.',
       grades: [],
       useCertNumber: true,
       useValidPeriod: true,
@@ -317,6 +349,7 @@ export async function seedProductionMasters(
         jebonDefaultSizeType: cert.jebonDefaultSizeType,
         jebonDefaultQuantity: cert.jebonDefaultQuantity,
         useJebonCover: cert.useJebonCover,
+        useJebonCoverDate: cert.useJebonCoverDate,
         jebonCoverColor: cert.jebonCoverColor,
         jebonCoverPageCount: cert.jebonCoverPageCount,
         jebonInnerColor: cert.jebonInnerColor,
@@ -329,7 +362,7 @@ export async function seedProductionMasters(
   const printItems = [
     {
       id: 'PRINT_CERT_PAPER',
-      name: '인증서 용지(A4)',
+      name: '인증서 용지',
       size: 'A4',
       supplier: '아트로릭',
       orderQty: 1,
@@ -339,7 +372,7 @@ export async function seedProductionMasters(
     },
     {
       id: 'PRINT_BAG_M',
-      name: '(중)쇼핑백',
+      name: '쇼핑백(중)',
       size: '230*70*320',
       supplier: '한생미디어',
       orderQty: 2000,
@@ -349,7 +382,7 @@ export async function seedProductionMasters(
     },
     {
       id: 'PRINT_BAG_L',
-      name: '(대)쇼핑백',
+      name: '쇼핑백(대)',
       size: '300*100*450',
       supplier: '한생미디어',
       orderQty: 2000,
@@ -378,14 +411,24 @@ export async function seedProductionMasters(
       sortOrder: 50,
     },
     {
-      id: 'PRINT_CONDOLENCE_ENVELOPE',
-      name: '경조사봉투',
+      id: 'PRINT_CONDOLENCE_ENVELOPE_CHUK',
+      name: '경조사봉투(축의)',
       size: '',
       supplier: '드림디포',
       orderQty: 200,
       unitValue: 'VAL_1',
       isCustom: false,
       sortOrder: 60,
+    },
+    {
+      id: 'PRINT_CONDOLENCE_ENVELOPE_JO',
+      name: '경조사봉투(조의)',
+      size: '',
+      supplier: '드림디포',
+      orderQty: 200,
+      unitValue: 'VAL_1',
+      isCustom: false,
+      sortOrder: 61,
     },
     {
       id: 'PRINT_OTHER',
@@ -466,6 +509,15 @@ export async function seedProductionMasters(
         item.sortOrder
       );
     }
+  }
+
+  try {
+    await prisma.productionPrintItemMaster.updateMany({
+      where: { id: 'PRINT_CONDOLENCE_ENVELOPE' },
+      data: { isActive: false },
+    });
+  } catch {
+    /* 구 단일 경조사봉투 행 비활성화 — 미존재 시 무시 */
   }
 
   console.log('✅ [Production Masters] 완료');

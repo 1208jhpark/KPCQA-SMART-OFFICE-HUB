@@ -1842,9 +1842,9 @@ return (
               <th className="h-12 px-4 w-[120px]">발주 일자</th>
               <th className="h-12 px-4 min-w-[160px]">신청 상세</th>
               <th className="h-12 px-4 text-center w-[80px]">총 수량</th>
-              <th className="h-12 px-2 text-center w-[120px]">엑셀 다운로드</th>
-              <th className="h-12 px-2 text-center w-[120px]">업체 메일 발송</th>
-              <th className="h-12 px-2 text-center w-[110px]">지급처리</th>
+              <th className="h-12 px-2 text-center w-[120px]">발주서(첨부용)</th>
+              <th className="h-12 px-2 text-center w-[120px]">발주 메일 양식</th>
+              <th className="h-12 px-2 text-center w-[110px]">지급처리 여부</th>
               <th className="h-12 px-2 text-center min-w-[128px]">
                 <div className="flex flex-col items-center justify-center gap-1">
                   <span>명세서 검수</span>
@@ -1900,7 +1900,7 @@ return (
                           : DISABLED_ACTION_BTN
                       }`}
                     >
-                      📊 엑셀 저장
+                      📊엑셀 다운로드
                     </button>
                   </td>
                   <td className="px-2 text-center">
@@ -1909,7 +1909,7 @@ return (
                       onClick={() => openEmailModal(batch)}
                       className="p-1.5 px-3 font-black text-[10px] rounded-lg w-full transition-colors bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200"
                     >
-                      📋 미리보기
+                      📋텍스트 복사
                     </button>
                   </td>
                   <td className="px-2 text-center">

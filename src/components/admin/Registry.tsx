@@ -37,6 +37,7 @@ const ProductionApplyHistory = dynamic(() => import('../asset/production/Product
 const DeptOrderPanel = dynamic(() => import('../asset/production/DeptOrderPanel').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
 const DeptInspectionPanel = dynamic(() => import('../asset/production/DeptInspectionPanel').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
 const DeptArchivePanel = dynamic(() => import('../asset/production/DeptArchivePanel').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
+const MasterOrderDashboard = dynamic(() => import('../asset/production/MasterOrderDashboard').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
 
 
 // --- [마케팅] ---
@@ -94,6 +95,7 @@ export const ModuleRegistry: Record<string, React.ComponentType<any>> = {
   '/asset/production/dept-master/order': DeptOrderPanel,
   '/asset/production/dept-master/inspection': DeptInspectionPanel,
   '/asset/production/dept-master/archive': DeptArchivePanel,
+  '/asset/production/master/dashboard': MasterOrderDashboard,
   
   // [마케팅]
   '/marketing/dashboard': MarketingDashboard,

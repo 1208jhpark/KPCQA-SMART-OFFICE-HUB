@@ -80,6 +80,12 @@ export default function ServiceLayout({ children }: { children: React.ReactNode 
     }
   }, [loading, user?.must_reset_password, pathname, router]);
 
+  // 경로 변경 즉시 이전 인덱스 잔상 제거 (async 메뉴 재조회 완료 전 1~2초 깜빡임 방지)
+  useEffect(() => {
+    setShowIndexGrid(false);
+    setAccessError(null);
+  }, [pathname]);
+
   // 캐시된 메뉴로 즉시 점프 (북마크·직접 URL 진입 시 중간 화면 억제)
   useEffect(() => {
     if (loading || !user || menus.length === 0) return;
@@ -89,15 +95,50 @@ export default function ServiceLayout({ children }: { children: React.ReactNode 
       .find((m) => cleanPathname === (m.path || '').replace(/\/$/, '').toLowerCase() && m.path !== '/home');
     if (!currentMenu) {
       setEntryJumpPending(false);
+      setShowIndexGrid(false);
       return;
     }
     const dest = resolveEntryHref(currentMenu, menus, user, unitsList);
     const self = (currentMenu.path || '').replace(/\/$/, '').toLowerCase();
     if (dest && dest.replace(/\/$/, '').toLowerCase() !== self) {
+      setShowIndexGrid(false);
       setEntryJumpPending(true);
       router.replace(dest);
+      return;
+    }
+
+    setEntryJumpPending(false);
+
+    // 캐시된 메뉴로 인덱스/본문 전환을 즉시 결정 (재조회 대기 없음)
+    const exactMatch = cleanPathname === self;
+    const isDirectMode =
+      currentMenu.entry_l4_direct === true ||
+      String(currentMenu.entry_l4_direct).toLowerCase() === 'true' ||
+      currentMenu.entry_l4_direct === 1;
+    if (currentMenu.level === 3 && exactMatch && !isDirectMode) {
+      const children = menus
+        .filter((m: any) => m.parent_id === currentMenu.id && m.is_active && m.is_visible)
+        .sort((a: any, b: any) => (a.sort_order || 0) - (b.sort_order || 0));
+      const allowedChildren = children.filter(
+        (c: any) => checkMenuPermission(user, c, menus, unitsList).hasAccess
+      );
+      setIndexTitle(
+        currentMenu.show_page_title && currentMenu.page_title
+          ? currentMenu.page_title
+          : currentMenu.name || ''
+      );
+      setShowIndexTitle(true);
+      if (currentMenu.show_page_desc) {
+        setIndexDescription(currentMenu.page_description || '');
+        setShowIndexDesc(true);
+      } else {
+        setIndexDescription('');
+        setShowIndexDesc(false);
+      }
+      setIndexCards(allowedChildren);
+      setShowIndexGrid(true);
     } else {
-      setEntryJumpPending(false);
+      setShowIndexGrid(false);
     }
   }, [pathname, loading, user, menus, unitsList, router]);
    

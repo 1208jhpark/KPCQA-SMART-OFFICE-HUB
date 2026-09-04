@@ -2,7 +2,8 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import { getKSTDateString } from '@/utils/dateUtils';
-import { displaySignValidPeriod } from '@/lib/production-sign-excel';
+import { displaySignValidPeriod, formatPrintItemInfoSpec } from '@/lib/production-sign-excel';
+import { isHqReceiveShip, resolveDeliveryMode } from '@/lib/production-shipping';
 
 const HISTORY_CATEGORIES = [
   { id: 'ALL', label: '전체 내역', icon: '📋' },
@@ -12,12 +13,13 @@ const HISTORY_CATEGORIES = [
   { id: 'OFFICE_SUPPLIES', label: '사무문구류', icon: '📎' },
 ];
 
-/** 신청 수량 단위: 제본=부, 기타제작=마스터 단위, 그 외=EA */
+/** 신청 수량 단위: 제본=부, 기타제작=마스터 단위, 사무문구=건, 그 외=EA */
 function formatQuantityUnit(item: {
   category?: string;
   options?: { printItemMasterInfo?: { unitLabel?: string; unitValue?: string } };
 }) {
   if (item.category === 'JEBON') return '부';
+  if (item.category === 'OFFICE_SUPPLIES') return '건';
   if (item.category === 'PRINT') {
     const label = item.options?.printItemMasterInfo?.unitLabel;
     if (label) return String(label);
@@ -25,29 +27,18 @@ function formatQuantityUnit(item: {
   return 'EA';
 }
 
-type CustomRequestLabel = '메인문구(한글)' | '메인문구(영문)' | '기타';
-const CUSTOM_REQUEST_LABELS: CustomRequestLabel[] = ['메인문구(한글)', '메인문구(영문)', '기타'];
+type CustomRequestRow = { id: number; value: string };
 
-function customRequestPlaceholder(label: string) {
-  if (label === '메인문구(한글)') return '예) 품질경영시스템 인증기업';
-  if (label === '메인문구(영문)') return '예) The Company in Integrated...';
-  return '요청 사항 혹은 하단 프리뷰 문구 보조 제어 스펙 자유 기재란';
-}
-
-function normalizeCustomRequests(raw: unknown): { id: number; label: CustomRequestLabel; value: string }[] {
+function normalizeCustomRequests(raw: unknown): CustomRequestRow[] {
   if (!Array.isArray(raw)) return [];
   return raw.map((req: any, i: number) => {
     if (typeof req === 'string') {
-      return { id: Date.now() + i, label: '기타' as CustomRequestLabel, value: req };
+      return { id: Date.now() + i, value: req };
     }
-    const rawLabel = String(req?.label || '기타');
-    const label = (CUSTOM_REQUEST_LABELS as readonly string[]).includes(rawLabel)
-      ? (rawLabel as CustomRequestLabel)
-      : ('기타' as CustomRequestLabel);
+    const value = String(req?.value || '');
     return {
       id: typeof req?.id === 'number' ? req.id : Date.now() + i,
-      label,
-      value: String(req?.value || ''),
+      value,
     };
   });
 }
@@ -58,31 +49,39 @@ function isJebonNormalCert(certType: string | undefined | null) {
   return t === 'NORMAL' || t.includes('일반');
 }
 
-/** 신청 탭(ProductionApplyForm) jebonFormSteps와 동일 번호 체계 */
-function getJebonFormSteps(certType: string | undefined | null) {
-  const isNormal = isJebonNormalCert(certType);
-  if (isNormal) {
-    return {
-      certType: 1,
-      certPhase: null as number | null,
-      size: 2,
-      cover: 3,
-      inner: 4,
-      coverMainTitle: 5,
-      subtitle: 6,
-      building: null as number | null,
-      coverDate: null as number | null,
-      customRequest: 7,
-    };
+/** 제본 판형 — 종류(jebonSizeType) · 치수(jebonSize) 분리 표시 */
+function resolveJebonSizeDisplay(options: Record<string, unknown> | undefined | null) {
+  const typeCode = String(options?.jebonSizeType || '').trim();
+  const sizeSpec = String(options?.jebonSize || '').trim();
+
+  if (!typeCode && !sizeSpec) {
+    return { kind: null as string | null, spec: null as string | null };
   }
+
+  if (!typeCode) {
+    if (/×|mm|절|\d/.test(sizeSpec) && sizeSpec.length > 3) {
+      return { kind: null, spec: sizeSpec };
+    }
+    return { kind: sizeSpec, spec: null };
+  }
+
+  const isCustom = typeCode === '비규격' || typeCode === 'CUSTOM';
+  if (isCustom) {
+    return { kind: typeCode, spec: sizeSpec || null };
+  }
+
+  const spec = sizeSpec && sizeSpec !== typeCode ? sizeSpec : null;
+  return { kind: typeCode, spec };
+}
+
+/** 신청 탭(ProductionApplyForm) jebonFormSteps와 동일 번호 체계 */
+function getJebonFormSteps() {
   return {
     certType: 1,
     certPhase: 2,
     size: 3,
     cover: 4,
     inner: 5,
-    coverMainTitle: null as number | null,
-    subtitle: null as number | null,
     building: 6,
     coverDate: 7,
     customRequest: 8,
@@ -181,10 +180,17 @@ export default function ProductionRequestDetailModal({
         : detailItem?.options?.certType
       : null;
   const jebonFormSteps = useMemo(
-    () => getJebonFormSteps(jebonDetailCertType),
+    () => getJebonFormSteps(),
     [jebonDetailCertType]
   );
   const jebonIsNormal = isJebonNormalCert(jebonDetailCertType);
+  const jebonSizeDisplay = useMemo(
+    () =>
+      detailItem?.category === 'JEBON'
+        ? resolveJebonSizeDisplay(detailItem?.options)
+        : { kind: null, spec: null },
+    [detailItem?.category, detailItem?.options]
+  );
   const selectedDraftPrintItem = useMemo(() => {
     if (detailItem?.category !== 'PRINT') return null;
     const draftId = detailDraft?.options?.printItemId;
@@ -390,9 +396,11 @@ export default function ProductionRequestDetailModal({
     const title = String(detailDraft.title || '').trim();
     if (!title) return alert('관리용 제목을 입력해 주세요.');
     const opts = detailDraft.options || {};
-    const isBatch =
-      detailItem.category === 'JEBON' && opts.jebonBatchShipping === true;
-    if (detailItem.category !== 'OFFICE_SUPPLIES' && !isBatch) {
+    const isBatch = isHqReceiveShip({
+      category: detailItem.category,
+      options: opts,
+    });
+    if (!isBatch) {
       if (!String(opts.receiverName || '').trim() || !String(opts.receiverPhone || '').trim()) {
         return alert('수령인 성명과 연락처를 입력해 주세요.');
       }
@@ -406,6 +414,12 @@ export default function ProductionRequestDetailModal({
     if (detailItem.category === 'SIGN') {
       if (!String(opts.companyName || '').trim()) {
         return alert('현판 신청 회사를 입력해 주세요.');
+      }
+      const projectOrOrg = String(opts.certType || '').includes('ISO')
+        ? String(opts.isoCompanyName || '').trim()
+        : String(opts.projectName || '').trim();
+      if (!projectOrOrg) {
+        return alert('프로젝트명/건물명/경영시스템 조직명을 입력해 주세요.');
       }
     }
     if (detailItem.category === 'PRINT') {
@@ -429,7 +443,7 @@ export default function ProductionRequestDetailModal({
 
     const customRequests = normalizeCustomRequests(opts.customRequests)
       .filter((r) => r.value.trim() !== '')
-      .map(({ label, value }) => ({ label, value: value.trim() }));
+      .map(({ value }) => ({ value: value.trim() }));
 
     const formattedValidPeriod =
       detailItem.category === 'SIGN'
@@ -547,7 +561,7 @@ export default function ProductionRequestDetailModal({
                   <DetailRow label="소속 부서" value={detailItem.deptName} highlight={false} />
                   <DetailRow label="신청자" value={detailItem.userName} highlight={false} />
                 </div>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-1 border-t border-slate-100">
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 pt-1 border-t border-slate-100">
                   <DetailRow
                     label="외주업체"
                     highlight
@@ -582,7 +596,7 @@ export default function ProductionRequestDetailModal({
                     value={getCategoryLabel(detailItem.category)}
                   />
                   <DetailRow
-                    label="신청 총 수량"
+                    label={detailItem.category === 'OFFICE_SUPPLIES' ? '건' : '신청 총 수량'}
                     highlight
                     value={
                       detailEditing && detailItem.category !== 'OFFICE_SUPPLIES' ? (
@@ -603,6 +617,8 @@ export default function ProductionRequestDetailModal({
                       )
                     }
                   />
+                  {/* 윗줄 4열(신청자)과 세로 맞춤 — 빈 칸 */}
+                  <div className="hidden lg:block" aria-hidden />
                 </div>
               </div>
 
@@ -617,37 +633,7 @@ export default function ProductionRequestDetailModal({
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <div>
                           <label className="block text-[10px] font-black text-slate-400 mb-1">
-                            1. 품목 및 기본 사양
-                          </label>
-                          <select
-                            value={detailDraft?.options?.plateMasterInfo?.code || ''}
-                            onChange={(e) => {
-                              const p = plateOptions.find((x) => x.code === e.target.value);
-                              patchDraftOptions({
-                                plateType: p?.code || '',
-                                plateMasterInfo: p
-                                  ? {
-                                      code: p.code,
-                                      label: p.label,
-                                      size: p.size,
-                                      price: p.price,
-                                    }
-                                  : null,
-                              });
-                            }}
-                            className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold outline-none cursor-pointer"
-                          >
-                            <option value="">품목 선택</option>
-                            {plateOptions.map((p) => (
-                              <option key={p.code} value={p.code}>
-                                {p.label} ({p.size})
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                        <div>
-                          <label className="block text-[10px] font-black text-slate-400 mb-1">
-                            2. 인증의 종류
+                            1. 인증의 종류
                           </label>
                           <select
                             value={detailDraft?.options?.certType || ''}
@@ -675,7 +661,7 @@ export default function ProductionRequestDetailModal({
                         </div>
                         <div>
                           <label className="block text-[10px] font-black text-slate-400 mb-1">
-                            3. 인증상세 또는 등급
+                            2. 인증 등급/종류 설정
                           </label>
                           {(() => {
                             const grades =
@@ -715,7 +701,38 @@ export default function ProductionRequestDetailModal({
                         </div>
                         <div>
                           <label className="block text-[10px] font-black text-slate-400 mb-1">
-                            4. 프로젝트명/건물명/시설명/기업명
+                            3. 현판 품목 설정
+                          </label>
+                          <select
+                            value={detailDraft?.options?.plateMasterInfo?.code || ''}
+                            onChange={(e) => {
+                              const p = plateOptions.find((x) => x.code === e.target.value);
+                              patchDraftOptions({
+                                plateType: p?.code || '',
+                                plateMasterInfo: p
+                                  ? {
+                                      code: p.code,
+                                      label: p.label,
+                                      size: p.size,
+                                      price: p.price,
+                                    }
+                                  : null,
+                              });
+                            }}
+                            className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold outline-none cursor-pointer"
+                          >
+                            <option value="">품목 선택</option>
+                            {plateOptions.map((p) => (
+                              <option key={p.code} value={p.code}>
+                                {p.label} ({p.size})
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-[10px] font-black text-slate-400 mb-1">
+                            4. 프로젝트명/건물명/경영시스템 조직명{' '}
+                            <span className="text-red-500">*</span>
                           </label>
                           <input
                             type="text"
@@ -765,27 +782,33 @@ export default function ProductionRequestDetailModal({
                     ) : (
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <DetailRow
-                          label="1. 품목 및 기본 사양"
+                          label="1. 인증의 종류"
+                          value={detailItem.options?.certType}
+                        />
+                        <DetailRow
+                          label="2. 인증 등급/종류 설정"
+                          value={detailItem.options?.certLevel}
+                        />
+                        <DetailRow
+                          label="3. 현판 품목 설정"
                           value={
                             detailItem.options?.plateMasterInfo
                               ? `${detailItem.options.plateMasterInfo.label} (${detailItem.options.plateMasterInfo.size})`
                               : null
                           }
                         />
-                        <DetailRow label="2. 인증의 종류" value={detailItem.options?.certType} />
                         <DetailRow
-                          label="3. 인증상세 또는 등급"
-                          value={detailItem.options?.certLevel}
-                        />
-                        <DetailRow
-                          label="4. 프로젝트명/건물명/시설명/기업명"
+                          label="4. 프로젝트명/건물명/경영시스템 조직명"
                           value={
                             String(detailItem.options?.certType || '').includes('ISO')
                               ? detailItem.options?.isoCompanyName
                               : detailItem.options?.projectName
                           }
                         />
-                        <DetailRow label="5. 인증번호" value={detailItem.options?.certNumber} />
+                        <DetailRow
+                          label="5. 인증번호"
+                          value={detailItem.options?.certNumber}
+                        />
                         <DetailRow
                           label="6. 현판 유효기간"
                           value={displaySignValidPeriod(
@@ -812,9 +835,18 @@ export default function ProductionRequestDetailModal({
                             </label>
                             <select
                               value={detailDraft?.options?.certType || ''}
-                              onChange={(e) =>
-                                patchDraftOptions({ certType: e.target.value })
-                              }
+                              onChange={(e) => {
+                                const nextLabel = e.target.value;
+                                const nextIsNormal = isJebonNormalCert(nextLabel);
+                                patchDraftOptions({
+                                  certType: nextLabel,
+                                  certPhase: nextIsNormal
+                                    ? '해당없음'
+                                    : detailDraft?.options?.certPhase === '해당없음'
+                                      ? '예비인증'
+                                      : detailDraft?.options?.certPhase || '예비인증',
+                                });
+                              }}
                               className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold outline-none cursor-pointer"
                             >
                               <option value="">제본 종류 선택</option>
@@ -827,41 +859,56 @@ export default function ProductionRequestDetailModal({
                                 ))}
                             </select>
                           </div>
-                          {!jebonIsNormal && jebonFormSteps.certPhase != null && (
-                            <div>
+                          <div>
                               <label className="block text-[10px] font-black text-slate-400 mb-1">
                                 {jebonFormSteps.certPhase}. 인증의 단계
                               </label>
                               <select
-                                value={detailDraft?.options?.certPhase || '예비인증'}
+                                value={
+                                  detailDraft?.options?.certPhase ||
+                                  (jebonIsNormal ? '해당없음' : '예비인증')
+                                }
                                 onChange={(e) =>
                                   patchDraftOptions({ certPhase: e.target.value })
                                 }
                                 className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold outline-none cursor-pointer"
                               >
+                                <option value="해당없음">해당없음</option>
                                 <option value="예비인증">예비인증</option>
                                 <option value="본인증">본인증</option>
                               </select>
                             </div>
-                          )}
                         </div>
 
                         {/* 판형 · 표지 · 본문 — 3열 */}
                         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
                           <div className="bg-slate-50/50 p-4 rounded-2xl border border-slate-200 space-y-2">
-                            <label className="block text-[10px] font-black text-slate-500 tracking-widest uppercase">
+                            <div className="text-[10px] font-black text-slate-500 tracking-widest uppercase">
                               📏 {jebonFormSteps.size}. 제본 판형 지정
+                            </div>
+                            <label className="block text-[10px] font-black text-slate-400 mb-1">
+                              종류
+                            </label>
+                            <input
+                              type="text"
+                              value={detailDraft?.options?.jebonSizeType || ''}
+                              onChange={(e) =>
+                                patchDraftOptions({ jebonSizeType: e.target.value })
+                              }
+                              placeholder="예: A4, B5, 비규격"
+                              className="w-full bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-xs font-bold outline-none"
+                            />
+                            <label className="block text-[10px] font-black text-slate-400 mb-1">
+                              치수
                             </label>
                             <input
                               type="text"
                               value={detailDraft?.options?.jebonSize || ''}
                               onChange={(e) =>
-                                patchDraftOptions({
-                                  jebonSize: e.target.value,
-                                  jebonSizeType: e.target.value,
-                                })
+                                patchDraftOptions({ jebonSize: e.target.value })
                               }
-                              className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-semibold text-slate-800 outline-none"
+                              placeholder="예: 210 × 297mm"
+                              className="w-full bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-xs font-semibold text-slate-800 outline-none"
                             />
                           </div>
                           <div className="p-4 rounded-2xl border border-slate-200 bg-slate-50/50 space-y-2">
@@ -954,54 +1001,27 @@ export default function ProductionRequestDetailModal({
                           </div>
                         </div>
 
-                        {/* 표지 제목 / 프로젝트명 분기 */}
-                        {jebonIsNormal ? (
-                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            <div>
-                              <label className="block text-[10px] font-black text-slate-400 mb-1">
-                                {jebonFormSteps.coverMainTitle}. 📄 제본 표지 메인 제목
-                              </label>
-                              <input
-                                type="text"
-                                value={detailDraft?.options?.coverName || ''}
-                                onChange={(e) =>
-                                  patchDraftOptions({ coverName: e.target.value })
-                                }
-                                className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-semibold outline-none"
-                              />
-                            </div>
-                            <div>
-                              <label className="block text-[10px] font-black text-slate-400 mb-1">
-                                {jebonFormSteps.subtitle}. 📝 표지 서브 부제목{' '}
-                                <span className="text-slate-300 font-medium">(선택)</span>
-                              </label>
-                              <input
-                                type="text"
-                                value={detailDraft?.options?.jebonSubtitle || ''}
-                                onChange={(e) =>
-                                  patchDraftOptions({ jebonSubtitle: e.target.value })
-                                }
-                                className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-semibold outline-none"
-                              />
-                            </div>
-                          </div>
-                        ) : (
-                          <div>
-                            <label className="block text-[10px] font-black text-slate-400 mb-1">
-                              {jebonFormSteps.building}. 프로젝트명(건물명)
-                            </label>
-                            <input
-                              type="text"
-                              value={detailDraft?.options?.jebonBuildingName || ''}
-                              onChange={(e) =>
-                                patchDraftOptions({ jebonBuildingName: e.target.value })
-                              }
-                              className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-semibold outline-none"
-                            />
-                          </div>
-                        )}
+                        <div>
+                          <label className="block text-[10px] font-black text-slate-400 mb-1">
+                            {jebonFormSteps.building}. 프로젝트명/건물명/표지제목
+                          </label>
+                          <input
+                            type="text"
+                            value={
+                              detailDraft?.options?.jebonBuildingName ||
+                              detailDraft?.options?.coverName ||
+                              ''
+                            }
+                            onChange={(e) =>
+                              patchDraftOptions({
+                                jebonBuildingName: e.target.value,
+                                coverName: e.target.value,
+                              })
+                            }
+                            className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-semibold outline-none"
+                          />
+                        </div>
 
-                        {!jebonIsNormal && jebonFormSteps.coverDate != null && (
                         <div>
                           <label className="block text-[10px] font-black text-slate-400 mb-1">
                             {jebonFormSteps.coverDate}. 표지 일자(인증 완료일 등){' '}
@@ -1016,7 +1036,6 @@ export default function ProductionRequestDetailModal({
                             className="w-full border rounded-xl px-3 py-2 text-xs font-semibold outline-none bg-white border-slate-200"
                           />
                         </div>
-                        )}
                       </div>
                     ) : (
                       <div className="space-y-6">
@@ -1026,21 +1045,23 @@ export default function ProductionRequestDetailModal({
                             label={`${jebonFormSteps.certType}. 제본 종류 선택`}
                             value={detailItem.options?.certType}
                           />
-                          {!jebonIsNormal && jebonFormSteps.certPhase != null && (
-                            <DetailRow
-                              label={`${jebonFormSteps.certPhase}. 인증의 단계`}
-                              value={detailItem.options?.certPhase}
-                            />
-                          )}
+                          <DetailRow
+                            label={`${jebonFormSteps.certPhase}. 인증의 단계`}
+                            value={
+                              detailItem.options?.certPhase ||
+                              (jebonIsNormal ? '해당없음' : undefined)
+                            }
+                          />
                         </div>
 
                         {/* 판형 · 표지 · 본문 — 3열 */}
                         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-                          <div className="bg-slate-50/50 p-4 rounded-2xl border border-slate-200 shadow-sm">
-                            <DetailRow
-                              label={`${jebonFormSteps.size}. 제본 판형 지정`}
-                              value={detailItem.options?.jebonSize}
-                            />
+                          <div className="p-4 rounded-2xl border border-slate-200 bg-slate-50/50 shadow-sm space-y-2">
+                            <div className="text-[10px] font-black text-slate-500 tracking-widest uppercase mb-1">
+                              📏 {jebonFormSteps.size}. 제본 판형 지정
+                            </div>
+                            <DetailRow label="종류" value={jebonSizeDisplay.kind} />
+                            <DetailRow label="치수" value={jebonSizeDisplay.spec} />
                           </div>
                           <div className="p-4 rounded-2xl border border-slate-200 bg-slate-50/50 shadow-sm space-y-2">
                             <div className="text-[10px] font-black text-slate-500 tracking-widest uppercase mb-1">
@@ -1076,31 +1097,18 @@ export default function ProductionRequestDetailModal({
                           </div>
                         </div>
 
-                        {/* 표지 제목 / 프로젝트명 분기 */}
-                        {jebonIsNormal ? (
-                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            <DetailRow
-                              label={`${jebonFormSteps.coverMainTitle}. 📄 제본 표지 메인 제목`}
-                              value={detailItem.options?.coverName}
-                            />
-                            <DetailRow
-                              label={`${jebonFormSteps.subtitle}. 📝 표지 서브 부제목`}
-                              value={detailItem.options?.jebonSubtitle}
-                            />
-                          </div>
-                        ) : (
-                          <DetailRow
-                            label={`${jebonFormSteps.building}. 프로젝트명(건물명)`}
-                            value={detailItem.options?.jebonBuildingName}
-                          />
-                        )}
+                        <DetailRow
+                          label={`${jebonFormSteps.building}. 프로젝트명/건물명/표지제목`}
+                          value={
+                            detailItem.options?.jebonBuildingName ||
+                            detailItem.options?.coverName
+                          }
+                        />
 
-                        {!jebonIsNormal && jebonFormSteps.coverDate != null && (
-                          <DetailRow
-                            label={`${jebonFormSteps.coverDate}. 표지 일자(인증 완료일 등)`}
-                            value={detailItem.options?.formattedCompDate}
-                          />
-                        )}
+                        <DetailRow
+                          label={`${jebonFormSteps.coverDate}. 표지 일자(인증 완료일 등)`}
+                          value={detailItem.options?.formattedCompDate}
+                        />
                       </div>
                     )}
                   </div>
@@ -1201,34 +1209,13 @@ export default function ProductionRequestDetailModal({
                       </div>
                     ) : (
                       <>
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                          <DetailRow
-                            label="1. 주문 물품"
-                            value={
-                              detailItem.options?.printItemMasterInfo?.name ||
-                              detailItem.options?.printItemType
-                            }
-                            highlight
-                          />
-                          <DetailRow
-                            label={
-                              detailItem.options?.printItemMasterInfo?.isCustom ||
-                              detailItem.options?.printCustomName
-                                ? '선택 물품 정보/규격'
-                                : '1. 선택 물품 정보'
-                            }
-                            value={
-                              detailItem.options?.printCustomName ||
-                              [
-                                detailItem.options?.printItemMasterInfo?.name,
-                                detailItem.options?.printItemMasterInfo?.size,
-                              ]
-                                .filter(Boolean)
-                                .join(' ') ||
-                              detailItem.options?.printItemType
-                            }
-                          />
-                        </div>
+                        <DetailRow
+                          label="선택 물품 정보/규격"
+                          value={formatPrintItemInfoSpec(
+                            (detailItem.options || {}) as Record<string, unknown>
+                          )}
+                          highlight
+                        />
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                           <DetailRow label="2. 인쇄 제작 문구1" value={detailItem.options?.printItemDetails} />
                           <DetailRow label="3. 인쇄 제작 문구2" value={detailItem.options?.printDeliveryDetails} />
@@ -1275,7 +1262,7 @@ export default function ProductionRequestDetailModal({
                           patchDraftOptions({
                             customRequests: [
                               ...normalizeCustomRequests(detailDraft?.options?.customRequests),
-                              { id: Date.now(), label: '기타', value: '' },
+                              { id: Date.now(), value: '' },
                             ],
                           })
                         }
@@ -1302,38 +1289,19 @@ export default function ProductionRequestDetailModal({
                               <span className="text-slate-400 font-mono font-bold w-3.5 shrink-0 text-right text-[10px]">
                                 {index + 1}.
                               </span>
-                              <div className="flex-1 grid grid-cols-1 md:grid-cols-4 gap-2 min-w-0">
-                                <select
-                                  value={req.label}
-                                  onChange={(e) => {
-                                    const label = e.target.value as CustomRequestLabel;
-                                    const next = normalizeCustomRequests(
-                                      detailDraft?.options?.customRequests
-                                    ).map((c) => (c.id === req.id ? { ...c, label } : c));
-                                    patchDraftOptions({ customRequests: next });
-                                  }}
-                                  className="w-full md:col-span-1 bg-white border border-slate-200 rounded-lg px-2.5 py-2 text-[11px] font-bold text-slate-700 outline-none cursor-pointer"
-                                >
-                                  {CUSTOM_REQUEST_LABELS.map((label) => (
-                                    <option key={label} value={label}>
-                                      {label}
-                                    </option>
-                                  ))}
-                                </select>
-                                <input
-                                  type="text"
-                                  placeholder={customRequestPlaceholder(req.label)}
-                                  value={req.value}
-                                  onChange={(e) => {
-                                    const value = e.target.value;
-                                    const next = normalizeCustomRequests(
-                                      detailDraft?.options?.customRequests
-                                    ).map((c) => (c.id === req.id ? { ...c, value } : c));
-                                    patchDraftOptions({ customRequests: next });
-                                  }}
-                                  className="w-full md:col-span-3 bg-white border border-slate-200 rounded-lg px-3 py-2 text-[11px] font-semibold text-slate-800 outline-none"
-                                />
-                              </div>
+                              <input
+                                type="text"
+                                placeholder="요청 사항 혹은 프리뷰 문구 보조 제어 스펙 등 자유롭게 기재"
+                                value={req.value}
+                                onChange={(e) => {
+                                  const value = e.target.value;
+                                  const next = normalizeCustomRequests(
+                                    detailDraft?.options?.customRequests
+                                  ).map((c) => (c.id === req.id ? { ...c, value } : c));
+                                  patchDraftOptions({ customRequests: next });
+                                }}
+                                className="flex-1 min-w-0 bg-white border border-slate-200 rounded-lg px-3 py-2 text-[11px] font-semibold text-slate-800 outline-none"
+                              />
                               <button
                                 type="button"
                                 onClick={() => {
@@ -1358,9 +1326,7 @@ export default function ProductionRequestDetailModal({
                         (req, i) => (
                           <div key={req.id} className="flex gap-2 text-xs">
                             <span className="text-slate-400 font-mono">{i + 1}.</span>
-                            <span className="text-slate-800">
-                              [{req.label}] {req.value}
-                            </span>
+                            <span className="text-slate-800">{req.value}</span>
                           </div>
                         )
                       )}
@@ -1370,15 +1336,24 @@ export default function ProductionRequestDetailModal({
               )}
 
               {/* 블록 4. 배송지 */}
-              {detailItem.category !== 'OFFICE_SUPPLIES' && (
                 <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-3">
                   <DetailSectionTitle title="🚚 최종 제작 사양 배송 주소지" />
-                  {detailItem.category === 'JEBON' &&
-                  (detailEditing
-                    ? detailDraft?.options?.jebonBatchShipping
-                    : detailItem.options?.jebonBatchShipping) ? (
-                    <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs font-bold text-slate-700">
-                      묶음 발주시 입력 — 신청 시 개별 배송지 미기재
+                  {isHqReceiveShip({
+                    category: detailItem.category,
+                    options: detailEditing ? detailDraft?.options : detailItem.options,
+                  }) ? (
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs font-bold text-slate-700 space-y-1">
+                      <p>
+                        {resolveDeliveryMode({
+                          category: detailItem.category,
+                          options: detailEditing ? detailDraft?.options : detailItem.options,
+                        }) === 'HQ_RECEIVE'
+                          ? '☑ 인증원 수령/묶음 발주'
+                          : '배송지 부서 대장 입력'}
+                      </p>
+                      <p className="text-slate-500 font-medium">
+                        신청 시 개별 배송지 미기재 — 부서 발주 시 입력
+                      </p>
                     </div>
                   ) : detailEditing ? (
                     <div className="space-y-3">
@@ -1534,7 +1509,6 @@ export default function ProductionRequestDetailModal({
                     </div>
                   )}
                 </div>
-              )}
 
               {/* 시스템 내부 보조 서식 — 현판(SIGN)만 */}
               {detailItem.category === 'SIGN' && (
@@ -1562,7 +1536,7 @@ export default function ProductionRequestDetailModal({
                       </div>
                       <div>
                         <label className="block text-[10px] font-black text-slate-500 mb-1">
-                          기타 설명1
+                          신청인 정보
                         </label>
                         <input
                           type="text"
@@ -1575,7 +1549,7 @@ export default function ProductionRequestDetailModal({
                       </div>
                       <div>
                         <label className="block text-[10px] font-black text-slate-500 mb-1">
-                          기타 설명2
+                          기타
                         </label>
                         <input
                           type="text"
@@ -1586,21 +1560,6 @@ export default function ProductionRequestDetailModal({
                           className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-semibold outline-none"
                         />
                       </div>
-                      {String(detailDraft?.options?.certType || '').includes('ISO') && (
-                        <div className="col-span-1 md:col-span-3">
-                          <label className="block text-[10px] font-black text-slate-500 mb-1">
-                            신청 현판 번호 (ISO 전용 내부 보관)
-                          </label>
-                          <input
-                            type="text"
-                            value={detailDraft?.options?.internalSystemSerial || ''}
-                            onChange={(e) =>
-                              patchDraftOptions({ internalSystemSerial: e.target.value })
-                            }
-                            className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-semibold outline-none"
-                          />
-                        </div>
-                      )}
                     </div>
                   ) : (
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-2">
@@ -1610,24 +1569,15 @@ export default function ProductionRequestDetailModal({
                         highlight={false}
                       />
                       <DetailRow
-                        label="기타 설명1"
+                        label="신청인 정보"
                         value={detailItem.options?.applicantName}
                         highlight={false}
                       />
                       <DetailRow
-                        label="기타 설명2"
+                        label="기타"
                         value={detailItem.options?.applicantPhone}
                         highlight={false}
                       />
-                      {String(detailItem.options?.certType || '').includes('ISO') && (
-                        <div className="col-span-1 md:col-span-3 pt-2">
-                          <DetailRow
-                            label="신청 현판 번호 (ISO 전용 내부 보관)"
-                            value={detailItem.options?.internalSystemSerial}
-                            highlight={false}
-                          />
-                        </div>
-                      )}
                     </div>
                   )}
                 </div>

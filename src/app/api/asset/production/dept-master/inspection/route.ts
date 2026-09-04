@@ -1,10 +1,15 @@
 import { NextResponse } from 'next/server';
+import { Prisma } from '@prisma/client';
 import prisma from '@/lib/prisma';
 import {
   authorizeApi,
   authorizeAnyMenuPaths,
   authErrorToResponse,
 } from '@/lib/server-auth-guard';
+import {
+  isCustomerDirectShip,
+  withVendorDispatched,
+} from '@/lib/production-shipping';
 
 export const dynamic = 'force-dynamic';
 
@@ -14,6 +19,63 @@ const READ_PATHS = [
   '/asset/production/dept-master/inspection',
   '/asset/production/dept-master/archive',
 ];
+
+function asOptionsRecord(value: unknown): Record<string, unknown> {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  return {};
+}
+
+function asInputJson(value: Record<string, unknown>): Prisma.InputJsonValue {
+  return value as Prisma.InputJsonValue;
+}
+
+function resolveBatchAppliedAt(items: Array<{ createdAt: Date; updatedAt: Date; options: unknown }>) {
+  const fromOpts = items
+    .map((i) => {
+      const raw = asOptionsRecord(i.options).batchOrderedAt;
+      const t = raw ? new Date(String(raw)).getTime() : 0;
+      return Number.isFinite(t) ? t : 0;
+    })
+    .filter((t) => t > 0);
+  if (fromOpts.length > 0) return new Date(Math.min(...fromOpts)).toISOString();
+
+  // 레거시: 발주확정 전이면 updatedAt, 확정 후면 createdAt 대신 최소 updatedAt 추정 불가 → createdAt 폴백 지양
+  // vendorDispatchedAt 이 있으면 그보다 이전의 updatedAt 후보가 없으므로 항목 최초 생성일 중 최신(묶음 시점 근사) 사용
+  const dispatchedAts = items
+    .map((i) => {
+      const opts = asOptionsRecord(i.options);
+      if (opts.vendorDispatched !== true) return 0;
+      const raw = opts.vendorDispatchedAt;
+      return raw ? new Date(String(raw)).getTime() : 0;
+    })
+    .filter((t) => t > 0);
+  if (dispatchedAts.length > 0) {
+    const minDispatch = Math.min(...dispatchedAts);
+    const beforeDispatch = items
+      .map((i) => new Date(i.updatedAt || i.createdAt).getTime())
+      .filter((t) => t > 0 && t < minDispatch);
+    if (beforeDispatch.length > 0) return new Date(Math.max(...beforeDispatch)).toISOString();
+  }
+
+  const updated = items
+    .map((i) => new Date(i.updatedAt || i.createdAt).getTime())
+    .filter((t) => t > 0);
+  return updated.length > 0 ? new Date(Math.min(...updated)).toISOString() : null;
+}
+
+function resolveBatchDispatchedAt(items: Array<{ options: unknown }>) {
+  const times = items
+    .map((i) => {
+      const opts = asOptionsRecord(i.options);
+      if (opts.vendorDispatched !== true) return 0;
+      const raw = opts.vendorDispatchedAt;
+      return raw ? new Date(String(raw)).getTime() : 0;
+    })
+    .filter((t) => t > 0);
+  return times.length > 0 ? new Date(Math.max(...times)).toISOString() : null;
+}
 
 type ScopeUnit = { id: string; unit_name: string };
 
@@ -129,17 +191,16 @@ export async function GET() {
           )
         );
         const allVerified = items.length > 0 && items.every((i) => i.status === 'VERIFIED');
-        const orderedAt = items.reduce((max, i) => {
-          const t = new Date(i.updatedAt || i.createdAt).getTime();
-          return t > max ? t : max;
-        }, 0);
+        const orderedAt = resolveBatchAppliedAt(items);
+        const dispatchedAt = resolveBatchDispatchedAt(items);
         return {
           id,
           status: allVerified ? 'VERIFIED' : 'ORDERED',
           totalCount: items.length,
           totalQuantity: items.reduce((sum, i) => sum + (i.quantity || 0), 0),
           vendors,
-          orderedAt: orderedAt ? new Date(orderedAt).toISOString() : null,
+          orderedAt,
+          dispatchedAt,
           items,
         };
       })
@@ -163,31 +224,124 @@ export async function GET() {
   }
 }
 
-/** [POST] 단가 승인 / 발주 취소 / 보관함 이동 */
+/** [POST] 외주 발주확인 / 수령완료 / 발주 취소 / 보관함 이동 / 단가승인 */
 export async function POST(req: Request) {
   try {
     await authorizeApi(MENU_PATH, { requireEditor: true });
     const body = await req.json().catch(() => ({}));
     const action = String(body.action || '').trim().toLowerCase();
 
+    if (action === 'confirm-dispatch') {
+      const batchId = String(body.batchId || '').trim();
+      if (!batchId) {
+        return NextResponse.json({ message: '묶음 번호가 필요합니다.' }, { status: 400 });
+      }
+      const rows = await prisma.productionRequest.findMany({
+        where: { batchId, status: 'ORDERED', isArchived: false },
+      });
+      if (rows.length === 0) {
+        return NextResponse.json(
+          { message: '발주진행(ORDERED) 건이 없습니다.' },
+          { status: 400 }
+        );
+      }
+
+      let dispatched = 0;
+      let autoReceived = 0;
+      for (const row of rows) {
+        const prev = asOptionsRecord(row.options);
+        if (prev.vendorDispatched === true) continue;
+        const nextOpts = withVendorDispatched(prev);
+        const direct = isCustomerDirectShip({
+          category: row.category,
+          options: nextOpts,
+        });
+        await prisma.productionRequest.update({
+          where: { id: row.id },
+          data: {
+            options: asInputJson(nextOpts),
+            ...(direct ? { status: 'VERIFIED' } : {}),
+          },
+        });
+        dispatched += 1;
+        if (direct) autoReceived += 1;
+      }
+
+      return NextResponse.json({
+        message:
+          autoReceived > 0
+            ? `${dispatched}건 외주 발주완료 처리했습니다. (고객사 직발송 ${autoReceived}건은 수령절차 생략)`
+            : `${dispatched}건 외주 발주완료 처리했습니다.`,
+        count: dispatched,
+        autoReceived,
+      });
+    }
+
+    if (action === 'confirm-receive') {
+      const requestId = String(body.requestId || '').trim();
+      if (!requestId) {
+        return NextResponse.json({ message: '신청 ID가 필요합니다.' }, { status: 400 });
+      }
+      const row = await prisma.productionRequest.findUnique({ where: { id: requestId } });
+      if (!row || row.isArchived || row.status !== 'ORDERED') {
+        return NextResponse.json(
+          { message: '발주진행 상태의 건만 수령완료할 수 있습니다.' },
+          { status: 400 }
+        );
+      }
+      const opts = asOptionsRecord(row.options);
+      if (opts.vendorDispatched !== true) {
+        return NextResponse.json(
+          { message: '묶음 「발주완료」 처리 후 수령완료할 수 있습니다.' },
+          { status: 400 }
+        );
+      }
+      if (isCustomerDirectShip({ category: row.category, options: opts })) {
+        return NextResponse.json(
+          { message: '고객사 직발송 건은 수령검수가 필요하지 않습니다.' },
+          { status: 400 }
+        );
+      }
+      await prisma.productionRequest.update({
+        where: { id: requestId },
+        data: { status: 'VERIFIED' },
+      });
+      return NextResponse.json({ message: '수령완료 처리되었습니다.', id: requestId });
+    }
+
     if (action === 'cancel-batch') {
       const batchId = String(body.batchId || '').trim();
       if (!batchId) {
         return NextResponse.json({ message: '묶음 번호가 필요합니다.' }, { status: 400 });
       }
-      const result = await prisma.productionRequest.updateMany({
-        where: { batchId, status: 'ORDERED', isArchived: false },
-        data: { status: 'ACCEPTED', batchId: null },
+      const rows = await prisma.productionRequest.findMany({
+        where: {
+          batchId,
+          status: { in: ['ORDERED', 'VERIFIED'] },
+          isArchived: false,
+        },
       });
-      if (result.count === 0) {
+      if (rows.length === 0) {
         return NextResponse.json(
-          { message: '발주완료(미정산) 건만 취소할 수 있습니다.' },
+          { message: '발주진행·수령완료 건만 취소할 수 있습니다.' },
           { status: 400 }
         );
       }
+      for (const row of rows) {
+        const prev = asOptionsRecord(row.options);
+        const { vendorDispatched: _vd, vendorDispatchedAt: _at, ...rest } = prev;
+        await prisma.productionRequest.update({
+          where: { id: row.id },
+          data: {
+            status: 'ACCEPTED',
+            batchId: null,
+            options: asInputJson(rest),
+          },
+        });
+      }
       return NextResponse.json({
-        message: `${result.count}건 발주를 취소하고 발주대기열로 되돌렸습니다.`,
-        count: result.count,
+        message: `${rows.length}건 발주를 취소하고 발주대기열로 되돌렸습니다.`,
+        count: rows.length,
       });
     }
 
@@ -202,7 +356,7 @@ export async function POST(req: Request) {
       });
       if (result.count === 0) {
         return NextResponse.json(
-          { message: '정산승인(VERIFIED) 건만 보관함으로 이동할 수 있습니다.' },
+          { message: '수령완료(VERIFIED) 건만 보관함으로 이동할 수 있습니다.' },
           { status: 400 }
         );
       }

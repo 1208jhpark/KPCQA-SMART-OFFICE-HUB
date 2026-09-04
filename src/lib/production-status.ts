@@ -24,9 +24,9 @@ export function productionStatusLabel(status: string): string {
     case PRODUCTION_STATUS.ACCEPTED:
       return '발주대기';
     case PRODUCTION_STATUS.ORDERED:
-      return '발주완료';
+      return '발주진행';
     case PRODUCTION_STATUS.VERIFIED:
-      return '정산승인';
+      return '수령완료';
     case PRODUCTION_STATUS.REJECTED:
       return '반려';
     case PRODUCTION_STATUS.CANCELLED:

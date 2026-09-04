@@ -79,7 +79,8 @@ export function useInterfaceStepTabs(
   defs: readonly InterfaceStepTabDef[],
   pathPrefix: string
 ): ResolvedInterfaceStepTab[] {
-  const [interfaces, setInterfaces] = useState<InterfaceMenuRow[]>([]);
+  /** null = 로딩 중. 빈 배열 fallback을 먼저 그리면 admin 문구와 어긋나 1~2초 깜빡임 */
+  const [interfaces, setInterfaces] = useState<InterfaceMenuRow[] | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -98,7 +99,10 @@ export function useInterfaceStepTabs(
   }, []);
 
   return useMemo(
-    () => resolveInterfaceStepTabs(defs, interfaces, pathPrefix),
+    () =>
+      interfaces == null
+        ? []
+        : resolveInterfaceStepTabs(defs, interfaces, pathPrefix),
     [defs, interfaces, pathPrefix]
   );
 }
@@ -116,7 +120,7 @@ export const PRODUCTION_DEPT_MASTER_TABS: InterfaceStepTabDef[] = [
   {
     id: 'inspection',
     path: '/asset/production/dept-master/inspection',
-    fallbackName: '명세서 검수',
+    fallbackName: '발주/수령 검수',
     fallbackIcon: '🧾',
     activeColor: 'text-emerald-600',
   },
@@ -124,6 +128,31 @@ export const PRODUCTION_DEPT_MASTER_TABS: InterfaceStepTabDef[] = [
     id: 'archive',
     path: '/asset/production/dept-master/archive',
     fallbackName: '정산 보관함',
+    fallbackIcon: '📁',
+    activeColor: 'text-slate-800',
+  },
+];
+
+/** 제작물 마스터(경영실) — 명함 master 탭 규격과 동일 */
+export const PRODUCTION_MASTER_TABS: InterfaceStepTabDef[] = [
+  {
+    id: 'dashboard',
+    path: '/asset/production/master/dashboard',
+    fallbackName: '검수 완료 보관함',
+    fallbackIcon: '🗂️',
+    activeColor: 'text-indigo-600',
+  },
+  {
+    id: 'invoice',
+    path: '/asset/production/master/invoice',
+    fallbackName: '명세·정산 대조',
+    fallbackIcon: '🧾',
+    activeColor: 'text-emerald-600',
+  },
+  {
+    id: 'archive',
+    path: '/asset/production/master/archive',
+    fallbackName: '정산 완료 아카이브',
     fallbackIcon: '📁',
     activeColor: 'text-slate-800',
   },
@@ -140,7 +169,7 @@ export const BUSINESS_CARD_MASTER_TABS: InterfaceStepTabDef[] = [
   {
     id: 'order',
     path: '/asset/businesscard/master/order',
-    fallbackName: '접수/발주/명세서 검수',
+    fallbackName: '접수/발주/발주·수령 검수',
     fallbackIcon: '🧾',
     activeColor: 'text-emerald-600',
   },

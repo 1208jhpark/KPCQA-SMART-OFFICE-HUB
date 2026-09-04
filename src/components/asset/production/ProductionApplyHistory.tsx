@@ -3,9 +3,16 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import * as XLSX from 'xlsx';
 import { getKSTDateString, getKSTNowYearMonth, getKSTYearMonth } from '@/utils/dateUtils';
 import LoadingState from '@/components/common/LoadingState';
 import ProductionRequestDetailModal from '@/components/asset/production/ProductionRequestDetailModal';
+import {
+  buildSignDetailExcelRows,
+  buildJebonDetailExcelRows,
+  buildPrintDetailExcelRows,
+  buildOfficeSuppliesDetailExcelRows,
+} from '@/lib/production-sign-excel';
 import {
   getProductionCategoryBadgeClass,
   getProductionCategoryFolderTabClasses,
@@ -22,12 +29,13 @@ const HISTORY_CATEGORIES = [
 
 const ITEMS_PER_PAGE = 10;
 
-/** 신청 수량 단위: 제본=부, 기타제작=마스터 단위, 그 외=EA */
+/** 신청 수량 단위: 제본=부, 기타제작=마스터 단위, 사무문구=건, 그 외=EA */
 function formatQuantityUnit(item: {
   category?: string;
   options?: { printItemMasterInfo?: { unitLabel?: string; unitValue?: string } };
 }) {
   if (item.category === 'JEBON') return '부';
+  if (item.category === 'OFFICE_SUPPLIES') return '건';
   if (item.category === 'PRINT') {
     const label = item.options?.printItemMasterInfo?.unitLabel;
     if (label) return String(label);
@@ -210,7 +218,6 @@ export default function ProductionApplyHistory() {
     }
   };
 
-  // 🚀 [지침 완벽 반영]: 시스템 내부 보조 서식을 철저히 배제하고 순서대로 엑셀(CSV) 추출
   const handleExcelDownload = () => {
     const targetData =
       selectedIds.length > 0
@@ -219,7 +226,61 @@ export default function ProductionApplyHistory() {
 
     if (targetData.length === 0) return alert('다운로드할 데이터가 없습니다.');
 
-    // 외주 제작사 전달용 최적화 헤더 스펙 (보조 서식 차단 완료)
+    const yearLabel = selectedYear === 'ALL' ? '전체' : `${selectedYear}년`;
+
+    if (activeCategory === 'SIGN') {
+      const rows = buildSignDetailExcelRows(targetData);
+      if (rows.length === 0) return alert('다운로드할 현판(SIGN) 데이터가 없습니다.');
+      const ws = XLSX.utils.json_to_sheet(rows);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, '현판상세');
+      XLSX.writeFile(
+        wb,
+        `현판_신청상세_${yearLabel}${selectedIds.length > 0 ? '_선택분' : ''}.xlsx`
+      );
+      return;
+    }
+
+    if (activeCategory === 'JEBON') {
+      const rows = buildJebonDetailExcelRows(targetData);
+      if (rows.length === 0) return alert('다운로드할 제본(JEBON) 데이터가 없습니다.');
+      const ws = XLSX.utils.json_to_sheet(rows);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, '제본상세');
+      XLSX.writeFile(
+        wb,
+        `제본_신청상세_${yearLabel}${selectedIds.length > 0 ? '_선택분' : ''}.xlsx`
+      );
+      return;
+    }
+
+    if (activeCategory === 'PRINT') {
+      const rows = buildPrintDetailExcelRows(targetData);
+      if (rows.length === 0) return alert('다운로드할 기타 제작물(PRINT) 데이터가 없습니다.');
+      const ws = XLSX.utils.json_to_sheet(rows);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, '기타제작상세');
+      XLSX.writeFile(
+        wb,
+        `기타제작_신청상세_${yearLabel}${selectedIds.length > 0 ? '_선택분' : ''}.xlsx`
+      );
+      return;
+    }
+
+    if (activeCategory === 'OFFICE_SUPPLIES') {
+      const rows = buildOfficeSuppliesDetailExcelRows(targetData);
+      if (rows.length === 0) return alert('다운로드할 사무문구류 데이터가 없습니다.');
+      const ws = XLSX.utils.json_to_sheet(rows);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, '사무문구류');
+      XLSX.writeFile(
+        wb,
+        `사무문구류_신청상세_${yearLabel}${selectedIds.length > 0 ? '_선택분' : ''}.xlsx`
+      );
+      return;
+    }
+
+    // 전체 — 통합 이력 CSV
     const headers = [
       '관리번호',
       '분류명',
@@ -247,8 +308,6 @@ export default function ProductionApplyHistory() {
             !digits || /^0+$/.test(digits) ? '해당없음' : opt.formattedValidPeriod;
           return `사양: ${opt.plateMasterInfo?.label || ''}(${opt.plateMasterInfo?.size || ''}) / 인증: ${opt.certType || ''} / 등급: ${opt.certLevel || ''} / 유효기간: ${period}`;
         })();
-      } else if (item.category === 'JEBON') {
-        detailSpec = `판형: ${opt.jebonSize || 'A4'} / 표지: ${opt.coverColor || ''}(${opt.coverPageCount || 0}p) / 본문: ${opt.innerColor || ''}(${opt.innerPageCount || 0}p) / 단계: ${opt.certPhase || ''} / 지정일: ${opt.formattedCompDate || '해당없음'}`;
       } else if (item.category === 'PRINT') {
         detailSpec = `품목: ${opt.printCustomName || opt.printItemType || ''} / 인쇄문구1: ${opt.printItemDetails || ''} / 인쇄문구2: ${opt.printDeliveryDetails || ''}`;
       } else if (item.category === 'OFFICE_SUPPLIES') {
@@ -406,15 +465,17 @@ export default function ProductionApplyHistory() {
               </select>
             </div>
 
-            <button
-              type="button"
-              onClick={handleExcelDownload}
-              className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-[10px] font-black shadow-sm hover:bg-emerald-700 transition-all whitespace-nowrap"
-            >
-              {selectedIds.length > 0
-                ? `선택 EXCEL 다운로드(${selectedIds.length})`
-                : '화면 목록 EXCEL 다운로드'}
-            </button>
+            {activeCategory !== 'ALL' && (
+              <button
+                type="button"
+                onClick={handleExcelDownload}
+                className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-[10px] font-black shadow-sm hover:bg-emerald-700 transition-all whitespace-nowrap"
+              >
+                {selectedIds.length > 0
+                  ? `선택 EXCEL 다운로드(${selectedIds.length})`
+                  : '화면 목록 EXCEL 다운로드'}
+              </button>
+            )}
           </div>
         </div>
 
@@ -444,7 +505,9 @@ export default function ProductionApplyHistory() {
                   <th className="h-12 px-2 text-center whitespace-nowrap">분류</th>
                   <th className="h-12 px-2">관리용 제목</th>
                   <th className="h-12 px-2 text-center whitespace-nowrap">신청내역</th>
-                  <th className="h-12 px-2 text-center whitespace-nowrap">수량</th>
+                  <th className="h-12 px-2 text-center whitespace-nowrap">
+                    {activeCategory === 'OFFICE_SUPPLIES' ? '건' : '수량'}
+                  </th>
                   <th className="h-12 px-2 text-center whitespace-nowrap">외주업체</th>
                   <th className="h-12 px-2 text-center whitespace-nowrap">공정상태</th>
                   <th className="h-12 px-2 text-center whitespace-nowrap">액션</th>

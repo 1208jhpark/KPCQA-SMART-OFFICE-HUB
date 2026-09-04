@@ -17,14 +17,36 @@ const READ_PATHS = [
   '/asset/production/dept-master/archive',
 ];
 
+/** 시드(seed-production-masters) 등록 순서 — 목록/연동 UI 기본 정렬 */
+const SEED_PLATE_ORDER = [
+  'CAST_IRON_300',
+  'TUNGSTEN_300',
+  'BRASS_300',
+  'STAINLESS_300',
+  'STAINLESS_90',
+  'STAINLESS_450_A',
+  'STAINLESS_450_IMS',
+  'STAINLESS_450_B',
+  'WOOD_240',
+  'SILVER_220',
+  'SILVER_260',
+] as const;
+
+function plateSortRank(code: string) {
+  const idx = (SEED_PLATE_ORDER as readonly string[]).indexOf(code);
+  return idx >= 0 ? idx : SEED_PLATE_ORDER.length + 100;
+}
+
 export async function GET() {
   try {
     await authorizeAnyMenuPaths(READ_PATHS);
     const plates = await prisma.productionPlateMaster.findMany({
       where: { isActive: true },
     });
-    // 가나다순(동일 품명은 규격순) — 시드·신규 등록 모두 동일 규칙
+    // 시드 등록 순서 우선, 그 외(수동 추가)는 라벨·규격순
     plates.sort((a, b) => {
+      const bySeed = plateSortRank(a.code) - plateSortRank(b.code);
+      if (bySeed !== 0) return bySeed;
       const byLabel = a.label.localeCompare(b.label, 'ko');
       if (byLabel !== 0) return byLabel;
       return String(a.size || '').localeCompare(String(b.size || ''), 'ko');

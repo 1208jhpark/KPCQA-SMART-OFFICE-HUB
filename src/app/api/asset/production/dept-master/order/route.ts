@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { Prisma } from '@prisma/client';
 import prisma from '@/lib/prisma';
 import { getKSTDateString } from '@/utils/dateUtils';
 import {
@@ -6,6 +7,13 @@ import {
   authorizeAnyMenuPaths,
   authErrorToResponse,
 } from '@/lib/server-auth-guard';
+import {
+  mergeBatchShippingIntoOptions,
+  shouldApplyBatchShippingToItem,
+  validateBatchShippingInput,
+  type BatchShippingApplyScope,
+  type BatchShippingInput,
+} from '@/lib/production-shipping';
 
 export const dynamic = 'force-dynamic';
 
@@ -15,6 +23,65 @@ const READ_PATHS = [
   '/asset/production/dept-master/inspection',
   '/asset/production/dept-master/archive',
 ];
+
+function asOptionsRecord(value: unknown): Record<string, unknown> {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  return {};
+}
+
+function asInputJson(value: Record<string, unknown>): Prisma.InputJsonValue {
+  return value as Prisma.InputJsonValue;
+}
+
+function formatBatchId(prefix: string, sequence: number) {
+  return `${prefix}-${String(sequence).padStart(3, '0')}`;
+}
+
+/** 당일 부서별 기존 묶음 번호 최대값 다음 시퀀스 */
+async function getNextBatchSequenceStart(deptName: string) {
+  const todayStr = getKSTDateString().replace(/-/g, '');
+  const prefix = `BATCH-${deptName}-${todayStr}`;
+  const rows = await prisma.productionRequest.findMany({
+    where: { batchId: { startsWith: prefix } },
+    select: { batchId: true },
+    distinct: ['batchId'],
+  });
+  let maxSeq = 0;
+  for (const row of rows) {
+    const matched = String(row.batchId || '').match(/-(\d{3})$/);
+    if (matched) maxSeq = Math.max(maxSeq, parseInt(matched[1], 10));
+  }
+  return { prefix, startSeq: maxSeq + 1 };
+}
+
+async function applyBatchShippingToBatch(
+  batchId: string,
+  batchShipping: BatchShippingInput,
+  batchShippingScope: BatchShippingApplyScope
+) {
+  const rows = await prisma.productionRequest.findMany({
+    where: { batchId },
+  });
+  for (const row of rows) {
+    if (
+      !shouldApplyBatchShippingToItem(
+        { category: row.category, options: asOptionsRecord(row.options) },
+        batchShippingScope
+      )
+    ) {
+      continue;
+    }
+    const prevOptions = asOptionsRecord(row.options);
+    await prisma.productionRequest.update({
+      where: { id: row.id },
+      data: {
+        options: asInputJson(mergeBatchShippingIntoOptions(prevOptions, batchShipping)),
+      },
+    });
+  }
+}
 
 type ScopeUnit = { id: string; unit_name: string };
 
@@ -130,46 +197,112 @@ export async function POST(req: Request) {
     const requestIds = Array.isArray(body.requestIds)
       ? body.requestIds.map((id: unknown) => String(id || '').trim()).filter(Boolean)
       : [];
+    const batchShippingRaw = body.batchShipping;
 
     if (requestIds.length === 0) {
       return NextResponse.json({ message: '발주할 항목을 선택해주세요.' }, { status: 400 });
     }
 
+    let batchShipping: BatchShippingInput | null = null;
+    if (batchShippingRaw && typeof batchShippingRaw === 'object') {
+      batchShipping = {
+        receiverName: String((batchShippingRaw as BatchShippingInput).receiverName || ''),
+        receiverPhone: String((batchShippingRaw as BatchShippingInput).receiverPhone || ''),
+        shippingZipCode: String((batchShippingRaw as BatchShippingInput).shippingZipCode || ''),
+        shippingAddressRoad: String(
+          (batchShippingRaw as BatchShippingInput).shippingAddressRoad || ''
+        ),
+        shippingAddressDetail: String(
+          (batchShippingRaw as BatchShippingInput).shippingAddressDetail || ''
+        ),
+        companyAddressLabel: String(
+          (batchShippingRaw as BatchShippingInput).companyAddressLabel || ''
+        ),
+      };
+      const shippingErr = validateBatchShippingInput(batchShipping);
+      if (shippingErr) {
+        return NextResponse.json({ message: shippingErr }, { status: 400 });
+      }
+    }
+
     const myUnit = auth.user.unit;
     const deptName = myUnit?.unit_name || '부서';
 
-    const todayStr = getKSTDateString().replace(/-/g, '');
-    const batchPrefix = `BATCH-${deptName}-${todayStr}`;
-
-    const samePrefixCount = await prisma.productionRequest.groupBy({
-      by: ['batchId'],
-      where: { batchId: { startsWith: batchPrefix } },
-    });
-    const sequence = String(samePrefixCount.length + 1).padStart(3, '0');
-    const newBatchId = `${batchPrefix}-${sequence}`;
-
-    const result = await prisma.productionRequest.updateMany({
-      where: {
-        id: { in: requestIds },
-        status: 'ACCEPTED',
-      },
-      data: {
-        status: 'ORDERED',
-        batchId: newBatchId,
-      },
+    const acceptedRows = await prisma.productionRequest.findMany({
+      where: { id: { in: requestIds }, status: 'ACCEPTED' },
     });
 
-    if (result.count === 0) {
+    if (acceptedRows.length === 0) {
       return NextResponse.json(
         { message: '발주대기(접수완료) 상태인 건만 묶음 발주할 수 있습니다. 먼저 접수 처리해 주세요.' },
         { status: 400 }
       );
     }
 
+    const batchShippingScope: BatchShippingApplyScope =
+      body.batchShippingScope === 'all' ? 'all' : 'deferred';
+
+    const printRows = acceptedRows.filter((r) => r.category === 'PRINT');
+    const bundleRows = acceptedRows.filter((r) => r.category !== 'PRINT');
+    const { prefix, startSeq } = await getNextBatchSequenceStart(deptName);
+    const batchOrderedAt = new Date().toISOString();
+
+    let nextSeq = startSeq;
+    const tx: Prisma.PrismaPromise<unknown>[] = [];
+
+    for (const row of printRows) {
+      const prev = asOptionsRecord(row.options);
+      tx.push(
+        prisma.productionRequest.update({
+          where: { id: row.id },
+          data: {
+            status: 'ORDERED',
+            batchId: formatBatchId(prefix, nextSeq++),
+            options: asInputJson({ ...prev, batchOrderedAt }),
+          },
+        })
+      );
+    }
+
+    let bundleBatchId: string | null = null;
+    if (bundleRows.length > 0) {
+      bundleBatchId = formatBatchId(prefix, nextSeq);
+      for (const row of bundleRows) {
+        const prev = asOptionsRecord(row.options);
+        tx.push(
+          prisma.productionRequest.update({
+            where: { id: row.id },
+            data: {
+              status: 'ORDERED',
+              batchId: bundleBatchId,
+              options: asInputJson({ ...prev, batchOrderedAt }),
+            },
+          })
+        );
+      }
+    }
+
+    await prisma.$transaction(tx);
+
+    if (batchShipping && bundleBatchId) {
+      await applyBatchShippingToBatch(bundleBatchId, batchShipping, batchShippingScope);
+    }
+
+    const printCount = printRows.length;
+    const bundleCount = bundleRows.length;
+    let message: string;
+    if (printCount > 0 && bundleCount > 0) {
+      message = `기타 제작물 ${printCount}건 개별 발주, 그 외 ${bundleCount}건 묶음 발주가 완료되었습니다.`;
+    } else if (printCount > 0) {
+      message = `${printCount}건 개별 발주 처리가 완료되었습니다. (기타 제작물은 건별 묶음으로 생성됩니다)`;
+    } else {
+      message = `${bundleCount}건 묶음 발주 처리가 완료되었습니다. 발주/수령 검수 탭에서 확인하세요.`;
+    }
+
     return NextResponse.json({
-      message: `${result.count}건 묶음 발주 처리가 완료되었습니다. 명세서 검수 탭에서 확인하세요.`,
-      batchId: newBatchId,
-      count: result.count,
+      message,
+      batchId: bundleBatchId || undefined,
+      count: acceptedRows.length,
       redirectTo: '/asset/production/dept-master/inspection',
     });
   } catch (error) {
@@ -204,10 +337,7 @@ export async function PATCH(req: Request) {
           { status: 400 }
         );
       }
-      const prevOptions =
-        row.options && typeof row.options === 'object' && !Array.isArray(row.options)
-          ? (row.options as Record<string, unknown>)
-          : {};
+      const prevOptions = asOptionsRecord(row.options);
       const nextOptions =
         body.options && typeof body.options === 'object' && !Array.isArray(body.options)
           ? { ...prevOptions, ...(body.options as Record<string, unknown>) }
@@ -221,9 +351,26 @@ export async function PATCH(req: Request) {
 
       const updated = await prisma.productionRequest.update({
         where: { id },
-        data: { title, quantity, options: nextOptions },
+        data: { title, quantity, options: asInputJson(nextOptions) },
       });
       return NextResponse.json({ message: '수정이 저장되었습니다.', data: updated });
+    }
+
+    if (action === 'revert' || action === 'unaccept') {
+      if (row.status !== 'ACCEPTED') {
+        return NextResponse.json(
+          { message: '발주대기(접수완료) 상태인 건만 접수 대기로 되돌릴 수 있습니다.' },
+          { status: 400 }
+        );
+      }
+      const updated = await prisma.productionRequest.update({
+        where: { id },
+        data: { status: 'PENDING' },
+      });
+      return NextResponse.json({
+        message: '접수를 취소하고 신청(접수 대기)으로 되돌렸습니다.',
+        data: updated,
+      });
     }
 
     if (row.status !== 'PENDING') {
