@@ -147,51 +147,6 @@ function batchLabelOpts(kind: 'sign' | 'jebon' | 'print' | 'office' | 'other') {
   return {};
 }
 
-function sanitizeExcelFilePart(value: string) {
-  const cleaned = String(value || '')
-    .trim()
-    .replace(/[\\/:*?"<>|]/g, '_')
-    .replace(/\s+/g, ' ')
-    .replace(/_+/g, '_')
-    .trim();
-  return cleaned || '미지정';
-}
-
-function resolveBatchCenterName(items: { deptName?: string }[]) {
-  const names = Array.from(
-    new Set(
-      (items || [])
-        .map((i) => String(i.deptName || '').trim())
-        .filter(Boolean)
-    )
-  );
-  if (names.length === 0) return '미지정';
-  return names[0];
-}
-
-/** 발주서 다운로드 파일명: [현판]_발주서_소속센터_발주생성일 */
-function formatOrderExcelDownloadName(
-  kind: 'sign' | 'jebon' | 'print' | 'office' | 'other',
-  items: { deptName?: string }[],
-  orderedAt: string | null | undefined
-) {
-  const tag =
-    kind === 'sign'
-      ? '[현판]'
-      : kind === 'jebon'
-        ? '[제본]'
-        : kind === 'print'
-          ? '[기타제작물]'
-          : kind === 'office'
-            ? '[사무문구류]'
-            : '[제작물]';
-  const center = sanitizeExcelFilePart(resolveBatchCenterName(items));
-  const date = sanitizeExcelFilePart(
-    orderedAt ? getKSTDateString(orderedAt) : '미정'
-  );
-  return `${tag}_발주서_${center}_${date}`;
-}
-
 function getKSTYearMonthParts(dateInput: Date | string | number | null | undefined) {
   if (dateInput == null) return null;
   const ym = getKSTYearMonth(dateInput);
@@ -224,6 +179,10 @@ export default function DeptInspectionPanel() {
   } | null>(null);
   const [isVendorModalOpen, setIsVendorModalOpen] = useState(false);
   const [vendorForm, setVendorForm] = useState(EMPTY_VENDOR_FORM);
+
+  const [dispatchModalBatch, setDispatchModalBatch] = useState<OrderBatch | null>(null);
+  const [dispatchDateInput, setDispatchDateInput] = useState<string>('');
+  const [dispatchSubmitting, setDispatchSubmitting] = useState(false);
 
   const [selectedYear, setSelectedYear] = useState(() => String(getKSTNowYearMonth().year));
   const [selectedMonth, setSelectedMonth] = useState('ALL');
@@ -462,7 +421,7 @@ export default function DeptInspectionPanel() {
     const allJebon = exportItems.every((i) => i.category === 'JEBON');
     const labelKind = getBatchLabelKind(batch, activeCategory);
     const downloadName = (kind: 'sign' | 'jebon' | 'print' | 'office' | 'other') =>
-      `${formatOrderExcelDownloadName(kind, exportItems, batch.orderedAt)}.xlsx`;
+      `${formatBatchExcelBaseName(batch.id, batchLabelOpts(kind))}.xlsx`;
 
     if (allSign || activeCategory === 'SIGN') {
       const signRows = buildSignOrderExcelRows(
@@ -574,20 +533,29 @@ export default function DeptInspectionPanel() {
     }
   };
 
-  const handleConfirmDispatch = async (batch: OrderBatch) => {
+  const openDispatchModal = (batch: OrderBatch) => {
     if (!canEdit) return alert('발주완료 권한(Edit)이 없습니다.');
-    if (
-      !confirm(
-        `[${formatBatchNo(batch.id)}] 외주 발주완료 처리할까요?\n(엑셀·메일 발송 후 눌러 주세요)\n고객사 직발송 건은 수령검수를 생략합니다.`
-      )
-    ) {
-      return;
+    setDispatchModalBatch(batch);
+    setDispatchDateInput(getKSTDateString());
+  };
+
+  const handleConfirmDispatch = async () => {
+    if (!dispatchModalBatch) return;
+    if (!canEdit) return alert('발주완료 권한(Edit)이 없습니다.');
+    const dateVal = dispatchDateInput.trim();
+    if (!dateVal) {
+      return alert('발주 완료일을 선택해주세요.');
     }
+    setDispatchSubmitting(true);
     try {
       const res = await fetch('/api/asset/production/dept-master/inspection', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'confirm-dispatch', batchId: batch.id }),
+        body: JSON.stringify({
+          action: 'confirm-dispatch',
+          batchId: dispatchModalBatch.id,
+          dispatchedDate: dateVal,
+        }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -595,9 +563,12 @@ export default function DeptInspectionPanel() {
         return;
       }
       alert(data.message || '발주완료 처리되었습니다.');
+      setDispatchModalBatch(null);
       await fetchData();
     } catch {
       alert('서버와 통신할 수 없습니다.');
+    } finally {
+      setDispatchSubmitting(false);
     }
   };
 
@@ -665,15 +636,32 @@ export default function DeptInspectionPanel() {
 
   const getBatchReceiveSummary = (batch: OrderBatch) => {
     const items = batch.items || [];
-    const direct = items.filter((i) => isCustomerDirectShip(i)).length;
-    const received = items.filter((i) => i.status === PRODUCTION_STATUS.VERIFIED).length;
-    const pendingReceive = items.filter(
+    const directItems = items.filter((i) => isCustomerDirectShip(i));
+    const normalItems = items.filter((i) => !isCustomerDirectShip(i));
+
+    const directTotal = directItems.length;
+    const directCompleted = directItems.filter(
+      (i) => i.status === PRODUCTION_STATUS.VERIFIED
+    ).length;
+
+    const normalTotal = normalItems.length;
+    const normalReceived = normalItems.filter(
+      (i) => i.status === PRODUCTION_STATUS.VERIFIED
+    ).length;
+    const normalPending = normalItems.filter(
       (i) =>
         i.status === PRODUCTION_STATUS.ORDERED &&
-        isVendorDispatched(i.options || {}) &&
-        !isCustomerDirectShip(i)
+        isVendorDispatched(i.options || {})
     ).length;
-    return { direct, received, pendingReceive, total: items.length };
+
+    return {
+      directTotal,
+      directCompleted,
+      normalTotal,
+      normalReceived,
+      normalPending,
+      total: items.length,
+    };
   };
 
   const openEmailModal = (batch: OrderBatch) => {
@@ -1033,8 +1021,8 @@ export default function DeptInspectionPanel() {
                 <col style={{ width: '7%' }} />
                 <col style={{ width: '7%' }} />
                 <col style={{ width: '7%' }} />
-                <col style={{ width: '10%' }} />
-                <col style={{ width: '6%' }} />
+                <col style={{ width: '9%' }} />
+                <col style={{ width: '7%' }} />
               </colgroup>
               <thead className="bg-indigo-100 text-indigo-900 text-[10px] font-black uppercase tracking-widest border-b border-indigo-200">
                 <tr>
@@ -1052,10 +1040,38 @@ export default function DeptInspectionPanel() {
                   <th className="h-12 px-2 whitespace-nowrap">외주업체</th>
                   <th className="h-12 px-1 text-center whitespace-nowrap">총 수량</th>
                   <th className="h-12 px-2 whitespace-nowrap">신청 상세</th>
-                  <th className="h-12 px-1 text-center whitespace-nowrap">발주서(엑셀)</th>
-                  <th className="h-12 px-1 text-center whitespace-nowrap">메일 양식(복사)</th>
-                  <th className="h-12 px-1 text-center whitespace-nowrap">발주 완료</th>
-                  <th className="h-12 px-1 text-center whitespace-nowrap">수령 검수</th>
+                  <th className="h-12 px-1 text-center">
+                    <div className="flex flex-col items-center justify-center gap-0.5 leading-tight">
+                      <span className="whitespace-nowrap">발주서</span>
+                      <span className="text-[10px] font-bold text-indigo-700/80 normal-case tracking-normal whitespace-nowrap">
+                        (엑셀 다운)
+                      </span>
+                    </div>
+                  </th>
+                  <th className="h-12 px-1 text-center">
+                    <div className="flex flex-col items-center justify-center gap-0.5 leading-tight">
+                      <span className="whitespace-nowrap">메일 양식</span>
+                      <span className="text-[10px] font-bold text-indigo-700/80 normal-case tracking-normal whitespace-nowrap">
+                        (복사 활용)
+                      </span>
+                    </div>
+                  </th>
+                  <th className="h-12 px-1 text-center">
+                    <div className="flex flex-col items-center justify-center gap-0.5 leading-tight">
+                      <span className="whitespace-nowrap">발주 완료</span>
+                      <span className="text-[10px] font-bold text-indigo-700/80 normal-case tracking-normal whitespace-nowrap">
+                        (발주 요청일)
+                      </span>
+                    </div>
+                  </th>
+                  <th className="h-12 px-1 text-center">
+                    <div className="flex flex-col items-center justify-center gap-0.5 leading-tight">
+                      <span className="whitespace-nowrap">수령 검수</span>
+                      <span className="text-[10px] font-bold text-indigo-700/80 normal-case tracking-normal whitespace-nowrap">
+                        (물품 수령 상태)
+                      </span>
+                    </div>
+                  </th>
                   <th className="h-12 px-1 text-center">
                     <div className="flex flex-col items-center justify-center gap-0.5 leading-tight">
                       <span className="whitespace-nowrap">보관함 이동</span>
@@ -1064,7 +1080,14 @@ export default function DeptInspectionPanel() {
                       </span>
                     </div>
                   </th>
-                  <th className="h-12 px-1 text-center whitespace-nowrap">발주 취소</th>
+                  <th className="h-12 px-1 text-center">
+                    <div className="flex flex-col items-center justify-center gap-0.5 leading-tight">
+                      <span className="whitespace-nowrap">발주 취소</span>
+                      <span className="text-[10px] font-bold text-indigo-700/80 normal-case tracking-normal whitespace-nowrap">
+                        (발주대기 탭 복귀)
+                      </span>
+                    </div>
+                  </th>
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-slate-100 text-[11px] font-bold text-slate-700">
@@ -1178,7 +1201,7 @@ export default function DeptInspectionPanel() {
                                 type="button"
                                 disabled={!canEdit}
                                 title={!canEdit ? '편집 권한 필요' : undefined}
-                                onClick={() => handleConfirmDispatch(batch)}
+                                onClick={() => openDispatchModal(batch)}
                                 className={`px-2 py-1 text-[10px] font-black rounded-lg w-full whitespace-nowrap transition-colors ${
                                   canEdit
                                     ? 'bg-blue-600 hover:bg-blue-700 text-white'
@@ -1193,26 +1216,56 @@ export default function DeptInspectionPanel() {
                         <td className="px-2 text-center">
                           {(() => {
                             const sum = getBatchReceiveSummary(batch);
-                            if (sum.total > 0 && sum.received === sum.total) {
+                            if (sum.total === 0) return <span className="text-[10px] text-slate-300">-</span>;
+
+                            // 1) 일반 수령건과 고객사 직발송건이 둘 다 있는 경우: 2줄로 구분 표시
+                            if (sum.directTotal > 0 && sum.normalTotal > 0) {
                               return (
-                                <span className="text-[10px] font-bold text-emerald-600 whitespace-nowrap">
-                                  수령 완료 {sum.received}/{sum.total}
+                                <div className="flex flex-col items-center justify-center gap-0.5 leading-tight">
+                                  {sum.normalReceived === sum.normalTotal ? (
+                                    <span className="text-[10px] font-bold text-emerald-600 whitespace-nowrap">
+                                      수령 완료 {sum.normalReceived}/{sum.normalTotal}
+                                    </span>
+                                  ) : (
+                                    <span className="text-[10px] font-bold text-slate-500 whitespace-nowrap">
+                                      수령 {sum.normalReceived}/{sum.normalTotal}
+                                      {sum.normalPending > 0 ? (
+                                        <span className="text-red-600">
+                                          {` · 대기 ${sum.normalPending}`}
+                                        </span>
+                                      ) : null}
+                                    </span>
+                                  )}
+                                  <span className="text-[10px] font-bold text-indigo-600 whitespace-nowrap">
+                                    고객사 직발송 {sum.directCompleted}/{sum.directTotal}
+                                  </span>
+                                </div>
+                              );
+                            }
+
+                            // 2) 고객사 직발송만 있는 경우
+                            if (sum.directTotal > 0) {
+                              return (
+                                <span className="text-[10px] font-bold text-indigo-600 whitespace-nowrap">
+                                  고객사 직발송 {sum.directCompleted}/{sum.directTotal}
                                 </span>
                               );
                             }
-                            if (sum.direct === sum.total && sum.total > 0) {
+
+                            // 3) 일반 수령건만 있는 경우
+                            if (sum.normalReceived === sum.normalTotal) {
                               return (
-                                <span className="text-[10px] font-bold text-indigo-600 whitespace-nowrap">
-                                  고객사 직발송
+                                <span className="text-[10px] font-bold text-emerald-600 whitespace-nowrap">
+                                  수령 완료 {sum.normalReceived}/{sum.normalTotal}
                                 </span>
                               );
                             }
                             return (
                               <span className="text-[10px] font-bold text-slate-500 whitespace-nowrap">
-                                수령 {sum.received}/{sum.total}
-                                {sum.pendingReceive > 0 ? (
+                                수령 {sum.normalReceived}/{sum.normalTotal}
+                                {sum.normalPending > 0 ? (
                                   <span className="text-red-600">
-                                    {` · 대기 ${sum.pendingReceive}`}
+                                    {` · 대기 ${sum.normalPending}`}
                                   </span>
                                 ) : null}
                               </span>
@@ -1396,17 +1449,23 @@ export default function DeptInspectionPanel() {
                                                   : DISABLED_ACTION_BTN
                                               }`}
                                             >
-                                              수령 대기→완료
+                                              수령 완료
                                             </button>
                                           );
                                         })()}
                                       </td>
                                       <td className="px-2 text-center">
-                                        <span
-                                          className={`text-[10px] font-bold whitespace-nowrap ${productionStatusTextClass(item.status)}`}
-                                        >
-                                          {productionStatusLabel(item.status)}
-                                        </span>
+                                        {isCustomerDirectShip(item) ? (
+                                          <span className="text-[10px] font-bold text-indigo-600 whitespace-nowrap">
+                                            고객사 직발송
+                                          </span>
+                                        ) : (
+                                          <span
+                                            className={`text-[10px] font-bold whitespace-nowrap ${productionStatusTextClass(item.status)}`}
+                                          >
+                                            {productionStatusLabel(item.status)}
+                                          </span>
+                                        )}
                                       </td>
                                     </tr>
                                   ))}
@@ -1902,6 +1961,81 @@ export default function DeptInspectionPanel() {
                   저장
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {dispatchModalBatch && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 animate-fade-in backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl border border-slate-200 space-y-4 animate-scale-up">
+            <div className="border-b border-slate-100 pb-3">
+              <h3 className="text-base font-black text-slate-800 flex items-center gap-2">
+                <span>📅</span>
+                <span>발주 완료일을 기록합니다.</span>
+              </h3>
+              <p className="text-xs text-slate-500 mt-1 leading-relaxed">
+                실제 메일 발송일 등 발주 요청일을 입력하세요.<br />
+                기본값은 오늘(Today)이며 달력에서 변경할 수 있습니다.
+              </p>
+            </div>
+
+            <div className="rounded-xl bg-slate-50 p-3.5 border border-slate-200/80 space-y-2">
+              <div
+                className="font-mono font-bold text-indigo-700 text-xs sm:text-[13px] break-all leading-snug tracking-tight"
+                title={dispatchModalBatch.id}
+              >
+                {formatBatchExcelBaseName(
+                  dispatchModalBatch.id,
+                  batchLabelOpts(getBatchLabelKind(dispatchModalBatch, activeCategory))
+                )}
+              </div>
+              <div className="flex items-center justify-between text-xs text-slate-600 pt-2 border-t border-slate-200/70">
+                <span className="font-bold text-slate-500">수량 / 건수:</span>
+                <span className="font-bold text-slate-800">
+                  총 {dispatchModalBatch.totalQuantity}개 ({dispatchModalBatch.items?.length || 0}건)
+                </span>
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-black text-slate-700">
+                  날짜:
+                </label>
+                <button
+                  type="button"
+                  onClick={() => setDispatchDateInput(getKSTDateString())}
+                  className="text-[11px] font-bold text-blue-600 hover:text-blue-800 hover:underline"
+                >
+                  오늘(Today)로 설정
+                </button>
+              </div>
+              <input
+                type="date"
+                value={dispatchDateInput}
+                onChange={(e) => setDispatchDateInput(e.target.value)}
+                className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm font-mono font-bold text-slate-800 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100 shadow-sm"
+              />
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setDispatchModalBatch(null)}
+                disabled={dispatchSubmitting}
+                className="rounded-xl bg-slate-100 hover:bg-slate-200 px-4 py-2 text-xs font-black text-slate-600 transition-colors"
+              >
+                취소
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmDispatch}
+                disabled={dispatchSubmitting}
+                className="rounded-xl bg-blue-600 hover:bg-blue-700 px-5 py-2 text-xs font-black text-white shadow-sm transition-colors disabled:opacity-50 flex items-center gap-1.5"
+              >
+                {dispatchSubmitting ? '저장 중...' : '확인'}
+              </button>
             </div>
           </div>
         </div>

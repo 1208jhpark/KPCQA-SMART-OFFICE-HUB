@@ -8,7 +8,7 @@ import {
 
 export const dynamic = 'force-dynamic';
 
-export const DEFAULT_GROUPWARE_SHORTCUT_URL =
+const DEFAULT_GROUPWARE_SHORTCUT_URL =
   'https://ep.kpcqa.or.kr/ea/edoc/eapproval/docCommonDrafWrite.do?template_key=8';
 
 async function readGroupwareShortcutUrl() {

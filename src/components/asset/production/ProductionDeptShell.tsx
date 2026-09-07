@@ -22,7 +22,7 @@ type PermissionSummary = {
 
 type ProductionDeptShellProps = {
   children: React.ReactNode;
-  pageHint?: string;
+  pageHint?: React.ReactNode;
 };
 
 export default function ProductionDeptShell({ children, pageHint }: ProductionDeptShellProps) {

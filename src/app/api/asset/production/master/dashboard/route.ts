@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import prisma from '@/lib/prisma';
+import { Prisma } from '@prisma/client';
 import {
   authorizeApi,
   authorizeAnyMenuPaths,
@@ -12,6 +13,7 @@ const MENU_PATH = '/asset/production/master/dashboard';
 const READ_PATHS = [
   '/asset/production/master/dashboard',
   '/asset/production/master/archive',
+  '/asset/production/dept-master/archive',
   '/asset/production/master/invoice',
 ];
 
@@ -20,6 +22,10 @@ function asOptionsRecord(value: unknown): Record<string, unknown> {
     return value as Record<string, unknown>;
   }
   return {};
+}
+
+function asInputJson(value: Record<string, unknown>): Prisma.InputJsonValue {
+  return value as unknown as Prisma.InputJsonValue;
 }
 
 function resolveBatchDispatchedAt(items: Array<{ options: unknown }>) {
@@ -99,6 +105,30 @@ export async function GET() {
           const t = new Date(i.updatedAt || i.createdAt).getTime();
           return t > max ? t : max;
         }, 0);
+
+        let inspectStatus: 'idle' | 'match' | 'mismatch' = 'idle';
+        let inspectFileName: string | null = null;
+        let inspectResult: any = null;
+        let inspectedAt: string | null = null;
+
+        const statuses = items.map((i) => {
+          const opts = asOptionsRecord(i.options);
+          if (!inspectFileName && opts.inspectFileName) inspectFileName = String(opts.inspectFileName);
+          if (!inspectResult && opts.inspectResult) inspectResult = opts.inspectResult;
+          if (!inspectedAt && opts.inspectedAt) inspectedAt = String(opts.inspectedAt);
+          return typeof opts.inspectStatus === 'string' ? opts.inspectStatus : 'idle';
+        });
+
+        if (statuses.some((s) => s === 'mismatch')) {
+          inspectStatus = 'mismatch';
+        } else if (statuses.length > 0 && statuses.every((s) => s === 'match')) {
+          inspectStatus = 'match';
+        } else if (statuses.some((s) => s === 'match')) {
+          inspectStatus = 'mismatch';
+        } else {
+          inspectStatus = 'idle';
+        }
+
         return {
           id,
           status: 'VERIFIED',
@@ -110,6 +140,10 @@ export async function GET() {
           orderedAt: resolveBatchAppliedAt(items),
           dispatchedAt: resolveBatchDispatchedAt(items),
           archivedAt: archivedAt ? new Date(archivedAt).toISOString() : null,
+          inspectStatus,
+          inspectFileName,
+          inspectResult,
+          inspectedAt,
           items,
         };
       })
@@ -139,12 +173,86 @@ export async function GET() {
   }
 }
 
+/** [PUT] 명세서 검수 결과 저장 */
+export async function PUT(req: Request) {
+  try {
+    await authorizeAnyMenuPaths(READ_PATHS);
+    const body = await req.json().catch(() => ({}));
+    const rows: Array<{
+      batchId: string;
+      inspectStatus: 'idle' | 'match' | 'mismatch';
+      inspectFileName?: string | null;
+      inspectResult?: any;
+    }> = Array.isArray(body?.batches) ? body.batches : [];
+
+    if (rows.length === 0) {
+      return NextResponse.json({ message: '저장할 검수 묶음이 없습니다.' }, { status: 400 });
+    }
+
+    let count = 0;
+    for (const row of rows) {
+      const batchId = String(row?.batchId || '').trim();
+      if (!batchId) continue;
+      const inspectStatus =
+        row.inspectStatus === 'match' || row.inspectStatus === 'mismatch'
+          ? row.inspectStatus
+          : 'idle';
+      const inspectFileName = row.inspectFileName
+        ? String(row.inspectFileName).slice(0, 255)
+        : null;
+      const inspectResult = row.inspectResult ?? null;
+      const inspectedAt = inspectStatus === 'idle' ? null : new Date().toISOString();
+
+      const items = await prisma.productionRequest.findMany({
+        where: { batchId },
+      });
+
+      for (const item of items) {
+        const prevOpts = asOptionsRecord(item.options);
+        const itemStatus = inspectResult?.itemStatus?.[item.id] || inspectStatus;
+        const itemPrice = Number(inspectResult?.itemPrice?.[item.id] || 0);
+
+        const nextOpts = {
+          ...prevOpts,
+          inspectStatus: itemStatus,
+          inspectFileName,
+          inspectResult,
+          inspectedAt,
+        };
+
+        await prisma.productionRequest.update({
+          where: { id: item.id },
+          data: {
+            options: asInputJson(nextOpts),
+            ...(itemPrice > 0 ? { finalPrice: itemPrice } : {}),
+          },
+        });
+      }
+      count += 1;
+    }
+
+    return NextResponse.json({ success: true, count });
+  } catch (error: any) {
+    const authRes = authErrorToResponse(error);
+    if (authRes.status !== 500) return authRes;
+    console.error('[production/master/dashboard PUT]', error);
+    return NextResponse.json(
+      { message: '검수 결과 저장 실패', error: error.message },
+      { status: 500 }
+    );
+  }
+}
+
 /** [POST] 명세표 대조(단가) 저장 — 정산 상태 */
 export async function POST(req: Request) {
   try {
     await authorizeApi(MENU_PATH, { requireEditor: true });
     const body = await req.json().catch(() => ({}));
     const action = String(body.action || '').trim().toLowerCase();
+
+    if (action === 'inspect') {
+      return PUT(req);
+    }
 
     if (action !== 'statement-match') {
       return NextResponse.json({ message: '지원하지 않는 작업입니다.' }, { status: 400 });
@@ -165,6 +273,17 @@ export async function POST(req: Request) {
       if (!requestId) continue;
       const finalPrice = Number(row?.finalPrice);
       if (!Number.isFinite(finalPrice) || finalPrice < 0) continue;
+
+      const item = await prisma.productionRequest.findUnique({
+        where: { id: requestId },
+        select: { options: true },
+      });
+      const prevOpts = asOptionsRecord(item?.options);
+      const nextOpts = {
+        ...prevOpts,
+        inspectStatus: finalPrice > 0 ? 'match' : prevOpts.inspectStatus || 'idle',
+      };
+
       const result = await prisma.productionRequest.updateMany({
         where: {
           id: requestId,
@@ -172,7 +291,10 @@ export async function POST(req: Request) {
           isArchived: true,
           status: 'VERIFIED',
         },
-        data: { finalPrice },
+        data: {
+          finalPrice,
+          options: asInputJson(nextOpts),
+        },
       });
       updated += result.count;
     }

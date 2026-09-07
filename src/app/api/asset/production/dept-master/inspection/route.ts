@@ -233,6 +233,10 @@ export async function POST(req: Request) {
 
     if (action === 'confirm-dispatch') {
       const batchId = String(body.batchId || '').trim();
+      const dispatchedDate =
+        typeof body.dispatchedDate === 'string' && body.dispatchedDate.trim()
+          ? body.dispatchedDate.trim()
+          : undefined;
       if (!batchId) {
         return NextResponse.json({ message: '묶음 번호가 필요합니다.' }, { status: 400 });
       }
@@ -251,7 +255,7 @@ export async function POST(req: Request) {
       for (const row of rows) {
         const prev = asOptionsRecord(row.options);
         if (prev.vendorDispatched === true) continue;
-        const nextOpts = withVendorDispatched(prev);
+        const nextOpts = withVendorDispatched(prev, dispatchedDate);
         const direct = isCustomerDirectShip({
           category: row.category,
           options: nextOpts,
@@ -329,13 +333,30 @@ export async function POST(req: Request) {
       }
       for (const row of rows) {
         const prev = asOptionsRecord(row.options);
-        const { vendorDispatched: _vd, vendorDispatchedAt: _at, ...rest } = prev;
+        const { vendorDispatched: _vd, vendorDispatchedAt: _at, _backupShipping, ...rest } = prev;
+        let restoredOptions = { ...rest };
+        if (_backupShipping && typeof _backupShipping === 'object') {
+          const b = _backupShipping as Record<string, unknown>;
+          restoredOptions = {
+            ...restoredOptions,
+            receiverName: b.receiverName ?? '',
+            receiverPhone: b.receiverPhone ?? '',
+            shippingZipCode: b.shippingZipCode ?? '',
+            shippingAddressRoad: b.shippingAddressRoad ?? '',
+            shippingAddressDetail: b.shippingAddressDetail ?? '',
+            shippingAddress: b.shippingAddress ?? '',
+            companyAddressLabel: b.companyAddressLabel ?? '',
+            selectedCompanyAddressId: b.selectedCompanyAddressId ?? '',
+            deliveryMode: b.deliveryMode ?? undefined,
+            jebonBatchShipping: b.jebonBatchShipping ?? undefined,
+          };
+        }
         await prisma.productionRequest.update({
           where: { id: row.id },
           data: {
             status: 'ACCEPTED',
             batchId: null,
-            options: asInputJson(rest),
+            options: asInputJson(restoredOptions),
           },
         });
       }

@@ -1,0 +1,26 @@
+[
+  {
+    "id": "stmt-1788767547845-kvkxj",
+    "category": "SIGN",
+    "vendorName": "아트로릭",
+    "fileName": "(아트로릭) 26년 3월 인쇄비 거래명세표.pdf",
+    "storedFileName": "statement_SIGN_아트로릭_1788767547845.pdf",
+    "fileSize": 92183,
+    "mimeType": "application/pdf",
+    "uploadedAt": "2026-09-07T07:52:27.847Z",
+    "uploadedBy": "관리자",
+    "url": "/uploads/production-statement/statement_SIGN_아트로릭_1788767547845.pdf"
+  },
+  {
+    "id": "stmt-1788757726776-emj6i",
+    "category": "OFFICE_SUPPLIES",
+    "vendorName": "드림디포",
+    "fileName": "드림디포 견적서.pdf",
+    "storedFileName": "statement_OFFICE_SUPPLIES_드림디포_1788757726776.pdf",
+    "fileSize": 60069,
+    "mimeType": "application/pdf",
+    "uploadedAt": "2026-09-07T05:08:46.779Z",
+    "uploadedBy": "관리자",
+    "url": "/uploads/production-statement/statement_OFFICE_SUPPLIES_드림디포_1788757726776.pdf"
+  }
+]

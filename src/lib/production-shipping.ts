@@ -77,12 +77,38 @@ export function isHqReceiveShip(item: {
   return resolveDeliveryMode(item) === 'HQ_RECEIVE';
 }
 
-/** 부서 대장에서 배송지 입력하도록 미룬 건(인증원 수령 + 주소 미입력) */
+/**
+ * 실배송지 입력 완료 건:
+ * - 원문 검수 기준 '고객사 직발송' 모드이어야 하고,
+ * - 수령인, 연락처, 배송지 주소가 모두 유효하게 입력되어 있어야 함.
+ * - '인증원 수령/묶음 발주' 모드로 설정된 건은 묶음 발주 시 입력 대기 대상이므로 false.
+ */
+export function isItemShippingEntered(item: {
+  category?: string;
+  options?: Record<string, unknown> | null;
+}): boolean {
+  if (isHqReceiveShip(item)) return false;
+  return hasProductionShippingAddress(item.options);
+}
+
+/**
+ * 실배송지 미입력 건:
+ * - 원문 검수에서 '인증원 수령/묶음 발주'로 체크된 건, 또는
+ * - 고객사 직발송 모드이지만 주소 정보가 아직 미입력된 건
+ */
+export function isItemShippingUnentered(item: {
+  category?: string;
+  options?: Record<string, unknown> | null;
+}): boolean {
+  return !isItemShippingEntered(item);
+}
+
+/** 실배송지 미입력 건 (묶음 배송지 입력 대상) */
 export function itemDeferredBatchShipping(item: {
   category?: string;
   options?: Record<string, unknown> | null;
 }): boolean {
-  return isHqReceiveShip(item) && !hasProductionShippingAddress(item.options);
+  return isItemShippingUnentered(item);
 }
 
 /** @deprecated use itemDeferredBatchShipping */
@@ -94,13 +120,12 @@ export function jebonItemDeferredBatchShipping(item: {
   return itemDeferredBatchShipping(item);
 }
 
-/** 묶음 발주 시 배송지 일괄 입력 대상 — 인증원 수령/묶음 발주 건은 발주 시 주소 입력 */
+/** 묶음 발주 시 배송지 일괄 입력 대상 — 인증원 수령/묶음 발주 건 또는 실배송지 미입력 건 */
 export function itemNeedsBatchShipping(item: {
   category?: string;
   options?: Record<string, unknown> | null;
 }): boolean {
-  if (isHqReceiveShip(item)) return true;
-  return !hasProductionShippingAddress(item.options);
+  return isItemShippingUnentered(item);
 }
 
 /** @deprecated use itemNeedsBatchShipping */
@@ -117,7 +142,7 @@ export function shouldApplyBatchShippingToItem(
   scope: BatchShippingApplyScope
 ): boolean {
   if (scope === 'all') return true;
-  return itemDeferredBatchShipping(item);
+  return isItemShippingUnentered(item);
 }
 
 /** @deprecated use shouldApplyBatchShippingToItem */
@@ -169,11 +194,20 @@ export function isVendorDispatched(
 }
 
 export function withVendorDispatched(
-  prev: Record<string, unknown>
+  prev: Record<string, unknown>,
+  customDate?: string
 ): Record<string, unknown> {
+  let dateStr = new Date().toISOString();
+  if (customDate) {
+    const trimmed = String(customDate).trim();
+    const d = new Date(trimmed.includes('T') ? trimmed : `${trimmed}T12:00:00+09:00`);
+    if (!isNaN(d.getTime())) {
+      dateStr = d.toISOString();
+    }
+  }
   return {
     ...prev,
     vendorDispatched: true,
-    vendorDispatchedAt: new Date().toISOString(),
+    vendorDispatchedAt: dateStr,
   };
 }

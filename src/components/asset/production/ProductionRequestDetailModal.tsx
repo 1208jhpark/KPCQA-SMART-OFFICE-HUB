@@ -170,6 +170,39 @@ export default function ProductionRequestDetailModal({
     setDetailDraft(null);
   }, [item]);
 
+  useEffect(() => {
+    if (typeof window !== 'undefined' && !(window as any).daum?.Postcode) {
+      const script = document.createElement('script');
+      script.src = '//t1.daumcdn.net/mapjsapi/bundle/postcode/prod/postcode.v2.js';
+      script.async = true;
+      document.head.appendChild(script);
+    }
+  }, []);
+
+  const openDetailPostcode = () => {
+    if (typeof window !== 'undefined' && (window as any).daum?.Postcode) {
+      new (window as any).daum.Postcode({
+        oncomplete: (data: any) => {
+          setDetailDraft((prev: any) => {
+            if (!prev) return prev;
+            return {
+              ...prev,
+              options: {
+                ...prev.options,
+                companyAddressLabel: '',
+                selectedCompanyAddressId: '',
+                shippingZipCode: data.zonecode,
+                shippingAddressRoad: data.roadAddress || data.address,
+              },
+            };
+          });
+        },
+      }).open();
+    } else {
+      alert('주소 검색 엔진을 로드 중입니다. 잠시 후 다시 클릭해 주세요.');
+    }
+  };
+
   const canShowEdit =
     allowEdit && Boolean(detailItem?.status) && editableStatuses.includes(detailItem.status);
 
@@ -275,11 +308,17 @@ export default function ProductionRequestDetailModal({
 
   const startDetailEdit = async () => {
     if (!canShowEdit || !detailItem) return;
+    const initialDeliveryMode = resolveDeliveryMode({
+      category: detailItem.category,
+      options: detailItem.options,
+    });
     setDetailDraft({
       title: detailItem.title || '',
       quantity: detailItem.quantity || 1,
       options: {
         ...(detailItem.options || {}),
+        deliveryMode: initialDeliveryMode,
+        jebonBatchShipping: initialDeliveryMode === 'HQ_RECEIVE',
         formattedValidPeriod: displaySignValidPeriod(
           detailItem.options?.formattedValidPeriod
         ),
@@ -412,9 +451,6 @@ export default function ProductionRequestDetailModal({
       }
     }
     if (detailItem.category === 'SIGN') {
-      if (!String(opts.companyName || '').trim()) {
-        return alert('현판 신청 회사를 입력해 주세요.');
-      }
       const projectOrOrg = String(opts.certType || '').includes('ISO')
         ? String(opts.isoCompanyName || '').trim()
         : String(opts.projectName || '').trim();
@@ -450,6 +486,28 @@ export default function ProductionRequestDetailModal({
         ? displaySignValidPeriod(opts.formattedValidPeriod)
         : opts.formattedValidPeriod;
 
+    const nextOptions = {
+      ...opts,
+      deliveryMode: isBatch ? 'HQ_RECEIVE' : 'CUSTOMER_DIRECT',
+      jebonBatchShipping: isBatch,
+      customRequests,
+      ...(isBatch
+        ? {
+            receiverName: '',
+            receiverPhone: '',
+            shippingZipCode: '',
+            shippingAddressRoad: '',
+            shippingAddressDetail: '',
+            shippingAddress: '',
+            companyAddressLabel: '',
+            selectedCompanyAddressId: '',
+          }
+        : {
+            shippingAddress,
+          }),
+      ...(detailItem.category === 'SIGN' ? { formattedValidPeriod } : {}),
+    };
+
     setDetailSaving(true);
     try {
       const res = await fetch(editApiPath, {
@@ -460,12 +518,7 @@ export default function ProductionRequestDetailModal({
           action: 'update',
           title,
           quantity: Math.max(1, Number(detailDraft.quantity) || 1),
-          options: {
-            ...opts,
-            shippingAddress,
-            customRequests,
-            ...(detailItem.category === 'SIGN' ? { formattedValidPeriod } : {}),
-          },
+          options: nextOptions,
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -477,12 +530,7 @@ export default function ProductionRequestDetailModal({
         ...detailItem,
         title,
         quantity: Math.max(1, Number(detailDraft.quantity) || 1),
-        options: {
-          ...opts,
-          shippingAddress,
-          customRequests,
-          ...(detailItem.category === 'SIGN' ? { formattedValidPeriod } : {}),
-        },
+        options: nextOptions,
       };
       const merged = { ...detailItem, ...updated };
       setDetailItem(merged);
@@ -1336,179 +1384,287 @@ export default function ProductionRequestDetailModal({
               )}
 
               {/* 블록 4. 배송지 */}
-                <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-3">
-                  <DetailSectionTitle title="🚚 최종 제작 사양 배송 주소지" />
-                  {isHqReceiveShip({
-                    category: detailItem.category,
-                    options: detailEditing ? detailDraft?.options : detailItem.options,
-                  }) ? (
-                    <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs font-bold text-slate-700 space-y-1">
-                      <p>
+              <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
+                {detailEditing ? (
+                  <>
+                    <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
+                      <div className="flex flex-wrap items-center gap-2 min-w-0">
+                        <DetailSectionTitle title="🚚 최종 제작 사양 배송 주소지" />
                         {resolveDeliveryMode({
                           category: detailItem.category,
-                          options: detailEditing ? detailDraft?.options : detailItem.options,
-                        }) === 'HQ_RECEIVE'
-                          ? '☑ 인증원 수령/묶음 발주'
-                          : '배송지 부서 대장 입력'}
-                      </p>
-                      <p className="text-slate-500 font-medium">
-                        신청 시 개별 배송지 미기재 — 부서 발주 시 입력
-                      </p>
-                    </div>
-                  ) : detailEditing ? (
-                    <div className="space-y-3">
-                      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                        <div>
-                          <label className="block text-[10px] font-black text-slate-400 mb-1">수령인 성명</label>
-                          <input
-                            type="text"
-                            value={detailDraft?.options?.receiverName || ''}
-                            onChange={(e) =>
-                              setDetailDraft((prev: any) => ({
-                                ...prev,
-                                options: { ...prev.options, receiverName: e.target.value },
-                              }))
-                            }
-                            className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-semibold text-slate-800 outline-none"
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-[10px] font-black text-slate-400 mb-1">수령인 연락처</label>
-                          <input
-                            type="text"
-                            value={detailDraft?.options?.receiverPhone || ''}
-                            onChange={(e) =>
-                              setDetailDraft((prev: any) => ({
-                                ...prev,
-                                options: { ...prev.options, receiverPhone: e.target.value },
-                              }))
-                            }
-                            className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-semibold text-slate-800 outline-none"
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-[10px] font-black text-slate-400 mb-1">
-                            전사 공통 주소
-                          </label>
-                          <select
-                            value={
-                              companyAddresses.find(
-                                (a) => a.label === detailDraft?.options?.companyAddressLabel
-                              )?.id ||
-                              detailDraft?.options?.selectedCompanyAddressId ||
-                              ''
-                            }
-                            onChange={(e) => applyCompanyAddressToDraft(e.target.value)}
-                            className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold text-slate-800 outline-none cursor-pointer"
-                          >
-                            <option value="">직접 입력 / 주소 검색</option>
-                            {companyAddresses
-                              .filter((a) => a.isActive !== false)
-                              .map((a) => (
-                                <option key={a.id} value={a.id}>
-                                  🏢 {a.label} — {a.addressKo}
-                                </option>
-                              ))}
-                          </select>
-                        </div>
+                          options: detailDraft?.options,
+                        }) === 'CUSTOMER_DIRECT' && (
+                          <span className="text-[11px] font-bold text-red-500 bg-red-50 px-2.5 py-1 rounded-lg border border-red-200">
+                            고객사/현장 직발송 — 아래 실배송지를 입력해 주세요
+                          </span>
+                        )}
+                        {resolveDeliveryMode({
+                          category: detailItem.category,
+                          options: detailDraft?.options,
+                        }) === 'HQ_RECEIVE' && (
+                          <span className="text-[11px] font-bold text-amber-700 bg-amber-50 px-2.5 py-1 rounded-lg border border-amber-200">
+                            인증원 수령 — 실배송지는 부서 대장(발주)에서 묶음 배송 시 입력합니다
+                          </span>
+                        )}
                       </div>
-                      <div className="flex flex-wrap gap-2 items-stretch">
-                        <div className="flex items-center gap-1.5 shrink-0 bg-slate-50 border border-slate-200 rounded-xl px-2.5 h-10">
-                          <span className="text-[9px] font-black text-slate-400">우편</span>
+                      <div className="flex flex-wrap items-center gap-3 shrink-0 ml-auto">
+                        <label className="flex items-center gap-2 cursor-pointer select-none">
                           <input
-                            type="text"
-                            value={detailDraft?.options?.shippingZipCode || ''}
-                            onChange={(e) =>
+                            type="checkbox"
+                            checked={
+                              resolveDeliveryMode({
+                                category: detailItem.category,
+                                options: detailDraft?.options,
+                              }) === 'CUSTOMER_DIRECT'
+                            }
+                            onChange={() =>
                               setDetailDraft((prev: any) => ({
                                 ...prev,
                                 options: {
                                   ...prev.options,
-                                  shippingZipCode: e.target.value,
-                                  companyAddressLabel: '',
-                                  selectedCompanyAddressId: '',
+                                  deliveryMode: 'CUSTOMER_DIRECT',
+                                  jebonBatchShipping: false,
                                 },
                               }))
                             }
-                            className="w-14 font-mono text-center text-xs font-black text-slate-800 bg-transparent outline-none"
+                            className="w-3.5 h-3.5 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
                           />
-                        </div>
-                        <input
-                          type="text"
-                          value={detailDraft?.options?.shippingAddressRoad || ''}
-                          onChange={(e) =>
-                            setDetailDraft((prev: any) => ({
-                              ...prev,
-                              options: {
-                                ...prev.options,
-                                shippingAddressRoad: e.target.value,
-                                companyAddressLabel: '',
-                                selectedCompanyAddressId: '',
-                              },
-                            }))
-                          }
-                          placeholder="도로명 주소"
-                          className="flex-[2] min-w-[12rem] h-10 px-3 border border-slate-200 rounded-xl bg-slate-50 text-xs font-bold text-slate-800 outline-none"
-                        />
-                        <div className="flex items-center gap-1.5 flex-[1.2] min-w-[12rem] max-w-[22rem] bg-slate-50 border border-slate-200 rounded-xl px-2.5 h-10">
-                          <span className="text-[9px] font-black text-slate-500 shrink-0">상세</span>
+                          <span className="text-[11px] font-black text-slate-700">고객사 직발송</span>
+                        </label>
+                        <label className="flex items-center gap-2 cursor-pointer select-none">
                           <input
-                            type="text"
-                            value={detailDraft?.options?.shippingAddressDetail || ''}
-                            onChange={(e) =>
+                            type="checkbox"
+                            checked={
+                              resolveDeliveryMode({
+                                category: detailItem.category,
+                                options: detailDraft?.options,
+                              }) === 'HQ_RECEIVE'
+                            }
+                            onChange={() =>
                               setDetailDraft((prev: any) => ({
                                 ...prev,
                                 options: {
                                   ...prev.options,
-                                  shippingAddressDetail: e.target.value,
+                                  deliveryMode: 'HQ_RECEIVE',
+                                  jebonBatchShipping: true,
                                 },
                               }))
                             }
-                            placeholder="동·호수 등"
-                            className="min-w-0 flex-1 text-xs font-semibold text-slate-800 outline-none bg-transparent"
+                            className="w-3.5 h-3.5 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
                           />
-                        </div>
+                          <span className="text-[11px] font-black text-slate-700">인증원 수령/묶음 발주</span>
+                        </label>
                       </div>
                     </div>
-                  ) : (
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                      <DetailRow
-                        label="수령인 성명"
-                        value={detailItem.options?.receiverName}
-                        highlight={false}
-                      />
-                      <DetailRow
-                        label="수령인 연락처"
-                        value={detailItem.options?.receiverPhone}
-                        highlight={false}
-                      />
-                      <DetailRow
-                        label="전사 공통 주소"
-                        value={
-                          detailItem.options?.companyAddressLabel ||
-                          '직접 입력 / 주소 검색'
-                        }
-                        highlight={false}
-                      />
-                      <div className="col-span-1 md:col-span-3">
+
+                    {resolveDeliveryMode({
+                      category: detailItem.category,
+                      options: detailDraft?.options,
+                    }) === 'HQ_RECEIVE' ? (
+                      <div className="rounded-xl border border-amber-200 bg-amber-50/70 p-4 text-xs font-bold text-amber-900 space-y-1">
+                        <p className="flex items-center gap-1.5 font-black">
+                          <span>🏢</span>
+                          <span>인증원 수령 / 묶음 발주 모드</span>
+                        </p>
+                        <p className="text-slate-600 font-medium">
+                          개별 배송지를 입력하지 않고, 발주 관리 탭에서 묶음 발주 시 한 번에 배송 주소를 설정합니다.
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="space-y-4 pt-1 animate-fade-in">
+                        <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-start">
+                          <div className="md:col-span-3">
+                            <label className="block text-[10px] font-black text-slate-500 tracking-widest mb-1.5">
+                              수령인 성명
+                            </label>
+                            <input
+                              type="text"
+                              placeholder="수령인 성명"
+                              value={detailDraft?.options?.receiverName || ''}
+                              onChange={(e) =>
+                                setDetailDraft((prev: any) => ({
+                                  ...prev,
+                                  options: { ...prev.options, receiverName: e.target.value },
+                                }))
+                              }
+                              className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-semibold text-slate-800 outline-none focus:border-blue-500 focus:bg-white"
+                            />
+                          </div>
+                          <div className="md:col-span-3">
+                            <label className="block text-[10px] font-black text-slate-500 tracking-widest mb-1.5">
+                              수령인 연락처
+                            </label>
+                            <input
+                              type="text"
+                              placeholder="수령인 연락처"
+                              value={detailDraft?.options?.receiverPhone || ''}
+                              onChange={(e) =>
+                                setDetailDraft((prev: any) => ({
+                                  ...prev,
+                                  options: { ...prev.options, receiverPhone: e.target.value },
+                                }))
+                              }
+                              className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-semibold text-slate-800 outline-none focus:border-blue-500 focus:bg-white"
+                            />
+                          </div>
+                          <div className="md:col-span-6">
+                            <label className="block text-[10px] font-black text-slate-500 tracking-widest mb-1.5">
+                              전사 공통 주소 불러오기
+                            </label>
+                            <select
+                              value={
+                                companyAddresses.find(
+                                  (a) => a.label === detailDraft?.options?.companyAddressLabel
+                                )?.id ||
+                                detailDraft?.options?.selectedCompanyAddressId ||
+                                ''
+                              }
+                              onChange={(e) => applyCompanyAddressToDraft(e.target.value)}
+                              className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold text-slate-700 outline-none cursor-pointer focus:border-blue-500 focus:bg-white"
+                            >
+                              <option value="">직접 입력 / 주소 검색</option>
+                              {companyAddresses
+                                .filter((a) => a.isActive !== false)
+                                .map((a) => (
+                                  <option key={a.id} value={a.id}>
+                                    🏢 {a.label} — {a.addressKo}
+                                  </option>
+                                ))}
+                            </select>
+                          </div>
+                        </div>
+
+                        <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-3 space-y-2">
+                          <div className="flex flex-wrap items-stretch gap-2">
+                            <button
+                              type="button"
+                              onClick={openDetailPostcode}
+                              className="shrink-0 px-3 h-10 bg-slate-900 text-white rounded-xl text-[11px] font-black shadow-sm hover:bg-slate-800 transition-all active:scale-95"
+                            >
+                              🔍 주소 검색
+                            </button>
+                            <div className="flex items-center gap-1.5 shrink-0 bg-white border border-slate-200 rounded-xl px-2.5 h-10">
+                              <span className="text-[9px] font-black text-slate-400">우편</span>
+                              <input
+                                type="text"
+                                value={detailDraft?.options?.shippingZipCode || ''}
+                                onChange={(e) =>
+                                  setDetailDraft((prev: any) => ({
+                                    ...prev,
+                                    options: {
+                                      ...prev.options,
+                                      shippingZipCode: e.target.value,
+                                      companyAddressLabel: '',
+                                      selectedCompanyAddressId: '',
+                                    },
+                                  }))
+                                }
+                                placeholder="우편번호"
+                                className="w-16 font-mono text-center text-xs font-black text-blue-600 bg-transparent outline-none"
+                              />
+                            </div>
+                            <input
+                              type="text"
+                              value={detailDraft?.options?.shippingAddressRoad || ''}
+                              onChange={(e) =>
+                                setDetailDraft((prev: any) => ({
+                                  ...prev,
+                                  options: {
+                                    ...prev.options,
+                                    shippingAddressRoad: e.target.value,
+                                    companyAddressLabel: '',
+                                    selectedCompanyAddressId: '',
+                                  },
+                                }))
+                              }
+                              placeholder="도로명 주소 (검색 또는 전사 주소)"
+                              className="flex-[2] min-w-[12rem] h-10 px-3 border border-slate-200 rounded-xl bg-white text-xs font-bold text-slate-800 outline-none focus:border-blue-500"
+                            />
+                            <div className="flex items-center gap-1.5 flex-[1.2] min-w-[12rem] max-w-[22rem] bg-white border border-slate-200 rounded-xl px-2.5 h-10">
+                              <span className="text-[9px] font-black text-blue-600 shrink-0">상세</span>
+                              <input
+                                type="text"
+                                value={detailDraft?.options?.shippingAddressDetail || ''}
+                                onChange={(e) =>
+                                  setDetailDraft((prev: any) => ({
+                                    ...prev,
+                                    options: {
+                                      ...prev.options,
+                                      shippingAddressDetail: e.target.value,
+                                    },
+                                  }))
+                                }
+                                placeholder="상세주소 (동·호수 등)"
+                                className="min-w-0 flex-1 text-xs font-semibold text-slate-800 outline-none bg-transparent"
+                              />
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <DetailSectionTitle title="🚚 최종 제작 사양 배송 주소지" />
+                    {isHqReceiveShip({
+                      category: detailItem.category,
+                      options: detailItem.options,
+                    }) ? (
+                      <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs font-bold text-slate-700 space-y-1">
+                        <p>
+                          {resolveDeliveryMode({
+                            category: detailItem.category,
+                            options: detailItem.options,
+                          }) === 'HQ_RECEIVE'
+                            ? '☑ 인증원 수령/묶음 발주'
+                            : '배송지 부서 대장 입력'}
+                        </p>
+                        <p className="text-slate-500 font-medium">
+                          신청 시 개별 배송지 미기재 — 부서 발주 시 입력
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                         <DetailRow
-                          label="배송지 (우편번호·도로명·상세)"
+                          label="수령인 성명"
+                          value={detailItem.options?.receiverName}
+                          highlight={false}
+                        />
+                        <DetailRow
+                          label="수령인 연락처"
+                          value={detailItem.options?.receiverPhone}
+                          highlight={false}
+                        />
+                        <DetailRow
+                          label="전사 공통 주소"
                           value={
-                            detailItem.options?.shippingAddress ||
-                            [
-                              detailItem.options?.shippingZipCode &&
-                                `[${detailItem.options.shippingZipCode}]`,
-                              detailItem.options?.shippingAddressRoad,
-                              detailItem.options?.shippingAddressDetail,
-                            ]
-                              .filter(Boolean)
-                              .join(' ')
+                            detailItem.options?.companyAddressLabel ||
+                            '직접 입력 / 주소 검색'
                           }
                           highlight={false}
                         />
+                        <div className="col-span-1 md:col-span-3">
+                          <DetailRow
+                            label="배송지 (우편번호·도로명·상세)"
+                            value={
+                              detailItem.options?.shippingAddress ||
+                              [
+                                detailItem.options?.shippingZipCode &&
+                                  `[${detailItem.options.shippingZipCode}]`,
+                                detailItem.options?.shippingAddressRoad,
+                                detailItem.options?.shippingAddressDetail,
+                              ]
+                                .filter(Boolean)
+                                .join(' ')
+                            }
+                            highlight={false}
+                          />
+                        </div>
                       </div>
-                    </div>
-                  )}
-                </div>
+                    )}
+                  </>
+                )}
+              </div>
 
               {/* 시스템 내부 보조 서식 — 현판(SIGN)만 */}
               {detailItem.category === 'SIGN' && (
@@ -1523,7 +1679,7 @@ export default function ProductionRequestDetailModal({
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-2">
                       <div>
                         <label className="block text-[10px] font-black text-slate-500 mb-1">
-                          현판 신청 회사 *
+                          현판 신청 회사 <span className="text-slate-400 font-medium">(선택)</span>
                         </label>
                         <input
                           type="text"
@@ -1536,7 +1692,7 @@ export default function ProductionRequestDetailModal({
                       </div>
                       <div>
                         <label className="block text-[10px] font-black text-slate-500 mb-1">
-                          신청인 정보
+                          신청인 정보 <span className="text-slate-400 font-medium">(선택)</span>
                         </label>
                         <input
                           type="text"
@@ -1549,7 +1705,7 @@ export default function ProductionRequestDetailModal({
                       </div>
                       <div>
                         <label className="block text-[10px] font-black text-slate-500 mb-1">
-                          기타
+                          기타 <span className="text-slate-400 font-medium">(선택)</span>
                         </label>
                         <input
                           type="text"

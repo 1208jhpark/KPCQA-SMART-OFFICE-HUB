@@ -74,10 +74,32 @@ async function applyBatchShippingToBatch(
       continue;
     }
     const prevOptions = asOptionsRecord(row.options);
+    const existingBackup = prevOptions._backupShipping;
+    const backupShipping =
+      existingBackup && typeof existingBackup === 'object'
+        ? existingBackup
+        : {
+            receiverName: prevOptions.receiverName ?? '',
+            receiverPhone: prevOptions.receiverPhone ?? '',
+            shippingZipCode: prevOptions.shippingZipCode ?? '',
+            shippingAddressRoad: prevOptions.shippingAddressRoad ?? '',
+            shippingAddressDetail: prevOptions.shippingAddressDetail ?? '',
+            shippingAddress: prevOptions.shippingAddress ?? '',
+            companyAddressLabel: prevOptions.companyAddressLabel ?? '',
+            selectedCompanyAddressId: prevOptions.selectedCompanyAddressId ?? '',
+            deliveryMode: prevOptions.deliveryMode ?? null,
+            jebonBatchShipping: prevOptions.jebonBatchShipping ?? null,
+          };
+
+    const nextOptions = {
+      ...mergeBatchShippingIntoOptions(prevOptions, batchShipping),
+      _backupShipping: backupShipping,
+    };
+
     await prisma.productionRequest.update({
       where: { id: row.id },
       data: {
-        options: asInputJson(mergeBatchShippingIntoOptions(prevOptions, batchShipping)),
+        options: asInputJson(nextOptions),
       },
     });
   }

@@ -23,7 +23,12 @@ import {
   buildJebonDetailExcelRows,
   buildPrintDetailExcelRows,
 } from '@/lib/production-sign-excel';
-import { itemDeferredBatchShipping, itemNeedsBatchShipping } from '@/lib/production-shipping';
+import {
+  isItemShippingEntered,
+  isItemShippingUnentered,
+  itemDeferredBatchShipping,
+  itemNeedsBatchShipping,
+} from '@/lib/production-shipping';
 import type { BatchShippingApplyScope, BatchShippingInput } from '@/lib/production-shipping';
 import ProductionBatchShippingModal, {
   type BatchShippingSubmitPayload,
@@ -36,10 +41,10 @@ const DISABLED_ACTION_BTN =
 
 const HISTORY_CATEGORIES = [
   { id: 'ALL', label: '접수 대기', icon: '⏳' },
-  { id: 'SIGN', label: '현판/명판/상패', icon: '📛' },
-  { id: 'JEBON', label: '제본', icon: '📚' },
-  { id: 'PRINT', label: '기타 제작물', icon: '📜' },
-  { id: 'OFFICE_SUPPLIES', label: '사무문구류', icon: '📎' },
+  { id: 'SIGN', label: '현판/명판/상패 발주 대기', icon: '📛' },
+  { id: 'JEBON', label: '제본 발주 대기', icon: '📚' },
+  { id: 'PRINT', label: '기타 제작물 발주 대기', icon: '📜' },
+  { id: 'OFFICE_SUPPLIES', label: '사무문구류 발주 대기', icon: '📎' },
 ];
 
 type ProductionRequestRow = {
@@ -384,8 +389,12 @@ export default function DeptOrderPanel() {
     return requests.filter((r) => idSet.has(r.id));
   }, [requests, pendingOrderIds, selectedIds]);
 
-  const batchShippingDeferredCount = useMemo(
-    () => pendingOrderRequests.filter((r) => itemDeferredBatchShipping(r)).length,
+  const batchShippingUnenteredCount = useMemo(
+    () => pendingOrderRequests.filter((r) => isItemShippingUnentered(r)).length,
+    [pendingOrderRequests]
+  );
+  const batchShippingEnteredCount = useMemo(
+    () => pendingOrderRequests.filter((r) => isItemShippingEntered(r)).length,
     [pendingOrderRequests]
   );
 
@@ -543,15 +552,15 @@ export default function DeptOrderPanel() {
       return;
     }
     const applyCount =
-      scope === 'all' ? pendingOrderRequests.length : batchShippingDeferredCount;
+      scope === 'all' ? pendingOrderRequests.length : batchShippingUnenteredCount;
     if (applyCount <= 0) {
       alert('선택한 적용 범위에 해당하는 건이 없습니다.');
       return;
     }
     const scopeLabel =
       scope === 'all'
-        ? `배송지 적용 대상 전체 ${applyCount}건`
-        : `「인증원 수령」 미입력 ${applyCount}건`;
+        ? `전체 ${applyCount}건 (기존 입력건 포함)`
+        : `실배송지 미입력 ${applyCount}건`;
     if (
       !confirm(
         `선택한 ${ids.length}건을 묶음 발주합니다.\n${scopeLabel}에 입력한 배송지를 일괄 적용합니다.`
@@ -640,7 +649,13 @@ export default function DeptOrderPanel() {
   };
 
   return (
-    <ProductionDeptShell pageHint="⏳ 접수 대기중 탭에서 접수·반려 후, 분류 탭(현판/제본 등)에서 발주대기 건을 선택해 묶음 발주합니다. 발주 완료 건은 발주/수령 검수 탭에서 관리합니다.">
+    <ProductionDeptShell
+      pageHint={
+        <>
+          [접수대기] 부서원의 외주 발주 접수건 (원문 검수) 검토 후 접수 → [발주 대기] 개별 또는 묶음 발주 합니다. (배송지 일괄 지정 가능)
+        </>
+      }
+    >
       {/* 카테고리 서류철 탭 + 테이블 */}
       <div className="w-full">
         <div
@@ -1079,11 +1094,14 @@ export default function DeptOrderPanel() {
         <ProductionBatchShippingModal
           open
           showApplyScope
+          totalCount={pendingOrderRequests.length}
+          unenteredCount={batchShippingUnenteredCount}
+          enteredCount={batchShippingEnteredCount}
           totalJebonCount={pendingOrderRequests.length}
-          deferredCount={batchShippingDeferredCount}
+          deferredCount={batchShippingUnenteredCount}
           saving={ordering}
           title="묶음 배송지 입력 후 발주"
-          description="인증원 수령(배송지 미입력) 건에 동일한 실배송지를 적용한 뒤 묶음 발주합니다."
+          description="묶음 발주할 건의 실배송지를 확인 및 일괄 적용합니다."
           submitLabel="배송지 적용 후 발주"
           onClose={() => {
             if (!ordering) {

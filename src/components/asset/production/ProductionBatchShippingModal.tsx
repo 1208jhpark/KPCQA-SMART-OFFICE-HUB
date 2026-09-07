@@ -27,7 +27,12 @@ type Props = {
   description?: string;
   /** 적용 범위 선택 UI (발주·검수 묶음 배송지) */
   showApplyScope?: boolean;
+  totalCount?: number;
+  unenteredCount?: number;
+  enteredCount?: number;
+  /** @deprecated 호환용 */
   totalJebonCount?: number;
+  /** @deprecated 호환용 */
   deferredCount?: number;
   saving?: boolean;
   submitLabel?: string;
@@ -49,6 +54,9 @@ export default function ProductionBatchShippingModal({
   title = '묶음 배송지 일괄 설정',
   description = '선택한 건에 동일한 실배송지를 적용합니다.',
   showApplyScope = false,
+  totalCount,
+  unenteredCount,
+  enteredCount,
   totalJebonCount = 0,
   deferredCount = 0,
   saving = false,
@@ -56,6 +64,10 @@ export default function ProductionBatchShippingModal({
   onClose,
   onSubmit,
 }: Props) {
+  const total = totalCount ?? totalJebonCount ?? 0;
+  const unentered = unenteredCount ?? deferredCount ?? 0;
+  const entered = enteredCount ?? Math.max(0, total - unentered);
+
   const [form, setForm] = useState<BatchShippingInput>(emptyForm());
   const [companyAddresses, setCompanyAddresses] = useState<CompanyAddressRow[]>([]);
   const [selectedCompanyAddressId, setSelectedCompanyAddressId] = useState('');
@@ -65,12 +77,12 @@ export default function ProductionBatchShippingModal({
     if (!open) return;
     setForm(emptyForm());
     setSelectedCompanyAddressId('');
-    setApplyScope(deferredCount > 0 ? 'deferred' : 'all');
+    setApplyScope(unentered > 0 ? 'deferred' : 'all');
     fetch(`/api/asset/businesscard/master/addresses?t=${Date.now()}`, { cache: 'no-store' })
       .then((res) => (res.ok ? res.json() : []))
       .then((rows) => setCompanyAddresses(Array.isArray(rows) ? rows : []))
       .catch(() => setCompanyAddresses([]));
-  }, [open, deferredCount]);
+  }, [open, unentered]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -122,7 +134,7 @@ export default function ProductionBatchShippingModal({
     const err = validateBatchShippingInput(form);
     if (err) return alert(err);
     if (showApplyScope) {
-      const targetCount = applyScope === 'all' ? totalJebonCount : deferredCount;
+      const targetCount = applyScope === 'all' ? total : unentered;
       if (targetCount <= 0) {
         return alert('선택한 적용 범위에 해당하는 건이 없습니다.');
       }
@@ -139,47 +151,65 @@ export default function ProductionBatchShippingModal({
           <h3 className="text-base font-black text-slate-900">{title}</h3>
           <p className="text-xs text-slate-500 mt-1.5 font-semibold leading-relaxed">{description}</p>
           {showApplyScope && (
-            <div className="mt-4 space-y-2.5 p-3.5 bg-slate-50 border border-slate-200 rounded-xl">
-              <label
-                className={`flex items-start gap-2.5 cursor-pointer select-none ${
-                  totalJebonCount <= 0 ? 'opacity-40 cursor-not-allowed' : ''
-                }`}
-              >
-                <input
-                  type="checkbox"
-                  checked={applyScope === 'all'}
-                  disabled={totalJebonCount <= 0}
-                  onChange={() => totalJebonCount > 0 && setApplyScope('all')}
-                  className="mt-0.5 w-3.5 h-3.5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer disabled:cursor-not-allowed"
-                />
-                <span className="text-[11px] font-bold text-slate-700 leading-snug">
-                  묶음 배송 전체 항목 일괄 실배송지 변경
-                  <span className="text-indigo-600 font-black"> ({totalJebonCount}건)</span>
-                  <span className="block text-[10px] font-semibold text-slate-400 mt-0.5">
-                    신청자가 개별 입력한 주소도 무시하고 모두 동일 주소로 변경합니다.
-                  </span>
+            <div className="mt-4 space-y-3 p-4 bg-slate-50 border border-slate-200 rounded-xl">
+              {/* 🚀 주소상태 요약 표시 */}
+              <div className="flex flex-wrap items-center gap-2 pb-2.5 border-b border-slate-200 text-xs">
+                <span className="font-black text-slate-700">주소상태:</span>
+                <span className="inline-flex items-center gap-1 font-bold text-amber-700 bg-amber-50 px-2 py-0.5 rounded-md border border-amber-200">
+                  실배송지 미입력건 <strong className="font-black">({unentered}건)</strong>
                 </span>
-              </label>
-              <label
-                className={`flex items-start gap-2.5 cursor-pointer select-none ${
-                  deferredCount <= 0 ? 'opacity-40 cursor-not-allowed' : ''
-                }`}
-              >
-                <input
-                  type="checkbox"
-                  checked={applyScope === 'deferred'}
-                  disabled={deferredCount <= 0}
-                  onChange={() => deferredCount > 0 && setApplyScope('deferred')}
-                  className="mt-0.5 w-3.5 h-3.5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer disabled:cursor-not-allowed"
-                />
-                <span className="text-[11px] font-bold text-slate-700 leading-snug">
-                  신청 시 「묶음 발주시」로 미입력된 건 실배송지 변경
-                  <span className="text-indigo-600 font-black"> ({deferredCount}건)</span>
-                  <span className="block text-[10px] font-semibold text-slate-400 mt-0.5">
-                    묶음 발주 시 입력하기로 한 건만 적용합니다. 개별 입력 건은 유지됩니다.
-                  </span>
+                <span className="text-slate-300">/</span>
+                <span className="inline-flex items-center gap-1 font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-200">
+                  실배송지 입력건 <strong className="font-black">({entered}건)</strong>
                 </span>
-              </label>
+              </div>
+
+              {/* 🚀 선택 옵션들 */}
+              <div className="space-y-2 pt-0.5">
+                <label
+                  className={`flex items-start gap-2.5 cursor-pointer select-none p-2 rounded-lg transition-colors ${
+                    applyScope === 'deferred'
+                      ? 'bg-white border border-indigo-300 shadow-sm'
+                      : 'hover:bg-slate-100/80 border border-transparent'
+                  } ${unentered <= 0 ? 'opacity-40 cursor-not-allowed' : ''}`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={applyScope === 'deferred'}
+                    disabled={unentered <= 0}
+                    onChange={() => unentered > 0 && setApplyScope('deferred')}
+                    className="mt-0.5 w-3.5 h-3.5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer disabled:cursor-not-allowed"
+                  />
+                  <span className="text-[11px] font-bold text-slate-800 leading-snug">
+                    실배송지 미입력건({unentered}건)에 대해서만 실배송지 일괄 변경
+                    <span className="block text-[10px] font-medium text-slate-500 mt-0.5">
+                      기존에 입력된 실배송지는 유지하고, 미입력된 건만 지금 입력한 주소로 변경합니다.
+                    </span>
+                  </span>
+                </label>
+
+                <label
+                  className={`flex items-start gap-2.5 cursor-pointer select-none p-2 rounded-lg transition-colors ${
+                    applyScope === 'all'
+                      ? 'bg-white border border-indigo-300 shadow-sm'
+                      : 'hover:bg-slate-100/80 border border-transparent'
+                  } ${total <= 0 ? 'opacity-40 cursor-not-allowed' : ''}`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={applyScope === 'all'}
+                    disabled={total <= 0}
+                    onChange={() => total > 0 && setApplyScope('all')}
+                    className="mt-0.5 w-3.5 h-3.5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer disabled:cursor-not-allowed"
+                  />
+                  <span className="text-[11px] font-bold text-slate-800 leading-snug">
+                    전체 건({total}건) 실배송지 일괄 변경(기존 입력건을 무시)
+                    <span className="block text-[10px] font-medium text-slate-500 mt-0.5">
+                      신청자가 개별 입력한 주소도 무시하고 모두 동일 주소로 변경합니다.
+                    </span>
+                  </span>
+                </label>
+              </div>
             </div>
           )}
         </div>

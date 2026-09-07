@@ -23,7 +23,7 @@ type PermissionSummary = {
 type ProductionMasterShellProps = {
   children: React.ReactNode;
   /** 배너 본문 안내 (기본: 제작물 마스터 공통) */
-  pageHint?: string;
+  pageHint?: React.ReactNode;
 };
 
 /**
