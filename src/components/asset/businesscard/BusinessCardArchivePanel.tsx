@@ -66,35 +66,6 @@ function formatBatchNo(id: string) {
   return String(id || '').replace(/^BATCH-/, 'PO-BC-');
 }
 
-function toOrderExcelRows(items: RequestItem[]) {
-  return items.map((r) => ({
-    '관리번호': r.postNumber,
-    '수량(통)': r.quantity || 1,
-    '성명': r.userName,
-    '신청일자': r.applyDate,
-    '본부': r.deptHead,
-    '소속': r.deptName || '',
-    '직책/직급': r.title,
-    '추가사항': r.additionalKo || '',
-    '우편번호': r.zipCode,
-    '주소': r.addressKo,
-    '휴대전화': r.mobile,
-    '전화번호': r.phone || '',
-    '팩스': r.fax || '',
-    '이메일': r.email,
-    '영문이름': r.userNameEn || '',
-    '영문본부': r.deptHeadEn || '',
-    '영문소속': r.deptNameEn || '',
-    '영문직책': r.titleEn || '',
-    '영문추가': r.additionalEn || '',
-    '영문주소': r.addressEn || '',
-    '영문 휴대전화': r.mobileEn || '',
-    '영문전화': r.phoneEn || '',
-    '영문팩스': r.faxEn || '',
-    '이메일(영문)': r.emailEn || r.email,
-  }));
-}
-
 function toBulkOrderExcelRows(batch: ArchivedBatch, items: RequestItem[]) {
   return items.map((r) => ({
     '관리번호': r.postNumber,
@@ -123,18 +94,6 @@ function toBulkOrderExcelRows(batch: ArchivedBatch, items: RequestItem[]) {
     '영문팩스': r.faxEn || '',
     '이메일(영문)': r.emailEn || r.email,
   }));
-}
-
-function downloadOrderExcelFile(batch: ArchivedBatch) {
-  const excelData = toOrderExcelRows(batch.items || []);
-  if (excelData.length === 0) {
-    alert('내려받을 내역이 없습니다.');
-    return;
-  }
-  const ws = XLSX.utils.json_to_sheet(excelData);
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, '명함발주데이터');
-  XLSX.writeFile(wb, `명함발주서_${formatBatchNo(batch.id)}.xlsx`);
 }
 
 interface UnitItem {
@@ -238,7 +197,7 @@ export default function BusinessCardArchivePanel() {
   const [archivedBatches, setArchivedBatches] = useState<ArchivedBatch[]>([]);
   const [units, setUnits] = useState<UnitItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [expandedBatchId, setExpandedBatchId] = useState<string | null>(null);
+  const [expandedBatchIds, setExpandedBatchIds] = useState<Set<string>>(new Set());
   const [currentUser, setCurrentUser] = useState<any>(null);
   const [interfaceConfig, setInterfaceConfig] = useState<any>(null);
   const [permissionSummary, setPermissionSummary] = useState<{
@@ -390,7 +349,7 @@ export default function BusinessCardArchivePanel() {
   let totalQty = 0;
   let totalCalculatedPrice = 0;
   let totalPriceKnown = 0;
-  const deptStatsMap: Record<string, { names: Set<string>; qty: number; price: number; priceKnown: number }> = {};
+  const deptStatsMap: Record<string, { qty: number; price: number; priceKnown: number }> = {};
 
   processedBatches.forEach((batch) => {
     batch.displayItems?.forEach((item) => {
@@ -398,8 +357,7 @@ export default function BusinessCardArchivePanel() {
       const price = itemInspectPrice(batch, item);
       totalQty += q;
       const dept = breakdownGroupKey(item, selectedOrg, units);
-      if (!deptStatsMap[dept]) deptStatsMap[dept] = { names: new Set(), qty: 0, price: 0, priceKnown: 0 };
-      deptStatsMap[dept].names.add(item.userName);
+      if (!deptStatsMap[dept]) deptStatsMap[dept] = { qty: 0, price: 0, priceKnown: 0 };
       deptStatsMap[dept].qty += q;
       if (price != null) {
         totalCalculatedPrice += price;
@@ -453,6 +411,29 @@ export default function BusinessCardArchivePanel() {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
+      return next;
+    });
+  };
+
+  /** 대상자 검색 시 매칭 묶음 하위 상세(아코디언) 자동 펼침 */
+  useEffect(() => {
+    const qUser = nameSearch.trim();
+    if (!qUser) {
+      setExpandedBatchIds(new Set());
+      return;
+    }
+    const start = (currentPage - 1) * itemsPerPage;
+    const pageIds = processedBatches
+      .slice(start, start + itemsPerPage)
+      .map((b) => b.id);
+    setExpandedBatchIds(new Set(pageIds));
+  }, [nameSearch, currentPage, processedBatches, itemsPerPage]);
+
+  const toggleBatchExpand = (batchId: string) => {
+    setExpandedBatchIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(batchId)) next.delete(batchId);
+      else next.add(batchId);
       return next;
     });
   };
@@ -526,39 +507,46 @@ export default function BusinessCardArchivePanel() {
         </p>
       </div>
 
-      <div className="bg-white border border-slate-200 rounded-[2.5rem] shadow-sm p-8 space-y-6">
-        <div className="border-b border-slate-100 pb-5">
-          <h2 className="text-xl font-black flex items-center gap-2 text-slate-800">🗄️ 과거 발주 및 지급 완료 묶음 결산 이력</h2>
-          <p className="text-xs text-slate-500 mt-1.5">아래 표의 연도·월·조직·대상자 검색에 맞춰 수량과 금액이 바로 집계됩니다.</p>
+      <div className="bg-white border border-slate-200 rounded-2xl shadow-sm px-5 py-3 space-y-3">
+        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 border-b border-slate-100 pb-2">
+          <h2 className="text-base font-black text-slate-800 whitespace-nowrap">🗄️ 과거 발주 및 지급 완료 묶음 결산 이력</h2>
+          <p className="text-xs text-slate-500">
+            아래 표의 연도·월·조직·대상자 검색에 맞춰 수량과 금액이 바로 집계됩니다.
+          </p>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          <div className="bg-slate-800 rounded-3xl p-6 shadow-md flex flex-col justify-center border border-slate-700">
-            <h3 className="text-slate-400 text-[10px] font-black tracking-widest mb-4">TOTAL SUMMARY</h3>
-            <div className="space-y-4">
-              <div className="flex justify-between items-end border-b border-slate-600/50 pb-3">
-                <span className="text-sm font-bold text-slate-300">총 발주 수량</span>
-                <span className="text-3xl font-black text-white font-mono">{totalQty} <span className="text-sm font-normal text-slate-400 ml-0.5">통</span></span>
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 items-stretch">
+          <div className="bg-white border border-slate-200 rounded-lg p-3 flex flex-col justify-center min-h-[64px]">
+            <h3 className="text-slate-400 text-[9px] font-black tracking-widest mb-1.5">TOTAL SUMMARY</h3>
+            <div className="flex flex-row items-center gap-6 flex-wrap">
+              <div className="flex items-baseline gap-2">
+                <span className="text-xs font-bold text-slate-500 whitespace-nowrap">총 발주 수량</span>
+                <span className="text-lg font-black text-slate-800 font-mono tabular-nums">
+                  {totalQty}
+                  <span className="text-xs font-bold text-slate-500 ml-0.5">통</span>
+                </span>
               </div>
-              <div className="flex justify-between items-end">
-                <span className="text-sm font-bold text-slate-300">외주 정산 총액</span>
-                <span className="text-3xl font-black text-emerald-400 font-mono tracking-tight">
+              <div className="flex items-baseline gap-2">
+                <span className="text-xs font-bold text-slate-500 whitespace-nowrap">외주 정산 총액</span>
+                <span className="text-lg font-bold text-indigo-600 font-mono tabular-nums tracking-tight">
                   {totalPriceKnown > 0 ? `₩${totalCalculatedPrice.toLocaleString()}` : '-'}
                 </span>
               </div>
             </div>
           </div>
 
-          <div className="lg:col-span-2 bg-white rounded-3xl border border-slate-200 h-48 flex flex-col overflow-hidden shadow-sm">
-            <div className="bg-slate-50/90 backdrop-blur-sm px-5 py-3 border-b border-slate-200 flex justify-between items-center z-10 shrink-0">
+          <div className="lg:col-span-2 bg-white rounded-lg border border-slate-200 flex flex-col shadow-sm min-h-[64px]">
+            <div className="bg-slate-50/90 px-3 py-1 border-b border-slate-200 flex justify-between items-center shrink-0">
               <h3 className="text-slate-500 text-[10px] font-black tracking-widest">조직별 조회</h3>
-              <span className="text-[10px] font-bold text-slate-400 bg-slate-200/50 px-2 py-0.5 rounded-md">{Object.keys(deptStatsMap).length}개 조직</span>
+              <span className="text-[10px] font-bold text-slate-400 bg-slate-200/50 px-1.5 py-0.5 rounded">
+                {Object.keys(deptStatsMap).length}개 조직
+              </span>
             </div>
-            <div className="flex-1 overflow-y-auto custom-scrollbar p-2">
+            <div className="px-2 py-1.5">
               {Object.keys(deptStatsMap).length === 0 ? (
-                <p className="text-slate-400 text-xs text-center py-10 font-bold">조건에 맞는 데이터가 없습니다.</p>
+                <p className="text-slate-400 text-xs text-center py-1 font-bold">조건에 맞는 데이터가 없습니다.</p>
               ) : (
-                <div className="space-y-0.5">
+                <div className="flex flex-wrap gap-1.5">
                   {Object.entries(deptStatsMap)
                     .sort((a, b) => {
                       const orderOf = (name: string) => {
@@ -569,22 +557,21 @@ export default function BusinessCardArchivePanel() {
                       if (byOrder !== 0) return byOrder;
                       return b[1].qty - a[1].qty;
                     })
-                    .map(([dept, data], idx) => (
-                    <div key={idx} className="flex flex-row items-center justify-between hover:bg-slate-50 transition-colors px-3 py-2 rounded-lg gap-3">
-                      <div className="w-[140px] shrink-0 font-black text-slate-700 text-[11px] truncate" title={dept}>
-                        {dept}
-                      </div>
-                      <div className="flex-1 text-[11px] font-medium text-slate-500 truncate" title={Array.from(data.names).join(', ')}>
-                        {Array.from(data.names).join(', ')}
-                      </div>
-                      <div className="shrink-0 flex items-center justify-end gap-4">
-                        <span className="text-[11px] font-black text-slate-500 w-8 text-right">{data.qty}통</span>
-                        <span className="text-[12px] font-black text-emerald-600 font-mono w-[70px] text-right">
+                    .map(([dept, data]) => (
+                      <div
+                        key={dept}
+                        title={dept}
+                        className="inline-flex items-center gap-1.5 border border-slate-200 bg-white rounded-md px-2.5 py-1 text-xs"
+                      >
+                        <span className="font-medium text-slate-700 truncate max-w-[140px]">{dept}</span>
+                        <span className="text-slate-300">·</span>
+                        <span className="text-slate-500 tabular-nums whitespace-nowrap">{data.qty}통</span>
+                        <span className="text-slate-300">·</span>
+                        <span className="font-bold text-indigo-600 font-mono tabular-nums whitespace-nowrap">
                           {data.priceKnown > 0 ? `₩${data.price.toLocaleString()}` : '-'}
                         </span>
                       </div>
-                    </div>
-                  ))}
+                    ))}
                 </div>
               )}
             </div>
@@ -713,10 +700,20 @@ export default function BusinessCardArchivePanel() {
         </div>
 
         <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse">
+          <table className="w-full table-fixed text-left border-collapse">
+            <colgroup>
+              <col className="w-[50px]" />
+              <col className="w-[48px]" />
+              <col className="w-[160px]" />
+              <col className="w-[120px]" />
+              <col />
+              <col className="w-[110px]" />
+              <col className="w-[100px]" />
+              <col className="w-[100px]" />
+            </colgroup>
             <thead className="bg-indigo-100 text-indigo-900 text-[10px] font-black uppercase tracking-widest border-b border-indigo-200">
               <tr>
-                <th className="h-12 px-4 w-[50px]">
+                <th className="h-12 px-4">
                   <input
                     type="checkbox"
                     title="현재 페이지(최대 10건)만 선택"
@@ -725,33 +722,40 @@ export default function BusinessCardArchivePanel() {
                     className="w-3 h-3 accent-indigo-600 cursor-pointer"
                   />
                 </th>
-                <th className="h-12 px-2 w-[48px] text-center">NO</th>
-                <th className="h-12 px-2 w-[160px]">묶음 번호</th>
-                <th className="h-12 px-4 w-[120px]">발주 일자</th>
-                <th className="h-12 px-4 min-w-[200px]">결산 포함 대상자</th>
-                <th className="h-12 px-4 text-center w-[100px]">묶음 내 수량</th>
-                <th className="h-12 px-4 text-center w-[100px]">정산 금액</th>
-                <th className="h-12 px-4 text-center w-[100px]">상태</th>
-                <th className="h-12 px-2 text-center w-[120px]">엑셀 다운로드</th>
+                <th className="h-12 px-2 text-center">NO</th>
+                <th className="h-12 px-2">묶음 번호</th>
+                <th className="h-12 px-4">발주 일자</th>
+                <th className="h-12 px-4">신청 상세</th>
+                <th className="h-12 px-2 text-center">
+                  <div className="flex flex-col items-center justify-center gap-0.5 leading-tight">
+                    <span className="whitespace-nowrap">건 / 통</span>
+                    <span className="text-[9px] font-bold text-indigo-700/80 normal-case tracking-normal whitespace-nowrap">
+                      (신청 / 수량)
+                    </span>
+                  </div>
+                </th>
+                <th className="h-12 px-2 text-center">정산 금액</th>
+                <th className="h-12 px-2 text-center">상태</th>
               </tr>
             </thead>
             <tbody className="bg-white text-xs font-bold text-slate-700 divide-y divide-slate-100">
               {isLoading ? (
-                <tr><td colSpan={9} className="p-16 text-center text-slate-400 text-xs">데이터를 불러오는 중입니다...</td></tr>
+                <tr><td colSpan={8} className="p-16 text-center text-slate-400 text-xs">데이터를 불러오는 중입니다...</td></tr>
               ) : paginatedBatches.length === 0 ? (
-                <tr><td colSpan={9} className="p-16 text-center text-slate-400 text-xs">조건에 맞는 보관 내역이 없습니다.</td></tr>
+                <tr><td colSpan={8} className="p-16 text-center text-slate-400 text-xs">조건에 맞는 보관 내역이 없습니다.</td></tr>
               ) : (
                 paginatedBatches.map((batch, index) => {
                   const rowNo = processedBatches.length - ((currentPage - 1) * itemsPerPage + index);
-                  const batchQty = batch.displayItems?.reduce((sum, item) => sum + (item.quantity || 1), 0) || 0;
+                  const displayItems = batch.displayItems || [];
+                  const batchCount = displayItems.length;
+                  const batchQty = displayItems.reduce((sum, item) => sum + (item.quantity || 1), 0);
                   const { sum: batchPriceSum, known: batchPriceKnown } = sumKnownPrices(batch, batch.displayItems);
                   return (
                     <React.Fragment key={batch.id}>
                       <tr
-                        className={`h-16 hover:bg-indigo-50/40 cursor-pointer transition-colors ${selectedBatchIds.has(batch.id) ? 'bg-indigo-50/50' : ''}`}
-                        onClick={() => setExpandedBatchId(expandedBatchId === batch.id ? null : batch.id)}
+                        className={`h-16 hover:bg-indigo-50/40 transition-colors ${selectedBatchIds.has(batch.id) ? 'bg-indigo-50/50' : ''}`}
                       >
-                        <td className="px-4" onClick={(e) => e.stopPropagation()}>
+                        <td className="px-4">
                           <input
                             type="checkbox"
                             checked={selectedBatchIds.has(batch.id)}
@@ -760,73 +764,102 @@ export default function BusinessCardArchivePanel() {
                           />
                         </td>
                         <td className="px-2 text-center font-mono text-slate-500 tabular-nums">{rowNo}</td>
-                        <td className="px-2 font-mono text-indigo-600">{expandedBatchId === batch.id ? '👇' : '👉'} {formatBatchNo(batch.id)}</td>
-                        <td className="px-4 text-slate-600 font-mono">{batch.orderDate}</td>
-                        <td className="px-4 text-slate-700 truncate max-w-xs" title={Array.from(new Set(batch.displayItems?.map((i) => i.userName).filter(Boolean))).join(', ')}>
-                          {Array.from(new Set(batch.displayItems?.map((i) => i.userName).filter(Boolean))).join(', ') || '-'}
+                        <td
+                          className="px-2 font-mono text-indigo-600 cursor-pointer whitespace-nowrap tabular-nums truncate overflow-hidden"
+                          title={formatBatchNo(batch.id)}
+                          onClick={() => toggleBatchExpand(batch.id)}
+                        >
+                          {formatBatchNo(batch.id)}
                         </td>
-                        <td className="px-4 text-center text-indigo-700 font-black">{batchQty} 통</td>
+                        <td className="px-4 text-slate-600 font-mono">{batch.orderDate}</td>
+                        <td
+                          className="px-4 cursor-pointer"
+                          onClick={() => toggleBatchExpand(batch.id)}
+                        >
+                          <span className="text-indigo-600 underline underline-offset-2">상세보기</span>
+                          {(() => {
+                            const names = Array.from(new Set(batch.displayItems?.map((i) => i.userName).filter(Boolean)));
+                            if (names.length === 0) return null;
+                            const label = names.join(', ');
+                            return (
+                              <p className="text-[10px] text-slate-400 mt-0.5 truncate" title={label}>
+                                {label}
+                              </p>
+                            );
+                          })()}
+                        </td>
+                        <td className="px-2 text-center whitespace-nowrap">
+                          <span className="text-slate-900 font-black tabular-nums">
+                            {batchCount}
+                            <span className="text-[10px] font-bold text-slate-500 ml-0.5">건</span>
+                            <span className="mx-1 text-slate-300 font-bold">/</span>
+                            {batchQty}
+                            <span className="text-[10px] font-bold text-slate-500 ml-0.5">통</span>
+                          </span>
+                        </td>
                         <td className="px-4 text-center font-mono tabular-nums text-slate-800">
                           {batchPriceKnown > 0 ? `₩${batchPriceSum.toLocaleString()}` : '-'}
                         </td>
                         <td className="px-4 text-center">
-                          <span className="text-[10px] font-bold whitespace-nowrap text-emerald-600">검수완료</span>
-                        </td>
-                        <td className="px-2 text-center" onClick={(e) => e.stopPropagation()}>
-                          <button
-                            type="button"
-                            disabled={!canEditMaster}
-                            title={!canEditMaster ? '편집 권한 필요' : undefined}
-                            onClick={() => {
-                              if (!canEditMaster) return alertNoEditPermission();
-                              downloadOrderExcelFile(batch);
-                            }}
-                            className={`p-1.5 px-3 font-black text-[10px] rounded-lg w-full ${
-                              canEditMaster
-                                ? 'bg-white hover:bg-slate-50 text-slate-700 border border-slate-200'
-                                : DISABLED_ACTION_BTN
-                            }`}
-                          >
-                            📊 엑셀 저장
-                          </button>
+                          <span className="text-[10px] font-bold whitespace-nowrap text-slate-900">검수완료</span>
                         </td>
                       </tr>
-                      {expandedBatchId === batch.id && (
-                        <tr>
-                          <td colSpan={9} className="bg-indigo-50/60 p-6 border-l-4 border-indigo-400">
-                            <div className="bg-white border border-indigo-100 rounded-2xl overflow-hidden shadow-sm">
-                              <table className="w-full text-left text-xs">
-                                <thead className="bg-slate-50 text-slate-600 font-black tracking-widest border-b border-slate-200 text-[10px]">
-                                  <tr>
-                                    <th className="h-10 px-2 w-[48px] text-center">NO</th>
-                                    <th className="h-10 px-2 w-[110px] text-center whitespace-nowrap">관리번호</th>
-                                    <th className="h-10 px-2 w-[72px] text-center whitespace-nowrap">신청주체</th>
-                                    <th className="h-10 px-2">본부 (상위 조직)</th>
-                                    <th className="h-10 px-2">센터 (하위 조직)</th>
-                                    <th className="h-10 px-2">대상자</th>
-                                    <th className="h-10 px-2">직책 / 직급</th>
-                                    <th className="h-10 px-2 text-center w-[72px] whitespace-nowrap">수량(통)</th>
-                                    <th className="h-10 px-2 text-center w-[96px] whitespace-nowrap">정산액</th>
+                      {expandedBatchIds.has(batch.id) && (
+                        <tr className="bg-transparent">
+                          <td className="bg-slate-100/70 border-y border-slate-200" />
+                          <td className="bg-slate-100/70 border-y border-slate-200" />
+                          <td
+                            colSpan={6}
+                            className="bg-slate-100/70 py-3 px-0 border-y border-slate-200 border-l-4 border-l-blue-500"
+                          >
+                            <div className="overflow-hidden bg-transparent">
+                              <table className="w-full table-fixed text-left text-xs border-collapse bg-transparent">
+                                <colgroup>
+                                  {/* NO+관리번호 = 묶음160+일자120 − border4 → 신청주체 = 신청 상세 */}
+                                  <col className="w-[48px]" />
+                                  <col className="w-[228px]" />
+                                  <col className="w-[96px]" />
+                                  <col />
+                                  <col />
+                                  <col />
+                                  <col />
+                                  <col className="w-[110px]" />
+                                  <col className="w-[100px]" />
+                                  <col className="w-[100px]" />
+                                </colgroup>
+                                <thead>
+                                  <tr className="bg-slate-200/80 text-slate-700 font-semibold border-b border-slate-300 text-[10px] tracking-widest">
+                                    <th className="h-10 px-1 text-center bg-transparent">NO</th>
+                                    <th className="h-10 px-2 text-center whitespace-nowrap bg-transparent">관리번호</th>
+                                    <th className="h-10 px-1 text-center whitespace-nowrap bg-transparent">신청주체</th>
+                                    <th className="h-10 px-2 text-left bg-transparent">본부 (상위 조직)</th>
+                                    <th className="h-10 px-2 text-left bg-transparent">센터 (하위 조직)</th>
+                                    <th className="h-10 px-2 text-left bg-transparent">대상자</th>
+                                    <th className="h-10 px-2 text-left bg-transparent">직책 / 직급</th>
+                                    <th className="h-10 px-1 text-center whitespace-nowrap bg-transparent">수량(통)</th>
+                                    <th className="h-10 px-1 text-center whitespace-nowrap bg-transparent">정산액</th>
+                                    <th className="h-10 px-1 bg-transparent" aria-hidden />
                                   </tr>
                                 </thead>
-                                <tbody className="divide-y divide-slate-100 font-bold text-slate-700">
+                                <tbody className="divide-y divide-slate-200/80 font-bold text-slate-700 bg-transparent">
                                   {batch.displayItems?.map((item, idx) => (
-                                    <tr key={item.id} className="h-12 hover:bg-slate-50/50 text-[11px] font-bold text-slate-700">
-                                      <td className="px-2 text-center font-mono text-slate-500 tabular-nums">{idx + 1}</td>
-                                      <td className="px-2 text-center font-mono text-slate-900 tabular-nums truncate">{item.postNumber}</td>
-                                      <td className="px-2 text-center">
+                                    <tr key={item.id} className="h-12 bg-transparent hover:bg-slate-200/40 text-[11px] font-bold text-slate-700 transition-colors">
+                                      <td className="px-1 text-center font-mono text-slate-500 tabular-nums bg-transparent">{idx + 1}</td>
+                                      <td className="px-2 text-center font-mono text-slate-900 tabular-nums truncate bg-transparent" title={item.postNumber}>{item.postNumber}</td>
+                                      <td className="px-1 text-center bg-transparent">
                                         {item.applicantType === '관리자대행' ? (
                                           <span className="text-[10px] font-bold whitespace-nowrap text-indigo-700" title={item.applicantName || ''}>관리자대행</span>
                                         ) : (
                                           <span className="text-[10px] font-bold whitespace-nowrap text-slate-600">본인</span>
                                         )}
                                       </td>
-                                      <td className="px-2 truncate" title={item.deptHead || ''}>{item.deptHead || '-'}</td>
-                                      <td className="px-2 truncate" title={item.deptName || ''}>{item.deptName || <span className="text-slate-300">-</span>}</td>
-                                      <td className="px-2 text-slate-800 truncate">{item.userName || '-'}</td>
-                                      <td className="px-2 text-slate-800 truncate" title={item.title || ''}>{item.title || '-'}</td>
-                                      <td className="px-2 text-center font-mono tabular-nums text-slate-900">{item.quantity || 1}</td>
-                                      <td className="px-2 text-center font-mono tabular-nums text-slate-800">{formatPriceWon(itemInspectPrice(batch, item))}</td>
+                                      <td className="px-2 truncate bg-transparent" title={item.deptHead || ''}>{item.deptHead || '-'}</td>
+                                      <td className="px-2 truncate bg-transparent" title={item.deptName || ''}>{item.deptName || <span className="text-slate-300">-</span>}</td>
+                                      <td className="px-2 text-slate-800 truncate bg-transparent">{item.userName || '-'}</td>
+                                      <td className="px-2 text-slate-800 truncate bg-transparent" title={item.title || ''}>{item.title || '-'}</td>
+                                      <td className="px-1 text-center font-mono tabular-nums text-slate-900 bg-transparent">{item.quantity || 1}</td>
+                                      <td className="px-1 text-center font-mono tabular-nums text-slate-800 bg-transparent">{formatPriceWon(itemInspectPrice(batch, item))}</td>
+                                      <td className="bg-transparent" aria-hidden />
                                     </tr>
                                   ))}
                                 </tbody>

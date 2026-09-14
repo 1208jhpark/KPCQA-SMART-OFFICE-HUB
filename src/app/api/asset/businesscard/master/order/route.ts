@@ -107,7 +107,7 @@ export async function POST(req: Request) {
 /** 보관함 이관 */
 export async function PUT(req: Request) {
   try {
-    await authorizeApi(MENU_PATH, { requireEditor: true });
+    await authorizeApi(MENU_PATH);
     const body = await req.json();
     const { batchIds } = body;
 
@@ -164,7 +164,7 @@ export async function PUT(req: Request) {
 /** 지급 완료 */
 export async function PATCH(req: Request) {
   try {
-    await authorizeApi(MENU_PATH, { requireEditor: true });
+    await authorizeApi(MENU_PATH);
     const { batchId } = await req.json();
 
     if (!batchId) {

@@ -35,8 +35,10 @@ const ProductionApplyForm = dynamic(() => import('../asset/production/Production
 const ProductionApplyHistory = dynamic(() => import('../asset/production/ProductionApplyHistory').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
 const DeptOrderPanel = dynamic(() => import('../asset/production/DeptOrderPanel').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
 const DeptInspectionPanel = dynamic(() => import('../asset/production/DeptInspectionPanel').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
-const DeptArchivePanel = dynamic(() => import('../asset/production/DeptArchivePanel').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
+const DeptSettlementPanel = dynamic(() => import('../asset/production/DeptSettlementPanel').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
+const DeptSettledArchive = dynamic(() => import('../asset/production/DeptSettledArchive').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
 const MasterOrderDashboard = dynamic(() => import('../asset/production/MasterOrderDashboard').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
+const MasterSettledArchive = dynamic(() => import('../asset/production/MasterSettledArchive').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
 
 // --- [마케팅] ---
 const MarketingDashboard = dynamic(() => import('../../components/marketing/DashboardModule').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
@@ -91,8 +93,10 @@ export const ModuleRegistry: Record<string, React.ComponentType<any>> = {
 '/asset/production/apply/history': ProductionApplyHistory,
 '/asset/production/dept-master/order': DeptOrderPanel,
 '/asset/production/dept-master/inspection': DeptInspectionPanel,
-'/asset/production/dept-master/archive': DeptArchivePanel,
+'/asset/production/dept-master/settlement': DeptSettlementPanel,
+'/asset/production/dept-master/archive': DeptSettledArchive,
 '/asset/production/master/dashboard': MasterOrderDashboard,
+'/asset/production/master/archive': MasterSettledArchive,
 
   // [마케팅]
   '/marketing/dashboard': MarketingDashboard,

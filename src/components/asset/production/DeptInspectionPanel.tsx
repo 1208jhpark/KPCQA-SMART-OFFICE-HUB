@@ -101,7 +101,12 @@ function formatQuantityUnit(item: BatchItem) {
   if (item.category === 'OFFICE_SUPPLIES') return '건';
   if (item.category === 'PRINT') {
     const label = (item.options as any)?.printItemMasterInfo?.unitLabel;
-    if (label) return String(label);
+    if (label) {
+      const short = String(label)
+        .replace(/\([^)]*\)/g, '')
+        .trim();
+      return short || String(label);
+    }
   }
   return 'EA';
 }
@@ -406,8 +411,6 @@ export default function DeptInspectionPanel() {
   };
 
   const handleBatchExcel = (batch: OrderBatch) => {
-    if (!canEdit) return alert('엑셀 저장 권한(Edit)이 없습니다.');
-
     const exportItems =
       activeCategory === 'ALL'
         ? batch.items
@@ -504,9 +507,9 @@ export default function DeptInspectionPanel() {
   };
 
   const handleCancelBatch = async (batch: OrderBatch) => {
-    if (!canEdit) return alert('발주 취소 권한(Edit)이 없습니다.');
+    if (!canEdit) return alert('발주취소 권한(Edit)이 없습니다.');
     if (batch.status === PRODUCTION_STATUS.VERIFIED) {
-      return alert('수령완료된 묶음은 발주 취소할 수 없습니다. (보관함 이동 대상)');
+      return alert('수령완료된 묶음은 발주취소할 수 없습니다. (보관함 이동 대상)');
     }
     if (
       !confirm(
@@ -523,7 +526,7 @@ export default function DeptInspectionPanel() {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        alert(data.message || '발주 취소에 실패했습니다.');
+        alert(data.message || '발주취소에 실패했습니다.');
         return;
       }
       alert(data.message || '발주를 취소했습니다.');
@@ -544,7 +547,7 @@ export default function DeptInspectionPanel() {
     if (!canEdit) return alert('발주완료 권한(Edit)이 없습니다.');
     const dateVal = dispatchDateInput.trim();
     if (!dateVal) {
-      return alert('발주 완료일을 선택해주세요.');
+      return alert('발주완료일을 선택해주세요.');
     }
     setDispatchSubmitting(true);
     try {
@@ -573,9 +576,9 @@ export default function DeptInspectionPanel() {
   };
 
   const handleConfirmReceive = async (item: BatchItem) => {
-    if (!canEdit) return alert('수령완료 권한(Edit)이 없습니다.');
+    if (!canEdit) return alert('수령확정 권한(Edit)이 없습니다.');
     if (
-      !confirm(`[${item.postNumber}] 수령완료 처리할까요?`)
+      !confirm(`[${item.postNumber}] 수령확정 처리할까요?`)
     ) {
       return;
     }
@@ -587,10 +590,10 @@ export default function DeptInspectionPanel() {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        alert(data.message || '수령완료 처리에 실패했습니다.');
+        alert(data.message || '수령확정 처리에 실패했습니다.');
         return;
       }
-      alert(data.message || '수령완료 처리되었습니다.');
+      alert(data.message || '수령확정 처리되었습니다.');
       await fetchData();
     } catch {
       alert('서버와 통신할 수 없습니다.');
@@ -598,11 +601,11 @@ export default function DeptInspectionPanel() {
   };
 
   const handleArchiveBatch = async (batch: OrderBatch) => {
-    if (!canEdit) return alert('보관함 이동 권한(Edit)이 없습니다.');
+    if (!canEdit) return alert('정산 이동 권한(Edit)이 없습니다.');
     if (batch.status !== PRODUCTION_STATUS.VERIFIED) {
-      return alert('수령완료된 묶음만 보관함으로 이동할 수 있습니다.');
+      return alert('수령완료된 묶음만 정산으로 이동할 수 있습니다.');
     }
-    if (!confirm(`[${formatBatchNo(batch.id)}] 검수 완료 보관함으로 이동할까요?`)) return;
+    if (!confirm(`[${formatBatchNo(batch.id)}] 명세서 정산으로 이동할까요?`)) return;
     try {
       const res = await fetch('/api/asset/production/dept-master/inspection', {
         method: 'POST',
@@ -611,13 +614,13 @@ export default function DeptInspectionPanel() {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        alert(data.message || '보관함 이동에 실패했습니다.');
+        alert(data.message || '정산 이동에 실패했습니다.');
         return;
       }
-      alert(data.message || '보관함으로 이동했습니다.');
+      alert(data.message || '정산으로 이동했습니다.');
       await fetchData();
-      if (confirm('검수 완료 보관함으로 이동할까요?')) {
-        router.push('/asset/production/dept-master/archive');
+      if (confirm('명세서 정산 화면으로 이동할까요?')) {
+        router.push('/asset/production/dept-master/settlement');
       }
     } catch {
       alert('서버와 통신할 수 없습니다.');
@@ -888,7 +891,7 @@ export default function DeptInspectionPanel() {
   };
 
   return (
-    <ProductionDeptShell pageHint="부서 묶음 발주 건을 외주 발주 묶음 대장으로 관리합니다. 엑셀 저장·메일 복사 → 명세 대조 → 보관함 이동.">
+    <ProductionDeptShell pageHint="외주 발주 묶음 관리 대장입니다. 묶음 발주 및 수령검수까지 담당합니다.">
       <div className="w-full">
         <div
           className="flex flex-wrap items-end gap-1 border-b border-slate-200"
@@ -935,7 +938,7 @@ export default function DeptInspectionPanel() {
                 외주 발주 묶음 관리 대장
               </h2>
               <p className="text-[11px] text-indigo-700/70 font-bold mt-1">
-                엑셀 저장·메일 복사(그룹웨어 첨부) → 발주완료 → 수령완료 → 보관함 이동
+                엑셀 저장·메일 복사(그룹웨어 첨부) → 발주확정 → 수령검수 → 정산 이동
               </p>
             </div>
           </div>
@@ -1012,7 +1015,7 @@ export default function DeptInspectionPanel() {
               <colgroup>
                 <col style={{ width: '3%' }} />
                 <col style={{ width: '3%' }} />
-                <col style={{ width: '22%' }} />
+                <col style={{ width: '24%' }} />
                 <col style={{ width: '8%' }} />
                 <col style={{ width: '7%' }} />
                 <col style={{ width: '5%' }} />
@@ -1021,11 +1024,31 @@ export default function DeptInspectionPanel() {
                 <col style={{ width: '7%' }} />
                 <col style={{ width: '7%' }} />
                 <col style={{ width: '7%' }} />
-                <col style={{ width: '9%' }} />
+                <col style={{ width: '7%' }} />
                 <col style={{ width: '7%' }} />
               </colgroup>
-              <thead className="bg-indigo-100 text-indigo-900 text-[10px] font-black uppercase tracking-widest border-b border-indigo-200">
+              <thead className="text-indigo-900 text-[10px] font-black uppercase tracking-widest border-b border-indigo-200">
                 <tr>
+                  <th
+                    colSpan={7}
+                    className="bg-slate-100 text-slate-700 border-b border-r border-slate-300 font-semibold text-center text-xs py-1.5 normal-case tracking-normal"
+                  >
+                    신청/기본정보
+                  </th>
+                  <th
+                    colSpan={4}
+                    className="bg-blue-50 text-blue-700 border-b border-r border-blue-200 font-semibold text-center text-xs py-1.5 normal-case tracking-normal"
+                  >
+                    발주 및 수령
+                  </th>
+                  <th
+                    colSpan={2}
+                    className="bg-indigo-50 text-indigo-700 border-b border-indigo-200 font-semibold text-center text-xs py-1.5 normal-case tracking-normal"
+                  >
+                    관리 액션(Edit)
+                  </th>
+                </tr>
+                <tr className="bg-indigo-100">
                   <th className="h-12 px-2">
                     <input
                       type="checkbox"
@@ -1039,7 +1062,7 @@ export default function DeptInspectionPanel() {
                   <th className="h-12 px-2 text-center whitespace-nowrap">발주 생성일</th>
                   <th className="h-12 px-2 whitespace-nowrap">외주업체</th>
                   <th className="h-12 px-1 text-center whitespace-nowrap">총 수량</th>
-                  <th className="h-12 px-2 whitespace-nowrap">신청 상세</th>
+                  <th className="h-12 px-2 whitespace-nowrap border-r border-slate-300">신청 상세</th>
                   <th className="h-12 px-1 text-center">
                     <div className="flex flex-col items-center justify-center gap-0.5 leading-tight">
                       <span className="whitespace-nowrap">발주서</span>
@@ -1058,15 +1081,15 @@ export default function DeptInspectionPanel() {
                   </th>
                   <th className="h-12 px-1 text-center">
                     <div className="flex flex-col items-center justify-center gap-0.5 leading-tight">
-                      <span className="whitespace-nowrap">발주 완료</span>
+                      <span className="whitespace-nowrap">발주완료 (Edit)</span>
                       <span className="text-[10px] font-bold text-indigo-700/80 normal-case tracking-normal whitespace-nowrap">
                         (발주 요청일)
                       </span>
                     </div>
                   </th>
-                  <th className="h-12 px-1 text-center">
+                  <th className="h-12 px-1 text-center border-r border-blue-200">
                     <div className="flex flex-col items-center justify-center gap-0.5 leading-tight">
-                      <span className="whitespace-nowrap">수령 검수</span>
+                      <span className="whitespace-nowrap">수령검수 (Edit)</span>
                       <span className="text-[10px] font-bold text-indigo-700/80 normal-case tracking-normal whitespace-nowrap">
                         (물품 수령 상태)
                       </span>
@@ -1074,9 +1097,9 @@ export default function DeptInspectionPanel() {
                   </th>
                   <th className="h-12 px-1 text-center">
                     <div className="flex flex-col items-center justify-center gap-0.5 leading-tight">
-                      <span className="whitespace-nowrap">보관함 이동</span>
+                      <span className="whitespace-nowrap">명세대조 이동</span>
                       <span className="text-[10px] font-bold text-indigo-700/80 normal-case tracking-normal whitespace-nowrap">
-                        (수령 완료 후)
+                        (수령완료 후)
                       </span>
                     </div>
                   </th>
@@ -1147,7 +1170,7 @@ export default function DeptInspectionPanel() {
                           {batch.items?.length || 0} 건
                         </td>
                         <td
-                          className="px-4 cursor-pointer"
+                          className="px-4 cursor-pointer border-r border-slate-200"
                           onClick={() => toggleBatchExpand(batch.id)}
                         >
                           <span className="text-indigo-600 underline underline-offset-2">
@@ -1157,14 +1180,8 @@ export default function DeptInspectionPanel() {
                         <td className="px-2 text-center whitespace-nowrap">
                           <button
                             type="button"
-                            disabled={!canEdit}
-                            title={!canEdit ? '편집 권한 필요' : undefined}
                             onClick={() => handleBatchExcel(batch)}
-                            className={`px-2.5 py-1 text-[10px] font-black rounded-lg w-full whitespace-nowrap transition-colors ${
-                              canEdit
-                                ? 'bg-white hover:bg-slate-50 text-slate-700 border border-slate-200'
-                                : DISABLED_ACTION_BTN
-                            }`}
+                            className="px-2.5 py-1 text-[10px] font-black rounded-lg w-full whitespace-nowrap transition-colors bg-white hover:bg-slate-50 text-slate-700 border border-slate-200"
                           >
                             📥 발주서 다운로드
                           </button>
@@ -1187,7 +1204,7 @@ export default function DeptInspectionPanel() {
                                 : null;
                               return (
                                 <span className="inline-flex flex-col items-center gap-0.5 text-[10px] font-bold text-emerald-700 leading-tight">
-                                  <span>발주 완료</span>
+                                  <span>발주완료</span>
                                   {dateLabel ? (
                                     <span className="font-mono tabular-nums text-emerald-600/90">
                                       ({dateLabel})
@@ -1208,12 +1225,16 @@ export default function DeptInspectionPanel() {
                                     : DISABLED_ACTION_BTN
                                 }`}
                               >
-                                → 발주 완료
+                                → 발주확정
                               </button>
                             );
                           })()}
                         </td>
-                        <td className="px-2 text-center">
+                        <td
+                          className="px-2 text-center cursor-pointer border-r border-slate-200"
+                          onClick={() => toggleBatchExpand(batch.id)}
+                          title="클릭하면 신청 상세를 펼칩니다"
+                        >
                           {(() => {
                             const sum = getBatchReceiveSummary(batch);
                             if (sum.total === 0) return <span className="text-[10px] text-slate-300">-</span>;
@@ -1223,8 +1244,8 @@ export default function DeptInspectionPanel() {
                               return (
                                 <div className="flex flex-col items-center justify-center gap-0.5 leading-tight">
                                   {sum.normalReceived === sum.normalTotal ? (
-                                    <span className="text-[10px] font-bold text-emerald-600 whitespace-nowrap">
-                                      수령 완료 {sum.normalReceived}/{sum.normalTotal}
+                                    <span className="text-[10px] font-bold text-slate-900 whitespace-nowrap">
+                                      수령완료 {sum.normalReceived}/{sum.normalTotal}
                                     </span>
                                   ) : (
                                     <span className="text-[10px] font-bold text-slate-500 whitespace-nowrap">
@@ -1255,8 +1276,8 @@ export default function DeptInspectionPanel() {
                             // 3) 일반 수령건만 있는 경우
                             if (sum.normalReceived === sum.normalTotal) {
                               return (
-                                <span className="text-[10px] font-bold text-emerald-600 whitespace-nowrap">
-                                  수령 완료 {sum.normalReceived}/{sum.normalTotal}
+                                <span className="text-[10px] font-bold text-slate-900 whitespace-nowrap">
+                                  수령완료 {sum.normalReceived}/{sum.normalTotal}
                                 </span>
                               );
                             }
@@ -1279,13 +1300,13 @@ export default function DeptInspectionPanel() {
                               disabled={!canEdit}
                               title={!canEdit ? '편집 권한 필요' : undefined}
                               onClick={() => handleArchiveBatch(batch)}
-                              className={`px-2 py-1 text-[10px] font-black rounded-lg shadow-sm w-full whitespace-nowrap transition-colors ${
+                              className={`px-2 py-1 text-[10px] font-black rounded-lg w-full whitespace-nowrap transition-colors ${
                                 canEdit
                                   ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
                                   : DISABLED_ACTION_BTN
                               }`}
                             >
-                              → 검수 완료 보관함 이동
+                              →명세대조
                             </button>
                           ) : (
                             <span className="text-[10px] font-bold text-slate-300">—</span>
@@ -1304,7 +1325,7 @@ export default function DeptInspectionPanel() {
                                   : DISABLED_ACTION_BTN
                               }`}
                             >
-                              발주 취소
+                              발주취소
                             </button>
                           ) : (
                             <span className="text-[10px] font-bold text-slate-300">—</span>
@@ -1313,109 +1334,121 @@ export default function DeptInspectionPanel() {
                       </tr>
 
                       {expandedBatchIds.has(batch.id) && (
-                        <tr>
-                          <td className="w-[50px] bg-indigo-50/60 border-b border-indigo-100" />
-                          <td className="w-[48px] bg-indigo-50/60 border-b border-indigo-100" />
+                        <tr className="bg-transparent">
+                          <td className="bg-slate-100/70 border-y border-slate-200" />
+                          <td className="bg-slate-100/70 border-y border-slate-200" />
                           <td
                             colSpan={11}
-                            className="bg-indigo-50/60 py-3 pr-4 pl-0 border-b border-indigo-100 border-l-4 border-l-indigo-400"
+                            className="bg-slate-100/70 p-4 border-y border-slate-200 border-l-4 border-l-blue-500"
                           >
-                            <div className="bg-white border border-indigo-100 rounded-2xl overflow-hidden shadow-sm">
-                              <table className="w-full text-left border-collapse">
-                                <thead className="bg-slate-50 text-slate-600 text-[10px] font-black tracking-widest border-b border-slate-200">
-                                  <tr>
-                                    <th className="h-10 px-2 w-[48px] text-center">NO</th>
-                                    <th className="h-10 px-2 w-[110px] text-center whitespace-nowrap">
+                            <div className="overflow-hidden bg-transparent">
+                              <table className="w-full table-fixed text-left border-collapse bg-transparent">
+                                <colgroup>
+                                  <col className="w-[44px]" />
+                                  <col className="w-[145px]" />
+                                  <col className="w-[85px]" />
+                                  <col className="w-[130px]" />
+                                  <col className="w-[65px]" />
+                                  <col className="w-[115px]" />
+                                  <col />
+                                  <col className="w-[100px]" />
+                                  <col className="w-[80px]" />
+                                  <col className="w-[90px]" />
+                                </colgroup>
+                                <thead>
+                                  <tr className="bg-slate-200/80 text-slate-700 font-semibold border-b border-slate-300 text-[10px] tracking-widest">
+                                    <th className="h-10 px-1 text-center whitespace-nowrap bg-transparent">NO</th>
+                                    <th className="h-10 px-2 text-center whitespace-nowrap bg-transparent">
                                       관리번호
                                     </th>
-                                    <th className="h-10 px-2 w-[96px] text-center whitespace-nowrap">
+                                    <th className="h-10 px-1 text-center whitespace-nowrap bg-transparent">
                                       신청일
                                     </th>
-                                    <th className="h-10 px-2">본부 (상위 조직)</th>
-                                    <th className="h-10 px-2">센터 (하위 조직)</th>
-                                    <th className="h-10 px-2">대상자</th>
-                                    <th className="h-10 px-2 text-center whitespace-nowrap">
-                                      분류
+                                    <th className="h-10 px-2 text-left truncate whitespace-nowrap bg-transparent">
+                                      소속 부서
                                     </th>
-                                    <th className="h-10 px-2">관리용 제목</th>
-                                    <th className="h-10 px-2 text-center w-[72px] whitespace-nowrap">
-                                      수량
+                                    <th className="h-10 px-2 text-center whitespace-nowrap bg-transparent">대상자</th>
+                                    <th className="h-10 px-1 text-center whitespace-nowrap bg-transparent">분류</th>
+                                    <th className="h-10 px-2 text-left whitespace-nowrap bg-transparent">
+                                      관리용 제목
                                     </th>
-                                    <th className="h-10 px-2 text-center w-[120px] whitespace-nowrap">
-                                      원문 확인
+                                    <th className="h-10 px-1 text-center whitespace-nowrap bg-transparent">수량</th>
+                                    <th className="h-10 px-1 text-center whitespace-nowrap bg-transparent">
+                                      원문확인
                                     </th>
-                                    <th className="h-10 px-2 text-center w-[120px] whitespace-nowrap">
-                                      수령 검수
-                                    </th>
-                                    <th className="h-10 px-2 text-center w-[96px] whitespace-nowrap">
-                                      상태
+                                    <th className="h-10 px-1 text-center whitespace-nowrap bg-transparent">
+                                      수령검수
                                     </th>
                                   </tr>
                                 </thead>
-                                <tbody className="divide-y divide-slate-100 text-[11px] font-bold text-slate-700">
+                                <tbody className="divide-y divide-slate-200/80 text-[11px] font-bold text-slate-700 bg-transparent">
                                   {batch.items?.map((item, idx) => (
                                     <tr
                                       key={item.id}
-                                      className="h-12 hover:bg-slate-50/50 transition-colors"
+                                      className="h-12 bg-transparent hover:bg-slate-200/40 transition-colors"
                                     >
-                                      <td className="px-2 text-center font-mono text-slate-500 tabular-nums">
+                                      <td className="px-1 text-center font-mono text-slate-500 tabular-nums bg-transparent">
                                         {idx + 1}
                                       </td>
-                                      <td className="px-2 text-center font-mono text-slate-900 tabular-nums truncate">
+                                      <td
+                                        className="px-2 text-center font-mono text-slate-900 tabular-nums truncate bg-transparent"
+                                        title={item.postNumber}
+                                      >
                                         {item.postNumber}
                                       </td>
-                                      <td className="px-2 text-center whitespace-nowrap tabular-nums text-slate-800">
+                                      <td className="px-1 text-center whitespace-nowrap tabular-nums text-slate-800 bg-transparent">
                                         {getKSTDateString(item.createdAt)}
                                       </td>
                                       <td
-                                        className="px-2 truncate"
-                                        title={item.deptHead || ''}
-                                      >
-                                        {item.deptHead || '-'}
-                                      </td>
-                                      <td
-                                        className="px-2 truncate"
+                                        className="px-2 truncate text-slate-700 bg-transparent"
                                         title={item.deptName || ''}
                                       >
                                         {item.deptName || (
                                           <span className="text-slate-300">-</span>
                                         )}
                                       </td>
-                                      <td className="px-2 text-slate-800 truncate">
+                                      <td
+                                        className="px-2 text-center text-slate-800 truncate bg-transparent"
+                                        title={item.userName || ''}
+                                      >
                                         {item.userName || '-'}
                                       </td>
-                                      <td className="px-2 text-center">
+                                      <td className="px-1 text-center whitespace-nowrap bg-transparent">
                                         <span
-                                          className={`px-2.5 py-1 rounded text-[10px] font-bold tracking-tight border ${getProductionCategoryBadgeClass(item.category)}`}
+                                          className={`px-2 py-0.5 rounded text-[10px] font-bold tracking-tight border whitespace-nowrap inline-block ${getProductionCategoryBadgeClass(item.category)}`}
                                         >
                                           {CATEGORY_LABEL[item.category] || item.category}
                                         </span>
                                       </td>
                                       <td
-                                        className="px-2 text-slate-800 truncate"
+                                        className="px-2 text-slate-800 truncate bg-transparent"
                                         title={item.title || ''}
                                       >
                                         {item.title || '-'}
                                       </td>
-                                      <td className="px-2 text-center">
-                                        <span className="font-mono tabular-nums">{item.quantity}</span>
+                                      <td className="px-1 text-center whitespace-nowrap bg-transparent">
+                                        <span className="font-mono tabular-nums">
+                                          {item.quantity}
+                                        </span>
                                         <span className="ml-0.5 text-[10px] font-medium text-slate-500">
                                           {formatQuantityUnit(item)}
                                         </span>
                                       </td>
-                                      <td className="px-2 text-center">
+                                      <td className="px-1 text-center whitespace-nowrap bg-transparent">
                                         <button
                                           type="button"
                                           onClick={() => setDetailItem(item)}
                                           className="px-2.5 py-1 text-[10px] font-bold rounded-lg transition-colors bg-slate-200 text-slate-600 hover:bg-slate-300 border border-slate-300"
                                         >
-                                          원문 확인
+                                          원문확인
                                         </button>
                                       </td>
-                                      <td className="px-2 text-center">
+                                      <td className="px-1 text-center whitespace-nowrap bg-transparent">
                                         {(() => {
                                           const direct = isCustomerDirectShip(item);
-                                          const dispatched = isVendorDispatched(item.options || {});
+                                          const dispatched = isVendorDispatched(
+                                            item.options || {}
+                                          );
                                           if (direct) {
                                             return (
                                               <span className="text-[10px] font-bold text-indigo-600 whitespace-nowrap">
@@ -1425,15 +1458,15 @@ export default function DeptInspectionPanel() {
                                           }
                                           if (item.status === PRODUCTION_STATUS.VERIFIED) {
                                             return (
-                                              <span className="text-[10px] font-bold text-emerald-600 whitespace-nowrap">
-                                                수령 완료
+                                              <span className="text-[10px] font-bold text-slate-900 whitespace-nowrap">
+                                                수령완료
                                               </span>
                                             );
                                           }
                                           if (!dispatched) {
                                             return (
                                               <span className="text-[10px] font-bold text-slate-400 whitespace-nowrap">
-                                                발주 완료 대기
+                                                발주완료 대기
                                               </span>
                                             );
                                           }
@@ -1445,27 +1478,14 @@ export default function DeptInspectionPanel() {
                                               onClick={() => handleConfirmReceive(item)}
                                               className={`px-2.5 py-1 text-[10px] font-black rounded-lg whitespace-nowrap transition-colors ${
                                                 canEdit
-                                                  ? 'bg-red-600 hover:bg-red-700 text-white'
+                                                  ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
                                                   : DISABLED_ACTION_BTN
                                               }`}
                                             >
-                                              수령 완료
+                                              수령확정
                                             </button>
                                           );
                                         })()}
-                                      </td>
-                                      <td className="px-2 text-center">
-                                        {isCustomerDirectShip(item) ? (
-                                          <span className="text-[10px] font-bold text-indigo-600 whitespace-nowrap">
-                                            고객사 직발송
-                                          </span>
-                                        ) : (
-                                          <span
-                                            className={`text-[10px] font-bold whitespace-nowrap ${productionStatusTextClass(item.status)}`}
-                                          >
-                                            {productionStatusLabel(item.status)}
-                                          </span>
-                                        )}
                                       </td>
                                     </tr>
                                   ))}
@@ -1566,7 +1586,7 @@ export default function DeptInspectionPanel() {
                       : DISABLED_ACTION_BTN
                   }`}
                 >
-                  ⚙️ 양식 설정
+                  ⚙️ 양식 설정(Edit)
                 </button>
                 <button
                   type="button"
@@ -1583,7 +1603,7 @@ export default function DeptInspectionPanel() {
                       : DISABLED_ACTION_BTN
                   }`}
                 >
-                  ⚙️ 업체 관리
+                  ⚙️ 업체 관리(Edit)
                 </button>
               </div>
             </div>
@@ -1655,7 +1675,7 @@ export default function DeptInspectionPanel() {
                     canEdit ? 'bg-slate-700 text-white hover:bg-slate-600' : DISABLED_ACTION_BTN
                   }`}
                 >
-                  ⚙
+                  ⚙ 설정(Edit)
                 </button>
               </div>
             </div>
@@ -1848,7 +1868,7 @@ export default function DeptInspectionPanel() {
                                 : DISABLED_ACTION_BTN
                             }`}
                           >
-                            ✏️ 수정
+                            ✏️ 수정(Edit)
                           </button>
                           <button
                             type="button"
@@ -1861,7 +1881,7 @@ export default function DeptInspectionPanel() {
                                 : DISABLED_ACTION_BTN
                             }`}
                           >
-                            삭제
+                            삭제(Edit)
                           </button>
                         </div>
                       </td>
@@ -1943,7 +1963,7 @@ export default function DeptInspectionPanel() {
                 }
                 className="rounded-xl bg-slate-100 px-4 py-2 text-xs font-black text-slate-600"
               >
-                기본값 불러오기
+                기본값 불러오기(Edit)
               </button>
               <div className="flex gap-2">
                 <button
@@ -1972,7 +1992,7 @@ export default function DeptInspectionPanel() {
             <div className="border-b border-slate-100 pb-3">
               <h3 className="text-base font-black text-slate-800 flex items-center gap-2">
                 <span>📅</span>
-                <span>발주 완료일을 기록합니다.</span>
+                <span>발주완료일을 기록합니다.</span>
               </h3>
               <p className="text-xs text-slate-500 mt-1 leading-relaxed">
                 실제 메일 발송일 등 발주 요청일을 입력하세요.<br />

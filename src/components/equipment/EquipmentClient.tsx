@@ -1318,7 +1318,7 @@ export default function EquipmentClient({
                   onClick={handleAddEq}
                   className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-[10px] font-black shadow-sm transition-all whitespace-nowrap"
                 >
-                  + 신규 등록
+                  + 신규 등록(Edit)
                 </button>
               )}
             </div>
@@ -1588,7 +1588,7 @@ export default function EquipmentClient({
                               : 'bg-slate-100 border-slate-200 text-slate-300 cursor-not-allowed'
                           }`}
                         >
-                          복구
+                          복구(Edit)
                         </button>
                       </td>
                       {isLv1 && (
@@ -1677,7 +1677,7 @@ export default function EquipmentClient({
             isArchivedView
               ? '폐기/반납 건은 조회만 가능합니다. 복구 후 수정하세요.'
               : canEditCurrent
-                ? '정보 수정'
+                ? '정보 수정(Edit)'
                 : '해당 소속 장비에 대한 수정 권한이 없습니다.'
           }
           className={`px-4 py-2 rounded-xl text-[11px] font-black transition-all shadow-sm border ${
@@ -1686,7 +1686,7 @@ export default function EquipmentClient({
               : 'bg-slate-700/40 text-slate-400 border-slate-600 cursor-not-allowed'
           }`}
         >
-          ✏️ 정보 수정
+          ✏️ 정보 수정(Edit)
         </button>
         <button
           type="button"
@@ -1983,7 +1983,7 @@ export default function EquipmentClient({
                             {/* 폐기/보관 조회 전용 — 이력 등록 숨김 */}
                             {canMutateDetail && !isEditingDetail && !selectedEq?.id?.startsWith('NEW-') && (
                               <button type="button" onClick={openAddHistoryModal} className="px-5 py-2.5 bg-slate-900 text-white rounded-xl text-[10px] font-black hover:bg-slate-800 transition-all shadow-md active:scale-95">
-                                + 신규 이력 추가
+                                + 신규 이력 추가(Edit)
                               </button>
                             )}
                           </div>
@@ -2043,7 +2043,7 @@ export default function EquipmentClient({
                                         title={
                                           canEditCurrent
                                             ? canMutateDetail
-                                              ? '상세/수정'
+                                              ? '상세/수정(Edit)'
                                               : '상세 조회'
                                             : '해당 소속 장비에 대한 편집 권한이 없습니다.'
                                         }
@@ -2053,7 +2053,7 @@ export default function EquipmentClient({
                                             : 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'
                                         }`}
                                       >
-                                        {canMutateDetail ? '상세/수정' : '상세'}
+                                        {canMutateDetail ? '상세/수정(Edit)' : '상세'}
                                       </button>
                                     </td>
                                   </tr>
@@ -2094,7 +2094,7 @@ export default function EquipmentClient({
                         <div className="flex gap-2">
                           {canMutateDetail && !isEditingDetail && !selectedEq?.id?.startsWith('NEW-') && (
                             <button type="button" onClick={openAddMaintenanceModal} className="px-5 py-2.5 bg-slate-900 text-white rounded-xl text-[10px] font-black hover:bg-slate-800 transition-all shadow-md active:scale-95">
-                              + 신규 이력 추가
+                              + 신규 이력 추가(Edit)
                             </button>
                           )}
                         </div>
@@ -2141,7 +2141,7 @@ export default function EquipmentClient({
                                     title={
                                       canEditCurrent
                                         ? canMutateDetail
-                                          ? '상세/수정'
+                                          ? '상세/수정(Edit)'
                                           : '상세 조회'
                                         : '해당 소속 장비에 대한 편집 권한이 없습니다.'
                                     }
@@ -2151,7 +2151,7 @@ export default function EquipmentClient({
                                         : 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'
                                     }`}
                                   >
-                                    {canMutateDetail ? '상세/수정' : '상세'}
+                                    {canMutateDetail ? '상세/수정(Edit)' : '상세'}
                                   </button>
                                 </td>
                               </tr>
@@ -2377,8 +2377,8 @@ export default function EquipmentClient({
                 {canMutateDetail && (
                   !isEditingMaintenance ? (
                     <>
-                      <button type="button" onClick={() => setIsEditingMaintenance(true)} className="px-3 py-1.5 bg-white/20 hover:bg-white/30 rounded-lg text-[10px] font-black transition-colors shadow-sm">✏️ 수정</button>
-                      <button type="button" onClick={() => handleDeleteMaintenance(selectedMaintenanceDetail.id)} className="px-3 py-1.5 bg-red-500/90 hover:bg-red-500 rounded-lg text-[10px] font-black transition-colors shadow-sm">🗑️ 삭제</button>
+                      <button type="button" onClick={() => setIsEditingMaintenance(true)} className="px-3 py-1.5 bg-white/20 hover:bg-white/30 rounded-lg text-[10px] font-black transition-colors shadow-sm">✏️ 수정(Edit)</button>
+                      <button type="button" onClick={() => handleDeleteMaintenance(selectedMaintenanceDetail.id)} className="px-3 py-1.5 bg-red-500/90 hover:bg-red-500 rounded-lg text-[10px] font-black transition-colors shadow-sm">🗑️ 삭제(Edit)</button>
                     </>
                   ) : (
                     <>
@@ -2503,8 +2503,8 @@ export default function EquipmentClient({
                 {canMutateDetail && (
                   !isEditingHistory ? (
                     <>
-                      <button type="button" onClick={() => setIsEditingHistory(true)} className="px-3 py-1.5 bg-white/20 hover:bg-white/30 rounded-lg text-[10px] font-black transition-colors shadow-sm">✏️ 수정</button>
-                      <button type="button" onClick={() => handleDeleteHistory(selectedHistoryDetail.id)} className="px-3 py-1.5 bg-red-500/90 hover:bg-red-500 rounded-lg text-[10px] font-black transition-colors shadow-sm">🗑️ 삭제</button>
+                      <button type="button" onClick={() => setIsEditingHistory(true)} className="px-3 py-1.5 bg-white/20 hover:bg-white/30 rounded-lg text-[10px] font-black transition-colors shadow-sm">✏️ 수정(Edit)</button>
+                      <button type="button" onClick={() => handleDeleteHistory(selectedHistoryDetail.id)} className="px-3 py-1.5 bg-red-500/90 hover:bg-red-500 rounded-lg text-[10px] font-black transition-colors shadow-sm">🗑️ 삭제(Edit)</button>
                     </>
                   ) : (
                     <>

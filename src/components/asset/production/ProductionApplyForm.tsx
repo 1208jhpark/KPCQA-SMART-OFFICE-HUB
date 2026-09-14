@@ -7,6 +7,13 @@ import { getKSTDateString } from '@/utils/dateUtils';
 import LoadingState from '@/components/common/LoadingState';
 import { getProductionCategoryFolderTabClasses } from '@/lib/production-category-theme';
 import { resolveInterfaceEditState } from '@/lib/permission-utils';
+import { isSeedPlateCode } from '@/lib/production-seed-plates';
+import { isSeedCertId } from '@/lib/production-seed-certs';
+import {
+  isSeedJebonSizeCode,
+  SEED_JEBON_SIZE_DEFAULTS,
+} from '@/lib/production-seed-jebon-sizes';
+import { isSeedPrintItemId } from '@/lib/production-seed-print-items';
 
 const MENU_PATH = '/asset/production/apply/request';
 
@@ -58,27 +65,12 @@ type JebonCertMasterRow = {
   jebonInnerColor: string;
 };
 
-const JEBON_SIZE_FALLBACK: JebonSizeMasterRow[] = [
-  { code: 'A4', label: 'A4', size: '210 × 297mm', description: '표준 기본' },
-  { code: 'B5', label: 'B5', size: '182 × 257mm', description: '' },
-  { code: 'A5', label: 'A5', size: '148 × 210mm', description: '' },
-  { code: 'B6', label: 'B6', size: '128 × 182mm', description: '' },
-  { code: '16절', label: '16절', size: '197 × 272mm', description: '' },
-  { code: '비규격', label: '비규격', size: '', description: '직접 입력' },
-];
-
-/** 시드 판형 — 삭제(LV_1) 라벨·권한 구분용 */
-const SEED_JEBON_SIZE_IDS = [
-  'A4',
-  'B5',
-  'A5',
-  'B6',
-  '16절',
-  '비규격',
-] as const;
-
-const isSeedJebonSizeCode = (code: string) =>
-  SEED_JEBON_SIZE_IDS.includes(code as (typeof SEED_JEBON_SIZE_IDS)[number]);
+const JEBON_SIZE_FALLBACK: JebonSizeMasterRow[] = SEED_JEBON_SIZE_DEFAULTS.map((r) => ({
+  code: r.code,
+  label: r.label,
+  size: r.size,
+  description: r.description,
+}));
 
 /** 종류·규격·설명·버튼 열 너비 고정 (행마다 flex 밀림 방지) */
 const JEBON_SIZE_MASTER_GRID =
@@ -101,23 +93,6 @@ const buildProductionShippingAddress = (data: {
 
 const DISABLED_ACTION_BTN =
   'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed opacity-70 shadow-none';
-
-/** 시드 인증 — 버튼 라벨·삭제 권한(LV_1) 구분용 */
-const SEED_CERT_IDS = [
-  'GSEED',
-  'BF',
-  'CONDENDSATION',
-  'EDUCATIONAL',
-  'ENERGY',
-  'OLD_ZEB',
-  'INTEGRATED_ZEB',
-  'ISO',
-  'NORMAL',
-  'GSEED_JEBON',
-  'ENERGY_JEBON',
-  'OLD_ZEB_JEBON',
-  'INTEGRATED_ZEB_JEBON',
-] as const;
 
 type CustomRequestRow = { id: number; value: string };
 
@@ -325,6 +300,8 @@ export default function ProductionApplyForm() {
   const [isSessionLoading, setIsSessionLoading] = useState(true);
 // 🚀 [추가] 중복 제출 방지용 상태 락(Lock)
 const [isSubmitting, setIsSubmitting] = useState(false);
+/** 일반제본(NORMAL) 신청 건별 표지 일자 사용 여부 (마스터와 독립) */
+const [jebonCoverDateLocalOn, setJebonCoverDateLocalOn] = useState(true);
 
 
 // 📝 실무 신청서 폼 상태 대장
@@ -449,6 +426,7 @@ const [signData, setSignData] = useState({
           ? c.linkedPlateCodes.map(String)
           : [],
       }));
+    // API(createdAt) 등록 순서 유지 — 하드코딩 정렬 없음
     const jebonRows = list
       .filter((c) => c.type === 'JEBON')
       .map((c) => ({
@@ -462,13 +440,8 @@ const [signData, setSignData] = useState({
         jebonCoverColor: c.jebonCoverColor || '컬러',
         jebonCoverPageCount: c.jebonCoverPageCount || '1',
         jebonInnerColor: c.jebonInnerColor || '흑백',
-      }))
-      .sort((a, b) => {
-        // 일반제본(NORMAL)을 맨 위 고정
-        if (a.id === 'NORMAL') return -1;
-        if (b.id === 'NORMAL') return 1;
-        return 0;
-      });
+      }));
+    // API(createdAt) 등록 순서 유지 — 하드코딩 정렬 없음
     const grades: Record<string, string[]> = {};
     list.forEach((c) => {
       grades[c.certId] = Array.isArray(c.grades) ? c.grades.map(String) : [];
@@ -545,9 +518,18 @@ const [signData, setSignData] = useState({
       fetch(`/api/asset/businesscard/master/addresses?t=${ts}`, { cache: 'no-store' }),
       fetch(`/api/asset/production/master/print-items?t=${ts}`, { cache: 'no-store' }),
     ]);
+    let loadedVendors: {
+      id: string;
+      label: string;
+      managerName?: string;
+      contact?: string;
+      email?: string;
+      items?: string;
+      priorityCategory?: string;
+    }[] = [];
     if (vendorsRes.ok) {
       const vendors = await vendorsRes.json();
-      const rows = Array.isArray(vendors)
+      loadedVendors = Array.isArray(vendors)
         ? vendors.map((v: any) => ({
             id: v.id,
             label: v.label,
@@ -558,10 +540,10 @@ const [signData, setSignData] = useState({
             priorityCategory: v.priorityCategory || '',
           }))
         : [];
-      setVendorMasterList(rows);
+      setVendorMasterList(loadedVendors);
       setSignData((prev) => ({
         ...prev,
-        vendor: resolveDefaultVendorId(activeTab, rows, prev.vendor),
+        vendor: resolveDefaultVendorId(activeTab, loadedVendors, prev.vendor),
       }));
     }
     if (platesRes.ok) {
@@ -622,6 +604,15 @@ const [signData, setSignData] = useState({
         if (!next) {
           return { ...prev, printItemId: '', printItemType: '', printCustomName: '' };
         }
+        const supplier = String(next.supplier || '').trim();
+        const matchedVendor =
+          supplier &&
+          (loadedVendors.find((v) => v.label.trim() === supplier) ||
+            loadedVendors.find(
+              (v) => v.label.includes(supplier) || supplier.includes(v.label.trim())
+            ));
+        const shouldApplyVendor =
+          Boolean(matchedVendor) && (activeTab === 'PRINT' || !stillValid || !prev.vendor);
         return {
           ...prev,
           printItemId: next.id,
@@ -631,6 +622,7 @@ const [signData, setSignData] = useState({
             ? prev.printUnitValue || next.unitValue || 'VAL_1'
             : next.unitValue || 'VAL_1',
           ...(stillValid ? {} : { quantity: Math.max(1, Number(next.orderQty) || 1) }),
+          ...(shouldApplyVendor && matchedVendor ? { vendor: matchedVendor.id } : {}),
         };
       });
     }
@@ -647,7 +639,19 @@ const [signData, setSignData] = useState({
     if (activeTab === 'PRINT') {
       if (tabChanged) {
         setDeliveryMode('HQ_RECEIVE');
-        setSignData((prev) => ({ ...prev, vendor: '' }));
+        setSignData((prev) => {
+          const item =
+            printItemMasterList.find((p) => p.id === prev.printItemId) ||
+            printItemMasterList[0];
+          const supplier = String(item?.supplier || '').trim();
+          const matched =
+            supplier &&
+            (vendorMasterList.find((v) => v.label.trim() === supplier) ||
+              vendorMasterList.find(
+                (v) => v.label.includes(supplier) || supplier.includes(v.label.trim())
+              ));
+          return { ...prev, vendor: matched ? matched.id : '' };
+        });
       }
       return;
     }
@@ -663,7 +667,7 @@ const [signData, setSignData] = useState({
         setSignData((prev) => ({ ...prev, vendor: priority.id }));
       }
     }
-  }, [activeTab, mastersReady, vendorMasterList]);
+  }, [activeTab, mastersReady, vendorMasterList, printItemMasterList]);
 
   useEffect(() => {
     Promise.all([
@@ -732,6 +736,8 @@ const [signData, setSignData] = useState({
     jebonCoverColor?: string;
     jebonCoverPageCount?: string;
     jebonInnerColor?: string;
+    /** 등급·입력방식·품목연결만 메뉴 접근자로 저장 (Edit 불필요) */
+    viewerWritable?: boolean;
   }) => {
     const res = await fetch('/api/asset/production/master/certs', {
       method: 'POST',
@@ -776,7 +782,11 @@ useEffect(() => {
 // 🚀 달력 팝업(type="date") 방식에 맞춘 제본 완료일자 포맷팅
 const formattedCompDate = useMemo(() => {
   const targetCert = jebonCertMasterList.find((c) => c.id === signData.certType);
-  if (targetCert?.useJebonCoverDate === false) return '';
+  const coverDateOn =
+    signData.certType === 'NORMAL'
+      ? jebonCoverDateLocalOn
+      : targetCert?.useJebonCoverDate !== false;
+  if (!coverDateOn) return '';
   // 값이 없으면 빈 칸 반환
   if (!signData.compDateRaw) return '';
 
@@ -799,7 +809,12 @@ const formattedCompDate = useMemo(() => {
     return `${y}. ${m}. ${d}${hasTrailingDot ? '.' : ''}`;
   }
   return `${y}. ${m}. ${d}.`;
-}, [signData.compDateRaw, signData.certType, jebonCertMasterList]);
+}, [
+  signData.compDateRaw,
+  signData.certType,
+  jebonCertMasterList,
+  jebonCoverDateLocalOn,
+]);
 
 // 🚀 명판 날인 유효기간 실시간 출력 포맷팅 (무한 루프 버그 완벽 해결)
 const formattedValidPeriod = useMemo(() => {
@@ -894,7 +909,18 @@ const formattedValidPeriod = useMemo(() => {
     [jebonCertMasterList, signData.certType]
   );
   const useJebonCoverField = selectedJebonCert?.useJebonCover !== false;
-  const useJebonCoverDateField = selectedJebonCert?.useJebonCoverDate !== false;
+  const useJebonCoverDateMaster = selectedJebonCert?.useJebonCoverDate !== false;
+  const isNormalJebon = signData.certType === 'NORMAL';
+  /** 일반제본: 신청서 로컬 토글 · 그 외: 마스터 설정 */
+  const useJebonCoverDateField = isNormalJebon
+    ? jebonCoverDateLocalOn
+    : useJebonCoverDateMaster;
+
+  // 일반제본 전환 시 마스터 기본값으로 로컬 토글 초기화
+  useEffect(() => {
+    if (signData.certType !== 'NORMAL') return;
+    setJebonCoverDateLocalOn(useJebonCoverDateMaster);
+  }, [signData.certType, useJebonCoverDateMaster]);
 
   const selectedPrintItem = useMemo(
     () => printItemMasterList.find((p) => p.id === signData.printItemId),
@@ -940,11 +966,22 @@ const formattedValidPeriod = useMemo(() => {
   }) => {
     const unit = shortUnitLabel(resolveUnitLabel(item.unitValue));
     const parts = [
-      item.size?.trim(),
-      item.supplier?.trim(),
-      item.orderQty > 0 ? `${item.orderQty}${unit}` : '',
-    ].filter(Boolean);
-    return parts.length ? `(${parts.join('/')})` : '';
+      item.size?.trim() || '-',
+      item.supplier?.trim() || '-',
+      item.orderQty > 0 ? `${item.orderQty}${unit}` : '-',
+    ];
+    return `(${parts.join('/')})`;
+  };
+
+  const resolveVendorIdBySupplier = (supplier: string) => {
+    const s = String(supplier || '').trim();
+    if (!s) return '';
+    const exact = vendorMasterList.find((v) => v.label.trim() === s);
+    if (exact) return exact.id;
+    const fuzzy = vendorMasterList.find(
+      (v) => v.label.includes(s) || s.includes(v.label.trim())
+    );
+    return fuzzy?.id || '';
   };
 
   useEffect(() => {
@@ -967,6 +1004,7 @@ const formattedValidPeriod = useMemo(() => {
     unitValue?: string;
     isCustom: boolean;
   }) => {
+    const vendorId = resolveVendorIdBySupplier(item.supplier);
     setSignData((prev) => ({
       ...prev,
       printItemId: item.id,
@@ -974,6 +1012,7 @@ const formattedValidPeriod = useMemo(() => {
       printCustomName: item.isCustom ? '' : item.name,
       quantity: Math.max(1, Number(item.orderQty) || 1),
       printUnitValue: item.unitValue || 'VAL_1',
+      ...(vendorId ? { vendor: vendorId } : {}),
     }));
     setIsPrintItemMenuOpen(false);
   };
@@ -1144,6 +1183,136 @@ const formattedValidPeriod = useMemo(() => {
     }
   };
 
+  const handleRestoreSeedPlates = async () => {
+    if (!canEdit) return alertNoEditPermission();
+    if (
+      !confirm(
+        '시드 기본 품목 중 없거나 삭제된 항목만 다시 채웁니다.\n이미 있는 품목의 단가·명칭·규격은 변경되지 않습니다. 계속할까요?'
+      )
+    ) {
+      return;
+    }
+    try {
+      const res = await fetch('/api/asset/production/master/plates', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'restore-seeds' }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        return alert(data.message || '시드 항목 복구 실패');
+      }
+      alert(data.message || '시드 항목 복구 완료');
+      await reloadMasters();
+    } catch {
+      alert('시드 항목 복구 중 오류가 발생했습니다.');
+    }
+  };
+
+  const handleRestoreSeedCerts = async () => {
+    if (!canEdit) return alertNoEditPermission();
+    const type = popSubTab === 'SIGN_SUB' ? 'SIGN' : 'JEBON';
+    const typeLabel = type === 'SIGN' ? '현판 인증' : '제본 인증';
+    if (
+      !confirm(
+        `시드 기본 ${typeLabel} 중 없거나 삭제된 항목만 다시 채웁니다.\n복구되는 인증의 등급(GRADE)은 시드 기본값으로 맞춥니다.\n명칭·서식·판형 연동은 변경되지 않습니다. 계속할까요?`
+      )
+    ) {
+      return;
+    }
+    try {
+      const res = await fetch('/api/asset/production/master/certs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'restore-seeds', type }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        return alert(data.message || '시드 인증 복구 실패');
+      }
+      alert(data.message || '시드 인증 복구 완료');
+      await reloadMasters();
+    } catch {
+      alert('시드 인증 복구 중 오류가 발생했습니다.');
+    }
+  };
+
+  const handleRestoreSeedJebonSizes = async () => {
+    if (!canEdit) return alertNoEditPermission();
+    if (
+      !confirm(
+        '시드 기본 제본 판형 중 없거나 삭제된 항목만 다시 채웁니다.\n이미 있는 판형의 종류·규격·설명은 변경되지 않습니다. 계속할까요?'
+      )
+    ) {
+      return;
+    }
+    try {
+      const res = await fetch('/api/asset/production/master/jebon-sizes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'restore-seeds' }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        return alert(data.message || '시드 판형 복구 실패');
+      }
+      alert(data.message || '시드 판형 복구 완료');
+      await reloadMasters();
+    } catch {
+      alert('시드 판형 복구 중 오류가 발생했습니다.');
+    }
+  };
+
+  const handleRestoreSeedPrintItems = async () => {
+    if (!canEdit) return alertNoEditPermission();
+    if (
+      !confirm(
+        '시드 기본 주문물품 중 없거나 삭제된 항목만 다시 채웁니다.\n이미 있는 품목의 명칭·규격·공급처·수량 등은 변경되지 않습니다. 계속할까요?'
+      )
+    ) {
+      return;
+    }
+    try {
+      const res = await fetch('/api/asset/production/master/print-items', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'restore-seeds' }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        return alert(data.message || '시드 품목 복구 실패');
+      }
+      alert(data.message || '시드 품목 복구 완료');
+      await reloadMasters();
+    } catch {
+      alert('시드 품목 복구 중 오류가 발생했습니다.');
+    }
+  };
+
+  const handleDeletePrintItem = async (item: { id: string; name: string }) => {
+    if (isSeedPrintItemId(item.id)) {
+      if (!canDeleteLv1Cert) return alertNoLv1Permission();
+    } else if (!canEdit) {
+      return alertNoEditPermission();
+    }
+    if (printItemMasterList.length <= 1)
+      return alert('최소 한 개 이상의 물품이 필요합니다.');
+    if (!confirm(`「${item.name}」을(를) 삭제할까요?`)) return;
+    try {
+      const res = await fetch(
+        `/api/asset/production/master/print-items?id=${encodeURIComponent(item.id)}`,
+        { method: 'DELETE' }
+      );
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        return alert(err.message || '삭제 실패');
+      }
+      await reloadMasters();
+    } catch {
+      alert('삭제 중 오류가 발생했습니다.');
+    }
+  };
+
   const handleSavePlateRow = async (p: {
     code: string;
     label: string;
@@ -1169,7 +1338,11 @@ const formattedValidPeriod = useMemo(() => {
   };
 
   const handleIdDeletePlate = async (code: string) => {
-    if (!canEdit) return alertNoEditPermission();
+    if (isSeedPlateCode(code)) {
+      if (!canDeleteLv1Cert) return alertNoLv1Permission();
+    } else if (!canEdit) {
+      return alertNoEditPermission();
+    }
     if (plateMasterList.length <= 1) return alert('최소 한 개 이상의 판 종류가 존재해야 합니다.');
     if (!confirm('해당 판 종류와 연동된 단가/규격 설정을 마스터 삭제하시겠습니까?')) return;
     try {
@@ -1259,7 +1432,6 @@ const formattedValidPeriod = useMemo(() => {
   };
 
   const handleAddCertMaster = async () => {
-    if (!canEdit) return alertNoEditPermission();
     if (!newCertName.trim()) return alert('인증 명칭을 기재해 주세요.');
     const type = popSubTab === 'SIGN_SUB' ? 'SIGN' : 'JEBON';
     const certId = `CERT_${Date.now()}`;
@@ -1289,9 +1461,6 @@ const formattedValidPeriod = useMemo(() => {
     }
   };
 
-  const isSeedCertId = (id: string) =>
-    SEED_CERT_IDS.includes(id as (typeof SEED_CERT_IDS)[number]);
-
   const handleIdDeleteCert = async (id: string) => {
     if (isSeedCertId(id)) {
       if (!canDeleteLv1Cert) return alertNoLv1Permission();
@@ -1316,7 +1485,6 @@ const formattedValidPeriod = useMemo(() => {
 
 // 🚀 최종 폼 제출 핸들러 (중복 제출 방지 및 4개 탭 완벽 격리 버전)
 const handleSubmit = async () => {
-  if (!canEdit) return alertNoEditPermission();
   // 1. 이미 제출 중이면 함수를 바로 종료 (중복 클릭 연타 방지 락!)
   if (isSubmitting) return;
 
@@ -1546,11 +1714,6 @@ return (
 
       {/* 분류 서류철 탭(좌) + MASTER CRITERIA 서류철(우) + 발급 신청서 */}
       <div className="w-full mt-2">
-        {!canEdit && ['SIGN', 'JEBON', 'PRINT'].includes(activeTab) && (
-          <p className="text-[10px] font-black text-amber-700 bg-amber-50 border border-amber-200 px-2.5 py-1 rounded-md mb-1.5 w-fit">
-            마스터 수정·삭제·신청 제출은 편집 권한 필요
-          </p>
-        )}
         <div
           className="flex flex-wrap items-end justify-between gap-x-2 gap-y-1 border-b border-slate-200"
           role="tablist"
@@ -1795,7 +1958,7 @@ return (
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-8 items-start border-t border-slate-100 pt-4">
                     <div>
                       <label className="block text-[10px] font-black text-slate-500 tracking-widest uppercase mb-2">
-                        4. 프로젝트명/건물명/경영시스템 조직명{' '}
+                        4. 프로젝트명/건물명/경영시스템인증 조직명{' '}
                         <span className="text-red-500">*</span>
                       </label>
                       {signData.certType === 'ISO' ? (
@@ -2174,17 +2337,51 @@ return (
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-8 items-start border-t border-slate-100 pt-4">
                   <div>
-                    <label className="block text-[10px] font-black text-slate-500 tracking-widest uppercase mb-2">
-                      {jebonFormSteps.coverDate}. 표지 일자(인증 완료일 등){' '}
-                      <span className="text-slate-400 font-medium">(선택)</span>
-                    </label>
+                    <div className="flex items-center justify-between gap-2 mb-2">
+                      <label className="block text-[10px] font-black text-slate-500 tracking-widest uppercase">
+                        {jebonFormSteps.coverDate}. 표지 일자(인증 완료일 등){' '}
+                        <span className="text-slate-400 font-medium">(선택)</span>
+                      </label>
+                      {isNormalJebon && (
+                        <button
+                          type="button"
+                          role="switch"
+                          aria-checked={jebonCoverDateLocalOn}
+                          title={
+                            jebonCoverDateLocalOn
+                              ? '표지 일자 사용 중 (클릭 시 미사용)'
+                              : '표지 일자 미사용 (클릭 시 사용)'
+                          }
+                          onClick={() => {
+                            setJebonCoverDateLocalOn((on) => {
+                              if (on) {
+                                setSignData((prev) => ({ ...prev, compDateRaw: '' }));
+                              }
+                              return !on;
+                            });
+                          }}
+                          className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors ${
+                            jebonCoverDateLocalOn ? 'bg-blue-600' : 'bg-slate-300'
+                          }`}
+                        >
+                          <span
+                            className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform ${
+                              jebonCoverDateLocalOn ? 'translate-x-4' : 'translate-x-1'
+                            }`}
+                          />
+                          <span className="sr-only">표지 일자 사용</span>
+                        </button>
+                      )}
+                    </div>
                     <input
                       type="date"
                       value={signData.compDateRaw || ''}
                       disabled={!useJebonCoverDateField}
                       title={
                         !useJebonCoverDateField
-                          ? '인증별 제본 서식 설정에서 표지 일자가 비활성화되어 있습니다'
+                          ? isNormalJebon
+                            ? '표지 일자 미사용 — 오른쪽 스위치로 켤 수 있습니다'
+                            : '인증별 제본 서식 설정에서 표지 일자가 비활성화되어 있습니다'
                           : undefined
                       }
                       onChange={(e) => setSignData({ ...signData, compDateRaw: e.target.value })}
@@ -2194,6 +2391,13 @@ return (
                           : 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'
                       }`}
                     />
+                    {isNormalJebon && (
+                      <p className="mt-1 text-[9px] font-bold text-slate-400">
+                        {jebonCoverDateLocalOn
+                          ? '이번 신청에 표지 일자를 사용합니다'
+                          : '이번 신청에서 표지 일자를 제외합니다 (마스터 설정은 변경되지 않음)'}
+                      </p>
+                    )}
                   </div>
                   <div>
                     <label className="block text-[10px] font-black text-slate-500 tracking-widest uppercase mb-2">
@@ -2721,9 +2925,11 @@ return (
                     signCertMasterList.find((c) => c.id === signData.certType)?.label ||
                     signData.certType ||
                     '인증종류';
+                  const plateTarget = plateMasterList.find((p) => p.code === signData.plateType);
+                  const platePart = plateTarget?.label || '현판';
                   setSignData({
                     ...signData,
-                    signFormTitle: `${projectPart}_현판_${certLabel}`,
+                    signFormTitle: `${projectPart}_${platePart}_${certLabel}`,
                   });
                 } else if (activeTab === 'PRINT') {
                   const productPart =
@@ -2749,20 +2955,13 @@ return (
                     signData.certPhase && signData.certPhase !== '해당없음'
                       ? signData.certPhase
                       : null;
-                  const jebonFormTitle =
-                    phasePart
-                      ? `${projectPart}_${phasePart}_${certLabel}_${
-                          formattedCompDate ||
-                          signData.compDateRaw?.replace(/-/g, '.') ||
-                          '일자미정'
-                        }`
-                      : `${projectPart}_${certLabel}${
-                          formattedCompDate
-                            ? `_${formattedCompDate}`
-                            : signData.compDateRaw
-                              ? `_${signData.compDateRaw.replace(/-/g, '.')}`
-                              : ''
-                        }`;
+                  // 7. 표지 일자가 비활성화(!useJebonCoverDateField)된 경우에는 일자 표기를 완전히 제외
+                  const datePart = useJebonCoverDateField
+                    ? formattedCompDate || signData.compDateRaw?.replace(/-/g, '.') || '일자미정'
+                    : null;
+                  const jebonFormTitle = [projectPart, phasePart, certLabel, datePart]
+                    .filter(Boolean)
+                    .join('_');
                   setSignData({
                     ...signData,
                     jebonFormTitle,
@@ -2916,17 +3115,13 @@ return (
                   onClick={handleSubmit}
                   disabled={
                     isSubmitting ||
-                    !canEdit ||
                     (activeTab === 'PRINT' && !signData.vendor)
                   }
-                  title={!canEdit ? '편집 권한 필요' : undefined}
-                  className={`w-full h-11 font-black text-xs rounded-xl transition-all shadow-md
+                  className={`w-full h-11 font-black text-xs rounded-xl transition-all shadow-md text-white
                     ${
-                      !canEdit
-                        ? DISABLED_ACTION_BTN
-                        : isSubmitting
-                          ? 'bg-slate-400 cursor-wait active:scale-100 text-white'
-                          : 'bg-blue-600 hover:bg-blue-700 active:scale-[0.99] text-white'
+                      isSubmitting
+                        ? 'bg-slate-400 cursor-wait active:scale-100'
+                        : 'bg-blue-600 hover:bg-blue-700 active:scale-[0.99]'
                     }`}
                 >
                   {isSubmitting ? (
@@ -3208,7 +3403,7 @@ return (
                                     : DISABLED_ACTION_BTN
                                 }`}
                               >
-                                수정
+                                수정(Edit)
                               </button>
                               <button
                                 type="button"
@@ -3244,7 +3439,7 @@ return (
                                     : DISABLED_ACTION_BTN
                                 }`}
                               >
-                                삭제
+                                삭제(Edit)
                               </button>
                             </div>
                           </div>
@@ -3297,17 +3492,40 @@ return (
             <div className="p-8 overflow-y-auto flex-1 bg-slate-50/50 space-y-6">
               <div className="bg-white rounded-2xl p-6 border border-slate-200 shadow-sm space-y-4">
                 <div className="border-b border-slate-100 pb-3">
-                  <h4 className="text-sm font-black text-slate-800">📜 주문 물품 마스터</h4>
-                  <p className="text-xs text-slate-400 mt-1">
-                    제품명·규격·단위를 신청서에 반영하고, 최근 공급처·제작 기본 수량은 참고용으로 관리합니다.
-                    단위는 /admin/settings 의 단위 그룹(master-data)과 연동됩니다.
-                  </p>
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <h4 className="text-sm font-black text-slate-800">📜 주문 물품 마스터</h4>
+                      <p className="text-xs text-slate-500 mt-1">
+                        제품명·규격·단위를 신청서에 반영하고, 최근 공급처·제작 기본 수량은 참고용으로 관리합니다.
+                      </p>
+                      <p className="text-[10px] text-slate-400 mt-1.5 leading-relaxed">
+                        ※ 신규 등록은 메뉴 접근자 모두 가능, 수정·삭제는 Edit, 시드 품목 삭제는 LV_1입니다. 「시드 항목 복구(Edit)」는 누락·삭제분만 다시 채우며 기존 값은 유지합니다.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={!canEdit}
+                      title={
+                        !canEdit
+                          ? '편집 권한 필요'
+                          : '시드 기본 품목 중 없거나 비활성인 항목만 추가/재활성'
+                      }
+                      onClick={handleRestoreSeedPrintItems}
+                      className={`shrink-0 text-[10px] font-black px-3 py-2 rounded-xl border transition-all active:scale-95 ${
+                        canEdit
+                          ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
+                          : DISABLED_ACTION_BTN
+                      }`}
+                    >
+                      시드 항목 복구(Edit)
+                    </button>
+                  </div>
                 </div>
 
                 <div className="space-y-3 bg-slate-50 p-4 rounded-xl border border-slate-200">
-                  <div className="grid grid-cols-1 md:grid-cols-5 gap-2">
-                    <div className="md:col-span-2">
-                      <label className="block text-[9px] font-bold text-slate-400 mb-1">제품명 *</label>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                    <div>
+                      <label className="block text-[9px] font-black text-slate-800 mb-1">제품명 *</label>
                       <input
                         type="text"
                         placeholder="예: 인증서 용지"
@@ -3319,7 +3537,7 @@ return (
                       />
                     </div>
                     <div>
-                      <label className="block text-[9px] font-bold text-slate-400 mb-1">규격</label>
+                      <label className="block text-[9px] font-black text-slate-800 mb-1">규격</label>
                       <input
                         type="text"
                         placeholder="예: 230*70*320"
@@ -3330,20 +3548,10 @@ return (
                         className="w-full bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-xs outline-none focus:border-purple-500"
                       />
                     </div>
-                    <div>
-                      <label className="block text-[9px] font-bold text-slate-400 mb-1">최근 공급처</label>
-                      <input
-                        type="text"
-                        placeholder="예: 아트로릭"
-                        value={newPrintItemData.supplier}
-                        onChange={(e) =>
-                          setNewPrintItemData({ ...newPrintItemData, supplier: e.target.value })
-                        }
-                        className="w-full bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-xs outline-none focus:border-purple-500"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-[9px] font-bold text-slate-400 mb-1">제작 기본 수량</label>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-12 gap-2 items-end">
+                    <div className="md:col-span-2">
+                      <label className="block text-[9px] font-black text-slate-800 mb-1">제작 기본 수량</label>
                       <input
                         type="number"
                         min={1}
@@ -3357,8 +3565,8 @@ return (
                         className="w-full bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-xs outline-none focus:border-purple-500"
                       />
                     </div>
-                    <div>
-                      <label className="block text-[9px] font-bold text-slate-400 mb-1">단위 *</label>
+                    <div className="md:col-span-2">
+                      <label className="block text-[9px] font-black text-slate-800 mb-1">단위 *</label>
                       <select
                         value={newPrintItemData.unitValue}
                         onChange={(e) =>
@@ -3379,8 +3587,25 @@ return (
                         ))}
                       </select>
                     </div>
-                    <div className="flex items-end md:col-span-2">
-                      <label className="flex items-center gap-2 cursor-pointer select-none pb-1.5">
+                    <div className="md:col-span-3">
+                      <label className="block text-[9px] font-black text-slate-800 mb-1">최근 공급처</label>
+                      <select
+                        value={newPrintItemData.supplier}
+                        onChange={(e) =>
+                          setNewPrintItemData({ ...newPrintItemData, supplier: e.target.value })
+                        }
+                        className="w-full bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-xs outline-none focus:border-purple-500"
+                      >
+                        <option value="">(미지정)</option>
+                        {vendorMasterList.map((v) => (
+                          <option key={v.id} value={v.label}>
+                            {v.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="md:col-span-2 flex items-end pb-1.5">
+                      <label className="flex items-center gap-2 cursor-pointer select-none">
                         <input
                           type="checkbox"
                           checked={newPrintItemData.isCustom}
@@ -3392,36 +3617,36 @@ return (
                           }
                           className="w-3.5 h-3.5 rounded border-slate-300 text-purple-600"
                         />
-                        <span className="text-[10px] font-bold text-slate-500">직접입력(기타)</span>
+                        <span className="text-[10px] font-black text-slate-800">직접입력(기타)</span>
                       </label>
                     </div>
-                  </div>
-                  <div className="flex justify-end pt-2 border-t border-slate-100">
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        const name = newPrintItemData.name.trim();
-                        if (!name) return alert('제품명을 입력하세요.');
-                        try {
-                          const res = await fetch('/api/asset/production/master/print-items', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify(newPrintItemData),
-                          });
-                          if (!res.ok) {
-                            const err = await res.json().catch(() => ({}));
-                            return alert(err.message || '저장 실패');
+                    <div className="md:col-span-3 flex justify-end">
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          const name = newPrintItemData.name.trim();
+                          if (!name) return alert('제품명을 입력하세요.');
+                          try {
+                            const res = await fetch('/api/asset/production/master/print-items', {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify(newPrintItemData),
+                            });
+                            if (!res.ok) {
+                              const err = await res.json().catch(() => ({}));
+                              return alert(err.message || '저장 실패');
+                            }
+                            setNewPrintItemData(emptyPrintItemForm);
+                            await reloadMasters();
+                          } catch {
+                            alert('저장 중 오류가 발생했습니다.');
                           }
-                          setNewPrintItemData(emptyPrintItemForm);
-                          await reloadMasters();
-                        } catch {
-                          alert('저장 중 오류가 발생했습니다.');
-                        }
-                      }}
-                      className="font-black text-xs px-4 py-2.5 rounded-xl shadow-md active:scale-95 transition-all bg-purple-600 hover:bg-purple-700 text-white"
-                    >
-                      + 신규 물품 등록
-                    </button>
+                        }}
+                        className="w-full font-black text-xs px-4 py-2 rounded-xl shadow-md active:scale-95 transition-all bg-purple-600 hover:bg-purple-700 text-white"
+                      >
+                        + 신규 물품 등록
+                      </button>
+                    </div>
                   </div>
                 </div>
 
@@ -3433,9 +3658,9 @@ return (
                     >
                       {editingPrintItemId === item.id ? (
                         <div className="space-y-3 animate-fade-in">
-                          <div className="grid grid-cols-1 md:grid-cols-5 gap-2">
-                            <div className="md:col-span-2">
-                              <label className="block text-[9px] font-bold text-slate-400 mb-1">제품명 *</label>
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                            <div>
+                              <label className="block text-[9px] font-black text-slate-800 mb-1">제품명 *</label>
                               <input
                                 type="text"
                                 value={editingPrintItemData.name}
@@ -3449,7 +3674,7 @@ return (
                               />
                             </div>
                             <div>
-                              <label className="block text-[9px] font-bold text-slate-400 mb-1">규격</label>
+                              <label className="block text-[9px] font-black text-slate-800 mb-1">규격</label>
                               <input
                                 type="text"
                                 value={editingPrintItemData.size}
@@ -3462,22 +3687,10 @@ return (
                                 className="w-full bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-xs outline-none"
                               />
                             </div>
-                            <div>
-                              <label className="block text-[9px] font-bold text-slate-400 mb-1">최근 공급처</label>
-                              <input
-                                type="text"
-                                value={editingPrintItemData.supplier}
-                                onChange={(e) =>
-                                  setEditingPrintItemData({
-                                    ...editingPrintItemData,
-                                    supplier: e.target.value,
-                                  })
-                                }
-                                className="w-full bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-xs outline-none"
-                              />
-                            </div>
-                            <div>
-                              <label className="block text-[9px] font-bold text-slate-400 mb-1">제작 기본 수량</label>
+                          </div>
+                          <div className="grid grid-cols-1 md:grid-cols-12 gap-2 items-end">
+                            <div className="md:col-span-2">
+                              <label className="block text-[9px] font-black text-slate-800 mb-1">제작 기본 수량</label>
                               <input
                                 type="number"
                                 min={1}
@@ -3491,8 +3704,8 @@ return (
                                 className="w-full bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-xs outline-none"
                               />
                             </div>
-                            <div>
-                              <label className="block text-[9px] font-bold text-slate-400 mb-1">단위 *</label>
+                            <div className="md:col-span-2">
+                              <label className="block text-[9px] font-black text-slate-800 mb-1">단위 *</label>
                               <select
                                 value={editingPrintItemData.unitValue}
                                 onChange={(e) =>
@@ -3513,7 +3726,35 @@ return (
                                 ))}
                               </select>
                             </div>
-                            <div className="flex items-end pb-1 md:col-span-2">
+                            <div className="md:col-span-4">
+                              <label className="block text-[9px] font-black text-slate-800 mb-1">최근 공급처</label>
+                              <select
+                                value={editingPrintItemData.supplier}
+                                onChange={(e) =>
+                                  setEditingPrintItemData({
+                                    ...editingPrintItemData,
+                                    supplier: e.target.value,
+                                  })
+                                }
+                                className="w-full bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-xs outline-none"
+                              >
+                                <option value="">(미지정)</option>
+                                {vendorMasterList.map((v) => (
+                                  <option key={v.id} value={v.label}>
+                                    {v.label}
+                                  </option>
+                                ))}
+                                {editingPrintItemData.supplier &&
+                                  !vendorMasterList.some(
+                                    (v) => v.label === editingPrintItemData.supplier
+                                  ) && (
+                                    <option value={editingPrintItemData.supplier}>
+                                      {editingPrintItemData.supplier} (기존)
+                                    </option>
+                                  )}
+                              </select>
+                            </div>
+                            <div className="md:col-span-4 flex items-end pb-1">
                               <label className="flex items-center gap-2 cursor-pointer select-none">
                                 <input
                                   type="checkbox"
@@ -3526,7 +3767,7 @@ return (
                                   }
                                   className="w-3.5 h-3.5 rounded border-slate-300 text-purple-600"
                                 />
-                                <span className="text-[10px] font-bold text-slate-500">직접입력(기타)</span>
+                                <span className="text-[10px] font-black text-slate-800">직접입력(기타)</span>
                               </label>
                             </div>
                           </div>
@@ -3589,14 +3830,29 @@ return (
                                 </span>
                               )}
                             </div>
-                            <div className="text-[11px] font-bold text-slate-500 flex flex-wrap gap-x-3 gap-y-1">
-                              {item.size && <span>규격: {item.size}</span>}
-                              {item.supplier && <span>최근 공급처: {item.supplier}</span>}
+                            <div className="text-[11px] flex flex-wrap items-center gap-x-1 gap-y-1">
                               <span>
-                                제작 기본 수량: {item.orderQty}
-                                {shortUnitLabel(resolveUnitLabel(item.unitValue))}
+                                <span className="font-black text-slate-800">규격:</span>{' '}
+                                <span className="font-medium text-slate-400">{item.size?.trim() || '-'}</span>
                               </span>
-                              <span>단위: {resolveUnitLabel(item.unitValue)}</span>
+                              <span className="text-slate-300 font-black">/</span>
+                              <span>
+                                <span className="font-black text-slate-800">최근 공급처:</span>{' '}
+                                <span className="font-medium text-slate-400">{item.supplier?.trim() || '-'}</span>
+                              </span>
+                              <span className="text-slate-300 font-black">/</span>
+                              <span>
+                                <span className="font-black text-slate-800">제작 기본 수량:</span>{' '}
+                                <span className="font-medium text-slate-400">
+                                  {item.orderQty}
+                                  {shortUnitLabel(resolveUnitLabel(item.unitValue))}
+                                </span>
+                              </span>
+                              <span className="text-slate-300 font-black">/</span>
+                              <span>
+                                <span className="font-black text-slate-800">단위:</span>{' '}
+                                <span className="font-medium text-slate-400">{resolveUnitLabel(item.unitValue)}</span>
+                              </span>
                             </div>
                           </div>
                           <div className="flex gap-1.5 shrink-0">
@@ -3623,38 +3879,28 @@ return (
                                   : DISABLED_ACTION_BTN
                               }`}
                             >
-                              수정
+                              수정(Edit)
                             </button>
                             <button
                               type="button"
-                              disabled={!canEdit}
-                              title={!canEdit ? '편집 권한 필요' : undefined}
-                              onClick={async () => {
-                                if (!canEdit) return alertNoEditPermission();
-                                if (printItemMasterList.length <= 1)
-                                  return alert('최소 한 개 이상의 물품이 필요합니다.');
-                                if (!confirm(`「${item.name}」을(를) 삭제할까요?`)) return;
-                                try {
-                                  const res = await fetch(
-                                    `/api/asset/production/master/print-items?id=${encodeURIComponent(item.id)}`,
-                                    { method: 'DELETE' }
-                                  );
-                                  if (!res.ok) {
-                                    const err = await res.json().catch(() => ({}));
-                                    return alert(err.message || '삭제 실패');
-                                  }
-                                  await reloadMasters();
-                                } catch {
-                                  alert('삭제 중 오류가 발생했습니다.');
-                                }
-                              }}
+                              disabled={
+                                !(isSeedPrintItemId(item.id) ? canDeleteLv1Cert : canEdit)
+                              }
+                              title={
+                                isSeedPrintItemId(item.id) && !canDeleteLv1Cert
+                                  ? '시드 품목 삭제는 LV_1 권한 필요'
+                                  : !canEdit
+                                    ? '편집 권한 필요'
+                                    : undefined
+                              }
+                              onClick={() => handleDeletePrintItem(item)}
                               className={`text-[10px] font-black px-2.5 py-1 rounded-lg border ${
-                                canEdit
+                                (isSeedPrintItemId(item.id) ? canDeleteLv1Cert : canEdit)
                                   ? 'text-red-500 hover:bg-red-50 bg-white border-slate-200'
                                   : DISABLED_ACTION_BTN
                               }`}
                             >
-                              삭제
+                              {isSeedPrintItemId(item.id) ? '삭제(LV_1)' : '삭제(Edit)'}
                             </button>
                           </div>
                         </div>
@@ -3682,11 +3928,35 @@ return (
             <div className="p-8 overflow-y-auto flex-1 bg-slate-50/50">
               <div className="bg-white rounded-2xl p-6 border border-slate-200 shadow-sm space-y-6">
                 <div className="border-b border-slate-100 pb-3">
-                  <h4 className="text-sm font-black text-slate-800">📊 단가 & 규격 마스터</h4>
-                  <p className="text-xs text-slate-400 mt-1">이곳에서 추가/수정한 품목 사양은 신청서 본문의 콤보박스와 미니 명세서 표에 실시간 연동됩니다.</p>
-                  <p className="text-[10px] text-slate-400 mt-1.5 leading-relaxed">
-                    목록은 등록순이 아니라 <span className="font-bold text-slate-500">품목명 가나다순</span>으로 정렬되며, 같은 품목명은 <span className="font-bold text-slate-500">규격순</span>으로 이어집니다.
-                  </p>
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <h4 className="text-sm font-black text-slate-800">📊 단가 & 규격 마스터</h4>
+                      <p className="text-xs text-slate-400 mt-1">이곳에서 추가/수정한 품목 사양은 신청서 본문의 콤보박스와 미니 명세서 표에 실시간 연동됩니다.</p>
+                      <p className="text-[10px] text-slate-400 mt-1.5 leading-relaxed">
+                        목록은 등록순이 아니라 <span className="font-bold text-slate-500">품목명 가나다순</span>으로 정렬되며, 같은 품목명은 <span className="font-bold text-slate-500">규격순</span>으로 이어집니다.
+                      </p>
+                      <p className="text-[10px] text-slate-400 mt-1.5 leading-relaxed">
+                        ※「시드 항목 복구」는 누락·삭제분만 다시 채우며 기존 단가·명칭은 유지합니다.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={!canEdit}
+                      title={
+                        !canEdit
+                          ? '편집 권한 필요'
+                          : '시드 기본 품목 중 없거나 비활성인 항목만 추가/재활성'
+                      }
+                      onClick={handleRestoreSeedPlates}
+                      className={`shrink-0 text-[10px] font-black px-3 py-2 rounded-xl border transition-all active:scale-95 ${
+                        canEdit
+                          ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
+                          : DISABLED_ACTION_BTN
+                      }`}
+                    >
+                      시드 항목 복구(Edit)
+                    </button>
+                  </div>
                 </div>
                 <div className="flex gap-3 bg-slate-50 p-4 rounded-xl border border-slate-200 items-end">
                   <div className="flex-1">
@@ -3729,20 +3999,28 @@ return (
                                 : DISABLED_ACTION_BTN
                             }`}
                           >
-                            {editingPlateIndex === idx ? '닫기' : '수정'}
+                            {editingPlateIndex === idx ? '닫기' : '수정(Edit)'}
                           </button>
                           <button
                             type="button"
-                            disabled={!canEdit}
-                            title={!canEdit ? '편집 권한 필요' : undefined}
+                            disabled={
+                              !(isSeedPlateCode(p.code) ? canDeleteLv1Cert : canEdit)
+                            }
+                            title={
+                              isSeedPlateCode(p.code) && !canDeleteLv1Cert
+                                ? '시드 품목 삭제는 LV_1 권한 필요'
+                                : !canEdit
+                                  ? '편집 권한 필요'
+                                  : undefined
+                            }
                             onClick={() => handleIdDeletePlate(p.code)}
                             className={`text-[10px] px-3 py-1.5 rounded-lg font-bold border ${
-                              canEdit
+                              (isSeedPlateCode(p.code) ? canDeleteLv1Cert : canEdit)
                                 ? 'text-red-500 hover:text-red-700 bg-slate-100 border-slate-200'
                                 : DISABLED_ACTION_BTN
                             }`}
                           >
-                            삭제
+                            {isSeedPlateCode(p.code) ? '삭제(LV_1)' : '삭제(Edit)'}
                           </button>
                         </div>
                       </div>
@@ -3849,15 +4127,34 @@ return (
                   {popSubTab === 'JEBON_SUB' && jebonSettingsTab === 'SIZE' ? (
                     <div className="space-y-4">
                       <div className="border-b border-slate-100 pb-3">
-                        <h4 className="text-sm font-black text-slate-800">📏 제본 판형 마스터</h4>
-                        <p className="text-[10px] text-slate-400 mt-1">
-                          종류·규격·설명으로 관리합니다. 신청서 「제본 판형 지정」 콤보박스에 실시간 반영됩니다.
-                        </p>
-                        {!canEdit && (
-                          <p className="text-[10px] text-amber-600 mt-1.5 font-bold">
-                            ※ 신규 판형 수정·삭제는 편집 권한, 시드 판형 삭제는 LV_1(마스터) 권한이 필요합니다. 신규 등록은 메뉴 접근자 모두 가능합니다.
-                          </p>
-                        )}
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div className="min-w-0 flex-1">
+                            <h4 className="text-sm font-black text-slate-800">📏 제본 판형 마스터</h4>
+                            <p className="text-[10px] text-slate-400 mt-1">
+                              종류·규격·설명으로 관리합니다. 신청서 「제본 판형 지정」 콤보박스에 실시간 반영됩니다.
+                            </p>
+                            <p className="text-[10px] text-slate-400 mt-1.5 leading-relaxed">
+                              ※ 신규 판형 수정·삭제는 편집 권한, 시드 판형 삭제는 LV_1(마스터) 권한이 필요합니다. 「시드 항목 복구(Edit)」는 누락·삭제분만 다시 채우며 기존 종류·규격·설명은 유지합니다.
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            disabled={!canEdit}
+                            title={
+                              !canEdit
+                                ? '편집 권한 필요'
+                                : '시드 기본 판형 중 없거나 비활성인 항목만 추가/재활성'
+                            }
+                            onClick={handleRestoreSeedJebonSizes}
+                            className={`shrink-0 text-[10px] font-black px-3 py-2 rounded-xl border transition-all active:scale-95 ${
+                              canEdit
+                                ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
+                                : DISABLED_ACTION_BTN
+                            }`}
+                          >
+                            시드 항목 복구(Edit)
+                          </button>
+                        </div>
                       </div>
 
                       <div className={`${JEBON_SIZE_MASTER_GRID} bg-slate-50 p-4 rounded-xl border border-slate-200`}>
@@ -4035,7 +4332,7 @@ return (
                                             : DISABLED_ACTION_BTN
                                         }`}
                                       >
-                                        수정
+                                        수정(Edit)
                                       </button>
                                       <button
                                         type="button"
@@ -4060,7 +4357,7 @@ return (
                                             : DISABLED_ACTION_BTN
                                         }`}
                                       >
-                                        {isSeedJebonSizeCode(row.code) ? '삭제(LV_1)' : '삭제'}
+                                        {isSeedJebonSizeCode(row.code) ? '삭제(LV_1)' : '삭제(Edit)'}
                                       </button>
                                     </>
                                   )}
@@ -4074,12 +4371,36 @@ return (
                   ) : (
                   <>
                   <div className="border-b border-slate-100 pb-3 shrink-0">
-                    <h4 className="text-sm font-black text-slate-800">
-                      {popSubTab === 'SIGN_SUB' ? '📋 인증별 설정' : '📋 인증별 제본 서식·기본값 설정'}
-                    </h4>
-                    <p className="text-[10px] text-slate-400 mt-1">
-                      「수정」을 누른 행만 편집할 수 있습니다. 변경 후 「저장」으로 DB에 반영하세요.
-                    </p>
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div className="min-w-0 flex-1">
+                        <h4 className="text-sm font-black text-slate-800">
+                          {popSubTab === 'SIGN_SUB' ? '📋 인증별 설정' : '📋 인증별 제본 서식·기본값 설정'}
+                        </h4>
+                        <p className="text-[10px] text-slate-400 mt-1">
+                          「수정(Edit)」을 누른 행만 편집할 수 있습니다. 변경 후 「저장」으로 DB에 반영하세요.
+                        </p>
+                        <p className="text-[10px] text-slate-400 mt-1.5 leading-relaxed">
+                          ※ 시드 인증 삭제는 LV_1, 「시드 항목 복구(Edit)」는 누락·삭제분을 다시 채우고 복구 시 등급(GRADE)도 시드 기본값으로 맞춥니다. 명칭·서식·판형 연동은 유지합니다.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        disabled={!canEdit}
+                        title={
+                          !canEdit
+                            ? '편집 권한 필요'
+                            : '시드 기본 인증 중 없거나 비활성인 항목만 추가/재활성'
+                        }
+                        onClick={handleRestoreSeedCerts}
+                        className={`shrink-0 text-[10px] font-black px-3 py-2 rounded-xl border transition-all active:scale-95 ${
+                          canEdit
+                            ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
+                            : DISABLED_ACTION_BTN
+                        }`}
+                      >
+                        시드 항목 복구(Edit)
+                      </button>
+                    </div>
                   </div>
 
                   {/* 마스터 카드 리스트 */}
@@ -4166,7 +4487,7 @@ return (
                                       : DISABLED_ACTION_BTN
                                   }`}
                                 >
-                                  수정
+                                  수정(Edit)
                                 </button>
                               )}
                               <button
@@ -4192,7 +4513,7 @@ return (
                                     : DISABLED_ACTION_BTN
                                 }`}
                               >
-                                {isSeedCertId(c.id) ? '삭제(LV_1)' : '삭제'}
+                                {isSeedCertId(c.id) ? '삭제(LV_1)' : '삭제(Edit)'}
                               </button>
                             </div>
                           </div>
@@ -4578,7 +4899,7 @@ return (
                                           : DISABLED_ACTION_BTN
                                       }`}
                                     >
-                                      수정
+                                      수정(Edit)
                                     </button>
                                   )}
                                   <button
@@ -4604,7 +4925,7 @@ return (
                                         : DISABLED_ACTION_BTN
                                     }`}
                                   >
-                                    {isSeedCertId(c.id) ? '삭제(LV_1)' : '삭제'}
+                                    {isSeedCertId(c.id) ? '삭제(LV_1)' : '삭제(Edit)'}
                                   </button>
                                 </div>
                               </div>
@@ -4615,32 +4936,22 @@ return (
                     )}
                   </div>
 
-                {/* 하단 신규 등록 — Edit 권한 필요 */}
+                {/* 하단 신규 등록 — 명판·제본 모두 메뉴 접근만으로 등록 가능 */}
                 <div className="mt-4 pt-3 border-t border-slate-100 flex gap-2 shrink-0">
                   <input 
                     type="text" 
                     placeholder={popSubTab === 'SIGN_SUB' ? "➕ 새 명판 인증명 입력" : "➕ 새 제본 인증명 입력"} 
                     value={newCertName}
-                    disabled={!canEdit}
-                    title={!canEdit ? '편집 권한 필요' : undefined}
                     onChange={e => setNewCertName(e.target.value)} 
-                    className={`flex-1 border rounded-xl px-3 py-2.5 text-xs font-semibold outline-none transition-all ${
-                      canEdit
-                        ? 'bg-slate-50 border-slate-200 focus:bg-white focus:border-blue-500'
-                        : 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'
-                    }`}
+                    className="flex-1 border rounded-xl px-3 py-2.5 text-xs font-semibold outline-none transition-all bg-slate-50 border-slate-200 focus:bg-white focus:border-blue-500"
                   />
                   <button 
                     type="button"
-                    disabled={!canEdit}
-                    title={!canEdit ? '편집 권한 필요' : undefined}
                     onClick={handleAddCertMaster} 
                     className={`px-4 py-2.5 rounded-xl font-black text-xs transition-all shadow-md active:scale-95 text-white ${
-                      !canEdit
-                        ? DISABLED_ACTION_BTN
-                        : popSubTab === 'SIGN_SUB'
-                          ? 'bg-blue-600 hover:bg-blue-500'
-                          : 'bg-indigo-600 hover:bg-indigo-500'
+                      popSubTab === 'SIGN_SUB'
+                        ? 'bg-blue-600 hover:bg-blue-500'
+                        : 'bg-indigo-600 hover:bg-indigo-500'
                     }`}
                   >
                     + 신규 등록
@@ -4663,7 +4974,7 @@ return (
                     </h4>
                     {!canEdit && (
                       <p className="text-[10px] text-amber-400/90 mt-1.5 font-bold">
-                        ※ 등급 추가·수정·삭제는 편집 권한이 필요합니다.
+                        ※ 등급 수정·삭제는 편집 권한이 필요합니다. (추가·입력 방식은 가능)
                       </p>
                     )}
                   </div>
@@ -4672,7 +4983,6 @@ return (
                     const row = signCertMasterList.find((c) => c.id === selectedMasterCertId);
                     if (!row) return null;
                     const saveGradeInputMode = async (useMultiGradeSelect: boolean) => {
-                      if (!canEdit) return alertNoEditPermission();
                       if (row.useMultiGradeSelect === useMultiGradeSelect) return;
                       try {
                         await persistCert({
@@ -4684,6 +4994,7 @@ return (
                           useCertNumber: row.useCertNumber,
                           useValidPeriod: row.useValidPeriod,
                           useMultiGradeSelect,
+                          viewerWritable: true,
                         });
                       } catch (err: any) {
                         alert(err?.message || '저장 실패');
@@ -4697,27 +5008,23 @@ return (
                         <div className="grid grid-cols-2 gap-2">
                           <button
                             type="button"
-                            disabled={!canEdit}
-                            title={!canEdit ? '편집 권한 필요' : undefined}
                             onClick={() => saveGradeInputMode(true)}
                             className={`px-2.5 py-2 rounded-lg text-[10px] font-black border transition-all ${
                               row.useMultiGradeSelect
                                 ? 'bg-blue-600 border-blue-500 text-white shadow-md'
                                 : 'bg-slate-900 border-slate-700 text-slate-400 hover:border-slate-500'
-                            } ${!canEdit ? 'opacity-50 cursor-not-allowed' : ''}`}
+                            }`}
                           >
                             ☑ 체크박스 복수 선택
                           </button>
                           <button
                             type="button"
-                            disabled={!canEdit}
-                            title={!canEdit ? '편집 권한 필요' : undefined}
                             onClick={() => saveGradeInputMode(false)}
                             className={`px-2.5 py-2 rounded-lg text-[10px] font-black border transition-all ${
                               !row.useMultiGradeSelect
                                 ? 'bg-indigo-600 border-indigo-500 text-white shadow-md'
                                 : 'bg-slate-900 border-slate-700 text-slate-400 hover:border-slate-500'
-                            } ${!canEdit ? 'opacity-50 cursor-not-allowed' : ''}`}
+                            }`}
                           >
                             ▾ 셀렉트 단일 선택
                           </button>
@@ -4734,17 +5041,12 @@ return (
                       type="text"
                       placeholder="➕ 새 등급 매핑 기입"
                       value={newGradeName}
-                      disabled={!canEdit}
-                      title={!canEdit ? '편집 권한 필요' : undefined}
                       onChange={e => setNewGradeName(e.target.value)}
-                      className="flex-1 bg-slate-800 border border-slate-700 text-white rounded-xl p-2.5 text-xs outline-none focus:border-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                      className="flex-1 bg-slate-800 border border-slate-700 text-white rounded-xl p-2.5 text-xs outline-none focus:border-blue-500"
                     />
                     <button
                       type="button"
-                      disabled={!canEdit}
-                      title={!canEdit ? '편집 권한 필요' : undefined}
                       onClick={async () => {
-                        if (!canEdit) return alertNoEditPermission();
                         if (!newGradeName.trim() || !selectedMasterCertId) return;
                         const nextGrades = [
                           ...(gradeMasterMap[selectedMasterCertId] || []),
@@ -4764,17 +5066,14 @@ return (
                             format: type === 'SIGN' ? (row as any).format || '' : '',
                             jebonFormat: type === 'JEBON' ? (row as any).jebonFormat || '' : '',
                             grades: nextGrades,
+                            viewerWritable: true,
                           });
                           setNewGradeName('');
                         } catch (err: any) {
                           alert(err?.message || '등급 저장 실패');
                         }
                       }}
-                      className={`font-black text-xs px-4 rounded-xl transition-all shadow-md ${
-                        canEdit
-                          ? 'bg-indigo-600 hover:bg-indigo-500 text-white'
-                          : 'bg-slate-700 text-slate-500 cursor-not-allowed opacity-60'
-                      }`}
+                      className="font-black text-xs px-4 rounded-xl transition-all shadow-md bg-indigo-600 hover:bg-indigo-500 text-white"
                     >
                       추가
                     </button>
@@ -4840,7 +5139,7 @@ return (
                                   : 'text-slate-500 bg-slate-800 cursor-not-allowed opacity-50'
                               }`}
                             >
-                              수정
+                              수정(Edit)
                             </button>
                           )}
                           <button
@@ -4879,7 +5178,7 @@ return (
                                 : 'text-slate-500 bg-slate-800 cursor-not-allowed opacity-50'
                             }`}
                           >
-                            삭제
+                            삭제(Edit)
                           </button>
                         </div>
                       </div>
@@ -4906,11 +5205,6 @@ return (
                   <p className="text-[10px] text-emerald-200/70 mt-1.5 font-bold leading-relaxed">
                     체크한 품목만 해당 인증 선택 시 신청폼 「3. 현판 품목 설정」에 노출됩니다. 복수 선택 가능 · 클릭 즉시 저장.
                   </p>
-                  {!canEdit && (
-                    <p className="text-[10px] text-amber-400/90 mt-1.5 font-bold">
-                      ※ 품목 연결 변경은 편집 권한이 필요합니다.
-                    </p>
-                  )}
                 </div>
 
                 {(() => {
@@ -4924,7 +5218,6 @@ return (
                   }
                   const linked = new Set(row.linkedPlateCodes || []);
                   const togglePlate = async (code: string, checked: boolean) => {
-                    if (!canEdit) return alertNoEditPermission();
                     const next = checked
                       ? [...linked, code]
                       : [...linked].filter((c) => c !== code);
@@ -4939,6 +5232,7 @@ return (
                         useValidPeriod: row.useValidPeriod,
                         useMultiGradeSelect: row.useMultiGradeSelect,
                         linkedPlateCodes: Array.from(new Set(next)),
+                        viewerWritable: true,
                       });
                     } catch (err: any) {
                       alert(err?.message || '품목 연결 저장 실패');
@@ -4962,14 +5256,13 @@ return (
                               checked
                                 ? 'bg-emerald-800/70 border-emerald-500 shadow-sm'
                                 : 'bg-emerald-900/50 border-emerald-800 hover:border-emerald-600'
-                            } ${!canEdit ? 'opacity-60 cursor-not-allowed' : ''}`}
+                            }`}
                           >
                             <input
                               type="checkbox"
                               checked={checked}
-                              disabled={!canEdit}
                               onChange={(e) => togglePlate(p.code, e.target.checked)}
-                              className="mt-0.5 w-3.5 h-3.5 accent-emerald-400 rounded disabled:cursor-not-allowed shrink-0"
+                              className="mt-0.5 w-3.5 h-3.5 accent-emerald-400 rounded shrink-0"
                             />
                             <span className="min-w-0 flex-1">
                               <span className="block text-xs font-black text-emerald-50 truncate">

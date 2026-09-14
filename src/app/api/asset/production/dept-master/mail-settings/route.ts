@@ -14,6 +14,7 @@ const MENU_PATH = '/asset/production/dept-master/inspection';
 const READ_PATHS = [
   '/asset/production/dept-master/inspection',
   '/asset/production/dept-master/order',
+  '/asset/production/dept-master/settlement',
   '/asset/production/dept-master/archive',
 ];
 

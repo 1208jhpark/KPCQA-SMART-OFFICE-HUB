@@ -17,6 +17,7 @@ const MENU_PATH = '/asset/production/dept-master/inspection';
 const READ_PATHS = [
   '/asset/production/dept-master/order',
   '/asset/production/dept-master/inspection',
+  '/asset/production/dept-master/settlement',
   '/asset/production/dept-master/archive',
 ];
 
@@ -227,7 +228,7 @@ export async function GET() {
 /** [POST] 외주 발주확인 / 수령완료 / 발주 취소 / 보관함 이동 / 단가승인 */
 export async function POST(req: Request) {
   try {
-    await authorizeApi(MENU_PATH, { requireEditor: true });
+    const auth = await authorizeApi(MENU_PATH, { requireEditor: true });
     const body = await req.json().catch(() => ({}));
     const action = String(body.action || '').trim().toLowerCase();
 
@@ -371,19 +372,46 @@ export async function POST(req: Request) {
       if (!batchId) {
         return NextResponse.json({ message: '묶음 번호가 필요합니다.' }, { status: 400 });
       }
-      const result = await prisma.productionRequest.updateMany({
+      const rows = await prisma.productionRequest.findMany({
         where: { batchId, status: 'VERIFIED', isArchived: false },
-        data: { isArchived: true },
       });
-      if (result.count === 0) {
+      if (rows.length === 0) {
         return NextResponse.json(
           { message: '수령완료(VERIFIED) 건만 보관함으로 이동할 수 있습니다.' },
           { status: 400 }
         );
       }
+
+      const { getKSTDateString } = await import('@/utils/dateUtils');
+      const settlementMovedBy = {
+        date: getKSTDateString(),
+        userName: String(auth.user?.name || '').trim() || '-',
+        deptName: String(
+          (auth.user as { unit?: { unit_name?: string | null } | null })?.unit?.unit_name || ''
+        ).trim(),
+      };
+      const settlementMovedAt = new Date().toISOString();
+
+      let updated = 0;
+      for (const row of rows) {
+        const prevOpts = asOptionsRecord(row.options);
+        await prisma.productionRequest.update({
+          where: { id: row.id },
+          data: {
+            isArchived: true,
+            options: asInputJson({
+              ...prevOpts,
+              settlementMovedBy,
+              settlementMovedAt,
+            }),
+          },
+        });
+        updated += 1;
+      }
+
       return NextResponse.json({
         message: '해당 발주 묶음이 성공적으로 보관함으로 이관되었습니다.',
-        count: result.count,
+        count: updated,
       });
     }
 

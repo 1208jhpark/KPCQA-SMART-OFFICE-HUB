@@ -1,20 +1,19 @@
 import { NextResponse } from 'next/server';
 import prisma from '@/lib/prisma';
-import { Prisma } from '@prisma/client';
 import {
-  authorizeApi,
   authorizeAnyMenuPaths,
   authErrorToResponse,
 } from '@/lib/server-auth-guard';
 
 export const dynamic = 'force-dynamic';
 
-const MENU_PATH = '/asset/production/dept-master/archive';
 const READ_PATHS = [
   '/asset/production/dept-master/order',
   '/asset/production/dept-master/inspection',
+  '/asset/production/dept-master/settlement',
   '/asset/production/dept-master/archive',
   '/asset/production/master/dashboard',
+  '/asset/production/master/archive',
 ];
 
 type ScopeUnit = { id: string; unit_name: string };
@@ -26,8 +25,23 @@ function asOptionsRecord(value: unknown): Record<string, unknown> {
   return {};
 }
 
-function asInputJson(value: Record<string, unknown>): Prisma.InputJsonValue {
-  return value as unknown as Prisma.InputJsonValue;
+function isMasterSettledArchived(options: unknown): boolean {
+  return asOptionsRecord(options).masterSettledArchived === true;
+}
+
+/** 묶음 내 행 순서 고정 — updatedAt 갱신(대조 저장 등)에 흔들리지 않게 */
+function sortBatchItemsStable<
+  T extends { id: string; createdAt: Date | string; postNumber?: string | null },
+>(items: T[]): T[] {
+  return [...items].sort((a, b) => {
+    const ta = new Date(a.createdAt).getTime();
+    const tb = new Date(b.createdAt).getTime();
+    if (ta !== tb) return ta - tb;
+    const pa = String(a.postNumber || '');
+    const pb = String(b.postNumber || '');
+    if (pa !== pb) return pa.localeCompare(pb, 'ko');
+    return String(a.id).localeCompare(String(b.id));
+  });
 }
 
 function resolveBatchDispatchedAt(items: Array<{ options: unknown }>) {
@@ -103,7 +117,7 @@ function resolveScopeFromUnits(
   };
 }
 
-/** [GET] 검수 완료 후 보관함으로 이관된 묶음 */
+/** [GET] 마스터 정산완료 이관 후 부서 보관함 (조회 전용) */
 export async function GET() {
   try {
     const auth = await authorizeAnyMenuPaths(READ_PATHS);
@@ -157,7 +171,8 @@ export async function GET() {
     }
 
     const batches = Array.from(byBatch.entries())
-      .map(([id, items]) => {
+      .map(([id, rawItems]) => {
+        const items = sortBatchItemsStable(rawItems);
         const vendors = Array.from(
           new Set(
             items
@@ -169,7 +184,7 @@ export async function GET() {
           )
         );
         const archivedAt = items.reduce((max, i) => {
-          const t = new Date(i.updatedAt || i.createdAt).getTime();
+          const t = new Date(i.createdAt).getTime();
           return t > max ? t : max;
         }, 0);
 
@@ -209,9 +224,12 @@ export async function GET() {
           inspectFileName,
           inspectResult,
           inspectedAt,
+          masterSettledArchived:
+            items.length > 0 && items.every((i) => isMasterSettledArchived(i.options)),
           items,
         };
       })
+      .filter((b) => b.masterSettledArchived)
       .sort((a, b) => {
         const ta = a.dispatchedAt
           ? new Date(a.dispatchedAt).getTime()
@@ -237,168 +255,5 @@ export async function GET() {
     if (authRes.status !== 500) return authRes;
     console.error('[production/dept-master/archive GET]', error);
     return NextResponse.json({ error: '보관함 조회 실패' }, { status: 500 });
-  }
-}
-
-/** [PUT] 명세서 검수 결과 저장 */
-export async function PUT(req: Request) {
-  try {
-    await authorizeAnyMenuPaths(READ_PATHS);
-    const body = await req.json().catch(() => ({}));
-    const rows: Array<{
-      batchId: string;
-      inspectStatus: 'idle' | 'match' | 'mismatch';
-      inspectFileName?: string | null;
-      inspectResult?: any;
-    }> = Array.isArray(body?.batches) ? body.batches : [];
-
-    if (rows.length === 0) {
-      return NextResponse.json({ message: '저장할 검수 묶음이 없습니다.' }, { status: 400 });
-    }
-
-    let count = 0;
-    for (const row of rows) {
-      const batchId = String(row?.batchId || '').trim();
-      if (!batchId) continue;
-      const inspectStatus =
-        row.inspectStatus === 'match' || row.inspectStatus === 'mismatch'
-          ? row.inspectStatus
-          : 'idle';
-      const inspectFileName = row.inspectFileName
-        ? String(row.inspectFileName).slice(0, 255)
-        : null;
-      const inspectResult = row.inspectResult ?? null;
-      const inspectedAt = inspectStatus === 'idle' ? null : new Date().toISOString();
-
-      const items = await prisma.productionRequest.findMany({
-        where: { batchId },
-      });
-
-      for (const item of items) {
-        const prevOpts = asOptionsRecord(item.options);
-        const itemStatus = inspectResult?.itemStatus?.[item.id] || inspectStatus;
-        const itemPrice = Number(inspectResult?.itemPrice?.[item.id] || 0);
-
-        const nextOpts = {
-          ...prevOpts,
-          inspectStatus: itemStatus,
-          inspectFileName,
-          inspectResult,
-          inspectedAt,
-        };
-
-        await prisma.productionRequest.update({
-          where: { id: item.id },
-          data: {
-            options: asInputJson(nextOpts),
-            ...(itemPrice > 0 ? { finalPrice: itemPrice } : {}),
-          },
-        });
-      }
-      count += 1;
-    }
-
-    return NextResponse.json({ success: true, count });
-  } catch (error: any) {
-    const authRes = authErrorToResponse(error);
-    if (authRes.status !== 500) return authRes;
-    console.error('[production/dept-master/archive PUT]', error);
-    return NextResponse.json(
-      { message: '검수 결과 저장 실패', error: error.message },
-      { status: 500 }
-    );
-  }
-}
-
-/** [POST] 묶음 보관함 이관 / 명세표 대조(단가) 저장 */
-export async function POST(req: Request) {
-  try {
-    await authorizeApi(MENU_PATH, { requireEditor: true });
-    const body = await req.json().catch(() => ({}));
-    const action = String(body.action || '').trim().toLowerCase();
-
-    if (action === 'inspect') {
-      return PUT(req);
-    }
-
-    if (action === 'statement-match') {
-      const batchId = String(body.batchId || '').trim();
-      const prices = Array.isArray(body.prices) ? body.prices : [];
-      if (!batchId) {
-        return NextResponse.json({ message: '묶음 번호가 필요합니다.' }, { status: 400 });
-      }
-      if (prices.length === 0) {
-        return NextResponse.json({ message: '대조할 단가 정보가 없습니다.' }, { status: 400 });
-      }
-
-      let updated = 0;
-      for (const row of prices) {
-        const requestId = String(row?.requestId || '').trim();
-        if (!requestId) continue;
-        const finalPrice = Number(row?.finalPrice);
-        if (!Number.isFinite(finalPrice) || finalPrice < 0) continue;
-
-        const item = await prisma.productionRequest.findUnique({
-          where: { id: requestId },
-          select: { options: true },
-        });
-        const prevOpts = asOptionsRecord(item?.options);
-        const nextOpts = {
-          ...prevOpts,
-          inspectStatus: finalPrice > 0 ? 'match' : prevOpts.inspectStatus || 'idle',
-        };
-
-        const result = await prisma.productionRequest.updateMany({
-          where: {
-            id: requestId,
-            batchId,
-            isArchived: true,
-            status: 'VERIFIED',
-          },
-          data: {
-            finalPrice,
-            options: asInputJson(nextOpts),
-          },
-        });
-        updated += result.count;
-      }
-
-      return NextResponse.json({
-        message: `${updated}건 명세표 대조(단가)를 저장했습니다.`,
-        count: updated,
-      });
-    }
-
-    const batchId = String(body.batchId || '').trim();
-
-    if (!batchId) {
-      return NextResponse.json({ message: '묶음 번호가 필요합니다.' }, { status: 400 });
-    }
-
-    const result = await prisma.productionRequest.updateMany({
-      where: {
-        batchId,
-        status: 'VERIFIED',
-        isArchived: false,
-      },
-      data: { isArchived: true },
-    });
-
-    if (result.count === 0) {
-      return NextResponse.json(
-        { message: '수령완료(VERIFIED) 건만 보관함으로 이동할 수 있습니다.' },
-        { status: 400 }
-      );
-    }
-
-    return NextResponse.json({
-      message: '해당 발주 묶음이 성공적으로 보관함으로 이관되었습니다.',
-      count: result.count,
-    });
-  } catch (error) {
-    const authRes = authErrorToResponse(error);
-    if (authRes.status !== 500) return authRes;
-    console.error('[production/dept-master/archive POST]', error);
-    return NextResponse.json({ message: '아카이브 이관 중 오류' }, { status: 500 });
   }
 }

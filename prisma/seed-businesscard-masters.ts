@@ -1,4 +1,6 @@
 import { PrismaClient } from '@prisma/client';
+import { SEED_BUSINESS_CARD_QUALIFICATIONS } from '../src/lib/businesscard-seed-qualifications';
+import { SEED_COMPANY_ADDRESSES } from '../src/lib/businesscard-seed-addresses';
 
 /**
  * 명함(BusinessCard) 마스터만 채우기/동기화.
@@ -12,34 +14,10 @@ export async function seedBusinessCardMasters(
 ) {
   console.log(`💳 [BusinessCard Masters] ${mode === 'fill' ? '채우기' : '동기화'} 시작...`);
 
-  const qualifications: { nameKo: string; nameEn: string }[] = [
-    { nameKo: '공학박사', nameEn: 'Ph.D.' },
-    { nameKo: '건축사', nameEn: 'Architect' },
-    { nameKo: '건축물에너지평가사', nameEn: 'Building Energy Assessor' },
-    {
-      nameKo: '건축물에너지효율등급 심사위원',
-      nameEn: 'Building Energy Efficiency Rating Auditor',
-    },
-    { nameKo: '건축기계설비기술사', nameEn: 'Professional Engineer' },
-    { nameKo: '에너지진단사', nameEn: 'Energy Management Engineer' },
-    { nameKo: '건축시공기술사', nameEn: 'P.E.' },
-    { nameKo: '벤처공학박사', nameEn: 'Doctor of Venture Engineering' },
-    { nameKo: '재난관리지도사', nameEn: 'Business Continuity Master' },
-    { nameKo: '인증심사원', nameEn: 'Auditor' },
-    { nameKo: '품질경영기술사', nameEn: 'Quality Management System P.E.' },
-    { nameKo: '기술지도사', nameEn: 'Technology Expert Advisor' },
-    { nameKo: '환경관리기술사', nameEn: 'Environment Engineer' },
-    { nameKo: '이학박사', nameEn: 'Ph.D.' },
-    {
-      nameKo: '국제통용발자국검증심사원',
-      nameEn: 'Cerified Carbon Footprints of Product Verification Professional',
-    },
-    {
-      nameKo: '공조냉동기계기술사',
-      nameEn: 'Professional Engineer Air-conditioning Refrigerating Machinery',
-    },
-    { nameKo: 'AA1000 ACSAP 검증심사원', nameEn: 'AA1000 ACSAP Auditor' },
-  ];
+  const qualifications = SEED_BUSINESS_CARD_QUALIFICATIONS.map((q) => ({
+    nameKo: q.nameKo,
+    nameEn: q.nameEn,
+  }));
 
   for (const q of qualifications) {
     const exist = await prisma.businessCardQualification.findFirst({
@@ -61,39 +39,14 @@ export async function seedBusinessCardMasters(
 
   console.log(`✅ [BusinessCard Masters] 자격사항 ${qualifications.length}건 처리 완료`);
 
-  const companyAddresses: {
-    label: string;
-    zipCode: string;
-    addressKo: string;
-    addressEn: string;
-    fax: string;
-    faxEn: string;
-  }[] = [
-    {
-      label: '12F(경영)',
-      zipCode: '04513',
-      addressKo: '서울특별시 중구 세종대로 39 대한상공회의소빌딩 12층',
-      addressEn: '12F, KCCI Buiding, Sejong-daero 39, Seoul, 04513 Korea',
-      fax: '02-6973-9099',
-      faxEn: '+82-2-6973-9099',
-    },
-    {
-      label: '11F',
-      zipCode: '04513',
-      addressKo: '서울특별시 중구 세종대로 39 대한상공회의소빌딩 11층',
-      addressEn: '11F, KCCI Buiding, Sejong-daero 39, Seoul, 04513 Korea',
-      fax: '02-6973-9098',
-      faxEn: '+82-2-6973-9098',
-    },
-    {
-      label: '12F',
-      zipCode: '04513',
-      addressKo: '서울특별시 중구 세종대로 39 대한상공회의소빌딩 12층',
-      addressEn: '12F, KCCI Buiding, Sejong-daero 39, Seoul, 04513 Korea',
-      fax: '02-6973-9097',
-      faxEn: '+82-2-6973-9097',
-    },
-  ];
+  const companyAddresses = SEED_COMPANY_ADDRESSES.map((addr) => ({
+    label: addr.label,
+    zipCode: addr.zipCode,
+    addressKo: addr.addressKo,
+    addressEn: addr.addressEn,
+    fax: addr.fax,
+    faxEn: addr.faxEn,
+  }));
 
   for (const addr of companyAddresses) {
     const exist = await prisma.companyAddress.findFirst({

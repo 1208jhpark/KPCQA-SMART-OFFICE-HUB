@@ -873,7 +873,7 @@ const formatAnswerForExport = (ans: any) => {
               canEdit ? 'bg-blue-500 text-white hover:bg-blue-400' : 'bg-slate-300 text-slate-500 cursor-not-allowed'
             }`}
           >
-            + 새로운 설문 작성
+            + 새로운 설문 작성(Edit)
           </button>
         </div>
         <div className="overflow-x-auto">
@@ -985,8 +985,8 @@ const formatAnswerForExport = (ans: any) => {
      
                     <td className="py-2 pr-4 align-middle bg-slate-50/50">
                       <div className="flex items-center justify-center gap-1 w-full">
-                        <button onClick={() => setEditModal(s)} disabled={s.status === '진행중' || s.status === '완료'} className={`flex-1 py-1.5 rounded text-[9px] font-black whitespace-nowrap transition-all ${s.status === '게시전' || s.status === '게시중단' ? 'bg-white border border-slate-300 text-slate-700 shadow-sm hover:bg-slate-100' : 'bg-slate-200 text-slate-400 cursor-not-allowed border border-transparent'}`}>수정</button>
-                        <button onClick={() => handleDeleteSurvey(s.id)} disabled={s.hasBeenPublished} className={`flex-1 py-1.5 rounded text-[9px] font-black whitespace-nowrap transition-all ${!s.hasBeenPublished ? 'bg-white border border-red-200 text-red-500 shadow-sm hover:bg-red-50' : 'bg-slate-200 text-slate-400 cursor-not-allowed border border-transparent'}`}>삭제</button>
+                        <button onClick={() => setEditModal(s)} disabled={s.status === '진행중' || s.status === '완료'} className={`flex-1 py-1.5 rounded text-[9px] font-black whitespace-nowrap transition-all ${s.status === '게시전' || s.status === '게시중단' ? 'bg-white border border-slate-300 text-slate-700 shadow-sm hover:bg-slate-100' : 'bg-slate-200 text-slate-400 cursor-not-allowed border border-transparent'}`}>수정(Edit)</button>
+                        <button onClick={() => handleDeleteSurvey(s.id)} disabled={s.hasBeenPublished} className={`flex-1 py-1.5 rounded text-[9px] font-black whitespace-nowrap transition-all ${!s.hasBeenPublished ? 'bg-white border border-red-200 text-red-500 shadow-sm hover:bg-red-50' : 'bg-slate-200 text-slate-400 cursor-not-allowed border border-transparent'}`}>삭제(Edit)</button>
                         <button onClick={() => handleStatusChange(s.id, 'ARCHIVE')} disabled={!canEdit || s.status !== '완료'} className={`flex-1 py-1.5 rounded text-[9px] font-black whitespace-nowrap transition-all ${canEdit && s.status === '완료' ? 'bg-slate-800 text-white shadow-sm hover:bg-slate-900' : 'bg-slate-200 text-slate-400 cursor-not-allowed border border-transparent'}`}>보관함이동</button>
                       </div>
                     </td>

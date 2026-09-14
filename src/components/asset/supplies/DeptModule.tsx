@@ -786,7 +786,7 @@ function DeptContent() {
                     onClick={startMemoEdit}
                     className="text-[9px] font-bold text-slate-400 hover:text-indigo-600 transition-colors shrink-0"
                   >
-                    수정
+                    수정(Edit)
                   </button>
                 ) : (
                   <span className="text-[9px] font-bold text-slate-300 shrink-0" title="Edit 권한 필요">

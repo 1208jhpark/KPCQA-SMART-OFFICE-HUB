@@ -12,6 +12,7 @@ export const dynamic = 'force-dynamic';
 const MASTER_PATH = '/asset/production/master/dashboard';
 const READ_PATHS = [
   '/asset/production/master/dashboard',
+  '/asset/production/dept-master/settlement',
   '/asset/production/dept-master/archive',
   '/asset/production/master/archive',
 ];
@@ -146,9 +147,12 @@ export async function POST(req: Request) {
 
     const currentList = await getStatementMetaList();
 
-    // 동일 코너 + 동일 외주업체 기존 등록 파일 검색
+    // 동일 코너 + 동일 외주업체 + 동일 파일명인 경우에만 기존 파일을 교체, 파일명이 다르면 여러 개 파일 공존 허용
     const existingIndex = currentList.findIndex(
-      (item) => item.category === category && item.vendorName.toLowerCase() === vendorName.toLowerCase()
+      (item) =>
+        item.category === category &&
+        item.vendorName.toLowerCase() === vendorName.toLowerCase() &&
+        item.fileName.toLowerCase() === file.name.toLowerCase()
     );
 
     if (existingIndex >= 0) {

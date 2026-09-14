@@ -4,6 +4,10 @@ import {
   authorizeAnyMenuPaths,
   authErrorToResponse,
 } from '@/lib/server-auth-guard';
+import {
+  isSeedJebonSizeCode,
+  SEED_JEBON_SIZE_DEFAULTS,
+} from '@/lib/production-seed-jebon-sizes';
 
 export const dynamic = 'force-dynamic';
 
@@ -12,25 +16,9 @@ const READ_PATHS = [
   '/asset/production/apply/history',
   '/asset/production/dept-master/order',
   '/asset/production/dept-master/inspection',
+  '/asset/production/dept-master/settlement',
   '/asset/production/dept-master/archive',
 ];
-
-/** 시드(seed-production-masters) 등록 순서 · LV_1 삭제 대상 */
-const SEED_JEBON_SIZE_CODES = new Set([
-  'A4',
-  'B5',
-  'A5',
-  'B6',
-  '16절',
-  '비규격',
-]);
-
-const SEED_JEBON_SIZE_ORDER = [...SEED_JEBON_SIZE_CODES];
-
-function jebonSizeSortRank(code: string) {
-  const idx = (SEED_JEBON_SIZE_ORDER as readonly string[]).indexOf(code);
-  return idx >= 0 ? idx : SEED_JEBON_SIZE_ORDER.length + 100;
-}
 
 function jebonSizeDbErrorMessage(error: unknown, fallback: string) {
   if (error && typeof error === 'object' && 'code' in error) {
@@ -51,11 +39,7 @@ export async function GET() {
     await authorizeAnyMenuPaths(READ_PATHS);
     const rows = await prisma.productionJebonSizeMaster.findMany({
       where: { isActive: true },
-    });
-    rows.sort((a, b) => {
-      const bySeed = jebonSizeSortRank(a.code) - jebonSizeSortRank(b.code);
-      if (bySeed !== 0) return bySeed;
-      return a.label.localeCompare(b.label, 'ko');
+      orderBy: { createdAt: 'asc' },
     });
     return NextResponse.json(rows);
   } catch (error) {
@@ -72,6 +56,51 @@ export async function GET() {
 export async function POST(req: Request) {
   try {
     const body = await req.json();
+
+    // 시드 누락분 복구: 없으면 추가, 비활성만 재활성 (종류·규격·설명 보존)
+    if (body?.action === 'restore-seeds') {
+      const auth = await authorizeAnyMenuPaths(READ_PATHS, { requireEditor: true });
+      void auth;
+
+      let created = 0;
+      let reactivated = 0;
+
+      for (const size of SEED_JEBON_SIZE_DEFAULTS) {
+        const existing = await prisma.productionJebonSizeMaster.findUnique({
+          where: { code: size.code },
+        });
+        if (!existing) {
+          await prisma.productionJebonSizeMaster.create({
+            data: {
+              code: size.code,
+              label: size.label,
+              size: size.size,
+              description: size.description,
+              isActive: true,
+            },
+          });
+          created += 1;
+          continue;
+        }
+        if (!existing.isActive) {
+          await prisma.productionJebonSizeMaster.update({
+            where: { code: size.code },
+            data: { isActive: true },
+          });
+          reactivated += 1;
+        }
+      }
+
+      return NextResponse.json({
+        message:
+          created + reactivated === 0
+            ? '복구할 시드 판형이 없습니다. (이미 모두 활성)'
+            : `시드 판형 복구 완료 (신규 ${created}건, 재활성 ${reactivated}건)`,
+        created,
+        reactivated,
+      });
+    }
+
     const code = String(body.code || '').trim();
     const label = String(body.label || '').trim();
     if (!code || !label) {
@@ -124,8 +153,7 @@ export async function DELETE(req: Request) {
       );
     }
 
-    const isSeed = SEED_JEBON_SIZE_CODES.has(code);
-    if (isSeed) {
+    if (isSeedJebonSizeCode(code)) {
       const isLv1OrMaster =
         auth.permission.isMaster || auth.permission.myRole === 'LV_1';
       if (!isLv1OrMaster) {

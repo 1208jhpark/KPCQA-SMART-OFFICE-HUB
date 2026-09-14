@@ -89,7 +89,7 @@ export default function ProductionMasterShell({
           </h1>
           <p className="text-emerald-100/90 text-xs mt-3 leading-relaxed">
             {pageHint ||
-              '각 부서에서 발주·수령 검수 완료 후 이관된 제작 묶음을 모아 명세 대조·정산 상태를 관리하는 마스터 컨트롤 허브입니다.'}
+              '각 부서에서 발주·수령검수 완료 후 이관된 제작 묶음을 모아 명세 대조·정산 상태를 관리하는 마스터 컨트롤 허브입니다.'}
           </p>
           {permissionSummary && (
             <div className="flex flex-wrap items-center gap-2 mt-4 pt-3 border-t border-white/15">

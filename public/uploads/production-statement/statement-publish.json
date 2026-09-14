@@ -1,0 +1,20 @@
+{
+  "JEBON": {
+    "category": "JEBON",
+    "published": false,
+    "updatedAt": "2026-09-14T04:16:53.219Z",
+    "updatedBy": "관리자"
+  },
+  "SIGN": {
+    "category": "SIGN",
+    "published": true,
+    "updatedAt": "2026-09-14T04:19:03.683Z",
+    "updatedBy": "관리자"
+  },
+  "OFFICE_SUPPLIES": {
+    "category": "OFFICE_SUPPLIES",
+    "published": true,
+    "updatedAt": "2026-09-14T04:35:32.765Z",
+    "updatedBy": "관리자"
+  }
+}

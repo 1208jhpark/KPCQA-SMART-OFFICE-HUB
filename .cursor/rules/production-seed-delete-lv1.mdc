@@ -1,0 +1,38 @@
+---
+description: marketing/equipment/survey/asset 버튼에 Edit·LV_1 권한 표기
+globs: src/components/{asset,marketing,equipment,survey}/**/*.{ts,tsx},src/app/(service)/{asset,marketing,equipment,survey}/**/*.{ts,tsx},src/app/api/{asset,marketing,equipment,survey}/**/*.ts
+alwaysApply: false
+---
+
+# Interface Edit / LV_1 button labels
+
+Users confuse who can click which button. Put the permission **in the button label**, not only in tooltips.
+
+Applies under `/asset`, `/marketing`, `/equipment`, `/survey` (and matching components).
+
+## Label convention
+
+| Who can use it | Button label examples |
+|---|---|
+| Anyone with menu access | `+ 신규 등록` (no suffix) when create is ungated |
+| Edit permission (`isEditor` / interface Edit) | `수정(Edit)`, `삭제(Edit)`, `복구(Edit)`, `복원(Edit)`, `…설정(Edit)`, `…관리(Edit)`, Edit-gated `+ 신규 …(Edit)` |
+| LV_1 / menu Master only | `삭제(LV_1)`, `영구삭제(LV_1)` |
+
+- Prefer **`Edit`** (title case), not `EDIT`.
+- Prefer **`LV_1`** as the role code.
+- Do **not** leave plain `수정` / `삭제` on Edit-gated master/settings row actions.
+- **Settings panel openers** that anyone may open to **view** (and where create may be ungated inside) must **not** use `(Edit)` on the entry button — e.g. production apply `현판 품목/규격/단가 설정`, `인증별 … 설정`, `업체관리 설정`. Put `(Edit)` / `(LV_1)` only on actions inside the panel that are actually gated.
+- **Dense table action columns** (many short buttons, risk of wrap): put `(Edit)` on the **column header** once (e.g. `신청내역 (Edit)`, `상태 (Edit)`), keep button labels plain (`원문 확인`, `반려`), and still gate clicks with Edit. Prefer this over repeating `(Edit)` on every cell button.
+- Icon-only gears: keep compact UI if needed, but visible text or `title` must include `(Edit)` when the control itself requires Edit.
+- Leave plain: `닫기` / `취소`, workflow CTAs when header already marks the column, applicant self-edit.
+- Detail modals: open/edit actions Edit-gated; `editPermissionTag="Edit"` only when `allowEdit` is interface Edit.
+
+## Seed delete = LV_1
+
+- Seed rows: `삭제(LV_1)` + LV_1/Master only.
+- User-added rows: `삭제(Edit)` + Edit only.
+- Mirror checks on DELETE APIs.
+
+## Seed restore (missing only)
+
+Prefer **시드 항목 복구(Edit)** over full reset for shared masters (e.g. Signage plates in `src/lib/production-seed-plates.ts`).

@@ -901,7 +901,7 @@ export default function ClientSearchModule() {
                               className="px-1.5 py-0.5 flex items-center justify-center bg-indigo-600 text-white rounded-md text-[9px] font-black hover:bg-slate-800 shadow-sm whitespace-nowrap"
                               title="부서 추가"
                             >
-                              부서+
+                              부서+(Edit)
                             </button>
                           )}
                         </div>
@@ -945,7 +945,7 @@ export default function ClientSearchModule() {
                           <div className="flex justify-center items-center gap-1 flex-nowrap">
                             {canEditMaster && (
                               <>
-                                <button onClick={() => { setEditClient(client); setFormData({name:client.name, location:client.location||'', category:client.category||''}); setShowModal(true); }} className="px-3 py-1 bg-white border border-slate-200 text-slate-600 rounded-lg text-[9px] font-black hover:bg-slate-50 transition-colors shadow-sm whitespace-nowrap">수정</button>
+                                <button onClick={() => { setEditClient(client); setFormData({name:client.name, location:client.location||'', category:client.category||''}); setShowModal(true); }} className="px-3 py-1 bg-white border border-slate-200 text-slate-600 rounded-lg text-[9px] font-black hover:bg-slate-50 transition-colors shadow-sm whitespace-nowrap">수정(Edit)</button>
                                 <button onClick={() => handleArchiveClient(client.id)} className="px-3 py-1 bg-slate-50 border border-slate-200 text-slate-400 rounded-lg text-[9px] font-black hover:bg-slate-200 transition-colors shadow-sm whitespace-nowrap">보관함</button>
                               </>
                             )}
@@ -971,7 +971,7 @@ export default function ClientSearchModule() {
                         ) : (
                           <div className="flex justify-center items-center gap-1 flex-nowrap">
                             {canEditMaster && (
-                              <button onClick={() => handleRestoreClient(client.id)} className="px-3 py-1 bg-white border border-slate-200 text-slate-600 rounded-lg text-[9px] font-black hover:bg-slate-50 transition-colors shadow-sm whitespace-nowrap">복구</button>
+                              <button onClick={() => handleRestoreClient(client.id)} className="px-3 py-1 bg-white border border-slate-200 text-slate-600 rounded-lg text-[9px] font-black hover:bg-slate-50 transition-colors shadow-sm whitespace-nowrap">복구(Edit)</button>
                             )}
                             {canHardDeleteClient() && (
                               clientHasDistributions(client) ? (
@@ -1032,7 +1032,7 @@ export default function ClientSearchModule() {
                                     onClick={() => setDeptModal({ isOpen: true, client, deptIndex: originalIndex, name: dept.name })}
                                     className="px-1.5 py-1 bg-white border border-slate-200 rounded text-[9px] font-black text-slate-500 hover:bg-indigo-600 hover:text-white shadow-sm transition-colors whitespace-nowrap"
                                   >
-                                    부서명수정
+                                    부서명수정(Edit)
                                   </button>
                                   {(dept.name !== "전사" || dept.is_hidden) && (
                                     <button
@@ -1040,7 +1040,7 @@ export default function ClientSearchModule() {
                                       onClick={() => handleToggleDeptHide(client, originalIndex)}
                                       className={`px-1.5 py-1 border rounded text-[9px] font-black shadow-sm transition-colors whitespace-nowrap ${dept.is_hidden ? 'bg-indigo-50 border-indigo-200 text-indigo-600 hover:bg-indigo-600 hover:text-white' : 'bg-white border-slate-200 text-slate-400 hover:bg-slate-600 hover:text-white'}`}
                                     >
-                                      {dept.is_hidden ? '숨김복구' : '부서숨김'}
+                                      {dept.is_hidden ? '숨김복구(Edit)' : '부서숨김(Edit)'}
                                     </button>
                                   )}
                                   {dept.name !== "전사" && (
@@ -1049,7 +1049,7 @@ export default function ClientSearchModule() {
                                       onClick={() => handleDeleteDept(client, dept.name)}
                                       className="px-1.5 py-1 bg-red-50 border border-red-100 text-red-400 rounded text-[9px] font-black hover:bg-red-500 hover:text-white transition-colors shadow-sm whitespace-nowrap"
                                     >
-                                      삭제
+                                      삭제(Edit)
                                     </button>
                                   )}
                               </div>

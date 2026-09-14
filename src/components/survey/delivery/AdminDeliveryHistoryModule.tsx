@@ -578,7 +578,7 @@ export default function AdminDeliveryHistoryModule() {
                     <td className="py-2 px-2 text-center align-middle"><span className="px-2 py-0.5 rounded font-black text-[9px] bg-slate-200 text-slate-600">{s.status}</span></td>
                     
                     <td className="py-2 px-2 text-center align-middle border-l border-slate-200">
-                      <button onClick={() => handleRestore(s.id)} disabled={!canEdit} className={`w-full py-1.5 border rounded transition-all font-black text-[9px] whitespace-nowrap shadow-sm ${canEdit ? 'border-slate-300 bg-white text-slate-700 hover:bg-slate-900 hover:text-white' : 'border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed'}`}>🔄 복원</button>
+                      <button onClick={() => handleRestore(s.id)} disabled={!canEdit} className={`w-full py-1.5 border rounded transition-all font-black text-[9px] whitespace-nowrap shadow-sm ${canEdit ? 'border-slate-300 bg-white text-slate-700 hover:bg-slate-900 hover:text-white' : 'border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed'}`}>🔄 복원(Edit)</button>
                     </td>
                     
                     <td className="py-2 px-2 align-middle bg-slate-50/20">

@@ -5,6 +5,10 @@ import {
   authorizeAnyMenuPaths,
   authErrorToResponse,
 } from '@/lib/server-auth-guard';
+import {
+  getSeedCertDefaultsForType,
+  isSeedCertId,
+} from '@/lib/production-seed-certs';
 
 export const dynamic = 'force-dynamic';
 
@@ -14,26 +18,11 @@ const READ_PATHS = [
   '/asset/production/apply/history',
   '/asset/production/dept-master/order',
   '/asset/production/dept-master/inspection',
+  '/asset/production/dept-master/settlement',
   '/asset/production/dept-master/archive',
 ];
 
-/** 시드 인증 — 삭제 시 LV_1/메뉴 Master 필요 */
-const SEED_CERT_IDS = new Set([
-  'GSEED',
-  'BF',
-  'CONDENDSATION',
-  'EDUCATIONAL',
-  'ENERGY',
-  'OLD_ZEB',
-  'INTEGRATED_ZEB',
-  'ISO',
-  'NORMAL',
-  'GSEED_JEBON',
-  'ENERGY_JEBON',
-  'OLD_ZEB_JEBON',
-  'INTEGRATED_ZEB_JEBON',
-]);
-
+/** 시드 인증 — 삭제 시 LV_1/메뉴 Master 필요 (isSeedCertId) */
 type MultiGradeRow = { certId: string; useMultiGradeSelect: boolean };
 type LinkedPlatesRow = { certId: string; linkedPlateCodes: unknown };
 
@@ -266,19 +255,103 @@ export async function GET() {
 export async function POST(req: Request) {
   try {
     const body = await req.json();
+
+    // 시드 누락분 복구: 없으면 추가, 비활성만 재활성 (명칭·서식·등급 등 보존)
+    if (body?.action === 'restore-seeds') {
+      await authorizeApi(MENU_PATH, { requireEditor: true });
+      const type = String(body.type || '').trim().toUpperCase();
+      if (type !== 'SIGN' && type !== 'JEBON') {
+        return NextResponse.json(
+          { message: 'type은 SIGN 또는 JEBON 이어야 합니다.' },
+          { status: 400 }
+        );
+      }
+
+      const seeds = getSeedCertDefaultsForType(type);
+      let created = 0;
+      let reactivated = 0;
+
+      for (const cert of seeds) {
+        const existing = await prisma.productionCertMaster.findUnique({
+          where: { certId: cert.certId },
+        });
+        if (!existing) {
+          const createData: Record<string, unknown> = {
+            certId: cert.certId,
+            type: cert.type,
+            label: cert.label,
+            format: cert.format,
+            jebonFormat: cert.jebonFormat,
+            grades: [...cert.grades],
+            useCertNumber: cert.useCertNumber,
+            useValidPeriod: cert.useValidPeriod,
+            useMultiGradeSelect: cert.useMultiGradeSelect,
+            isActive: true,
+          };
+          if (cert.type === 'JEBON' && 'jebonDefaultSizeType' in cert) {
+            Object.assign(createData, {
+              jebonDefaultSizeType: cert.jebonDefaultSizeType,
+              jebonDefaultQuantity: cert.jebonDefaultQuantity,
+              useJebonCover: cert.useJebonCover,
+              useJebonCoverDate: cert.useJebonCoverDate,
+              jebonCoverColor: cert.jebonCoverColor,
+              jebonCoverPageCount: cert.jebonCoverPageCount,
+              jebonInnerColor: cert.jebonInnerColor,
+            });
+          }
+          await prisma.productionCertMaster.create({
+            data: createData as any,
+          });
+          created += 1;
+          continue;
+        }
+        if (!existing.isActive) {
+          // 재활성 시 GRADE 패널(grades·복수선택)도 시드 기본값으로 맞춤
+          // (삭제 전 등급을 지운 상태로 비활성된 경우를 복구)
+          await prisma.productionCertMaster.update({
+            where: { certId: cert.certId },
+            data: {
+              isActive: true,
+              grades: [...cert.grades],
+              useMultiGradeSelect: cert.useMultiGradeSelect,
+            },
+          });
+          reactivated += 1;
+        }
+      }
+
+      return NextResponse.json({
+        message:
+          created + reactivated === 0
+            ? '복구할 시드 인증이 없습니다. (이미 모두 활성)'
+            : `시드 인증 복구 완료 (신규 ${created}건, 재활성 ${reactivated}건 · 등급 시드 반영)`,
+        created,
+        reactivated,
+      });
+    }
+
     const certId = String(body.certId || '').trim();
     const type = String(body.type || '').trim().toUpperCase();
-    const label = String(body.label || '').trim();
-    if (!certId || !label) {
+    const viewerWritable = body.viewerWritable === true;
+    let label = String(body.label || '').trim();
+    if (!certId || (!label && !viewerWritable)) {
       return NextResponse.json({ message: '인증 ID와 명칭은 필수입니다.' }, { status: 400 });
     }
     if (type !== 'SIGN' && type !== 'JEBON') {
       return NextResponse.json({ message: 'type은 SIGN 또는 JEBON 이어야 합니다.' }, { status: 400 });
     }
 
-    // 신규 등록·수정 모두 Edit 권한 필요
+    // 신규·viewerWritable(등급/입력방식/품목연결)은 메뉴 접근만, 그 외 수정은 Edit
     const existing = await prisma.productionCertMaster.findUnique({ where: { certId } });
-    await authorizeApi(MENU_PATH, { requireEditor: true });
+    await authorizeApi(MENU_PATH, {
+      requireEditor: !!existing && !viewerWritable,
+    });
+
+    if (viewerWritable && existing) {
+      label = existing.label;
+    } else if (!label) {
+      return NextResponse.json({ message: '인증 ID와 명칭은 필수입니다.' }, { status: 400 });
+    }
 
     const grades = Array.isArray(body.grades)
       ? body.grades.map((g: unknown) => String(g))
@@ -288,17 +361,21 @@ export async function POST(req: Request) {
           : []
         : [];
     const useCertNumber =
-      body.useCertNumber !== undefined
-        ? Boolean(body.useCertNumber)
-        : existing
-          ? existing.useCertNumber
-          : true;
+      viewerWritable && existing
+        ? existing.useCertNumber
+        : body.useCertNumber !== undefined
+          ? Boolean(body.useCertNumber)
+          : existing
+            ? existing.useCertNumber
+            : true;
     const useValidPeriod =
-      body.useValidPeriod !== undefined
-        ? Boolean(body.useValidPeriod)
-        : existing
-          ? existing.useValidPeriod
-          : true;
+      viewerWritable && existing
+        ? existing.useValidPeriod
+        : body.useValidPeriod !== undefined
+          ? Boolean(body.useValidPeriod)
+          : existing
+            ? existing.useValidPeriod
+            : true;
     const existingMultiGrade = existing ? await loadMultiGradeFlag(certId) : false;
     const useMultiGradeSelect =
       body.useMultiGradeSelect !== undefined
@@ -310,11 +387,17 @@ export async function POST(req: Request) {
         ? normalizeLinkedPlateCodes(body.linkedPlateCodes)
         : existingLinkedPlates;
     const format =
-      body.format !== undefined ? String(body.format) : existing?.format ?? '';
+      viewerWritable && existing
+        ? existing.format ?? ''
+        : body.format !== undefined
+          ? String(body.format)
+          : existing?.format ?? '';
     const jebonFormat =
-      body.jebonFormat !== undefined
-        ? String(body.jebonFormat)
-        : existing?.jebonFormat ?? '';
+      viewerWritable && existing
+        ? existing.jebonFormat ?? ''
+        : body.jebonFormat !== undefined
+          ? String(body.jebonFormat)
+          : existing?.jebonFormat ?? '';
 
     const existingJebon = existing
       ? await loadJebonFormFlags(certId)
@@ -328,7 +411,17 @@ export async function POST(req: Request) {
           jebonCoverPageCount: '1',
           jebonInnerColor: '흑백',
         };
-    const jebonFlags = {
+    const jebonFlags = viewerWritable && existing
+      ? {
+          jebonDefaultSizeType: existingJebon.jebonDefaultSizeType,
+          jebonDefaultQuantity: Number(existingJebon.jebonDefaultQuantity) || 1,
+          useJebonCover: existingJebon.useJebonCover,
+          useJebonCoverDate: existingJebon.useJebonCoverDate,
+          jebonCoverColor: existingJebon.jebonCoverColor,
+          jebonCoverPageCount: existingJebon.jebonCoverPageCount,
+          jebonInnerColor: existingJebon.jebonInnerColor,
+        }
+      : {
       jebonDefaultSizeType:
         body.jebonDefaultSizeType !== undefined
           ? String(body.jebonDefaultSizeType)
@@ -410,7 +503,7 @@ export async function DELETE(req: Request) {
     const certId = searchParams.get('certId');
     if (!certId) return NextResponse.json({ message: 'ID가 필요합니다.' }, { status: 400 });
 
-    if (SEED_CERT_IDS.has(certId)) {
+    if (isSeedCertId(certId)) {
       const isLv1OrMaster =
         auth.permission.isMaster || auth.permission.myRole === 'LV_1';
       if (!isLv1OrMaster) {

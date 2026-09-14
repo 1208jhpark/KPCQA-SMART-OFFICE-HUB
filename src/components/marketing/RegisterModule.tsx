@@ -896,10 +896,10 @@ function RegisterContent() {
                   <button
                     type="button"
                     onClick={() => setGroupwareShortcutEditor(groupwareShortcutUrl)}
-                    title="그룹웨어 바로가기 경로 설정"
-                    className="self-end w-7 h-7 inline-flex items-center justify-center rounded-lg bg-slate-100 text-slate-600 text-[12px] font-black hover:bg-slate-200 border border-slate-200"
+                    title="그룹웨어 바로가기 경로 설정(Edit)"
+                    className="self-end w-auto min-w-[7rem] h-7 px-2 inline-flex items-center justify-center rounded-lg bg-slate-100 text-slate-600 text-[10px] font-black hover:bg-slate-200 border border-slate-200"
                   >
-                    ⚙
+                    ⚙ 설정(Edit)
                   </button>
                   <a
                     href={groupwareShortcutUrl}

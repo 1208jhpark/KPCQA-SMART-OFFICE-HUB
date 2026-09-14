@@ -40,7 +40,7 @@ const DISABLED_ACTION_BTN =
   'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed';
 
 const HISTORY_CATEGORIES = [
-  { id: 'ALL', label: '접수 대기', icon: '⏳' },
+  { id: 'ALL', label: '접수대기', icon: '⏳' },
   { id: 'SIGN', label: '현판/명판/상패 발주 대기', icon: '📛' },
   { id: 'JEBON', label: '제본 발주 대기', icon: '📚' },
   { id: 'PRINT', label: '기타 제작물 발주 대기', icon: '📜' },
@@ -304,7 +304,7 @@ export default function DeptOrderPanel() {
     if (!canEdit) return alert('접수 권한(Edit)이 없습니다.');
     if (
       !confirm(
-        `[${row.postNumber}] 접수 완료 처리하시겠습니까?\n접수 후 ${getCategoryLabel(row.category)} 탭(발주대기)에서 확인·발주할 수 있습니다.`
+        `[${row.postNumber}] 접수확정 처리하시겠습니까?\n접수확정 후 ${getCategoryLabel(row.category)} 탭(발주대기)에서 확인·발주할 수 있습니다.`
       )
     ) {
       return;
@@ -318,7 +318,7 @@ export default function DeptOrderPanel() {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        alert(data.message || '접수 처리에 실패했습니다.');
+        alert(data.message || '접수확정 처리에 실패했습니다.');
         return;
       }
       setRequests((prev) =>
@@ -349,10 +349,10 @@ export default function DeptOrderPanel() {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        alert(data.message || '반려 처리에 실패했습니다.');
+        alert(data.message || '신청반려 처리에 실패했습니다.');
         return;
       }
-      alert(`[${rejectTarget.postNumber}] 반려 처리했습니다.`);
+      alert(`[${rejectTarget.postNumber}] 신청반려 처리했습니다.`);
       setRequests((prev) =>
         prev.map((r) =>
           r.id === rejectTarget.id
@@ -453,28 +453,9 @@ export default function DeptOrderPanel() {
       return;
     }
 
-    const allPrint = selectedRequests.every((r) => r.category === 'PRINT');
-    const hasPrint = selectedRequests.some((r) => r.category === 'PRINT');
-
-    if (allPrint) {
-      if (
-        !confirm(
-          `선택한 기타 제작물 ${ids.length}건을 각각 개별 발주하시겠습니까?\n발주/수령 검수 탭에는 건별로 별도 묶음이 생성됩니다.`
-        )
-      ) {
-        return;
-      }
-    } else if (hasPrint) {
-      if (
-        !confirm(
-          `선택 ${ids.length}건 중 기타 제작물은 건별 개별 발주, 나머지는 한 묶음으로 발주됩니다.\n계속하시겠습니까?`
-        )
-      ) {
-        return;
-      }
-    } else if (
+    if (
       !confirm(
-        `선택한 ${ids.length}건을 묶음 발주 처리하시겠습니까?\n발주 후 발주/수령 검수 탭의 외주 발주 묶음 관리 대장으로 이동합니다.`
+        `선택한 ${ids.length}건을 묶음 발주 처리하시겠습니까?\n발주 후 발주/수령검수 탭의 외주 발주 묶음 관리 대장으로 이동합니다.`
       )
     ) {
       return;
@@ -493,12 +474,9 @@ export default function DeptOrderPanel() {
       return;
     }
 
-    const isPrint = item.category === 'PRINT';
     if (
       !confirm(
-        isPrint
-          ? `[${item.postNumber}] 기타 제작물을 개별 발주하시겠습니까?\n발주/수령 검수 탭에 단독 묶음으로 생성됩니다.`
-          : `[${item.postNumber}] 발주 처리하시겠습니까?\n발주 후 발주/수령 검수 탭에서 확인합니다.`
+        `[${item.postNumber}] 발주 처리하시겠습니까?\n발주 후 발주/수령검수 탭에서 확인합니다.`
       )
     ) {
       return;
@@ -509,11 +487,11 @@ export default function DeptOrderPanel() {
   };
 
   const handleRevertAccept = async (item: ProductionRequestRow) => {
-    if (!canEdit) return alert('접수 취소 권한(Edit)이 없습니다.');
+    if (!canEdit) return alert('접수취소 권한(Edit)이 없습니다.');
     if (item.status !== PRODUCTION_STATUS.ACCEPTED) return;
     if (
       !confirm(
-        `[${item.postNumber}] 접수를 취소하고 신청(접수 대기) 탭으로 되돌릴까요?`
+        `[${item.postNumber}] 접수를 취소하고 신청(접수대기) 탭으로 되돌릴까요?`
       )
     ) {
       return;
@@ -527,7 +505,7 @@ export default function DeptOrderPanel() {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        alert(data.message || '접수 취소에 실패했습니다.');
+        alert(data.message || '접수취소에 실패했습니다.');
         return;
       }
       setRequests((prev) =>
@@ -645,14 +623,14 @@ export default function DeptOrderPanel() {
   const tabCountTitle = (catId: string) => {
     const n = getTabBadgeCount(catId);
     if (n <= 0) return undefined;
-    return catId === 'ALL' ? `접수 대기 ${n}건` : `발주대기 ${n}건`;
+    return catId === 'ALL' ? `접수대기 ${n}건` : `발주대기 ${n}건`;
   };
 
   return (
     <ProductionDeptShell
       pageHint={
         <>
-          [접수대기] 부서원의 외주 발주 접수건 (원문 검수) 검토 후 접수 → [발주 대기] 개별 또는 묶음 발주 합니다. (배송지 일괄 지정 가능)
+          [접수대기] 부서원의 외주 발주 접수건 (원문검수) 검토 후 접수확정 → [발주대기] 개별 또는 묶음 발주 합니다. (배송지 일괄 지정 가능)
         </>
       }
     >
@@ -822,7 +800,7 @@ export default function DeptOrderPanel() {
                   </th>
                   <th className="h-12 px-2 text-center whitespace-nowrap">외주업체</th>
                   <th className="h-12 px-2 text-center whitespace-nowrap">공정상태</th>
-                  <th className="h-12 px-2 text-center whitespace-nowrap">액션</th>
+                  <th className="h-12 px-2 text-center whitespace-nowrap">관리액션(Edit)</th>
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-slate-100 text-[11px] font-bold text-slate-700">
@@ -830,8 +808,8 @@ export default function DeptOrderPanel() {
                   <tr>
                     <td colSpan={13} className="p-16 text-center text-slate-400 text-xs">
                       {activeCategory === 'ALL'
-                        ? '접수 대기 중인 신규 신청이 없습니다.'
-                        : '발주대기(접수완료) 건이 없습니다. ⏳ 접수 대기중 탭에서 접수 후 이 분류 탭을 확인해 주세요.'}
+                        ? '접수대기 중인 신규 신청이 없습니다.'
+                        : '발주대기(접수완료) 건이 없습니다. ⏳ 접수대기 탭에서 접수 후 이 분류 탭을 확인해 주세요.'}
                     </td>
                   </tr>
                 ) : (
@@ -883,9 +861,9 @@ export default function DeptOrderPanel() {
                             <button
                               type="button"
                               onClick={() => setDetailItem(item)}
-                              className="px-2.5 py-1 text-[10px] font-bold rounded-lg transition-colors bg-blue-600 text-white border border-blue-600 hover:bg-blue-700"
+                              className="px-2.5 py-1 text-[10px] font-bold rounded-lg shadow-sm transition-colors bg-rose-600 text-white hover:bg-rose-700"
                             >
-                              원문 검수
+                              원문검수
                             </button>
                           ) : (
                             <button
@@ -893,7 +871,7 @@ export default function DeptOrderPanel() {
                               onClick={() => setDetailItem(item)}
                               className="px-2.5 py-1 text-[10px] font-bold rounded-lg transition-colors bg-slate-200 text-slate-600 hover:bg-slate-300 border border-slate-300"
                             >
-                              원문 확인
+                              원문확인
                             </button>
                           )}
                         </td>
@@ -921,31 +899,31 @@ export default function DeptOrderPanel() {
                                 disabled={!canEdit || actionBusyId === item.id}
                                 title={!canEdit ? '편집 권한 필요' : undefined}
                                 onClick={() => handleApprove(item)}
-                                className={`inline-flex items-center gap-1 px-2 py-1 text-[10px] font-black rounded-lg transition-colors ${
+                                className={`inline-flex items-center gap-1 px-2 py-1 text-[10px] font-black rounded-lg transition-colors whitespace-nowrap ${
                                   canEdit
                                     ? 'bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50'
                                     : DISABLED_ACTION_BTN
                                 }`}
                               >
                                 <span>→</span>
-                                <span>{actionBusyId === item.id ? '처리중' : '접수'}</span>
+                                <span>{actionBusyId === item.id ? '처리중' : '접수확정'}</span>
                               </button>
                               <button
                                 type="button"
                                 disabled={!canEdit || actionBusyId === item.id}
                                 title={!canEdit ? '편집 권한 필요' : undefined}
                                 onClick={() => {
-                                  if (!canEdit) return alert('반려 권한(Edit)이 없습니다.');
+                                  if (!canEdit) return alert('신청반려 권한(Edit)이 없습니다.');
                                   setRejectTarget(item);
                                   setRejectReason('');
                                 }}
-                                className={`px-2 py-1 text-[10px] font-black rounded-lg transition-colors ${
+                                className={`px-2 py-1 text-[10px] font-black rounded-lg transition-colors whitespace-nowrap ${
                                   canEdit
                                     ? 'bg-rose-50 border border-rose-200 hover:bg-rose-100 text-rose-600'
                                     : DISABLED_ACTION_BTN
                                 }`}
                               >
-                                반려
+                                신청반려
                               </button>
                             </div>
                           ) : item.status === PRODUCTION_STATUS.ACCEPTED && activeCategory !== 'ALL' ? (
@@ -963,22 +941,21 @@ export default function DeptOrderPanel() {
                               >
                                 <span>→</span>
                                 <span>
-                                  {ordering || actionBusyId === item.id ? '처리중' : '개별 발주 이동'}
+                                  {ordering || actionBusyId === item.id ? '처리중' : '개별발주 이동'}
                                 </span>
                               </button>
                               <button
                                 type="button"
                                 disabled={!canEdit || ordering || actionBusyId === item.id}
-                                title={!canEdit ? '편집 권한 필요' : '신청(접수 대기)로 되돌리기'}
+                                title={!canEdit ? '편집 권한 필요' : '신청(접수대기)로 되돌리기'}
                                 onClick={() => handleRevertAccept(item)}
-                                className={`inline-flex items-center gap-1 px-2 py-1 text-[10px] font-black rounded-lg transition-colors ${
+                                className={`px-2 py-1 text-[10px] font-black rounded-lg transition-colors whitespace-nowrap ${
                                   canEdit
-                                    ? 'bg-slate-100 border border-slate-200 text-slate-600 hover:bg-slate-200 disabled:opacity-50'
+                                    ? 'bg-rose-50 border border-rose-200 hover:bg-rose-100 text-rose-600 disabled:opacity-50'
                                     : DISABLED_ACTION_BTN
                                 }`}
                               >
-                                <span>←</span>
-                                <span>{actionBusyId === item.id ? '처리중' : '접수 취소'}</span>
+                                {actionBusyId === item.id ? '처리중' : '접수취소'}
                               </button>
                             </div>
                           ) : (
@@ -1037,7 +1014,7 @@ export default function DeptOrderPanel() {
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-50 p-4 animate-fade-in">
           <div className="bg-white border border-slate-200 rounded-2xl shadow-xl w-full max-w-md overflow-hidden">
             <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-rose-50">
-              <h3 className="text-sm font-black text-rose-800 tracking-tight">반려 사유 입력</h3>
+              <h3 className="text-sm font-black text-rose-800 tracking-tight">신청반려 사유 입력</h3>
               <button
                 type="button"
                 onClick={() => {
@@ -1083,7 +1060,7 @@ export default function DeptOrderPanel() {
                     : DISABLED_ACTION_BTN
                 }`}
               >
-                {savingReject ? '전송중' : '반려 전송'}
+                {savingReject ? '전송중' : '신청반려 전송'}
               </button>
             </div>
           </div>
@@ -1118,6 +1095,7 @@ export default function DeptOrderPanel() {
           item={detailItem}
           onClose={() => setDetailItem(null)}
           allowEdit={canEdit}
+          editPermissionTag="Edit"
           editableStatuses={['PENDING', 'ACCEPTED']}
           editApiPath="/api/asset/production/dept-master/order"
           onSaved={(updated) => {

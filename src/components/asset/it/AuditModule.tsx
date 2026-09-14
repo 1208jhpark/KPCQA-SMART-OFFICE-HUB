@@ -557,7 +557,7 @@ export default function AuditModule() {
                 : disabledActionClass
             }`}
           >
-            + 신규 실사 계획 수립
+            + 신규 실사 계획 수립(Edit)
           </button>
         </div>
         <div className="overflow-x-auto">
@@ -617,11 +617,11 @@ export default function AuditModule() {
                         {a.status === '작성중' || a.status === '게시중단' ? (
                           <>
                             <button type="button" disabled={!canEdit} title={!canEdit ? '편집 권한 필요' : undefined} onClick={() => handleStatusChange(a.id, 'PUBLISH')} className={`px-3 py-1.5 rounded-lg text-[10px] ${canEdit ? 'bg-indigo-600 text-white hover:bg-indigo-700' : disabledActionClass}`}>배포</button>
-                            <button type="button" disabled={!canEdit} title={!canEdit ? '편집 권한 필요' : undefined} onClick={() => { if (!canEdit) return; setEditModal(a); }} className={`px-3 py-1.5 rounded-lg text-[10px] border ${canEdit ? 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50' : disabledActionClass}`}>수정</button>
+                            <button type="button" disabled={!canEdit} title={!canEdit ? '편집 권한 필요' : undefined} onClick={() => { if (!canEdit) return; setEditModal(a); }} className={`px-3 py-1.5 rounded-lg text-[10px] border ${canEdit ? 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50' : disabledActionClass}`}>수정(Edit)</button>
                           </>
                         ) : a.status === '진행중' ? (
                           <>
-                            <button type="button" disabled={!canEdit} title={!canEdit ? '편집 권한 필요' : undefined} onClick={() => { if (!canEdit) return; setEditModal(a); }} className={`px-3 py-1.5 rounded-lg text-[10px] border ${canEdit ? 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50' : disabledActionClass}`}>수정</button>
+                            <button type="button" disabled={!canEdit} title={!canEdit ? '편집 권한 필요' : undefined} onClick={() => { if (!canEdit) return; setEditModal(a); }} className={`px-3 py-1.5 rounded-lg text-[10px] border ${canEdit ? 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50' : disabledActionClass}`}>수정(Edit)</button>
                             <button type="button" disabled={!canEdit} title={!canEdit ? '편집 권한 필요' : undefined} onClick={() => handleStatusChange(a.id, 'STOP')} className={`px-3 py-1.5 rounded-lg text-[10px] border ${canEdit ? 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50' : disabledActionClass}`}>중단</button>
                             <button type="button" disabled={!canEdit} title={!canEdit ? '편집 권한 필요' : undefined} onClick={() => handleStatusChange(a.id, 'CLOSE')} className={`px-3 py-1.5 rounded-lg text-[10px] ${canEdit ? 'bg-emerald-600 text-white hover:bg-emerald-700' : disabledActionClass}`}>마감</button>
                           </>

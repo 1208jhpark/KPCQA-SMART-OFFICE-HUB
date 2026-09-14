@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import prisma from '@/lib/prisma';
 import { authorizeAnyMenuPaths, authorizeApi, authErrorToResponse } from '@/lib/server-auth-guard';
+import { SEED_COMPANY_ADDRESSES } from '@/lib/businesscard-seed-addresses';
 
 export const dynamic = 'force-dynamic';
 
@@ -31,9 +32,45 @@ export async function GET() {
 
 export async function POST(req: Request) {
   try {
+    const body = await req.json();
+
+    if (body?.action === 'restore-seeds') {
+      await authorizeApi(WRITE_PATH, { requireEditor: true });
+      let created = 0;
+      let reactivated = 0;
+
+      for (const seed of SEED_COMPANY_ADDRESSES) {
+        const existing = await prisma.companyAddress.findFirst({
+          where: { label: seed.label },
+        });
+        if (!existing) {
+          await prisma.companyAddress.create({
+            data: { ...seed, isActive: true },
+          });
+          created += 1;
+          continue;
+        }
+        if (!existing.isActive) {
+          await prisma.companyAddress.update({
+            where: { id: existing.id },
+            data: { isActive: true },
+          });
+          reactivated += 1;
+        }
+      }
+
+      return NextResponse.json({
+        message:
+          created + reactivated === 0
+            ? '복구할 시드 주소가 없습니다. (이미 모두 활성)'
+            : `시드 주소 복구 완료 (신규 ${created}건, 재활성 ${reactivated}건)`,
+        created,
+        reactivated,
+      });
+    }
+
     await authorizeApi(WRITE_PATH, { requireEditor: true });
-    const data = await req.json();
-    const newAddress = await prisma.companyAddress.create({ data });
+    const newAddress = await prisma.companyAddress.create({ data: body });
     return NextResponse.json(newAddress);
   } catch (error) {
     const authRes = authErrorToResponse(error);

@@ -539,7 +539,7 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
                 : 'px-5 py-2 bg-slate-100 text-slate-400 border border-slate-200 rounded-lg text-[11px] font-black cursor-not-allowed opacity-70 flex items-center gap-1.5 shrink-0'
             }
           >
-            + 신규 물품 추가
+            + 신규 물품 추가(Edit)
           </button>
         </div>
      
@@ -725,7 +725,7 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
                                 : disabledActionBtn
                             }
                           >
-                            수정
+                            수정(Edit)
                           </button>
                           <button
                             type="button"
@@ -754,7 +754,7 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
                                   : '편집 권한 필요'
                               }
                             >
-                              삭제
+                              삭제(Edit)
                             </button>
                           )}
                         </div>

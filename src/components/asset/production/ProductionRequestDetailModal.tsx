@@ -122,6 +122,11 @@ type Props = {
   onClose: () => void;
   /** when true and status is in editableStatuses, show 수정/저장 */
   allowEdit?: boolean;
+  /**
+   * Interface Edit 권한으로 수정하는 경우 `Edit` — 버튼에 `수정(Edit)` 표기.
+   * 신청자 본인 수정(이력)은 생략 → `수정`.
+   */
+  editPermissionTag?: 'Edit';
   /** statuses that allow inline edit (default: PENDING only — personal history) */
   editableStatuses?: string[];
   /** PATCH endpoint for save (default: personal apply/history) */
@@ -134,6 +139,7 @@ export default function ProductionRequestDetailModal({
   item,
   onClose,
   allowEdit = false,
+  editPermissionTag,
   editableStatuses = ['PENDING'],
   editApiPath = '/api/asset/production/apply/history',
   onSaved,
@@ -242,17 +248,17 @@ export default function ProductionRequestDetailModal({
   }) => {
     const unitValue = printItem.unitValue || 'VAL_1';
     const unitLabel =
-      unitValue === 'VAL_BOX'
+      unitValue === 'VAL_BOX' || unitValue === 'VAL_2'
         ? 'BOX'
-        : unitValue === 'VAL_SET'
+        : unitValue === 'VAL_SET' || unitValue === 'VAL_4'
           ? 'SET'
-          : unitValue === 'VAL_PACK'
+          : unitValue === 'VAL_PACK' || unitValue === 'VAL_5'
             ? 'PACK'
-            : unitValue === 'VAL_BOOK'
+            : unitValue === 'VAL_BOOK' || unitValue === 'VAL_7'
               ? '권'
-              : unitValue === 'VAL_SHEET'
+              : unitValue === 'VAL_SHEET' || unitValue === 'VAL_8'
                 ? '장'
-                : unitValue === 'VAL_COPY'
+                : unitValue === 'VAL_COPY' || unitValue === 'VAL_6'
                   ? '부'
                   : '개';
     const parts = [
@@ -574,7 +580,25 @@ export default function ProductionRequestDetailModal({
             </div>
 
             <div className="p-8 overflow-y-auto bg-slate-50 space-y-6 flex-1">
-              
+              {detailItem.status === 'REJECTED' && (
+                <div className="rounded-2xl border border-rose-200 bg-rose-50 px-5 py-4 space-y-1.5">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-black tracking-widest text-rose-600 uppercase">
+                      신청 반려
+                    </span>
+                    {detailItem.options?.rejectedAt ? (
+                      <span className="text-[10px] font-bold text-rose-400 font-mono">
+                        {String(detailItem.options.rejectedAt)}
+                      </span>
+                    ) : null}
+                  </div>
+                  <p className="text-sm font-bold text-rose-900 whitespace-pre-wrap leading-relaxed">
+                    {String(detailItem.options?.rejectReason || '').trim() ||
+                      '등록된 반려 사유가 없습니다.'}
+                  </p>
+                </div>
+              )}
+
               {/* 블록 1. 기본 정보 */}
               <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
                 <DetailSectionTitle title="기본 정보 및 계정 연동 상태" />
@@ -1748,7 +1772,7 @@ export default function ProductionRequestDetailModal({
                   onClick={startDetailEdit}
                   className="px-6 py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-black text-xs transition-colors shadow-md"
                 >
-                  수정
+                  수정{editPermissionTag === 'Edit' ? '(Edit)' : ''}
                 </button>
               )}
               {canShowEdit && detailEditing && (

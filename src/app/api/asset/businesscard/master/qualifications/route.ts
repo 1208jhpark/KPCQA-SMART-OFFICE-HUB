@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import prisma from '@/lib/prisma';
 import { authorizeAnyMenuPaths, authorizeApi, authErrorToResponse } from '@/lib/server-auth-guard';
+import { SEED_BUSINESS_CARD_QUALIFICATIONS } from '@/lib/businesscard-seed-qualifications';
 
 export const dynamic = 'force-dynamic';
 
@@ -29,9 +30,45 @@ export async function GET() {
 
 export async function POST(req: Request) {
   try {
+    const body = await req.json();
+
+    if (body?.action === 'restore-seeds') {
+      await authorizeApi(WRITE_PATH, { requireEditor: true });
+      let created = 0;
+      let reactivated = 0;
+
+      for (const seed of SEED_BUSINESS_CARD_QUALIFICATIONS) {
+        const existing = await prisma.businessCardQualification.findFirst({
+          where: { nameKo: seed.nameKo },
+        });
+        if (!existing) {
+          await prisma.businessCardQualification.create({
+            data: { nameKo: seed.nameKo, nameEn: seed.nameEn, isActive: true },
+          });
+          created += 1;
+          continue;
+        }
+        if (!existing.isActive) {
+          await prisma.businessCardQualification.update({
+            where: { id: existing.id },
+            data: { isActive: true },
+          });
+          reactivated += 1;
+        }
+      }
+
+      return NextResponse.json({
+        message:
+          created + reactivated === 0
+            ? '복구할 시드 자격사항이 없습니다. (이미 모두 활성)'
+            : `시드 자격사항 복구 완료 (신규 ${created}건, 재활성 ${reactivated}건)`,
+        created,
+        reactivated,
+      });
+    }
+
     await authorizeApi(WRITE_PATH, { requireEditor: true });
-    const data = await req.json();
-    const newQual = await prisma.businessCardQualification.create({ data });
+    const newQual = await prisma.businessCardQualification.create({ data: body });
     return NextResponse.json(newQual);
   } catch (error) {
     const authRes = authErrorToResponse(error);

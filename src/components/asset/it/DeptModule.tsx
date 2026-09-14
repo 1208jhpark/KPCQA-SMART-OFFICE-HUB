@@ -918,7 +918,7 @@ export default function DeptModule() {
                     : 'text-slate-300 bg-slate-100 border border-slate-200 px-2 py-0.5 rounded-md cursor-not-allowed opacity-70'
                 }`}
               >
-                수정
+                수정(Edit)
               </button>
             ) : (
               <div className="flex items-center gap-1.5 shrink-0">

@@ -17,6 +17,7 @@ import {
   getProductionCategoryBadgeClass,
   getProductionCategoryFolderTabClasses,
 } from '@/lib/production-category-theme';
+import { isVendorDispatched } from '@/lib/production-shipping';
 
 // 🚀 [신청 페이지 CATEGORIES와 1:1 싱크 통일 + 전체내역 탭 추가]
 const HISTORY_CATEGORIES = [
@@ -56,7 +57,7 @@ function getKSTYearMonthParts(dateInput: Date | string | number | null | undefin
 export default function ProductionApplyHistory() {
   const [histories, setHistories] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [cancellingId, setCancellingId] = useState<string | null>(null);
+  const [actionBusyId, setActionBusyId] = useState<string | null>(null);
   const pathname = usePathname();
   const [currentUser, setCurrentUser] = useState<any>(null);
 
@@ -188,12 +189,12 @@ export default function ProductionApplyHistory() {
     if (item.status !== 'PENDING') return;
     if (
       !confirm(
-        `[${item.postNumber}] 신청을 취소하시겠습니까?\n대기중(미접수) 건은 목록에서 삭제되며, 복구할 수 없습니다.`
+        `[${item.postNumber}] 신청을 취소하시겠습니까?\n접수대기(미접수) 건은 목록에서 삭제되며, 복구할 수 없습니다.`
       )
     ) {
       return;
     }
-    setCancellingId(item.id);
+    setActionBusyId(item.id);
     try {
       const res = await fetch('/api/asset/production/apply/history', {
         method: 'PATCH',
@@ -214,7 +215,67 @@ export default function ProductionApplyHistory() {
     } catch {
       alert('취소 처리 중 오류가 발생했습니다.');
     } finally {
-      setCancellingId(null);
+      setActionBusyId(null);
+    }
+  };
+
+  const handleRevertAccept = async (item: any) => {
+    if (item.status !== 'ACCEPTED') return;
+    if (
+      !confirm(
+        `[${item.postNumber}] 접수를 취소하고 접수대기 상태로 되돌리시겠습니까?`
+      )
+    ) {
+      return;
+    }
+    setActionBusyId(item.id);
+    try {
+      const res = await fetch('/api/asset/production/apply/history', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: item.id, action: 'revert-accept' }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(data.message || '접수 취소에 실패했습니다.');
+        return;
+      }
+      setHistories((prev) =>
+        prev.map((h) => (h.id === item.id ? { ...h, status: 'PENDING' } : h))
+      );
+      alert('접수가 취소되어 접수대기 상태로 변경되었습니다.');
+    } catch {
+      alert('접수 취소 처리 중 오류가 발생했습니다.');
+    } finally {
+      setActionBusyId(null);
+    }
+  };
+
+  const handleConfirmReceive = async (item: any) => {
+    if (item.status !== 'ORDERED') return;
+    if (!confirm(`[${item.postNumber}] 물품을 수령확정 처리할까요?`)) {
+      return;
+    }
+    setActionBusyId(item.id);
+    try {
+      const res = await fetch('/api/asset/production/apply/history', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: item.id, action: 'confirm-receive' }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(data.message || '수령확정 처리에 실패했습니다.');
+        return;
+      }
+      setHistories((prev) =>
+        prev.map((h) => (h.id === item.id ? { ...h, status: 'VERIFIED' } : h))
+      );
+      alert('수령확정 처리되었습니다.');
+    } catch {
+      alert('수령확정 처리 중 오류가 발생했습니다.');
+    } finally {
+      setActionBusyId(null);
     }
   };
 
@@ -525,47 +586,46 @@ export default function ProductionApplyHistory() {
                     const rowNo =
                       filteredHistories.length - ((currentPage - 1) * ITEMS_PER_PAGE + idx);
                     const isPending = item.status === 'PENDING';
-                    const statusLabel =
-                      item.status === 'PENDING'
-                        ? '대기중'
-                        : item.status === 'ACCEPTED'
-                          ? '발주대기'
-                          : item.status === 'ORDERED'
-                            ? '발주완료'
-                            : item.status === 'VERIFIED'
-                              ? '정산승인'
-                              : item.status === 'REJECTED'
-                                ? '반려'
-                                : item.status === 'CANCELLED'
-                                  ? '취소됨'
-                                  : item.status;
-                    // businesscard/master/requests 공정상태 색상 톤과 통일
-                    const statusClass =
-                      item.status === 'PENDING'
-                        ? 'text-orange-600'
-                        : item.status === 'ACCEPTED'
-                          ? 'text-blue-600'
-                          : item.status === 'ORDERED'
-                            ? 'text-emerald-600'
-                            : item.status === 'VERIFIED'
-                              ? 'text-purple-700'
-                              : item.status === 'REJECTED'
-                                ? 'text-red-600'
-                                : item.status === 'CANCELLED'
-                                  ? 'text-slate-400'
-                                  : 'text-slate-500';
-                    const actionHint =
-                      item.status === 'ACCEPTED'
-                        ? '발주 대기'
-                        : item.status === 'ORDERED'
-                          ? '명세 검수 대기'
-                          : item.status === 'VERIFIED'
-                            ? '완료'
-                            : item.status === 'REJECTED'
-                              ? '반려됨'
-                              : item.status === 'CANCELLED'
-                                ? '취소됨'
-                                : '-';
+                    const isAccepted = item.status === 'ACCEPTED';
+                    const isOrdered = item.status === 'ORDERED';
+                    const isVerified = item.status === 'VERIFIED';
+                    const isRejected = item.status === 'REJECTED';
+                    const isCancelled = item.status === 'CANCELLED';
+
+                    const opts = (item.options || {}) as Record<string, unknown>;
+                    const isDispatched = opts.vendorDispatched === true;
+                    const dispatchedDate = opts.vendorDispatchedAt
+                      ? getKSTDateString(opts.vendorDispatchedAt as string)
+                      : '';
+
+                    // 1) 공정상태 판정
+                    let statusLabel = item.status;
+                    let statusClass = 'text-slate-500';
+
+                    if (isPending) {
+                      statusLabel = '접수대기';
+                      statusClass = 'text-orange-600 font-bold';
+                    } else if (isAccepted) {
+                      statusLabel = '발주대기';
+                      statusClass = 'text-blue-600 font-bold';
+                    } else if (isOrdered) {
+                      if (isDispatched) {
+                        statusLabel = '발주완료';
+                        statusClass = 'text-emerald-700 font-bold';
+                      } else {
+                        statusLabel = '발주중';
+                        statusClass = 'text-indigo-600 font-bold';
+                      }
+                    } else if (isVerified) {
+                      statusLabel = '수령완료';
+                      statusClass = 'text-slate-900 font-bold';
+                    } else if (isRejected) {
+                      statusLabel = '반려';
+                      statusClass = 'text-red-600 font-bold';
+                    } else if (isCancelled) {
+                      statusLabel = '취소됨';
+                      statusClass = 'text-slate-400 font-bold';
+                    }
                     return (
                     <tr
                       key={item.id}
@@ -611,7 +671,7 @@ export default function ProductionApplyHistory() {
                             onClick={() => openDetail(item)}
                             className="px-2.5 py-1 text-[10px] font-bold rounded-lg shadow-sm transition-colors bg-rose-600 text-white hover:bg-rose-700"
                           >
-                            원문 검수
+                            원문검수
                           </button>
                         ) : (
                           <button
@@ -619,7 +679,7 @@ export default function ProductionApplyHistory() {
                             onClick={() => openDetail(item)}
                             className="px-2.5 py-1 text-[10px] font-bold rounded-lg transition-colors bg-slate-200 text-slate-600 hover:bg-slate-300 border border-slate-300"
                           >
-                            원문 확인
+                            원문확인
                           </button>
                         )}
                       </td>
@@ -633,23 +693,89 @@ export default function ProductionApplyHistory() {
                         {item.options?.vendor || '-'}
                       </td>
                       <td className="px-2 text-center">
-                        <span className={`text-[10px] font-bold whitespace-nowrap ${statusClass}`}>
-                          {statusLabel}
-                        </span>
+                        {isOrdered && isDispatched ? (
+                          <div className="inline-flex flex-col items-center leading-tight">
+                            <span className="text-[10px] font-bold text-emerald-700 whitespace-nowrap">
+                              발주완료
+                            </span>
+                            {dispatchedDate && (
+                              <span className="text-[10px] font-medium text-slate-400 font-mono whitespace-nowrap">
+                                ({dispatchedDate})
+                              </span>
+                            )}
+                          </div>
+                        ) : isRejected ? (
+                          (() => {
+                            const rejectReason = String(opts.rejectReason || '').trim();
+                            const rejectedAt = String(opts.rejectedAt || '').trim();
+                            const tip = rejectReason
+                              ? `반려 사유: ${rejectReason}${rejectedAt ? `\n처리일: ${rejectedAt}` : ''}`
+                              : '등록된 반려 사유가 없습니다.';
+                            return (
+                              <button
+                                type="button"
+                                title={tip}
+                                onClick={() => {
+                                  if (rejectReason) {
+                                    alert(
+                                      `[${item.postNumber}] 반려 사유\n\n${rejectReason}${
+                                        rejectedAt ? `\n\n처리일: ${rejectedAt}` : ''
+                                      }`
+                                    );
+                                  } else {
+                                    alert('등록된 반려 사유가 없습니다.');
+                                  }
+                                }}
+                                className={`inline-flex flex-col items-center leading-tight ${statusClass} underline decoration-dotted underline-offset-2 cursor-pointer hover:opacity-80`}
+                              >
+                                <span className="text-[10px] font-bold whitespace-nowrap">반려</span>
+                                <span className="text-[9px] font-medium text-rose-500/90 whitespace-nowrap normal-case tracking-normal">
+                                  {rejectReason ? '사유 보기' : '사유 없음'}
+                                </span>
+                              </button>
+                            );
+                          })()
+                        ) : (
+                          <span className={`text-[10px] font-bold whitespace-nowrap ${statusClass}`}>
+                            {statusLabel}
+                          </span>
+                        )}
                       </td>
                       <td className="px-2 text-center">
                         {isPending ? (
                           <button
                             type="button"
-                            disabled={cancellingId === item.id}
+                            disabled={actionBusyId === item.id}
                             onClick={() => handleCancel(item)}
-                            className="px-2 py-1 text-[10px] font-black rounded-lg transition-colors bg-rose-50 border border-rose-200 hover:bg-rose-100 text-rose-600 disabled:opacity-50"
+                            className="px-2 py-1 text-[10px] font-black rounded-lg transition-colors bg-rose-50 border border-rose-200 hover:bg-rose-100 text-rose-600 disabled:opacity-50 whitespace-nowrap"
                           >
-                            {cancellingId === item.id ? '처리중…' : '신청취소'}
+                            {actionBusyId === item.id ? '처리중…' : '신청취소'}
                           </button>
+                        ) : isAccepted ? (
+                          <button
+                            type="button"
+                            disabled={actionBusyId === item.id}
+                            onClick={() => handleRevertAccept(item)}
+                            className="px-2 py-1 text-[10px] font-black rounded-lg transition-colors bg-rose-50 border border-rose-200 hover:bg-rose-100 text-rose-600 disabled:opacity-50 whitespace-nowrap"
+                          >
+                            {actionBusyId === item.id ? '처리중…' : '접수취소'}
+                          </button>
+                        ) : isOrdered && isDispatched ? (
+                          <button
+                            type="button"
+                            disabled={actionBusyId === item.id}
+                            onClick={() => handleConfirmReceive(item)}
+                            className="px-2.5 py-1 text-[10px] font-black rounded-lg whitespace-nowrap transition-colors bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm disabled:opacity-50"
+                          >
+                            {actionBusyId === item.id ? '처리중…' : '수령확정'}
+                          </button>
+                        ) : isVerified ? (
+                          <span className="text-[10px] text-slate-400 font-bold whitespace-nowrap">
+                            -
+                          </span>
                         ) : (
-                          <span className="text-[10px] text-slate-500 font-bold whitespace-nowrap">
-                            {actionHint}
+                          <span className="text-[10px] text-slate-400 font-bold whitespace-nowrap">
+                            -
                           </span>
                         )}
                       </td>

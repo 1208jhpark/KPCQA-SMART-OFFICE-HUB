@@ -120,20 +120,27 @@ export const PRODUCTION_DEPT_MASTER_TABS: InterfaceStepTabDef[] = [
   {
     id: 'inspection',
     path: '/asset/production/dept-master/inspection',
-    fallbackName: '발주/수령 검수',
+    fallbackName: '발주/수령검수',
     fallbackIcon: '🧾',
     activeColor: 'text-emerald-600',
   },
   {
+    id: 'settlement',
+    path: '/asset/production/dept-master/settlement',
+    fallbackName: '명세서 정산',
+    fallbackIcon: '💹',
+    activeColor: 'text-amber-700',
+  },
+  {
     id: 'archive',
     path: '/asset/production/dept-master/archive',
-    fallbackName: '정산 보관함',
+    fallbackName: '정산완료 보관함',
     fallbackIcon: '📁',
     activeColor: 'text-slate-800',
   },
 ];
 
-/** 제작물 마스터(경영실) — 명함 master 탭 규격과 동일 */
+/** 제작물 마스터(경영실) — dashboard(검수·정산) + archive(정산 완료) */
 export const PRODUCTION_MASTER_TABS: InterfaceStepTabDef[] = [
   {
     id: 'dashboard',
@@ -143,16 +150,9 @@ export const PRODUCTION_MASTER_TABS: InterfaceStepTabDef[] = [
     activeColor: 'text-indigo-600',
   },
   {
-    id: 'invoice',
-    path: '/asset/production/master/invoice',
-    fallbackName: '명세·정산 대조',
-    fallbackIcon: '🧾',
-    activeColor: 'text-emerald-600',
-  },
-  {
     id: 'archive',
     path: '/asset/production/master/archive',
-    fallbackName: '정산 완료 아카이브',
+    fallbackName: '대조완료 보관함',
     fallbackIcon: '📁',
     activeColor: 'text-slate-800',
   },
@@ -169,7 +169,7 @@ export const BUSINESS_CARD_MASTER_TABS: InterfaceStepTabDef[] = [
   {
     id: 'order',
     path: '/asset/businesscard/master/order',
-    fallbackName: '접수/발주/발주·수령 검수',
+    fallbackName: '접수/발주/발주·수령검수',
     fallbackIcon: '🧾',
     activeColor: 'text-emerald-600',
   },

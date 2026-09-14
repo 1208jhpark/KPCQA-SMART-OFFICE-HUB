@@ -20,7 +20,7 @@ export type ProductionStatusCode =
 export function productionStatusLabel(status: string): string {
   switch (status) {
     case PRODUCTION_STATUS.PENDING:
-      return '대기중';
+      return '접수대기';
     case PRODUCTION_STATUS.ACCEPTED:
       return '발주대기';
     case PRODUCTION_STATUS.ORDERED:
@@ -46,7 +46,7 @@ export function productionStatusTextClass(status: string): string {
     case PRODUCTION_STATUS.ORDERED:
       return 'text-emerald-600';
     case PRODUCTION_STATUS.VERIFIED:
-      return 'text-purple-700';
+      return 'text-slate-900 font-bold';
     case PRODUCTION_STATUS.REJECTED:
       return 'text-red-600';
     case PRODUCTION_STATUS.CANCELLED:

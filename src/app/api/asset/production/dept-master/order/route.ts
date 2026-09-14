@@ -21,6 +21,7 @@ const MENU_PATH = '/asset/production/dept-master/order';
 const READ_PATHS = [
   '/asset/production/dept-master/order',
   '/asset/production/dept-master/inspection',
+  '/asset/production/dept-master/settlement',
   '/asset/production/dept-master/archive',
 ];
 
@@ -264,66 +265,31 @@ export async function POST(req: Request) {
     const batchShippingScope: BatchShippingApplyScope =
       body.batchShippingScope === 'all' ? 'all' : 'deferred';
 
-    const printRows = acceptedRows.filter((r) => r.category === 'PRINT');
-    const bundleRows = acceptedRows.filter((r) => r.category !== 'PRINT');
     const { prefix, startSeq } = await getNextBatchSequenceStart(deptName);
     const batchOrderedAt = new Date().toISOString();
+    const bundleBatchId = formatBatchId(prefix, startSeq);
 
-    let nextSeq = startSeq;
-    const tx: Prisma.PrismaPromise<unknown>[] = [];
-
-    for (const row of printRows) {
+    const tx: Prisma.PrismaPromise<unknown>[] = acceptedRows.map((row) => {
       const prev = asOptionsRecord(row.options);
-      tx.push(
-        prisma.productionRequest.update({
-          where: { id: row.id },
-          data: {
-            status: 'ORDERED',
-            batchId: formatBatchId(prefix, nextSeq++),
-            options: asInputJson({ ...prev, batchOrderedAt }),
-          },
-        })
-      );
-    }
-
-    let bundleBatchId: string | null = null;
-    if (bundleRows.length > 0) {
-      bundleBatchId = formatBatchId(prefix, nextSeq);
-      for (const row of bundleRows) {
-        const prev = asOptionsRecord(row.options);
-        tx.push(
-          prisma.productionRequest.update({
-            where: { id: row.id },
-            data: {
-              status: 'ORDERED',
-              batchId: bundleBatchId,
-              options: asInputJson({ ...prev, batchOrderedAt }),
-            },
-          })
-        );
-      }
-    }
+      return prisma.productionRequest.update({
+        where: { id: row.id },
+        data: {
+          status: 'ORDERED',
+          batchId: bundleBatchId,
+          options: asInputJson({ ...prev, batchOrderedAt }),
+        },
+      });
+    });
 
     await prisma.$transaction(tx);
 
-    if (batchShipping && bundleBatchId) {
+    if (batchShipping) {
       await applyBatchShippingToBatch(bundleBatchId, batchShipping, batchShippingScope);
     }
 
-    const printCount = printRows.length;
-    const bundleCount = bundleRows.length;
-    let message: string;
-    if (printCount > 0 && bundleCount > 0) {
-      message = `기타 제작물 ${printCount}건 개별 발주, 그 외 ${bundleCount}건 묶음 발주가 완료되었습니다.`;
-    } else if (printCount > 0) {
-      message = `${printCount}건 개별 발주 처리가 완료되었습니다. (기타 제작물은 건별 묶음으로 생성됩니다)`;
-    } else {
-      message = `${bundleCount}건 묶음 발주 처리가 완료되었습니다. 발주/수령 검수 탭에서 확인하세요.`;
-    }
-
     return NextResponse.json({
-      message,
-      batchId: bundleBatchId || undefined,
+      message: `${acceptedRows.length}건 묶음 발주 처리가 완료되었습니다. 발주/수령검수 탭에서 확인하세요.`,
+      batchId: bundleBatchId,
       count: acceptedRows.length,
       redirectTo: '/asset/production/dept-master/inspection',
     });
@@ -355,7 +321,7 @@ export async function PATCH(req: Request) {
     if (action === 'update') {
       if (row.status !== 'PENDING' && row.status !== 'ACCEPTED') {
         return NextResponse.json(
-          { message: '대기중·발주대기 상태인 건만 원문을 수정할 수 있습니다.' },
+          { message: '접수대기·발주대기 상태인 건만 원문을 수정할 수 있습니다.' },
           { status: 400 }
         );
       }
@@ -397,7 +363,7 @@ export async function PATCH(req: Request) {
 
     if (row.status !== 'PENDING') {
       return NextResponse.json(
-        { message: '대기중(미접수) 상태인 건만 접수·반려할 수 있습니다.' },
+        { message: '접수대기(미접수) 상태인 건만 접수확정·신청반려할 수 있습니다.' },
         { status: 400 }
       );
     }
@@ -408,7 +374,7 @@ export async function PATCH(req: Request) {
         data: { status: 'ACCEPTED' },
       });
       return NextResponse.json({
-        message: '접수 완료 — 발주대기로 이동했습니다.',
+        message: '접수확정 완료 — 발주대기로 이동했습니다.',
         data: updated,
       });
     }
@@ -434,7 +400,7 @@ export async function PATCH(req: Request) {
         },
       });
       return NextResponse.json({
-        message: '반려 처리했습니다.',
+        message: '신청반려 처리했습니다.',
         data: updated,
       });
     }

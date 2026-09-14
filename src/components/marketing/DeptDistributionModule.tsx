@@ -2212,7 +2212,7 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
                            <div className="flex flex-row gap-1.5 justify-center">
                               {checkEditPermission(item.owner_dept) ? (
                                 <button onClick={() => handleRestoreItem(item.id, item.owner_dept)} className="flex-1 py-1.5 bg-white border border-slate-300 text-slate-600 rounded-md text-[10px] font-black hover:bg-slate-800 hover:text-white transition-colors shadow-sm whitespace-nowrap">
-                                  ↺ 복구
+                                  ↺ 복구(Edit)
                                 </button>
                               ) : (
                                 <span className="text-[10px] text-slate-300 font-bold">열람만</span>

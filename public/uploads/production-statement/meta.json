@@ -1,26 +1,98 @@
 [
   {
-    "id": "stmt-1788767547845-kvkxj",
-    "category": "SIGN",
-    "vendorName": "아트로릭",
-    "fileName": "(아트로릭) 26년 3월 인쇄비 거래명세표.pdf",
-    "storedFileName": "statement_SIGN_아트로릭_1788767547845.pdf",
-    "fileSize": 92183,
-    "mimeType": "application/pdf",
-    "uploadedAt": "2026-09-07T07:52:27.847Z",
-    "uploadedBy": "관리자",
-    "url": "/uploads/production-statement/statement_SIGN_아트로릭_1788767547845.pdf"
-  },
-  {
-    "id": "stmt-1788757726776-emj6i",
+    "id": "stmt-1789360528242-2j5b1",
     "category": "OFFICE_SUPPLIES",
     "vendorName": "드림디포",
-    "fileName": "드림디포 견적서.pdf",
-    "storedFileName": "statement_OFFICE_SUPPLIES_드림디포_1788757726776.pdf",
+    "fileName": "(드림디포) 26년 8월 거래명세서.xls",
+    "storedFileName": "statement_OFFICE_SUPPLIES_드림디포_1789360528242.xls",
+    "fileSize": 180224,
+    "mimeType": "application/vnd.ms-excel",
+    "uploadedAt": "2026-09-14T04:35:28.245Z",
+    "uploadedBy": "관리자",
+    "url": "/uploads/production-statement/statement_OFFICE_SUPPLIES_드림디포_1789360528242.xls"
+  },
+  {
+    "id": "stmt-1789103899567-bzs2q",
+    "category": "PRINT",
+    "vendorName": "드림디포",
+    "fileName": "드림디포경조사봉투.pdf",
+    "storedFileName": "statement_PRINT_드림디포_1789103899567.pdf",
     "fileSize": 60069,
     "mimeType": "application/pdf",
-    "uploadedAt": "2026-09-07T05:08:46.779Z",
+    "uploadedAt": "2026-09-11T05:18:19.569Z",
     "uploadedBy": "관리자",
-    "url": "/uploads/production-statement/statement_OFFICE_SUPPLIES_드림디포_1788757726776.pdf"
+    "url": "/uploads/production-statement/statement_PRINT_드림디포_1789103899567.pdf"
+  },
+  {
+    "id": "stmt-1789103746058-hmd1c",
+    "category": "PRINT",
+    "vendorName": "드림디포",
+    "fileName": "(드림디포) 경조사.xls",
+    "storedFileName": "statement_PRINT_드림디포_1789103746058.xls",
+    "fileSize": 154624,
+    "mimeType": "application/vnd.ms-excel",
+    "uploadedAt": "2026-09-11T05:15:46.060Z",
+    "uploadedBy": "관리자",
+    "url": "/uploads/production-statement/statement_PRINT_드림디포_1789103746058.xls"
+  },
+  {
+    "id": "stmt-1789099814713-da98b",
+    "category": "PRINT",
+    "vendorName": "한생미디어",
+    "fileName": "한생 쇼핑백.pdf",
+    "storedFileName": "statement_PRINT_한생미디어_1789099814713.pdf",
+    "fileSize": 106218,
+    "mimeType": "application/pdf",
+    "uploadedAt": "2026-09-11T04:10:14.715Z",
+    "uploadedBy": "관리자",
+    "url": "/uploads/production-statement/statement_PRINT_한생미디어_1789099814713.pdf"
+  },
+  {
+    "id": "stmt-1789099805520-gappm",
+    "category": "PRINT",
+    "vendorName": "한생미디어",
+    "fileName": "(한생상장).xlsx",
+    "storedFileName": "statement_PRINT_한생미디어_1789099805520.xlsx",
+    "fileSize": 250088,
+    "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "uploadedAt": "2026-09-11T04:10:05.525Z",
+    "uploadedBy": "관리자",
+    "url": "/uploads/production-statement/statement_PRINT_한생미디어_1789099805520.xlsx"
+  },
+  {
+    "id": "stmt-1789092812750-vn4na",
+    "category": "PRINT",
+    "vendorName": "아트로릭",
+    "fileName": "(아트로릭) 인증서용지홀더.pdf",
+    "storedFileName": "statement_PRINT_아트로릭_1789092812750.pdf",
+    "fileSize": 55890,
+    "mimeType": "application/pdf",
+    "uploadedAt": "2026-09-11T02:13:32.752Z",
+    "uploadedBy": "관리자",
+    "url": "/uploads/production-statement/statement_PRINT_아트로릭_1789092812750.pdf"
+  },
+  {
+    "id": "stmt-1788938918907-v6png",
+    "category": "JEBON",
+    "vendorName": "한생미디어",
+    "fileName": "(한생미디어) 26년 8월 인쇄비 납품 내역서.xlsx",
+    "storedFileName": "statement_JEBON_한생미디어_1788938918907.xlsx",
+    "fileSize": 250088,
+    "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "uploadedAt": "2026-09-09T07:28:38.909Z",
+    "uploadedBy": "관리자",
+    "url": "/uploads/production-statement/statement_JEBON_한생미디어_1788938918907.xlsx"
+  },
+  {
+    "id": "stmt-1788856769783-uhz33",
+    "category": "SIGN",
+    "vendorName": "아트로릭",
+    "fileName": "(아트로릭).pdf",
+    "storedFileName": "statement_SIGN_아트로릭_1788856769783.pdf",
+    "fileSize": 62624,
+    "mimeType": "application/pdf",
+    "uploadedAt": "2026-09-08T08:39:29.786Z",
+    "uploadedBy": "관리자",
+    "url": "/uploads/production-statement/statement_SIGN_아트로릭_1788856769783.pdf"
   }
 ]

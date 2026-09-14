@@ -1,0 +1,16 @@
+{
+  "JEBON": {
+    "category": "JEBON",
+    "requestedAt": "2026-09-21T17:00",
+    "memo": "명세 대조 작업 부탁드립니다.",
+    "updatedAt": "2026-09-14T04:03:35.686Z",
+    "updatedBy": "관리자"
+  },
+  "SIGN": {
+    "category": "SIGN",
+    "requestedAt": "2026-09-21T17:18",
+    "memo": "",
+    "updatedAt": "2026-09-14T04:18:48.795Z",
+    "updatedBy": "관리자"
+  }
+}

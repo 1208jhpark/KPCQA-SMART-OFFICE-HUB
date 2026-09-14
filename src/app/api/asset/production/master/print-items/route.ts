@@ -4,6 +4,10 @@ import {
   authorizeAnyMenuPaths,
   authErrorToResponse,
 } from '@/lib/server-auth-guard';
+import {
+  isSeedPrintItemId,
+  SEED_PRINT_ITEM_DEFAULTS,
+} from '@/lib/production-seed-print-items';
 
 export const dynamic = 'force-dynamic';
 
@@ -12,6 +16,7 @@ const READ_PATHS = [
   '/asset/production/apply/history',
   '/asset/production/dept-master/order',
   '/asset/production/dept-master/inspection',
+  '/asset/production/dept-master/settlement',
   '/asset/production/dept-master/archive',
 ];
 
@@ -60,8 +65,82 @@ export async function GET() {
 
 export async function POST(req: Request) {
   try {
-    await authorizeAnyMenuPaths(READ_PATHS);
     const body = await req.json();
+
+    // 시드 누락분 복구: 없으면 추가, 비활성만 재활성 (명칭·규격·공급처 등 보존)
+    if (body?.action === 'restore-seeds') {
+      await authorizeAnyMenuPaths(READ_PATHS, { requireEditor: true });
+
+      let created = 0;
+      let reactivated = 0;
+
+      for (const seed of SEED_PRINT_ITEM_DEFAULTS) {
+        let existing: { id: string; isActive: boolean } | null = null;
+        try {
+          existing = await prisma.productionPrintItemMaster.findUnique({
+            where: { id: seed.id },
+            select: { id: true, isActive: true },
+          });
+        } catch {
+          const rows = (await prisma.$queryRawUnsafe(
+            `SELECT id, "isActive" FROM "ProductionPrintItemMaster" WHERE id = $1 LIMIT 1`,
+            seed.id
+          )) as { id: string; isActive: boolean }[];
+          existing = rows[0] || null;
+        }
+
+        if (!existing) {
+          try {
+            await prisma.productionPrintItemMaster.create({
+              data: { ...seed, isActive: true },
+            });
+          } catch {
+            await prisma.$executeRawUnsafe(
+              `INSERT INTO "ProductionPrintItemMaster"
+                (id, name, size, supplier, "orderQty", "unitValue", "isCustom", "sortOrder", "isActive", "createdAt", "updatedAt")
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true, NOW(), NOW())
+               ON CONFLICT (id) DO NOTHING`,
+              seed.id,
+              seed.name,
+              seed.size,
+              seed.supplier,
+              seed.orderQty,
+              seed.unitValue,
+              seed.isCustom,
+              seed.sortOrder
+            );
+          }
+          created += 1;
+          continue;
+        }
+
+        if (!existing.isActive) {
+          try {
+            await prisma.productionPrintItemMaster.update({
+              where: { id: seed.id },
+              data: { isActive: true },
+            });
+          } catch {
+            await prisma.$executeRawUnsafe(
+              `UPDATE "ProductionPrintItemMaster" SET "isActive" = true, "updatedAt" = NOW() WHERE id = $1`,
+              seed.id
+            );
+          }
+          reactivated += 1;
+        }
+      }
+
+      return NextResponse.json({
+        message:
+          created + reactivated === 0
+            ? '복구할 시드 품목이 없습니다. (이미 모두 활성)'
+            : `시드 품목 복구 완료 (신규 ${created}건, 재활성 ${reactivated}건)`,
+        created,
+        reactivated,
+      });
+    }
+
+    await authorizeAnyMenuPaths(READ_PATHS);
     const name = String(body.name || '').trim();
     if (!name) return NextResponse.json({ message: '제품명은 필수입니다.' }, { status: 400 });
 
@@ -160,10 +239,23 @@ export async function PUT(req: Request) {
 
 export async function DELETE(req: Request) {
   try {
-    await authorizeAnyMenuPaths(READ_PATHS, { requireEditor: true });
+    const auth = await authorizeAnyMenuPaths(READ_PATHS);
     const { searchParams } = new URL(req.url);
-    const id = searchParams.get('id');
+    const id = String(searchParams.get('id') || '').trim();
     if (!id) return NextResponse.json({ message: '품목 ID가 필요합니다.' }, { status: 400 });
+
+    if (isSeedPrintItemId(id)) {
+      const isLv1OrMaster =
+        auth.permission.isMaster || auth.permission.myRole === 'LV_1';
+      if (!isLv1OrMaster) {
+        return NextResponse.json(
+          { message: '시드 품목 삭제는 LV_1(마스터) 권한이 필요합니다.' },
+          { status: 403 }
+        );
+      }
+    } else if (!auth.permission.isEditor) {
+      return NextResponse.json({ message: '편집 권한이 없습니다.' }, { status: 403 });
+    }
 
     try {
       const activeCount = await prisma.productionPrintItemMaster.count({

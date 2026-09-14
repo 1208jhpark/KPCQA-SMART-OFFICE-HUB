@@ -4,6 +4,8 @@ import { useState, useEffect, useMemo } from 'react';
 import * as XLSX from 'xlsx';
 import LoadingState from '@/components/common/LoadingState';
 import { resolveInterfaceEditState } from '@/lib/permission-utils';
+import { formatBusinessCardEnNumber } from '@/lib/businesscard-phone';
+import { formatBusinessCardAdminStatusLabel } from '@/lib/businesscard-status';
 import { getKSTNowYearMonth, formatKSTDateTime } from '@/utils/dateUtils';
 
 const MENU_PATH = '/asset/businesscard/my-page';
@@ -541,9 +543,9 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
       additionalQuals: parsedQuals,
       additionalQualsEn: parsedQualsEn,
       mobile: row.mobile || '',
-      mobileEn: row.mobileEn || '',
+      mobileEn: formatBusinessCardEnNumber('mobile', row.mobile || '') || row.mobileEn || '',
       phone: row.phone || '',
-      phoneEn: row.phoneEn || '',
+      phoneEn: formatBusinessCardEnNumber('phone', row.phone || '') || row.phoneEn || '',
       fax: row.fax || '',
       faxEn: row.faxEn || '',
       email: row.email || '',
@@ -627,29 +629,8 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
     }
   };
 
-  const formatEnNumber = (type: 'mobile' | 'phone' | 'fax', value: string) => {
-    const clean = value.replace(/[^0-9]/g, '');
-    if (!clean) return '';
-    if (type === 'mobile') {
-      return clean.startsWith('010') && clean.length === 11 ? `+82-10-${clean.substring(3, 7)}-${clean.substring(7)}` : value;
-    } else {
-      if (clean.startsWith('02')) {
-        const rest = clean.substring(2);
-        if (rest.length === 7 || rest.length === 8) {
-          const mid = rest.length === 8 ? rest.substring(0, 4) : rest.substring(0, 3);
-          return `+82-2-${mid}-${rest.substring(rest.length - 4)}`;
-        }
-      } else if (clean.startsWith('0')) {
-        const areaCode = clean.substring(1, 3);
-        const rest = clean.substring(3);
-        if (rest.length === 7 || rest.length === 8) {
-          const mid = rest.length === 8 ? rest.substring(0, 4) : rest.substring(0, 3);
-          return `+82-${areaCode}-${mid}-${rest.substring(rest.length - 4)}`;
-        }
-      }
-      return value;
-    }
-  };
+  const formatEnNumber = (type: 'mobile' | 'phone' | 'fax', value: string) =>
+    formatBusinessCardEnNumber(type, value);
 
   const handleTextChange = (field: string, value: string) => {
     setForm(prev => {
@@ -693,8 +674,10 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
       deptHead: form.deptHead, deptHeadEn: form.deptHeadEn,
       title: form.title, titleEn: form.titleEn,
       additionalKo: finalKo, additionalEn: finalEn,
-      mobile: form.mobile, mobileEn: form.mobileEn,
-      phone: form.phone, phoneEn: form.phoneEn,
+      mobile: form.mobile,
+      mobileEn: formatBusinessCardEnNumber('mobile', form.mobile) || form.mobileEn,
+      phone: form.phone,
+      phoneEn: formatBusinessCardEnNumber('phone', form.phone) || form.phoneEn,
       fax: form.fax, faxEn: form.faxEn,
       addressId: form.addressId, zipCode: form.zipCode, addressKo: form.addressKo, addressEn: form.addressEn,
       email: form.email, emailEn: form.emailEn,
@@ -779,7 +762,7 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
       이름: row.userName || '',
       수량통: row.quantity || 1,
       관리자의견: row.adminMemo || '',
-      공정상태: row.adminStatus || '',
+      공정상태: formatBusinessCardAdminStatusLabel(row.adminStatus),
       신청주체: row.applicantType || '본인',
       처리일자: row.processDate || '',
     }));
@@ -1255,11 +1238,21 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
             <div className="grid grid-cols-1 md:grid-cols-4 gap-x-4 gap-y-3">
               <div>
                 <label className="block text-[10px] font-black text-slate-400 mb-1">영문 휴대전화🔒</label>
-                <input type="text" readOnly value={form.mobileEn} className="w-full p-2 bg-slate-50 text-slate-500 border border-slate-100 rounded-lg text-xs font-mono cursor-not-allowed" />
+                <input
+                  type="text"
+                  readOnly
+                  value={formatBusinessCardEnNumber('mobile', form.mobile) || form.mobileEn || ''}
+                  className="w-full p-2 bg-slate-50 text-slate-500 border border-slate-100 rounded-lg text-xs font-mono cursor-not-allowed"
+                />
               </div>
               <div>
                 <label className="block text-[10px] font-black text-slate-400 mb-1">영문 전화🔒</label>
-                <input type="text" readOnly value={form.phoneEn} className="w-full p-2 bg-slate-50 text-slate-500 border border-slate-100 rounded-lg text-xs font-mono cursor-not-allowed" />
+                <input
+                  type="text"
+                  readOnly
+                  value={formatBusinessCardEnNumber('phone', form.phone) || form.phoneEn || ''}
+                  className="w-full p-2 bg-slate-50 text-slate-500 border border-slate-100 rounded-lg text-xs font-mono cursor-not-allowed"
+                />
               </div>
               <div>
                 <label className="block text-[10px] font-black text-slate-400 mb-1">영문 팩스🔒</label>
@@ -1533,7 +1526,7 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
                           </td>
                           <td className="px-2 text-center">
                             <span className={`text-[10px] font-bold whitespace-nowrap ${statusClass}`}>
-                              {row.adminStatus}
+                              {formatBusinessCardAdminStatusLabel(row.adminStatus)}
                             </span>
                             {row.applicantType === '관리자대행' && (
                               <span className="ml-1 text-[10px] font-bold whitespace-nowrap text-indigo-700">

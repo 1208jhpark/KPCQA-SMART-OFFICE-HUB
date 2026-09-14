@@ -1111,7 +1111,7 @@ const handleDownloadZipAll = async () => {
             onClick={handleAddSurvey}
             disabled={!canEdit}
             className={`px-4 py-2 rounded-xl font-black text-[10px] shadow-sm transition-all ${canEdit ? 'bg-teal-600 text-white hover:bg-teal-500' : 'bg-slate-300 text-slate-500 cursor-not-allowed'}`}
-          >+ 공지 추가</button>
+          >+ 공지 추가(Edit)</button>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-left font-medium min-w-[1450px]">
@@ -1209,8 +1209,8 @@ const handleDownloadZipAll = async () => {
                   </td>
                   <td className="py-2 pr-4 align-middle bg-slate-50/50">
                     <div className="flex items-center justify-center gap-1 w-full">
-                      <button onClick={() => { if (!requireEdit()) return; setEditModal(s); }} disabled={!canEdit || s.status === '진행중' || s.status === '완료'} className={`flex-1 py-1.5 rounded text-[9px] font-black whitespace-nowrap transition-all shadow-sm border ${canEdit && (s.status === '게시전' || s.status === '게시중단') ? 'bg-white border-slate-300 text-slate-700 hover:bg-slate-100' : 'bg-slate-50 border-slate-200 text-slate-300 cursor-not-allowed'}`}>수정</button>
-                      <button onClick={() => handleDeleteSurvey(s.id)} disabled={!canEdit || s.hasBeenPublished} className={`flex-1 py-1.5 rounded text-[9px] font-black whitespace-nowrap transition-all shadow-sm border ${canEdit && !s.hasBeenPublished ? 'bg-white border-red-200 text-red-500 hover:bg-red-50' : 'bg-slate-50 border-slate-200 text-slate-300 cursor-not-allowed'}`}>삭제</button>
+                      <button onClick={() => { if (!requireEdit()) return; setEditModal(s); }} disabled={!canEdit || s.status === '진행중' || s.status === '완료'} className={`flex-1 py-1.5 rounded text-[9px] font-black whitespace-nowrap transition-all shadow-sm border ${canEdit && (s.status === '게시전' || s.status === '게시중단') ? 'bg-white border-slate-300 text-slate-700 hover:bg-slate-100' : 'bg-slate-50 border-slate-200 text-slate-300 cursor-not-allowed'}`}>수정(Edit)</button>
+                      <button onClick={() => handleDeleteSurvey(s.id)} disabled={!canEdit || s.hasBeenPublished} className={`flex-1 py-1.5 rounded text-[9px] font-black whitespace-nowrap transition-all shadow-sm border ${canEdit && !s.hasBeenPublished ? 'bg-white border-red-200 text-red-500 hover:bg-red-50' : 'bg-slate-50 border-slate-200 text-slate-300 cursor-not-allowed'}`}>삭제(Edit)</button>
                       <button onClick={() => handleStatusChange(s.id, 'ARCHIVE')} disabled={!canEdit || s.status !== '완료'} className={`flex-1 py-1.5 rounded text-[9px] font-black whitespace-nowrap transition-all shadow-sm border ${canEdit && s.status === '완료' ? 'bg-slate-800 text-white border-slate-800 hover:bg-slate-900' : 'bg-slate-50 border-slate-200 text-slate-300 cursor-not-allowed'}`}>보관함이동</button>
                     </div>
                   </td>

@@ -1073,7 +1073,7 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
                                   : 'px-1.5 py-1.5 bg-slate-100 text-slate-400 border border-slate-200 rounded-md text-[10px] font-black cursor-not-allowed whitespace-nowrap opacity-70'
                               }
                             >
-                              삭제
+                              삭제(Edit)
                             </button>
                           </div>
                         ) : (
@@ -1125,7 +1125,7 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
                                     : 'px-1.5 py-1.5 bg-slate-100 text-slate-400 border border-slate-200 rounded-md text-[10px] font-black cursor-not-allowed whitespace-nowrap opacity-70'
                                 }
                               >
-                                삭제
+                                삭제(Edit)
                               </button>
                             )}
                           </div>

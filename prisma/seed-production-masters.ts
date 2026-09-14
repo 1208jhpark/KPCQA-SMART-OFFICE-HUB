@@ -1,4 +1,11 @@
 import { PrismaClient } from '@prisma/client';
+import { SEED_PLATE_DEFAULTS } from '../src/lib/production-seed-plates';
+import {
+  SEED_JEBON_CERT_DEFAULTS,
+  SEED_SIGN_CERT_DEFAULTS,
+} from '../src/lib/production-seed-certs';
+import { SEED_JEBON_SIZE_DEFAULTS } from '../src/lib/production-seed-jebon-sizes';
+import { SEED_PRINT_ITEM_DEFAULTS } from '../src/lib/production-seed-print-items';
 
 /**
  * 제작물(Production) 마스터만 채우기/동기화.
@@ -12,19 +19,12 @@ export async function seedProductionMasters(
 ) {
   console.log(`🏭 [Production Masters] ${mode === 'fill' ? '채우기' : '동기화'} 시작...`);
 
-  const plates = [
-    { code: 'CAST_IRON_300', label: '주물현판', price: 230000, size: '300*400' },
-    { code: 'TUNGSTEN_300', label: '텅스텐현판', price: 135000, size: '300*400' },
-    { code: 'BRASS_300', label: '신주현판', price: 160000, size: '300*400' },
-    { code: 'STAINLESS_300', label: '스텐현판', price: 120000, size: '300*400' },
-    { code: 'STAINLESS_90', label: '스텐현판', price: 120000, size: '90*55' },
-    { code: 'STAINLESS_450_A', label: 'ISO 실외 스텐현판_기업명표기', price: 120000, size: '450*300' },
-    { code: 'STAINLESS_450_IMS', label: 'ISO 실외 스텐현판_통합경영', price: 120000, size: '450*300' },
-    { code: 'STAINLESS_450_B', label: 'ISO 실외 스텐현판_기업명 미표기', price: 120000, size: '450*300' },
-    { code: 'WOOD_240', label: 'ISO 실내 메탈목재상패', price: 160000, size: '240*300' },
-    { code: 'SILVER_220', label: 'ISO 실내 원형 은쟁반패', price: 160000, size: '220*220' },
-    { code: 'SILVER_260', label: 'ISO 실내 팔각형 은쟁반패', price: 160000, size: '260*260' },
-  ];
+  const plates = SEED_PLATE_DEFAULTS.map((p) => ({
+    code: p.code,
+    label: p.label,
+    price: p.price,
+    size: p.size,
+  }));
 
   for (const plate of plates) {
     if (mode === 'fill') {
@@ -46,14 +46,12 @@ export async function seedProductionMasters(
     }
   }
 
-  const jebonSizes = [
-    { code: 'A4', label: 'A4', size: '210 × 297mm', description: '표준 기본' },
-    { code: 'B5', label: 'B5', size: '182 × 257mm', description: '' },
-    { code: 'A5', label: 'A5', size: '148 × 210mm', description: '' },
-    { code: 'B6', label: 'B6', size: '128 × 182mm', description: '' },
-    { code: '16절', label: '16절', size: '197 × 272mm', description: '' },
-    { code: '비규격', label: '비규격', size: '', description: '직접 입력' },
-  ];
+  const jebonSizes = SEED_JEBON_SIZE_DEFAULTS.map((r) => ({
+    code: r.code,
+    label: r.label,
+    size: r.size,
+    description: r.description,
+  }));
 
   for (const row of jebonSizes) {
     if (mode === 'fill') {
@@ -75,6 +73,16 @@ export async function seedProductionMasters(
       },
       create: row,
     });
+  }
+
+  if (mode !== 'fill') {
+    const base = new Date('2020-03-01T00:00:00.000Z').getTime();
+    for (let i = 0; i < jebonSizes.length; i++) {
+      await prisma.productionJebonSizeMaster.update({
+        where: { code: jebonSizes[i].code },
+        data: { createdAt: new Date(base + i * 1000) },
+      });
+    }
   }
 
   const productionVendors = [
@@ -125,185 +133,36 @@ export async function seedProductionMasters(
     }
   }
 
-  const signCerts = [
-    {
-      certId: 'GSEED',
-      type: 'SIGN',
-      label: '녹색건축인증',
-      format: '(0000. 00. 00. ~ 0000. 00. 00.)',
-      jebonFormat: '',
-      grades: ['최우수 (그린1등급)', '우수 (그린2등급)', '우량 (그린3등급)', '일반 (그린4등급)'],
-      useCertNumber: false,
-      useValidPeriod: true,
-      useMultiGradeSelect: false,
-    },
-    {
-      certId: 'BF',
-      type: 'SIGN',
-      label: 'BF 인증',
-      format: '(0000. 00. 00 ~ 0000. 00. 00)',
-      jebonFormat: '',
-      grades: ['최우수', '우수', '일반'],
-      useCertNumber: false,
-      useValidPeriod: true,
-      useMultiGradeSelect: false,
-    },
-    {
-      certId: 'EDUCATIONAL',
-      type: 'SIGN',
-      label: '교육시설안전인증',
-      format: '0000.00.00.~0000.00.00.',
-      jebonFormat: '',
-      grades: ['최우수', '우수'],
-      useCertNumber: true,
-      useValidPeriod: true,
-      useMultiGradeSelect: false,
-    },
-    {
-      certId: 'ENERGY',
-      type: 'SIGN',
-      label: '건축물에너지효율등급인증',
-      format: '0000. 00. 00 ~ 0000. 00. 00',
-      jebonFormat: '',
-      grades: ['1+++', '1++', '1+', '1등급', '2등급', '3등급', '4등급', '5등급', '6등급', '7등급'],
-      useCertNumber: true,
-      useValidPeriod: true,
-      useMultiGradeSelect: false,
-    },
-    {
-      certId: 'OLD_ZEB',
-      type: 'SIGN',
-      label: '(구) 제로에너지건축물인증',
-      format: '0000. 00. 00 ~ 0000. 00. 00',
-      jebonFormat: '',
-      grades: ['ZEB 5', 'ZEB 4', 'ZEB 3', 'ZEB 2', 'ZEB 1'],
-      useCertNumber: true,
-      useValidPeriod: true,
-      useMultiGradeSelect: false,
-    },
-    {
-      certId: 'INTEGRATED_ZEB',
-      type: 'SIGN',
-      label: '(통합) 제로에너지건축물인증',
-      format: '0000. 00. 00 ~ 0000. 00. 00',
-      jebonFormat: '',
-      grades: ['ZEB 5', 'ZEB 4', 'ZEB 3', 'ZEB 2', 'ZEB 1', 'ZEB +'],
-      useCertNumber: true,
-      useValidPeriod: true,
-      useMultiGradeSelect: false,
-    },
-    {
-      certId: 'ISO',
-      type: 'SIGN',
-      label: 'ISO 인증',
-      format: '',
-      jebonFormat: '',
-      grades: [
-        'KS Q ISO 9001 (품질경영시스템)',
-        'KS I ISO 14001 (환경경영시스템)',
-        'KS Q ISO 45001 (안전보건경영시스템)',
-        'IATF 16949',
-        'KS Q ISO 22000 (식품안전경영시스템)',
-        'TL 9000',
-        'KS A ISO 50001 (에너지경영시스템)',
-        'KS A ISO 22301 (비즈니스연속성경영시스템)',
-        'KS A ISO 37001 (부패방지경영시스템)',
-        'KS A ISO 37301 (준법경영시스템)',
-        'KS X ISO/IEC 27001 (정보보안경영시스템)',
-        'KS S ISO 21001 (교육기관경영시스템)',
-        'KS Q ISO 10002 (고객만족경영시스템)',
-        'KS X ISO/IEC 42001 (인공지능경영시스템)',
-      ],
-      useCertNumber: true,
-      useValidPeriod: false,
-      useMultiGradeSelect: true,
-    },
-  ];
+  const signCerts = SEED_SIGN_CERT_DEFAULTS.map((c) => ({
+    certId: c.certId,
+    type: c.type,
+    label: c.label,
+    format: c.format,
+    jebonFormat: c.jebonFormat,
+    grades: [...c.grades],
+    useCertNumber: c.useCertNumber,
+    useValidPeriod: c.useValidPeriod,
+    useMultiGradeSelect: c.useMultiGradeSelect,
+  }));
 
-  const jebonFormDefaults = {
-    jebonDefaultSizeType: 'A4',
-    jebonDefaultQuantity: 1,
-    useJebonCover: true,
-    useJebonCoverDate: true,
-    jebonCoverColor: '컬러',
-    jebonCoverPageCount: '1',
-    jebonInnerColor: '흑백',
-  };
-
-  const jebonCerts = [
-    {
-      certId: 'NORMAL',
-      type: 'JEBON',
-      label: '일반제본',
-      format: '',
-      jebonFormat: '0000. 0. 0.',
-      grades: [],
-      useCertNumber: true,
-      useValidPeriod: true,
-      useMultiGradeSelect: false,
-      ...jebonFormDefaults,
-    },
-    {
-      certId: 'GSEED_JEBON',
-      type: 'JEBON',
-      label: '녹색건축인증 평가서',
-      format: '',
-      jebonFormat: '0000. 0. 0.',
-      grades: ['기본 등급'],
-      useCertNumber: true,
-      useValidPeriod: true,
-      useMultiGradeSelect: false,
-      ...jebonFormDefaults,
-    },
-    {
-      certId: 'CONDENDSATION',
-      type: 'JEBON',
-      label: '결로방지 성능평가 결과 보고서',
-      format: '',
-      jebonFormat: '0000. 0. 0.',
-      grades: [],
-      useCertNumber: true,
-      useValidPeriod: true,
-      useMultiGradeSelect: false,
-      ...jebonFormDefaults,
-    },
-    {
-      certId: 'ENERGY_JEBON',
-      type: 'JEBON',
-      label: '건축물에너지효율등급인증 평가서',
-      format: '',
-      jebonFormat: '0000. 0. 0',
-      grades: ['기본 등급'],
-      useCertNumber: true,
-      useValidPeriod: true,
-      useMultiGradeSelect: false,
-      ...jebonFormDefaults,
-    },
-    {
-      certId: 'OLD_ZEB_JEBON',
-      type: 'JEBON',
-      label: '(구)제로에너지건축물인증 평가서',
-      format: '',
-      jebonFormat: '0000. 0. 0.',
-      grades: ['기본 등급'],
-      useCertNumber: true,
-      useValidPeriod: true,
-      useMultiGradeSelect: false,
-      ...jebonFormDefaults,
-    },
-    {
-      certId: 'INTEGRATED_ZEB_JEBON',
-      type: 'JEBON',
-      label: '(통합)제로에너지건축물인증 평가서',
-      format: '',
-      jebonFormat: '0000. 0. 0.',
-      grades: ['기본 등급'],
-      useCertNumber: true,
-      useValidPeriod: true,
-      useMultiGradeSelect: false,
-      ...jebonFormDefaults,
-    },
-  ];
+  const jebonCerts = SEED_JEBON_CERT_DEFAULTS.map((c) => ({
+    certId: c.certId,
+    type: c.type,
+    label: c.label,
+    format: c.format,
+    jebonFormat: c.jebonFormat,
+    grades: [...c.grades],
+    useCertNumber: c.useCertNumber,
+    useValidPeriod: c.useValidPeriod,
+    useMultiGradeSelect: c.useMultiGradeSelect,
+    jebonDefaultSizeType: c.jebonDefaultSizeType,
+    jebonDefaultQuantity: c.jebonDefaultQuantity,
+    useJebonCover: c.useJebonCover,
+    useJebonCoverDate: c.useJebonCoverDate,
+    jebonCoverColor: c.jebonCoverColor,
+    jebonCoverPageCount: c.jebonCoverPageCount,
+    jebonInnerColor: c.jebonInnerColor,
+  }));
 
   for (const cert of signCerts) {
     if (mode === 'fill') {
@@ -328,6 +187,48 @@ export async function seedProductionMasters(
       },
       create: cert,
     });
+  }
+
+  // 현판 ZEB: (구)/(통합) → 단일 '제로에너지건축물인증'(ZEB)로 통합
+  if (mode !== 'fill') {
+    const legacySignZeb = await prisma.productionCertMaster.findMany({
+      where: { certId: { in: ['OLD_ZEB', 'INTEGRATED_ZEB'] } },
+      select: { linkedPlateCodes: true },
+    });
+    const mergedPlates = Array.from(
+      new Set(
+        legacySignZeb.flatMap((row) =>
+          Array.isArray(row.linkedPlateCodes) ? row.linkedPlateCodes.map(String) : []
+        )
+      )
+    );
+    if (mergedPlates.length > 0) {
+      const zeb = await prisma.productionCertMaster.findUnique({ where: { certId: 'ZEB' } });
+      const existing = Array.isArray(zeb?.linkedPlateCodes)
+        ? (zeb!.linkedPlateCodes as unknown[]).map(String)
+        : [];
+      await prisma.productionCertMaster.update({
+        where: { certId: 'ZEB' },
+        data: {
+          linkedPlateCodes: Array.from(new Set([...existing, ...mergedPlates])),
+        },
+      });
+    }
+    await prisma.productionCertMaster.updateMany({
+      where: { certId: { in: ['OLD_ZEB', 'INTEGRATED_ZEB'] } },
+      data: { isActive: false },
+    });
+  }
+
+  // 시드 배열 순서를 createdAt에 반영 → API/UI는 createdAt만으로 동일 순서 유지 (하드코딩 정렬 불필요)
+  if (mode !== 'fill') {
+    const base = new Date('2020-01-01T00:00:00.000Z').getTime();
+    for (let i = 0; i < signCerts.length; i++) {
+      await prisma.productionCertMaster.update({
+        where: { certId: signCerts[i].certId },
+        data: { createdAt: new Date(base + i * 1000) },
+      });
+    }
   }
 
   for (const cert of jebonCerts) {
@@ -359,88 +260,31 @@ export async function seedProductionMasters(
     });
   }
 
-  const printItems = [
-    {
-      id: 'PRINT_CERT_PAPER',
-      name: '인증서 용지',
-      size: 'A4',
-      supplier: '아트로릭',
-      orderQty: 1,
-      unitValue: 'VAL_1',
-      isCustom: false,
-      sortOrder: 10,
-    },
-    {
-      id: 'PRINT_BAG_M',
-      name: '쇼핑백(중)',
-      size: '230*70*320',
-      supplier: '한생미디어',
-      orderQty: 2000,
-      unitValue: 'VAL_1',
-      isCustom: false,
-      sortOrder: 20,
-    },
-    {
-      id: 'PRINT_BAG_L',
-      name: '쇼핑백(대)',
-      size: '300*100*450',
-      supplier: '한생미디어',
-      orderQty: 2000,
-      unitValue: 'VAL_1',
-      isCustom: false,
-      sortOrder: 30,
-    },
-    {
-      id: 'PRINT_AWARD_CASE',
-      name: '상장케이스',
-      size: '',
-      supplier: '한생미디어',
-      orderQty: 600,
-      unitValue: 'VAL_1',
-      isCustom: false,
-      sortOrder: 40,
-    },
-    {
-      id: 'PRINT_COLOR_ENVELOPE',
-      name: '컬러대봉투(양면테잎)',
-      size: '330*245',
-      supplier: '아트로릭',
-      orderQty: 3000,
-      unitValue: 'VAL_1',
-      isCustom: false,
-      sortOrder: 50,
-    },
-    {
-      id: 'PRINT_CONDOLENCE_ENVELOPE_CHUK',
-      name: '경조사봉투(축의)',
-      size: '',
-      supplier: '드림디포',
-      orderQty: 200,
-      unitValue: 'VAL_1',
-      isCustom: false,
-      sortOrder: 60,
-    },
-    {
-      id: 'PRINT_CONDOLENCE_ENVELOPE_JO',
-      name: '경조사봉투(조의)',
-      size: '',
-      supplier: '드림디포',
-      orderQty: 200,
-      unitValue: 'VAL_1',
-      isCustom: false,
-      sortOrder: 61,
-    },
-    {
-      id: 'PRINT_OTHER',
-      name: '기타소모품',
-      size: '',
-      supplier: '',
-      orderQty: 1,
-      unitValue: 'VAL_1',
-      isCustom: true,
-      sortOrder: 999,
-    },
-  ];
+  // 제본 ZEB: (구)/(통합) → 단일 '제로에너지건축물인증 평가서'(ZEB_JEBON)로 통합, 구 시드 비활성화
+  if (mode !== 'fill') {
+    await prisma.productionCertMaster.updateMany({
+      where: { certId: { in: ['OLD_ZEB_JEBON', 'INTEGRATED_ZEB_JEBON'] } },
+      data: { isActive: false },
+    });
+    const base = new Date('2020-02-01T00:00:00.000Z').getTime();
+    for (let i = 0; i < jebonCerts.length; i++) {
+      await prisma.productionCertMaster.update({
+        where: { certId: jebonCerts[i].certId },
+        data: { createdAt: new Date(base + i * 1000) },
+      });
+    }
+  }
+
+  const printItems = SEED_PRINT_ITEM_DEFAULTS.map((item) => ({
+    id: item.id,
+    name: item.name,
+    size: item.size,
+    supplier: item.supplier,
+    orderQty: item.orderQty,
+    unitValue: item.unitValue,
+    isCustom: item.isCustom,
+    sortOrder: item.sortOrder,
+  }));
 
   for (const item of printItems) {
     if (mode === 'fill') {

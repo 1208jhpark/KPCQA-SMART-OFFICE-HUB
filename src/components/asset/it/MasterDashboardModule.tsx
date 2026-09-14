@@ -2275,7 +2275,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                   : DISABLED_ACTION_BTN
               }`}
             >
-              + 신규 자산 추가
+              + 신규 자산 추가(Edit)
             </button>
           </div>
         </div>
@@ -2880,7 +2880,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                                 : DISABLED_ACTION_BTN
                             }`}
                           >
-                            수정
+                            수정(Edit)
                           </button>
                           <button
                             type="button"
@@ -2906,7 +2906,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                                 : DISABLED_ACTION_BTN
                             }`}
                           >
-                            삭제
+                            삭제(Edit)
                           </button>
                         </div>
                       )}

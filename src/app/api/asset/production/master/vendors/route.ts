@@ -12,6 +12,7 @@ const READ_PATHS = [
   '/asset/production/apply/history',
   '/asset/production/dept-master/order',
   '/asset/production/dept-master/inspection',
+  '/asset/production/dept-master/settlement',
   '/asset/production/dept-master/archive',
 ];
 

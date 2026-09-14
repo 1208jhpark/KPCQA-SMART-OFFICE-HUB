@@ -77,6 +77,28 @@ interface BatchInspectResult {
   details?: StatementMatchRow[];
   itemStatus?: Record<string, ItemInspectStatus>;
   itemPrice?: Record<string, number>;
+  /** 명세표 대조(수기)로 확정했는지 */
+  settlementManual?: boolean;
+  /** 검수에서 따라온 기준 단가 (주황 하이라이트 비교용) */
+  settlementBaselines?: Record<string, number>;
+  settlementLastEdit?: { date?: string; userName?: string };
+}
+
+function moneyDigitsOnly(value: string | number | null | undefined): string {
+  return String(value ?? '').replace(/[^\d]/g, '');
+}
+
+function formatMoneyDigits(digits: string): string {
+  const d = moneyDigitsOnly(digits);
+  if (!d) return '';
+  return Number(d).toLocaleString('ko-KR');
+}
+
+function moneyDigitsToNumber(digits: string): number | null {
+  const d = moneyDigitsOnly(digits);
+  if (!d) return null;
+  const n = Number(d);
+  return Number.isFinite(n) ? n : null;
 }
 
 interface OrderBatch {
@@ -125,7 +147,7 @@ function ColumnGearButton({
       type="button"
       disabled={disabled}
       onClick={onClick}
-      title={disabled ? '편집 권한 필요' : `${label} 칼럼 제목 지정`}
+      title={disabled ? '편집 권한 필요' : `${label} 칼럼 설정(Edit)`}
       className={`ml-1 inline-flex h-5 w-5 items-center justify-center rounded-full text-[11px] ${
         disabled
           ? 'text-slate-300 cursor-not-allowed opacity-60'
@@ -266,7 +288,6 @@ const HeaderLight = ({ title, count, children }: { title: string, count: number,
 export default function BusinessCardOrderPanel() {
   const pathname = usePathname();
   const tabs = useInterfaceStepTabs(BUSINESS_CARD_MASTER_TABS, '/asset/businesscard/master');
-  const [requests, setRequests] = useState<RequestHistory[]>([]);
   const [batches, setBatches] = useState<OrderBatch[]>([]);
   const [units, setUnits] = useState<UnitItem[]>([]);
   const [addresses, setAddresses] = useState<AddressMaster[]>([]);
@@ -284,7 +305,6 @@ export default function BusinessCardOrderPanel() {
     editLevel: string;
   } | null>(null);
   
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [selectedBatchIds, setSelectedBatchIds] = useState<Set<string>>(new Set());
   
   const [detailTarget, setDetailTarget] = useState<RequestHistory | null>(null);
@@ -295,6 +315,10 @@ export default function BusinessCardOrderPanel() {
   
   const [isEmailModalOpen, setIsEmailModalOpen] = useState(false);
   const [isCompareModalOpen, setIsCompareModalOpen] = useState(false);
+  const [settlementBatch, setSettlementBatch] = useState<OrderBatch | null>(null);
+  const [priceDrafts, setPriceDrafts] = useState<Record<string, string>>({});
+  const [priceBaselines, setPriceBaselines] = useState<Record<string, string>>({});
+  const [savingSettlement, setSavingSettlement] = useState(false);
 
   const canEditMaster = useMemo(
     () => resolveInterfaceEditState(currentUser, interfaceConfig).isEditor,
@@ -339,34 +363,14 @@ const statementFileInputRef = useRef<HTMLInputElement>(null);
   const [orgMenuOpen, setOrgMenuOpen] = useState(false);
   const orgMenuRef = useRef<HTMLDivElement>(null);
   const [searchUserQuery, setSearchUserQuery] = useState('');
-  const [expandedBatchId, setExpandedBatchId] = useState<string | null>(null);
+  const [expandedBatchIds, setExpandedBatchIds] = useState<Set<string>>(new Set());
   const [batchPage, setBatchPage] = useState(1);
 
   const fetchData = async () => {
     try {
       setLoading(true);
       
-      // 1. 상단 대기열 데이터 로드 (아직 묶이지 않은 접수완료 건만)
-      const reqRes = await fetch(`/api/asset/businesscard/master/requests?t=${Date.now()}`, { cache: 'no-store' });
-      if (reqRes.ok) {
-        const data = await reqRes.json();
-        const orphans = data.filter((r: any) => r.adminStatus === '발주완료' && !r.orderGroupId);
-        if (orphans.length > 0) {
-          await Promise.all(orphans.map((r: any) =>
-            fetch('/api/asset/businesscard/master/requests', {
-              method: 'PUT',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ id: r.id, adminStatus: '접수완료' }),
-            })
-          ));
-        }
-        const orderWaitData = data
-          .filter((r: any) => !r.orderGroupId && (r.adminStatus === '접수완료' || r.adminStatus === '발주완료'))
-          .map((r: any) => ({ ...r, quantity: r.quantity || 1, adminStatus: '접수완료' }));
-        setRequests(orderWaitData);
-      }
-      
-      // 🚀 2. 하단 관리대장(발주 묶음) 데이터 로드 (증발 해결의 핵심!)
+      // 발주 묶음 대장 로드
       const batchRes = await fetch(`/api/asset/businesscard/master/order?t=${Date.now()}`, { cache: 'no-store' });
       if (batchRes.ok) {
         const batchData = await batchRes.json();
@@ -397,7 +401,7 @@ const statementFileInputRef = useRef<HTMLInputElement>(null);
         if (gradeGroup?.codes) setGrades(gradeGroup.codes);
       }
 
-      // 4. 외주업체 마스터 로드
+      // 외주업체 마스터 로드
       const vendorRes = await fetch(`/api/asset/businesscard/master/vendors?t=${Date.now()}`, { cache: 'no-store' });
       if (vendorRes.ok) {
         const vData = await vendorRes.json();
@@ -407,7 +411,7 @@ const statementFileInputRef = useRef<HTMLInputElement>(null);
         setVendors([]);
       }
 
-      // 5. 권한 배너용 인터페이스 요약
+      // 권한 배너용 인터페이스 요약
       const ts = Date.now();
       const [meRes, ifRes, summaryRes] = await Promise.all([
         fetch(`/api/auth/me?t=${ts}`, { cache: 'no-store' }).catch(() => null),
@@ -468,42 +472,6 @@ const statementFileInputRef = useRef<HTMLInputElement>(null);
       })
       .catch(() => {});
   }, []);
-
-  const handleSelectAll = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.checked) setSelectedIds(new Set(requests.map(r => r.id)));
-    else setSelectedIds(new Set());
-  };
-  const handleSelectRow = (id: string) => {
-    const nextSet = new Set(selectedIds);
-    if (nextSet.has(id)) nextSet.delete(id); else nextSet.add(id);
-    setSelectedIds(nextSet);
-  };
-
-  const handleCancelAccept = async (id: string, postNumber: string) => {
-    if (!canEditMaster) return alertNoEditPermission();
-    if (!confirm(`[${postNumber}] 접수를 취소하고 신청현황(대기중)으로 되돌릴까요?`)) return;
-    try {
-      const res = await fetch('/api/asset/businesscard/master/requests', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id, adminStatus: '대기중', processDate: null, batchId: null }),
-      });
-      if (res.ok) {
-        alert('접수를 취소했습니다. 신청현황 대기열로 돌아갑니다.');
-        setSelectedIds((prev) => {
-          const next = new Set(prev);
-          next.delete(id);
-          return next;
-        });
-        fetchData();
-      } else {
-        const data = await res.json().catch(() => ({}));
-        alert(data.message || '접수 취소에 실패했습니다.');
-      }
-    } catch {
-      alert('서버 연결 실패');
-    }
-  };
 
   const handleSelectAllBatches = (e: React.ChangeEvent<HTMLInputElement>) => {
     const pageIds = filteredBatches
@@ -1059,56 +1027,6 @@ const handleSaveColMap = async () => {
   setColMapEditor(null);
 };
 
-// 🚀 새로운 /order API를 사용하는 발주 묶음 생성 함수
-const handleCreateBatch = async () => {
-  if (!canEditMaster) return alertNoEditPermission();
-  if (selectedIds.size === 0) return alert('⚠️ 발주 처리할 명함을 선택해 주세요.');
-  const targets = requests.filter(r => selectedIds.has(r.id));
-  const dayKey = getKSTDateString().replace(/-/g, '');
-  const sameDayCount = batches.filter((b) => String(b.id || '').includes(dayKey)).length;
-  const batchId = `PO-BC-${dayKey}-${String(sameDayCount + 1).padStart(2, '0')}`;
-  const distinctDepts = Array.from(new Set(targets.map(t => t.deptHead))).join(', ');
-  
-  try {
-    const payload = {
-      id: batchId,
-      orderDate: getKSTDateString(),
-      totalCount: targets.length,
-      deptHeadGroup: distinctDepts || '전사종합',
-      status: '발주완료',
-      itemIds: targets.map(t => t.id)
-    };
-
-    const res = await fetch('/api/asset/businesscard/master/order', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    });
-    
-    if (!res.ok) {
-      const errData = await res.json();
-      throw new Error(errData.error || 'DB 묶음 생성 실패');
-    }
-
-    const newBatch: OrderBatch = {
-      id: batchId, 
-      orderDate: payload.orderDate,
-      totalCount: payload.totalCount, 
-      deptHeadGroup: payload.deptHeadGroup,
-      status: '발주완료', 
-      items: targets.map(t => ({ ...t, adminStatus: '발주완료', batchId }))
-    };
-    
-    setBatches([newBatch, ...batches]);
-    setRequests(requests.filter(r => !selectedIds.has(r.id)));
-    setSelectedIds(new Set());
-    alert("🚀 발주 묶음이 성공적으로 생성되어 DB에 완벽히 반영되었습니다.");
-  } catch (error: any) {
-    console.error(error);
-    alert(`❌ 발주 처리 실패: ${error.message}`);
-  }
-};
-
 const handleExecuteUpdate = async () => {
   if (!requestEditForm) return;
   if (!adminMemoInput.trim()) return alert('⚠️ 변경 이력 관리를 위해 하단에 [수정 사유]를 반드시 입력해 주세요.');
@@ -1130,7 +1048,6 @@ const handleExecuteUpdate = async () => {
 
     if (res.ok) {
       alert("💾 원문 정보가 DB에 완벽히 동기화 되었습니다.");
-      setRequests(requests.map(r => r.id === payload.id ? payload : r));
       setBatches(batches.map(b => ({ 
         ...b, items: b.items.map(item => item.id === payload.id ? payload : item) 
       })));
@@ -1341,6 +1258,162 @@ const getBatchInspectStatus = (batch: OrderBatch): 'idle' | 'match' | 'mismatch'
   return 'mismatch';
 };
 
+const resolveItemSettlementPrice = (batch: OrderBatch, itemId: string): number => {
+  if (itemMatchPrice[itemId] != null && Number.isFinite(itemMatchPrice[itemId])) {
+    return Number(itemMatchPrice[itemId]) || 0;
+  }
+  const mapped = batch.inspectResult?.itemPrice?.[itemId];
+  if (mapped != null && Number.isFinite(Number(mapped))) return Number(mapped) || 0;
+  const detail = batch.inspectResult?.details?.find((d) => d.id === itemId);
+  if (detail?.docPrice != null && Number.isFinite(Number(detail.docPrice))) {
+    return Number(detail.docPrice) || 0;
+  }
+  return 0;
+};
+
+const openSettlementModal = (batch: OrderBatch) => {
+  if (!canEditMaster) return alertNoEditPermission();
+  const drafts: Record<string, string> = {};
+  const baselines: Record<string, string> = {};
+  const storedBases = batch.inspectResult?.settlementBaselines || {};
+  for (const item of batch.items || []) {
+    const price = resolveItemSettlementPrice(batch, item.id);
+    const digits = price > 0 ? String(Math.trunc(price)) : '';
+    drafts[item.id] = digits;
+    const baseRaw = storedBases[item.id];
+    baselines[item.id] =
+      baseRaw != null && Number.isFinite(Number(baseRaw)) && Number(baseRaw) > 0
+        ? String(Math.trunc(Number(baseRaw)))
+        : digits;
+  }
+  setPriceDrafts(drafts);
+  setPriceBaselines(baselines);
+  setSettlementBatch(batch);
+};
+
+const isPriceDraftChanged = (itemId: string) => {
+  const cur = moneyDigitsToNumber(priceDrafts[itemId] || '');
+  const base = moneyDigitsToNumber(priceBaselines[itemId] || '');
+  if (cur == null && base == null) return false;
+  if (cur == null || base == null) return true;
+  return cur !== base;
+};
+
+const handleSaveSettlement = async () => {
+  if (!settlementBatch) return;
+  if (!canEditMaster) return alertNoEditPermission();
+  const items = settlementBatch.items || [];
+  if (items.length === 0) return alert('대조할 신청 건이 없습니다.');
+
+  const itemPrice: Record<string, number> = {};
+  const itemStatus: Record<string, ItemInspectStatus> = {};
+  const details: StatementMatchRow[] = [];
+  let totalPrice = 0;
+
+  for (const item of items) {
+    const n = moneyDigitsToNumber(priceDrafts[item.id] || '');
+    if (n == null || n < 0) {
+      return alert(`[${item.postNumber}] 정산단가(원)를 입력해 주세요.`);
+    }
+    itemPrice[item.id] = n;
+    itemStatus[item.id] = 'match';
+    totalPrice += n;
+    const prev = settlementBatch.inspectResult?.details?.find((d) => d.id === item.id);
+    details.push({
+      id: item.id,
+      name: prev?.name || item.userName || '',
+      dept: prev?.dept || item.deptName || '',
+      deptHead: prev?.deptHead || item.deptHead,
+      deptName: prev?.deptName || item.deptName,
+      dbQty: prev?.dbQty ?? item.quantity ?? 1,
+      nameMatch: prev?.nameMatch ?? true,
+      deptMatch: prev?.deptMatch ?? true,
+      qtyMatch: prev?.qtyMatch ?? true,
+      docQty: prev?.docQty ?? item.quantity ?? 1,
+      docDept: prev?.docDept || item.deptName || '',
+      docDepts: prev?.docDepts || [item.deptName || ''].filter(Boolean),
+      docQtyParts: prev?.docQtyParts || [],
+      docPrice: n,
+      matchStatus: 'match',
+      resultNote: prev?.resultNote || '명세표 대조(수기)로 확정',
+      adminOverride: true,
+      adminEditedFields: prev?.adminEditedFields,
+    });
+  }
+
+  const settlementBaselines: Record<string, number> = {};
+  for (const item of items) {
+    const b = moneyDigitsToNumber(priceBaselines[item.id] || '');
+    if (b != null && b > 0) settlementBaselines[item.id] = b;
+    else if (itemPrice[item.id] > 0) settlementBaselines[item.id] = itemPrice[item.id];
+  }
+
+  const prevResult = settlementBatch.inspectResult || {};
+  const inspectResult: BatchInspectResult = {
+    ...prevResult,
+    fileName: prevResult.fileName || settlementBatch.inspectFileName || '수기 명세표 대조',
+    matched: true,
+    docTotalQty: items.reduce((s, i) => s + (Number(i.quantity) || 0), 0),
+    docTotalPrice: totalPrice,
+    logs: [
+      ...(Array.isArray(prevResult.logs) ? prevResult.logs : []),
+      `✍️ 명세표 대조(수기) 확정 · ${getKSTDateString()} · ${String(currentUser?.name || '-').trim() || '-'}`,
+    ],
+    details,
+    itemStatus,
+    itemPrice,
+    settlementManual: true,
+    settlementBaselines,
+    settlementLastEdit: {
+      date: getKSTDateString(),
+      userName: String(currentUser?.name || '').trim() || '-',
+    },
+  };
+
+  setSavingSettlement(true);
+  try {
+    const res = await fetch('/api/asset/businesscard/master/order/inspect', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        batches: [
+          {
+            batchId: settlementBatch.id,
+            inspectStatus: 'match',
+            inspectFileName: inspectResult.fileName || null,
+            inspectResult,
+          },
+        ],
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.message || '명세표 대조 저장 실패');
+
+    setBatches((prev) =>
+      prev.map((b) =>
+        b.id === settlementBatch.id
+          ? {
+              ...b,
+              inspectStatus: 'match',
+              inspectFileName: inspectResult.fileName || b.inspectFileName,
+              inspectResult,
+            }
+          : b
+      )
+    );
+    setItemMatchPrice((prev) => ({ ...prev, ...itemPrice }));
+    setItemMatchStatus((prev) => ({ ...prev, ...itemStatus }));
+    setSettlementBatch(null);
+    setPriceBaselines({});
+    setPriceDrafts({});
+    alert('명세표 대조(수기)를 저장했습니다.\n명세서 검수가 일치로 확정되어 보관함 이동이 가능합니다.');
+  } catch (error: any) {
+    alert(error.message || '명세표 대조 저장 중 오류가 발생했습니다.');
+  } finally {
+    setSavingSettlement(false);
+  }
+};
+
 const handleCancelOrderBatch = async (batch: OrderBatch, e: React.MouseEvent) => {
   e.stopPropagation();
   if (!canEditMaster) return alertNoEditPermission();
@@ -1354,7 +1427,12 @@ const handleCancelOrderBatch = async (batch: OrderBatch, e: React.MouseEvent) =>
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.message || '발주 취소 실패');
-    setExpandedBatchId((prev) => (prev === batch.id ? null : prev));
+    setExpandedBatchIds((prev) => {
+      if (!prev.has(batch.id)) return prev;
+      const next = new Set(prev);
+      next.delete(batch.id);
+      return next;
+    });
     setSelectedBatchIds((prev) => {
       const next = new Set(prev);
       next.delete(batch.id);
@@ -1369,7 +1447,6 @@ const handleCancelOrderBatch = async (batch: OrderBatch, e: React.MouseEvent) =>
 
 const handleMarkAsDistributed = async (batchId: string, e: React.MouseEvent) => {
   e.stopPropagation(); // 행 클릭(아코디언 펼침) 방지
-  if (!canEditMaster) return alertNoEditPermission();
   
   if (!confirm(`이 묶음의 명함 현물이 도착하여 임직원에게 지급을 완료하셨습니까?\n(확인 시 사용자 화면에서도 '지급완료'로 변경됩니다.)`)) return;
 
@@ -1402,12 +1479,13 @@ const handleMarkAsDistributed = async (batchId: string, e: React.MouseEvent) => 
 
 const handleMoveBatchToArchive = async (batch: OrderBatch, e: React.MouseEvent) => {
   e.stopPropagation();
-  if (!canEditMaster) return alertNoEditPermission();
   if (batch.status !== '지급완료') {
     return alert('지급완료 처리된 묶음만 보관함으로 이동할 수 있습니다.\n배송 도착 후 [지급완료 처리]를 먼저 해 주세요.');
   }
   if (getBatchInspectStatus(batch) !== 'match') {
-    return alert('명세서 검수(거래명세표)가 일치한 묶음만 이동할 수 있습니다.');
+    return alert(
+      '명세서 검수가 일치하거나, [명세표 대조]에서 수기 단가를 확정한 묶음만 이동할 수 있습니다.'
+    );
   }
   if (!confirm(`[${formatBatchNo(batch.id)}] 검수 완료 보관함으로 이동하시겠습니까?`)) return;
 
@@ -1428,7 +1506,12 @@ const handleMoveBatchToArchive = async (batch: OrderBatch, e: React.MouseEvent) 
       next.delete(batch.id);
       return next;
     });
-    setExpandedBatchId((prev) => (prev === batch.id ? null : prev));
+    setExpandedBatchIds((prev) => {
+      if (!prev.has(batch.id)) return prev;
+      const next = new Set(prev);
+      next.delete(batch.id);
+      return next;
+    });
     alert('검수 완료 보관함으로 이동했습니다.');
   } catch (error: any) {
     console.error(error);
@@ -1475,14 +1558,16 @@ useEffect(() => {
 }, [selectedOrg, organizationUnit]);
 
 const q = searchUserQuery.trim().toLowerCase();
-const filteredBatches = afterPeriodList.filter((b) => {
-  const hasMatch = (b.items || []).some((item) => {
-    if (!itemMatchesOrg(item, selectedOrg, units)) return false;
-    if (q && !String(item.userName || '').toLowerCase().includes(q)) return false;
-    return true;
+const filteredBatches = useMemo(() => {
+  return afterPeriodList.filter((b) => {
+    const hasMatch = (b.items || []).some((item) => {
+      if (!itemMatchesOrg(item, selectedOrg, units)) return false;
+      if (q && !String(item.userName || '').toLowerCase().includes(q)) return false;
+      return true;
+    });
+    return hasMatch;
   });
-  return hasMatch;
-});
+}, [afterPeriodList, selectedOrg, units, q]);
 
 const batchTotalPages = Math.max(1, Math.ceil(filteredBatches.length / BATCH_PAGE_SIZE));
 const paginatedBatches = filteredBatches.slice(
@@ -1501,6 +1586,29 @@ useEffect(() => {
   if (batchPage > batchTotalPages) setBatchPage(batchTotalPages);
 }, [batchPage, batchTotalPages]);
 
+/** 대상자 검색 시 매칭 묶음 하위 상세(아코디언) 자동 펼침 */
+useEffect(() => {
+  const qUser = searchUserQuery.trim();
+  if (!qUser) {
+    setExpandedBatchIds(new Set());
+    return;
+  }
+  const start = (batchPage - 1) * BATCH_PAGE_SIZE;
+  const pageIds = filteredBatches
+    .slice(start, start + BATCH_PAGE_SIZE)
+    .map((b) => b.id);
+  setExpandedBatchIds(new Set(pageIds));
+}, [searchUserQuery, batchPage, filteredBatches]);
+
+const toggleBatchExpand = (batchId: string) => {
+  setExpandedBatchIds((prev) => {
+    const next = new Set(prev);
+    if (next.has(batchId)) next.delete(batchId);
+    else next.add(batchId);
+    return next;
+  });
+};
+
 return (
   <div className="w-full max-w-[1600px] mx-auto space-y-6 p-8 font-sans text-slate-900 pb-24 animate-fade-in">
     
@@ -1516,7 +1624,7 @@ return (
       전사 임직원 명함 발주 접수 통제 대장
     </h1>
     <p className="text-emerald-100/90 text-xs mt-3 leading-relaxed">
-      임직원이 신청한 명함의 국/영문 원본 조판 텍스트 데이터를 검수하고 외주 조판 공정으로 이관 제어하는 마스터 컨트롤 허브입니다.
+      묶음 발주는 신청현황의 [발주대기] 서류철에서 생성합니다. 여기서는 엑셀·메일·지급·명세 대조·보관함 이동을 처리합니다.
     </p>
     {permissionSummary && (
       <div className="flex flex-wrap items-center gap-2 mt-4 pt-3 border-t border-white/15">
@@ -1573,177 +1681,14 @@ return (
   </p>
 </div>
 
-    {/* 상단 대기열 */}
-    <div className="bg-white border border-slate-200 rounded-[2.5rem] shadow-sm overflow-hidden">
-      <div className="p-4 px-6 bg-slate-200/70 border-b border-slate-300 flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
-          <div className="w-2.5 h-2.5 rounded-full bg-blue-600" />
-          <h2 className="text-sm font-black text-slate-800 tracking-tight">접수완료/발주 대기열</h2>
-          <span className="text-[11px] font-bold bg-slate-300/80 text-slate-700 px-2 py-0.5 rounded-md">{requests.length}건</span>
-        </div>
-        <button
-          type="button"
-          onClick={handleCreateBatch}
-          disabled={!canEditMaster || selectedIds.size === 0}
-          title={!canEditMaster ? '편집 권한 필요' : undefined}
-          className={`inline-flex items-center gap-1 text-[10px] font-black rounded-lg px-4 py-1.5 transition-colors shadow-sm ${
-            canEditMaster
-              ? 'bg-indigo-600 text-white border border-indigo-600 hover:bg-indigo-700 disabled:opacity-50'
-              : DISABLED_ACTION_BTN
-          }`}
-        >
-          <span>→</span>
-          <span>선택된 {selectedIds.size}건 묶음 발주 생성 🚀</span>
-        </button>
-      </div>
-      
-      <div className="overflow-x-auto">
-        <table className="w-full text-left border-collapse table-fixed min-w-[1200px]">
-          <colgroup>
-            <col className="w-[40px]" />
-            <col className="w-[48px]" />
-            <col className="w-[110px]" />
-            <col className="w-[96px]" />
-            <col className="w-[72px]" />
-            <col className="w-[140px]" />
-            <col className="w-[140px]" />
-            <col className="w-[88px]" />
-            <col className="w-[120px]" />
-            <col className="w-[120px]" />
-            <col className="w-[72px]" />
-            <col className="w-[88px]" />
-            <col className="w-[88px]" />
-          </colgroup>
-          <thead className="bg-slate-100 text-slate-700 text-[10px] font-black uppercase tracking-widest border-b border-slate-200">
-            <tr>
-              <th className="h-12 pl-4 text-center">
-                <input
-                  type="checkbox"
-                  onChange={handleSelectAll}
-                  checked={requests.length > 0 && selectedIds.size === requests.length}
-                  className="w-3 h-3 accent-indigo-600 cursor-pointer"
-                />
-              </th>
-              <th className="h-12 px-2 text-center">NO</th>
-              <th className="h-12 px-2 text-center whitespace-nowrap">관리번호</th>
-              <th className="h-12 px-2 text-center whitespace-nowrap">신청일</th>
-              <th className="h-12 px-2 text-center whitespace-nowrap">신청주체</th>
-              <th className="h-12 px-2">본부 (상위 조직)</th>
-              <th className="h-12 px-2">센터 (하위 조직)</th>
-              <th className="h-12 px-2">대상자</th>
-              <th className="h-12 px-2">직책 / 직급</th>
-              <th className="h-12 px-2 text-center whitespace-nowrap">신청내역</th>
-              <th className="h-12 px-2 text-center whitespace-nowrap">수량(통)</th>
-              <th className="h-12 px-2 text-center whitespace-nowrap">공정상태</th>
-              <th className="h-12 px-2 text-center whitespace-nowrap">상태</th>
-            </tr>
-          </thead>
-          <tbody className="bg-white divide-y divide-slate-100 text-[11px] font-bold text-slate-700">
-            {requests.length === 0 ? (
-              <tr>
-                <td colSpan={13} className="p-16 text-center text-slate-400 text-xs">대기열이 비어있습니다.</td>
-              </tr>
-            ) : (
-              requests.map((row, idx) => {
-                const rowNo = requests.length - idx;
-                const appliedTitle = String(row.title || '').trim() || '-';
-                const isSelected = selectedIds.has(row.id);
-                return (
-                  <tr key={row.id} className={`hover:bg-slate-50/50 h-12 transition-colors ${isSelected ? 'bg-indigo-50/50' : ''}`}>
-                    <td className="pl-4 text-center" onClick={(e) => e.stopPropagation()}>
-                      <input
-                        type="checkbox"
-                        checked={isSelected}
-                        onChange={() => handleSelectRow(row.id)}
-                        className="w-3 h-3 accent-indigo-600 cursor-pointer"
-                      />
-                    </td>
-                    <td className="px-2 text-center font-mono text-slate-500 tabular-nums">{rowNo}</td>
-                    <td className="px-2 text-center font-mono text-slate-900 tabular-nums truncate">{row.postNumber}</td>
-                    <td className="px-2 text-center whitespace-nowrap tabular-nums text-slate-800">{row.applyDate}</td>
-                    <td className="px-2 text-center">
-                      {row.applicantType === '관리자대행' ? (
-                        <span className="text-[10px] font-bold whitespace-nowrap text-indigo-700" title={row.applicantName || ''}>
-                          관리자대행
-                        </span>
-                      ) : (
-                        <span className="text-[10px] font-bold whitespace-nowrap text-slate-600">
-                          본인
-                        </span>
-                      )}
-                    </td>
-                    <td className="px-2 truncate" title={row.deptHead || ''}>{row.deptHead || '-'}</td>
-                    <td className="px-2 truncate" title={row.deptName || ''}>{row.deptName || <span className="text-slate-300">-</span>}</td>
-                    <td className="px-2 text-slate-800 truncate">{row.userName || '-'}</td>
-                    <td className="px-2 text-slate-800 truncate" title={appliedTitle}>{appliedTitle}</td>
-                    <td className="px-2 text-center">
-                      <button
-                        type="button"
-                        disabled={!canEditMaster}
-                        title={!canEditMaster ? '편집 권한 필요' : undefined}
-                        onClick={() => {
-                          if (!canEditMaster) return alertNoEditPermission();
-                          setDetailReadOnly(false);
-                          setIsRequestEditing(false);
-                          setDetailTarget(row);
-                        }}
-                        className={`px-2.5 py-1 text-[10px] font-bold rounded-lg shadow-sm transition-colors ${
-                          canEditMaster
-                            ? 'bg-blue-600 text-white hover:bg-blue-700'
-                            : DISABLED_ACTION_BTN
-                        }`}
-                      >
-                        원문 최종 검수
-                      </button>
-                    </td>
-                    <td className="px-2 text-center font-mono tabular-nums text-slate-900">{row.quantity || 1}</td>
-                    <td className="px-2 text-center">
-                      <span className={`text-[10px] font-bold whitespace-nowrap ${
-                        row.adminStatus === '지급완료'
-                          ? 'text-purple-700'
-                          : row.adminStatus === '발주완료'
-                            ? 'text-emerald-600'
-                            : row.adminStatus === '접수완료'
-                              ? 'text-blue-600'
-                              : row.adminStatus === '반려'
-                                ? 'text-red-600'
-                                : 'text-orange-600'
-                      }`}>
-                        {row.adminStatus}
-                      </span>
-                    </td>
-                    <td className="px-2 text-center">
-                      <button
-                        type="button"
-                        disabled={!canEditMaster}
-                        title={!canEditMaster ? '편집 권한 필요' : undefined}
-                        onClick={() => handleCancelAccept(row.id, row.postNumber)}
-                        className={`px-2 py-1 text-[10px] font-black rounded-lg transition-colors ${
-                          canEditMaster
-                            ? 'bg-rose-50 border border-rose-200 hover:bg-rose-100 text-rose-600'
-                            : DISABLED_ACTION_BTN
-                        }`}
-                      >
-                        접수 취소
-                      </button>
-                    </td>
-                  </tr>
-                );
-              })
-            )}
-          </tbody>
-        </table>
-      </div>
-    </div>
-
-    {/* 하단 발주 묶음 대장 — 위 대기열과 동일 흰 카드, 헤더만 푸른 톤으로 구분 */}
-    <div className={`bg-white border border-indigo-200 rounded-[2.5rem] shadow-sm mt-8 ${orgMenuOpen ? 'overflow-visible' : 'overflow-hidden'}`}>
+    {/* 외주 발주 묶음 대장 */}
+    <div className={`bg-white border border-indigo-200 rounded-[2.5rem] shadow-sm ${orgMenuOpen ? 'overflow-visible' : 'overflow-hidden'}`}>
       <div className={`p-4 px-6 bg-indigo-50 border-b border-indigo-200 flex flex-wrap items-center justify-between gap-4 relative ${orgMenuOpen ? 'z-[80] overflow-visible' : ''}`}>
         <div className="flex items-start gap-2">
           <div className="w-2.5 h-2.5 rounded-full bg-indigo-600 mt-1.5 shrink-0" />
           <div>
             <h2 className="text-sm font-black text-slate-800 tracking-tight">외주 발주 묶음 관리 대장</h2>
-            <p className="text-[11px] text-indigo-700/70 font-bold mt-1">엑셀 저장·메일 복사(그룹웨어 첨부) → 배송 도착 후 지급처리 → 거래명세표 검수 → 보관함 이동</p>
+            <p className="text-[11px] text-indigo-700/70 font-bold mt-1">엑셀 저장·메일 복사(그룹웨어 첨부) → 배송 도착 후 지급처리 → 선택 거래명세표 검수 또는 명세표 수기 대조 → 보관함 이동</p>
           </div>
         </div>
         
@@ -1835,51 +1780,114 @@ return (
 
       <div className="overflow-x-auto">
         <table className="w-full text-left border-collapse">
-          <thead className="bg-indigo-100 text-indigo-900 text-[10px] font-black uppercase tracking-widest border-b border-indigo-200">
+          <thead className="text-indigo-900 text-[10px] font-black uppercase tracking-widest border-b border-indigo-200">
             <tr>
+              <th
+                colSpan={5}
+                className="bg-slate-100 text-slate-700 border-b border-r border-slate-300 font-semibold text-center text-xs py-1.5 normal-case tracking-normal"
+              >
+                신청/기본정보
+              </th>
+              <th
+                colSpan={3}
+                className="bg-blue-50 text-blue-700 border-b border-r border-blue-200 font-semibold text-center text-xs py-1.5 normal-case tracking-normal"
+              >
+                발주 및 지급
+              </th>
+              <th
+                colSpan={2}
+                className="bg-amber-50 text-amber-800 border-b border-r border-amber-200 font-semibold text-center text-xs py-1.5 normal-case tracking-normal"
+              >
+                명세 대조·검수
+              </th>
+              <th
+                colSpan={2}
+                className="bg-indigo-50 text-indigo-700 border-b border-indigo-200 font-semibold text-center text-xs py-1.5 normal-case tracking-normal"
+              >
+                관리 액션
+              </th>
+            </tr>
+            <tr className="bg-indigo-100">
               <th className="h-12 px-4 w-[50px]"><input type="checkbox" onChange={handleSelectAllBatches} checked={allPageBatchesSelected} className="w-3 h-3 accent-indigo-600 cursor-pointer" /></th>
               <th className="h-12 px-2 w-[160px]">묶음 번호</th>
               <th className="h-12 px-4 w-[120px]">발주 일자</th>
               <th className="h-12 px-4 min-w-[160px]">신청 상세</th>
-              <th className="h-12 px-4 text-center w-[80px]">총 수량</th>
-              <th className="h-12 px-2 text-center w-[120px]">발주서(첨부용)</th>
-              <th className="h-12 px-2 text-center w-[120px]">발주 메일 양식</th>
-              <th className="h-12 px-2 text-center w-[110px]">지급처리 여부</th>
-              <th className="h-12 px-2 text-center min-w-[128px]">
+              <th className="h-12 px-2 text-center w-[110px] border-r border-slate-300">
+                <div className="flex flex-col items-center justify-center gap-0.5 leading-tight">
+                  <span className="whitespace-nowrap">건 / 통</span>
+                  <span className="text-[9px] font-bold text-indigo-700/80 normal-case tracking-normal whitespace-nowrap">
+                    (신청 / 수량)
+                  </span>
+                </div>
+              </th>
+              <th className="h-12 px-2 text-center w-[120px]">
+                <div className="flex flex-col items-center justify-center gap-0.5 leading-tight">
+                  <span className="whitespace-nowrap">발주서 엑셀(Edit)</span>
+                </div>
+              </th>
+              <th className="h-12 px-2 text-center w-[120px]">
+                <div className="flex flex-col items-center justify-center gap-0.5 leading-tight">
+                  <span className="whitespace-nowrap">메일 양식</span>
+                  <span className="text-[10px] font-bold text-indigo-700/80 normal-case tracking-normal whitespace-nowrap">
+                    (복사 활용)
+                  </span>
+                </div>
+              </th>
+              <th className="h-12 px-2 text-center w-[110px] border-r border-blue-200">
+                <span className="whitespace-nowrap">수령/사용자지급</span>
+              </th>
+              <th className="h-12 px-1 text-center w-[132px]">
                 <div className="flex flex-col items-center justify-center gap-1">
-                  <span>명세서 검수</span>
+                  <span className="whitespace-nowrap">명세서 검수</span>
                   <button
                     type="button"
                     onClick={openCompareModal}
                     disabled={selectedBatchIds.size === 0}
-                    className="px-2 py-1 bg-amber-500 hover:bg-amber-600 text-white font-black text-[10px] rounded-lg shadow-sm disabled:opacity-40 whitespace-nowrap normal-case tracking-normal"
+                    className="px-1.5 py-1 bg-amber-500 hover:bg-amber-600 text-white font-black text-[9px] rounded-lg shadow-sm disabled:opacity-40 whitespace-nowrap normal-case tracking-normal leading-tight"
                   >
-                    선택 명세서 검수({selectedBatchIds.size}건)
+                    선택 검수({selectedBatchIds.size}건)
                   </button>
+                </div>
+              </th>
+              <th className="h-12 px-1 text-center w-[132px] border-r border-amber-200">
+                <div className="flex flex-col items-center justify-center gap-0.5 leading-tight">
+                  <span className="whitespace-nowrap">명세표 대조 (Edit)</span>
+                  <span className="text-[9px] font-bold text-indigo-700/80 normal-case tracking-normal whitespace-nowrap">
+                    (수기 단가 확정)
+                  </span>
                 </div>
               </th>
               <th className="h-12 px-2 text-center w-[150px]">
                 <div className="flex flex-col items-center justify-center gap-0.5 leading-tight">
                   <span>보관함 이동</span>
-                  <span className="text-[9px] font-bold text-indigo-700/80 normal-case tracking-normal">(지급/검수 완료 후)</span>
+                  <span className="text-[9px] font-bold text-indigo-700/80 normal-case tracking-normal">(지급/대조 완료 후)</span>
                 </div>
               </th>
-              <th className="h-12 px-2 text-center w-[90px]">발주 취소</th>
+              <th className="h-12 px-2 text-center w-[90px]">발주취소 (Edit)</th>
             </tr>
           </thead>
           <tbody className="bg-white text-xs font-bold text-slate-700 divide-y divide-slate-100">
             {filteredBatches.length === 0 ? (
               <tr>
-                <td colSpan={11} className="p-16 text-center text-slate-400 text-xs">발주 묶음이 없습니다.</td>
+                <td colSpan={12} className="p-16 text-center text-slate-400 text-xs">발주 묶음이 없습니다.</td>
               </tr>
             ) : paginatedBatches.map((batch) => (
               <React.Fragment key={batch.id}>
                 <tr className={`h-16 hover:bg-indigo-50/40 transition-colors ${selectedBatchIds.has(batch.id) ? 'bg-indigo-50/50' : ''}`}>
                   <td className="px-4"><input type="checkbox" checked={selectedBatchIds.has(batch.id)} onChange={() => handleSelectBatchRow(batch.id)} className="w-3 h-3 accent-indigo-600 cursor-pointer" /></td>
-                  <td className="px-2 font-mono text-indigo-600 cursor-pointer" onClick={() => setExpandedBatchId(expandedBatchId === batch.id ? null : batch.id)}>{expandedBatchId === batch.id ? '👇' : '👉'} {formatBatchNo(batch.id)}</td>
+                  <td
+                    className="px-2 font-mono text-indigo-600 cursor-pointer whitespace-nowrap tabular-nums truncate overflow-hidden"
+                    title={formatBatchNo(batch.id)}
+                    onClick={() => toggleBatchExpand(batch.id)}
+                  >
+                    {formatBatchNo(batch.id)}
+                  </td>
                   <td className="px-4 text-slate-600 font-mono">{batch.orderDate}</td>
-                  <td className="px-4 cursor-pointer" onClick={() => setExpandedBatchId(expandedBatchId === batch.id ? null : batch.id)}>
-                    <span className="text-indigo-600 underline underline-offset-2 font-black">상세 보기</span>
+                  <td
+                    className="px-4 cursor-pointer"
+                    onClick={() => toggleBatchExpand(batch.id)}
+                  >
+                    <span className="text-indigo-600 underline underline-offset-2">상세보기</span>
                     {(() => {
                       const names = Array.from(new Set((batch.items || []).map((i) => i.userName).filter(Boolean)));
                       if (names.length === 0) return null;
@@ -1887,43 +1895,52 @@ return (
                       return <p className="text-[10px] text-slate-400 mt-0.5 truncate" title={label}>{label}</p>;
                     })()}
                   </td>
-                  <td className="px-4 text-center text-indigo-700 font-black">{batch.items?.length || 0} 건</td>
-                  <td className="px-2 text-center">
+                  <td className="px-2 text-center border-r border-slate-200 whitespace-nowrap">
+                    {(() => {
+                      const items = batch.items || [];
+                      const count = items.length;
+                      const packs = items.reduce((sum, item) => sum + (item.quantity || 1), 0);
+                      return (
+                        <span className="text-indigo-700 font-black tabular-nums">
+                          {count}
+                          <span className="text-[10px] font-bold text-indigo-500 ml-0.5">건</span>
+                          <span className="mx-1 text-slate-300 font-bold">/</span>
+                          {packs}
+                          <span className="text-[10px] font-bold text-indigo-500 ml-0.5">통</span>
+                        </span>
+                      );
+                    })()}
+                  </td>
+                  <td className="px-2 text-center whitespace-nowrap">
                     <button
                       type="button"
                       disabled={!canEditMaster}
                       title={!canEditMaster ? '편집 권한 필요' : undefined}
                       onClick={() => handleBatchExcelDownload(batch)}
-                      className={`p-1.5 px-3 font-black text-[10px] rounded-lg w-full ${
+                      className={`px-2.5 py-1 text-[10px] font-black rounded-lg w-full whitespace-nowrap transition-colors ${
                         canEditMaster
                           ? 'bg-white hover:bg-slate-50 text-slate-700 border border-slate-200'
                           : DISABLED_ACTION_BTN
                       }`}
                     >
-                      📊엑셀 다운로드
+                      📥 발주서 다운로드
                     </button>
                   </td>
                   <td className="px-2 text-center">
                     <button
                       type="button"
                       onClick={() => openEmailModal(batch)}
-                      className="p-1.5 px-3 font-black text-[10px] rounded-lg w-full transition-colors bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200"
+                      className="px-2.5 py-1 text-[10px] font-black rounded-lg w-full whitespace-nowrap transition-colors bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200"
                     >
-                      📋텍스트 복사
+                      📋텍스트복사
                     </button>
                   </td>
-                  <td className="px-2 text-center">
+                  <td className="px-2 text-center border-r border-slate-200">
                       {batch.status === '발주완료' ? (
                         <button 
                           type="button"
-                          disabled={!canEditMaster}
-                          title={!canEditMaster ? '편집 권한 필요' : undefined}
                           onClick={(e) => handleMarkAsDistributed(batch.id, e)} 
-                          className={`inline-flex items-center gap-1 px-2 py-1 text-[10px] font-black rounded-lg transition-colors ${
-                            canEditMaster
-                              ? 'bg-blue-600 hover:bg-blue-700 text-white'
-                              : DISABLED_ACTION_BTN
-                          }`}
+                          className="inline-flex items-center gap-1 px-2 py-1 text-[10px] font-black rounded-lg transition-colors bg-blue-600 hover:bg-blue-700 text-white"
                         >
                           <span>→</span>
                           <span>명함지급완료</span>
@@ -1932,26 +1949,50 @@ return (
                         <span className="text-[10px] font-bold whitespace-nowrap text-violet-700">지급완료</span>
                       )}
                     </td>
-                  <td className="px-2 text-center">
-                    {(() => {
-                      const inspect = getBatchInspectStatus(batch);
-                      if (inspect === 'match') return <span className="text-[10px] font-black text-emerald-600">일치</span>;
-                      if (inspect === 'mismatch') return <span className="text-[10px] font-black text-rose-600">불일치</span>;
-                      return <span className="text-[10px] font-black text-slate-400">미검수</span>;
-                    })()}
+                  <td className="px-1 text-center w-[132px]">
+                    <div className="flex items-center justify-center">
+                      {(() => {
+                        const inspect = getBatchInspectStatus(batch);
+                        if (inspect === 'match') return <span className="text-[10px] font-black text-emerald-600">일치</span>;
+                        if (inspect === 'mismatch') return <span className="text-[10px] font-black text-rose-600">불일치</span>;
+                        return <span className="text-[10px] font-black text-slate-400">미검수</span>;
+                      })()}
+                    </div>
+                  </td>
+                  <td className="px-1 text-center w-[132px] border-r border-slate-200">
+                    <div className="flex items-center justify-center">
+                      <button
+                        type="button"
+                        disabled={!canEditMaster}
+                        title={
+                          !canEditMaster
+                            ? '편집 권한 필요'
+                            : batch.inspectResult?.settlementManual
+                              ? '수기 대조로 확정됨 · 다시 열어 수정 가능'
+                              : '검수 불일치여도 수기 단가로 확정할 수 있습니다'
+                        }
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          openSettlementModal(batch);
+                        }}
+                        className={`px-2.5 py-1 text-[10px] font-black rounded-lg whitespace-nowrap transition-colors ${
+                          canEditMaster
+                            ? batch.inspectResult?.settlementManual
+                              ? 'bg-indigo-600 hover:bg-indigo-700 text-white'
+                              : 'bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200'
+                            : DISABLED_ACTION_BTN
+                        }`}
+                      >
+                        {batch.inspectResult?.settlementManual ? '대조 확정됨' : '명세표 대조'}
+                      </button>
+                    </div>
                   </td>
                   <td className="px-2 text-center">
                     {batch.status === '지급완료' && getBatchInspectStatus(batch) === 'match' ? (
                       <button
                         type="button"
-                        disabled={!canEditMaster}
-                        title={!canEditMaster ? '편집 권한 필요' : undefined}
                         onClick={(e) => handleMoveBatchToArchive(batch, e)}
-                        className={`p-1.5 px-2 font-black text-[10px] rounded-lg shadow-sm w-full whitespace-nowrap ${
-                          canEditMaster
-                            ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
-                            : DISABLED_ACTION_BTN
-                        }`}
+                        className="px-2.5 py-1 text-[10px] font-black rounded-lg w-full whitespace-nowrap transition-colors bg-emerald-600 hover:bg-emerald-700 text-white"
                       >
                         → 검수 완료 보관함 이동
                       </button>
@@ -1972,7 +2013,7 @@ return (
                             : DISABLED_ACTION_BTN
                         }`}
                       >
-                        발주 취소
+                        발주취소
                       </button>
                     ) : (
                       <span className="text-[10px] text-slate-300">—</span>
@@ -1980,48 +2021,52 @@ return (
                   </td>
                 </tr>
                 
-                {expandedBatchId === batch.id && (
-                  <tr>
-                    <td colSpan={11} className="bg-indigo-50/60 p-6 border-l-4 border-indigo-400">
-                      <div className="bg-white border border-indigo-100 rounded-2xl overflow-hidden shadow-sm">
-                        <table className="w-full text-left text-xs">
-                          <thead className="bg-slate-50 text-slate-600 font-black tracking-widest border-b border-slate-200 text-[10px]">
-                            <tr>
-                              <th className="h-10 px-2 w-[48px] text-center">NO</th>
-                              <th className="h-10 px-2 w-[110px] text-center whitespace-nowrap">관리번호</th>
-                              <th className="h-10 px-2 w-[96px] text-center whitespace-nowrap">신청일</th>
-                              <th className="h-10 px-2 w-[72px] text-center whitespace-nowrap">신청주체</th>
-                              <th className="h-10 px-2">본부 (상위 조직)</th>
-                              <th className="h-10 px-2">센터 (하위 조직)</th>
-                              <th className="h-10 px-2">대상자</th>
-                              <th className="h-10 px-2">직책 / 직급</th>
-                              <th className="h-10 px-2 text-center w-[72px] whitespace-nowrap">수량(통)</th>
-                              <th className="h-10 px-2 text-center w-[120px] whitespace-nowrap">원문 확인</th>
-                              <th className="h-10 px-2 text-center w-[80px] whitespace-nowrap">명세서 대조</th>
-                              <th className="h-10 px-2 text-center w-[96px] whitespace-nowrap">금액결과</th>
+                {expandedBatchIds.has(batch.id) && (
+                  <tr className="bg-transparent">
+                    <td className="w-[50px] bg-slate-100/70 border-y border-slate-200" />
+                    <td
+                      colSpan={11}
+                      className="bg-slate-100/70 p-4 border-y border-slate-200 border-l-4 border-l-blue-500"
+                    >
+                      <div className="overflow-hidden bg-transparent">
+                        <table className="w-full text-left text-xs bg-transparent">
+                          <thead>
+                            <tr className="bg-slate-200/80 text-slate-700 font-semibold border-b border-slate-300 text-[10px] tracking-widest">
+                              <th className="h-10 px-2 w-[48px] text-center bg-transparent">NO</th>
+                              <th className="h-10 px-2 w-[110px] text-center whitespace-nowrap bg-transparent">관리번호</th>
+                              <th className="h-10 px-2 w-[96px] text-center whitespace-nowrap bg-transparent">신청일</th>
+                              <th className="h-10 px-2 w-[72px] text-center whitespace-nowrap bg-transparent">신청주체</th>
+                              <th className="h-10 px-2 bg-transparent">본부 (상위 조직)</th>
+                              <th className="h-10 px-2 bg-transparent">센터 (하위 조직)</th>
+                              <th className="h-10 px-2 bg-transparent">대상자</th>
+                              <th className="h-10 px-2 bg-transparent">직책 / 직급</th>
+                              <th className="h-10 px-2 text-center w-[72px] whitespace-nowrap bg-transparent">수량(통)</th>
+                              <th className="h-10 px-2 text-center w-[120px] whitespace-nowrap bg-transparent">원문확인 (Edit)</th>
+                              <th className="h-10 px-2 text-center w-[80px] whitespace-nowrap bg-transparent">명세서 대조</th>
+                              <th className="h-10 px-2 text-center w-[96px] whitespace-nowrap bg-transparent">금액결과</th>
                             </tr>
                           </thead>
-                          <tbody className="divide-y divide-slate-100 font-bold text-slate-700">
+                          <tbody className="divide-y divide-slate-200/80 font-bold text-slate-700 bg-transparent">
                             {batch.items?.map((item, idx) => {
                               const mStatus = itemMatchStatus[item.id] || 'idle';
                               return (
-                              <tr key={item.id} className={`h-12 hover:bg-slate-50/50 text-[11px] font-bold text-slate-700 ${mStatus === 'mismatch' || mStatus === 'missing' ? 'bg-rose-50/40' : ''}`}>
-                                <td className="px-2 text-center font-mono text-slate-500 tabular-nums">{idx + 1}</td>
-                                <td className="px-2 text-center font-mono text-slate-900 tabular-nums truncate">{item.postNumber}</td>
-                                <td className="px-2 text-center whitespace-nowrap tabular-nums text-slate-800">{item.applyDate || '-'}</td>
-                                <td className="px-2 text-center">
+                              <tr key={item.id} className={`h-12 bg-transparent hover:bg-slate-200/40 text-[11px] font-bold text-slate-700 transition-colors ${mStatus === 'mismatch' || mStatus === 'missing' ? 'bg-rose-100/50' : ''}`}>
+                                <td className="px-2 text-center font-mono text-slate-500 tabular-nums bg-transparent">{idx + 1}</td>
+                                <td className="px-2 text-center font-mono text-slate-900 tabular-nums truncate bg-transparent">{item.postNumber}</td>
+                                <td className="px-2 text-center whitespace-nowrap tabular-nums text-slate-800 bg-transparent">{item.applyDate || '-'}</td>
+                                <td className="px-2 text-center bg-transparent">
                                   {item.applicantType === '관리자대행' ? (
                                     <span className="text-[10px] font-bold whitespace-nowrap text-indigo-700">관리자대행</span>
                                   ) : (
                                     <span className="text-[10px] font-bold whitespace-nowrap text-slate-600">본인</span>
                                   )}
                                 </td>
-                                <td className="px-2 truncate" title={item.deptHead || ''}>{item.deptHead || '-'}</td>
-                                <td className="px-2 truncate" title={item.deptName || ''}>{item.deptName || <span className="text-slate-300">-</span>}</td>
-                                <td className="px-2 text-slate-800 truncate">{item.userName || '-'}</td>
-                                <td className="px-2 text-slate-800 truncate" title={item.title || ''}>{item.title || '-'}</td>
-                                <td className="px-2 text-center font-mono tabular-nums text-slate-900">{item.quantity || 1}</td>
-                                <td className="px-4 text-center">
+                                <td className="px-2 truncate bg-transparent" title={item.deptHead || ''}>{item.deptHead || '-'}</td>
+                                <td className="px-2 truncate bg-transparent" title={item.deptName || ''}>{item.deptName || <span className="text-slate-300">-</span>}</td>
+                                <td className="px-2 text-slate-800 truncate bg-transparent">{item.userName || '-'}</td>
+                                <td className="px-2 text-slate-800 truncate bg-transparent" title={item.title || ''}>{item.title || '-'}</td>
+                                <td className="px-2 text-center font-mono tabular-nums text-slate-900 bg-transparent">{item.quantity || 1}</td>
+                                <td className="px-4 text-center bg-transparent">
                                   <button
                                     type="button"
                                     disabled={!canEditMaster}
@@ -2038,15 +2083,15 @@ return (
                                         : DISABLED_ACTION_BTN
                                     }`}
                                   >
-                                    원문 확인
+                                    원문확인
                                   </button>
                                 </td>
-                                <td className="px-4 text-center text-base font-black">
+                                <td className="px-4 text-center text-base font-black bg-transparent">
                                   {mStatus === 'idle' && <span className="text-slate-300">-</span>}
                                   {mStatus === 'match' && <span className="text-emerald-500">O</span>}
                                   {(mStatus === 'mismatch' || mStatus === 'missing') && <span className="text-rose-500">X</span>}
                                 </td>
-                                <td className="px-2 text-center font-mono tabular-nums text-[11px]">
+                                <td className="px-2 text-center font-mono tabular-nums text-[11px] bg-transparent">
                                   {mStatus === 'idle' ? (
                                     <span className="text-slate-300">-</span>
                                   ) : (
@@ -2352,7 +2397,7 @@ return (
               <>
                 <button onClick={() => { setDetailTarget(null); setDetailReadOnly(false); }} className="px-5 py-2.5 bg-slate-100 text-slate-700 rounded-xl font-black text-xs hover:bg-slate-200 transition-colors">닫기</button>
                 {!detailReadOnly && (
-                  <button onClick={() => beginRequestEdit(detailTarget)} className="px-5 py-2.5 bg-amber-500 text-white rounded-xl font-black text-xs hover:bg-amber-600 transition-colors shadow-sm">✏️ 발주 전 직접 수정하기</button>
+                  <button onClick={() => beginRequestEdit(detailTarget)} className="px-5 py-2.5 bg-amber-500 text-white rounded-xl font-black text-xs hover:bg-amber-600 transition-colors shadow-sm">✏️ 발주 전 직접 수정하기(Edit)</button>
                 )}
               </>
             )}
@@ -2391,7 +2436,7 @@ return (
                     : DISABLED_ACTION_BTN
                 }`}
               >
-                ⚙️ 업체 관리
+                ⚙️ 업체 관리(Edit)
               </button>
             </div>
           </div>
@@ -2436,7 +2481,7 @@ return (
                     : DISABLED_ACTION_BTN
                 }`}
               >
-                ⚙
+                ⚙ 설정(Edit)
               </button>
             </div>
           </div>
@@ -2547,7 +2592,7 @@ return (
                             : DISABLED_ACTION_BTN
                         }`}
                       >
-                        ✏️ 수정
+                        ✏️ 수정(Edit)
                       </button>
                       <button
                         type="button"
@@ -2577,7 +2622,7 @@ return (
                             : DISABLED_ACTION_BTN
                         }`}
                       >
-                        삭제
+                        삭제(Edit)
                       </button>
                     </td>
                   </tr>
@@ -2593,7 +2638,138 @@ return (
       </div>
     )}
 
-    {/* 🚀 견적 대조 업로드 및 분석 모달 */}
+    {/* 명세표 대조(수기 단가) 모달 */}
+    {settlementBatch && (
+      <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm">
+        <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[90vh] overflow-y-auto border border-slate-200">
+          <div className="p-6 border-b border-slate-100">
+            <h3 className="text-base font-black text-slate-900">명세표 대조</h3>
+            <p className="text-xs text-slate-500 mt-1.5 font-semibold">
+              {formatBatchNo(settlementBatch.id)} · 외주 명세 단가를 건별로 입력합니다.
+            </p>
+            <p className="text-[10px] font-bold text-amber-700/90 mt-1.5">
+              ※ 명세서 검수에서 따라온 단가와 <strong>다른 숫자</strong>로 저장한 칸만{' '}
+              <span className="rounded px-1 bg-amber-100 border border-amber-200">주황</span>
+              으로 남습니다. 같은 숫자로 되돌리면 표시되지 않습니다.
+              검수가 불일치여도 여기서 확정하면 보관함 이동이 가능합니다.
+            </p>
+          </div>
+          <div className="p-6 overflow-x-auto space-y-3">
+            {(() => {
+              const items = settlementBatch.items || [];
+              const totalQty = items.reduce((s, i) => s + (Number(i.quantity) || 0), 0);
+              const totalPrice = items.reduce((s, i) => {
+                const n = moneyDigitsToNumber(priceDrafts[i.id] || '');
+                return s + (n ?? 0);
+              }, 0);
+              return (
+                <div className="flex items-center justify-end gap-4 px-1">
+                  <div className="text-right">
+                    <p className="text-[10px] font-bold text-slate-400">수량 합계</p>
+                    <p className="text-sm font-black text-slate-800 font-mono">
+                      {totalQty.toLocaleString()}통
+                    </p>
+                  </div>
+                  <div className="text-right min-w-[140px]">
+                    <p className="text-[10px] font-bold text-slate-400">최종 정산단가(원) 합계</p>
+                    <p className="text-base font-black text-indigo-600 font-mono">
+                      ₩{totalPrice.toLocaleString()}
+                    </p>
+                  </div>
+                </div>
+              );
+            })()}
+            <table className="w-full text-left text-xs">
+              <thead className="bg-slate-50 text-slate-600 font-black border-b border-slate-200 text-[10px]">
+                <tr>
+                  <th className="h-10 px-2">관리번호</th>
+                  <th className="h-10 px-2">대상자</th>
+                  <th className="h-10 px-2">직책 / 직급</th>
+                  <th className="h-10 px-2 text-center">수량</th>
+                  <th className="h-10 px-2 text-right w-[140px]">정산단가(원)</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 font-bold text-slate-700">
+                {(settlementBatch.items || []).map((item) => (
+                  <tr key={item.id} className="h-12">
+                    <td className="px-2 font-mono text-[11px]">{item.postNumber}</td>
+                    <td className="px-2 text-[11px]">{item.userName}</td>
+                    <td className="px-2 text-[11px] truncate max-w-[200px]" title={item.title}>
+                      {item.title || '-'}
+                    </td>
+                    <td className="px-2 text-center text-[11px]">{item.quantity || 1}통</td>
+                    <td className="px-2 text-right">
+                      {(() => {
+                        const changed = isPriceDraftChanged(item.id);
+                        const digits = moneyDigitsOnly(priceDrafts[item.id] || '');
+                        return (
+                          <input
+                            type="text"
+                            inputMode="numeric"
+                            value={formatMoneyDigits(digits)}
+                            title={
+                              changed
+                                ? '검수 따라온 단가와 다른 값으로 수정됨'
+                                : priceBaselines[item.id]
+                                  ? '검수에서 따라온 단가와 동일'
+                                  : '단가 미입력'
+                            }
+                            onChange={(e) => {
+                              setPriceDrafts((prev) => ({
+                                ...prev,
+                                [item.id]: moneyDigitsOnly(e.target.value),
+                              }));
+                            }}
+                            className={`w-full rounded-lg px-2 py-1.5 text-right text-[11px] font-mono outline-none transition-colors ${
+                              changed
+                                ? 'bg-amber-50 border-2 border-amber-400 text-amber-950 focus:border-amber-500 focus:ring-1 focus:ring-amber-200'
+                                : 'bg-slate-50 border border-slate-200 text-slate-800 focus:border-indigo-400'
+                            }`}
+                            placeholder="0"
+                          />
+                        );
+                      })()}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="p-6 border-t border-slate-100 flex items-center justify-between gap-3">
+            <p className="min-w-0 truncate text-[11px] font-semibold text-slate-500">
+              {settlementBatch.inspectResult?.settlementLastEdit
+                ? `최종 수정 ${settlementBatch.inspectResult.settlementLastEdit.date || '-'} · ${settlementBatch.inspectResult.settlementLastEdit.userName || '-'}`
+                : ''}
+            </p>
+            <div className="flex shrink-0 gap-2">
+              <button
+                type="button"
+                disabled={savingSettlement}
+                onClick={() => {
+                  setSettlementBatch(null);
+                  setPriceBaselines({});
+                  setPriceDrafts({});
+                }}
+                className="px-4 py-2.5 rounded-xl text-[11px] font-black text-slate-500 bg-slate-100 hover:bg-slate-200"
+              >
+                취소
+              </button>
+              <button
+                type="button"
+                disabled={savingSettlement || !canEditMaster}
+                onClick={handleSaveSettlement}
+                title={!canEditMaster ? '편집 권한 필요' : '명세표 대조 저장'}
+                className="px-4 py-2.5 rounded-xl text-[11px] font-black text-white bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50"
+              >
+                {savingSettlement ? '저장 중…' : '대조 저장(Edit)'}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {/* 외주사 거래명세표 교차 검증 모달 */}
     {isCompareModalOpen && (
       <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-sm flex items-center justify-center z-[70] p-4 animate-fade-in">
         <div className="bg-white border border-slate-200 rounded-[2.5rem] shadow-2xl max-w-7xl w-full p-8 space-y-6">

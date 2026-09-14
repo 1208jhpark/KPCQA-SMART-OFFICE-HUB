@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import prisma from '@/lib/prisma';
+import { Prisma } from '@prisma/client';
 import { cookies } from 'next/headers';
 import jwt from 'jsonwebtoken';
 
@@ -44,7 +45,7 @@ export async function GET(req: Request) {
   }
 }
 
-/** 본인 신청 · 대기중(PENDING) — cancel(삭제) / update(수정 확인) */
+/** 본인 신청 — cancel(삭제) / revert-accept(접수취소) / confirm-receive(수령완료) / update(수정) */
 export async function PATCH(req: Request) {
   try {
     const cookieStore = await cookies();
@@ -63,19 +64,69 @@ export async function PATCH(req: Request) {
     if (row.userEmail !== decoded.email) {
       return NextResponse.json({ message: '본인 신청만 처리할 수 있습니다.' }, { status: 403 });
     }
-    if (row.status !== 'PENDING') {
-      return NextResponse.json(
-        { message: '대기중(미접수) 상태에서만 처리할 수 있습니다.' },
-        { status: 400 }
-      );
-    }
 
     if (action === 'cancel') {
+      if (row.status !== 'PENDING') {
+        return NextResponse.json(
+          { message: '접수대기(미접수) 상태에서만 신청을 취소할 수 있습니다.' },
+          { status: 400 }
+        );
+      }
       await prisma.productionRequest.delete({ where: { id } });
       return NextResponse.json({ message: '신청이 취소되어 삭제되었습니다.' });
     }
 
+    if (action === 'revert-accept' || action === 'unaccept') {
+      if (row.status !== 'ACCEPTED') {
+        return NextResponse.json(
+          { message: '발주대기 상태인 건만 접수를 취소할 수 있습니다.' },
+          { status: 400 }
+        );
+      }
+      const updated = await prisma.productionRequest.update({
+        where: { id },
+        data: { status: 'PENDING' },
+      });
+      return NextResponse.json({
+        message: '접수를 취소하고 신청 대기 상태로 되돌렸습니다.',
+        data: updated,
+      });
+    }
+
+    if (action === 'confirm-receive') {
+      if (row.status !== 'ORDERED') {
+        return NextResponse.json(
+          { message: '발주 완료 상태의 건만 수령완료할 수 있습니다.' },
+          { status: 400 }
+        );
+      }
+      const opts =
+        row.options && typeof row.options === 'object' && !Array.isArray(row.options)
+          ? (row.options as Record<string, unknown>)
+          : {};
+      if (opts.vendorDispatched !== true) {
+        return NextResponse.json(
+          { message: '외주 발주가 완료된 후 수령완료 처리할 수 있습니다.' },
+          { status: 400 }
+        );
+      }
+      const updated = await prisma.productionRequest.update({
+        where: { id },
+        data: { status: 'VERIFIED' },
+      });
+      return NextResponse.json({
+        message: '수령완료 처리되었습니다.',
+        data: updated,
+      });
+    }
+
     if (action === 'update') {
+      if (row.status !== 'PENDING') {
+        return NextResponse.json(
+          { message: '접수대기(미접수) 상태에서만 수정할 수 있습니다.' },
+          { status: 400 }
+        );
+      }
       const prevOptions =
         row.options && typeof row.options === 'object' && !Array.isArray(row.options)
           ? (row.options as Record<string, unknown>)
@@ -100,7 +151,7 @@ export async function PATCH(req: Request) {
         data: {
           title,
           quantity,
-          options: nextOptions,
+          options: nextOptions as Prisma.InputJsonValue,
         },
       });
       return NextResponse.json({ message: '수정이 저장되었습니다.', data: updated });
