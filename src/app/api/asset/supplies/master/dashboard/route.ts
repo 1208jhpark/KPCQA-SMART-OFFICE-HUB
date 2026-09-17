@@ -1,6 +1,11 @@
 import { NextResponse } from 'next/server';
 import prisma from '@/lib/prisma';
-import { authorizeApi, assertSupplyOwnerDeptsEditable, authErrorToResponse } from '@/lib/server-auth-guard';
+import {
+  authorizeApi,
+  authorizeAnyMenuPaths,
+  assertSupplyOwnerDeptsEditable,
+  authErrorToResponse,
+} from '@/lib/server-auth-guard';
 import { createSupplyStockIn } from '@/lib/supply-stock-in';
 import { getKSTDateString } from '@/utils/dateUtils';
 import {
@@ -8,6 +13,7 @@ import {
   resolveTopOrgName,
   serializeSupplyOwnerDepts,
 } from '@/utils/orgUnits';
+import { SEED_SUPPLY_ITEM_DEFAULTS } from '@/lib/supply-seed-items';
 
 function resolveOwnerDepts(body: any, unitsList: any[] | undefined): string[] {
   if (Array.isArray(body?.owner_depts)) {
@@ -23,6 +29,15 @@ function resolveOwnerDepts(body: any, unitsList: any[] | undefined): string[] {
 export const dynamic = 'force-dynamic';
 
 const MENU_PATH = '/asset/supplies/master/dashboard';
+
+/** 마스터 Step 공통 Access — restock 등에서도 활성 물품 목록 조회 */
+const MASTER_MENU_PATHS = [
+  '/asset/supplies/master/dashboard',
+  '/asset/supplies/master/requests',
+  '/asset/supplies/master/restock',
+  '/asset/supplies/master/purchase',
+  '/asset/supplies/master/archive',
+];
 
 /** 대기 상태(영문·구 한글) — requests 메뉴 Access 없이 대시보드에서 집계 */
 const PENDING_STATUSES = ['PENDING', '대기중', '대기'];
@@ -56,7 +71,7 @@ function stripDisposalMeta(description: string | null | undefined) {
 /** [GET] 활성 소모품 마스터 + 단위 코드 + 신청 대기 집계 */
 export async function GET() {
   try {
-    await authorizeApi(MENU_PATH);
+    await authorizeAnyMenuPaths(MASTER_MENU_PATHS);
 
     const config = await prisma.systemConfig.findUnique({ where: { id: 'global' } });
     let units: any[] = [];
@@ -113,6 +128,76 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: result.error }, { status: result.status });
       }
       return NextResponse.json({ success: true, data: result.data });
+    }
+
+    // 시드 누락분 복구: LV_1 전용 — 없으면 추가, 비활성만 재활성 (단위·비고·재고 보존)
+    if (body?.action === 'restore-seeds') {
+      if (auth.permission?.myRole !== 'LV_1') {
+        return NextResponse.json(
+          { error: '시드 항목 복구는 LV_1만 가능합니다.' },
+          { status: 403 }
+        );
+      }
+
+      let created = 0;
+      let reactivated = 0;
+
+      for (const seed of SEED_SUPPLY_ITEM_DEFAULTS) {
+        const byId = await prisma.supplyItem.findUnique({ where: { id: seed.id } });
+        const byName =
+          byId ||
+          (await prisma.supplyItem.findFirst({
+            where: { name: seed.name },
+            orderBy: { createdAt: 'asc' },
+          }));
+
+        if (!byName) {
+          assertSupplyOwnerDeptsEditable(auth, parseSupplyOwnerDepts(seed.owner_dept));
+          await prisma.supplyItem.create({
+            data: {
+              id: seed.id,
+              name: seed.name,
+              unit_price: 0,
+              current_stock: seed.current_stock,
+              alert_qty: seed.alert_qty,
+              owner_dept: serializeSupplyOwnerDepts(parseSupplyOwnerDepts(seed.owner_dept)),
+              category: seed.category,
+              description: JSON.stringify({
+                s_unit: seed.s_unit,
+                note: seed.note,
+                publish_note: seed.publish_note || '',
+              }),
+              image_url: null,
+              is_published: false,
+              is_active: true,
+            },
+          });
+          created += 1;
+          continue;
+        }
+
+        if (!byName.is_active) {
+          assertSupplyOwnerDeptsEditable(auth, parseSupplyOwnerDepts(byName.owner_dept));
+          await prisma.supplyItem.update({
+            where: { id: byName.id },
+            data: {
+              is_active: true,
+              description: stripDisposalMeta(byName.description),
+            },
+          });
+          reactivated += 1;
+        }
+      }
+
+      return NextResponse.json({
+        success: true,
+        message:
+          created + reactivated === 0
+            ? '복구할 시드 품목이 없습니다. (이미 모두 활성)'
+            : `시드 품목 복구 완료 (신규 ${created}건, 재활성 ${reactivated}건)`,
+        created,
+        reactivated,
+      });
     }
 
     const name = String(body.name || '').trim();
@@ -266,7 +351,10 @@ export async function PATCH(req: Request) {
       data: {
         name,
         unit_price: cleanNum(body.unit_price) || existing.unit_price || 0,
-        // 현재고는 PATCH에서 덮어쓰지 않음 — 입고(increment) / 신청 선차감·복구만 변경
+        // 현재고는 기본 미변경 — LV_1만 초기재고·강제 보정 허용
+        ...(auth.permission?.myRole === 'LV_1' && body.current_stock !== undefined
+          ? { current_stock: Math.max(0, Math.floor(cleanNum(body.current_stock))) }
+          : {}),
         alert_qty: cleanNum(body.alert_qty) || 0,
         owner_dept,
         description,

@@ -2,6 +2,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import LoadingState from '@/components/common/LoadingState';
 
 export default function AdminInterfacePage() {
   const [activeTab, setActiveTab] = useState(1);
@@ -10,6 +11,7 @@ export default function AdminInterfacePage() {
   const [orgs, setOrgs] = useState<any[]>([]);
   const [users, setUsers] = useState<any[]>([]); 
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [selectedMenu, setSelectedMenu] = useState<any>(null);
   
   const [masterSearch, setMasterSearch] = useState('');
@@ -19,6 +21,8 @@ export default function AdminInterfacePage() {
   const [isSiteModalOpen, setIsSiteModalOpen] = useState(false);
   const [localSites, setLocalSites] = useState<any[]>([]);
   const [collapsedParents, setCollapsedParents] = useState<Record<string, boolean>>({});
+
+  const jsonHeaders = { 'Content-Type': 'application/json' };
   
   const parseLinkedSites = (rawSites: any): any[] => {
     if (!rawSites) return [];
@@ -36,19 +40,38 @@ export default function AdminInterfacePage() {
    
   const fetchData = async () => {
     try {
+      setLoadError(null);
       const [mRes, cRes, oRes] = await Promise.all([
         fetch('/api/admin/interface', { cache: 'no-store' }),
         fetch('/api/admin/config', { cache: 'no-store' }),
         fetch('/api/admin/units?active=true', { cache: 'no-store' })
       ]);
+
+      if (!mRes.ok) {
+        const err = await mRes.json().catch(() => ({}));
+        setLoadError(err.message || `메뉴 로드 실패 (${mRes.status})`);
+        setMenus([]);
+        return;
+      }
+      if (!cRes.ok) {
+        const err = await cRes.json().catch(() => ({}));
+        setLoadError(err.message || `설정 로드 실패 (${cRes.status})`);
+        return;
+      }
+
       const mData = await mRes.json();
       const cData = await cRes.json();
+      const oData = oRes.ok ? await oRes.json() : [];
       
-      setMenus(mData); 
+      setMenus(Array.isArray(mData) ? mData : []); 
       setConfig(cData); 
-      setOrgs(await oRes.json());
-      
-      setLocalSites(parseLinkedSites(cData?.linked_sites)); 
+      setOrgs(Array.isArray(oData) ? oData : []);
+      setLocalSites(parseLinkedSites(cData?.linked_sites));
+
+      setSelectedMenu((prev: any) => {
+        if (!prev?.id || !Array.isArray(mData)) return prev;
+        return mData.find((m: any) => m.id === prev.id) || prev;
+      });
       
       try {
         const uRes = await fetch('/api/admin/users', { cache: 'no-store' });
@@ -57,9 +80,13 @@ export default function AdminInterfacePage() {
           setUsers(uData.users ? uData.users : []); 
         }
       } catch (e) { setUsers([]); }
-      
+    } catch (error) {
+      console.error('interface 로드 실패', error);
+      setLoadError('데이터 로드 중 오류가 발생했습니다.');
+      setMenus([]);
+    } finally {
       setLoading(false);
-    } catch (error) { setLoading(false); }
+    }
   };
   
   useEffect(() => { fetchData(); }, []);
@@ -69,10 +96,13 @@ export default function AdminInterfacePage() {
       setConfig((prev: any) => ({ ...prev, ...payload }));
       const res = await fetch('/api/admin/config', { 
         method: 'PATCH', 
-        headers: { 'Content-Type': 'application/json' }, 
+        headers: jsonHeaders, 
         body: JSON.stringify(payload) 
       });
-      if (!res.ok) alert('설정 저장 중 오류가 발생했습니다.');
+      if (!res.ok) {
+        alert('설정 저장 중 오류가 발생했습니다.');
+        await fetchData();
+      }
     } catch (error) { console.error("Config Save Error"); }
   };
   
@@ -95,22 +125,29 @@ export default function AdminInterfacePage() {
     }
     const prev = menus.find((m) => m.id === id);
     setMenus((prevMenus) => prevMenus.map((m) => (m.id === id ? { ...m, ...payload } : m)));
+    setSelectedMenu((cur: any) => (cur?.id === id ? { ...cur, ...payload } : cur));
     try {
       const res = await fetch('/api/admin/interface', {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: jsonHeaders,
         body: JSON.stringify({ id, ...payload }),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
-        if (prev) setMenus((prevMenus) => prevMenus.map((m) => (m.id === id ? prev : m)));
+        if (prev) {
+          setMenus((prevMenus) => prevMenus.map((m) => (m.id === id ? prev : m)));
+          setSelectedMenu((cur: any) => (cur?.id === id ? prev : cur));
+        }
         alert(err.message || '데이터 저장 중 오류 발생');
         return false;
       }
-      fetchData();
+      await fetchData();
       return true;
     } catch (error) {
-      if (prev) setMenus((prevMenus) => prevMenus.map((m) => (m.id === id ? prev : m)));
+      if (prev) {
+        setMenus((prevMenus) => prevMenus.map((m) => (m.id === id ? prev : m)));
+        setSelectedMenu((cur: any) => (cur?.id === id ? prev : cur));
+      }
       alert('데이터 저장 중 오류 발생');
       return false;
     }
@@ -121,27 +158,46 @@ export default function AdminInterfacePage() {
     if (children.length === 0) return alert("동기화할 하위 메뉴가 없습니다.");
     if (!confirm(`부모 경로 [${parentMenu.path}]를 기준으로 경로를 업데이트하시겠습니까?`)) return;
     try {
-      await Promise.all(children.map(child => {
+      const results = await Promise.all(children.map(child => {
         const segments = child.path.split('/');
         const leaf = segments[segments.length - 1];
         const newPath = `${parentMenu.path}/${leaf}`.replace(/\/+/g, '/');
-        return fetch('/api/admin/interface', { method: 'PATCH', body: JSON.stringify({ id: child.id, path: newPath }) });
+        return fetch('/api/admin/interface', {
+          method: 'PATCH',
+          headers: jsonHeaders,
+          body: JSON.stringify({ id: child.id, path: newPath }),
+        });
       }));
-      fetchData();
+      const failed = results.filter((r) => !r.ok).length;
+      if (failed > 0) {
+        alert(`경로 동기화 일부 실패 (${failed}/${results.length})`);
+      }
+      await fetchData();
     } catch (e) { alert("동기화 실패"); }
   };
   
   const handleUpdateMode = (id: string, mode: 'INDEX' | 'DIRECT') => {
     const payload = { entry_sidebar: true, entry_index_view: mode === 'INDEX', entry_l4_direct: mode === 'DIRECT' };
     handleUpdate(id, payload);
-    if (selectedMenu?.id === id) setSelectedMenu({ ...selectedMenu, ...payload });
   };
   
   const handleResetOrder = async (children: any[]) => {
     if (!confirm('1번부터 재정렬하시겠습니까?')) return;
     try {
-      await Promise.all(children.map((c, index) => fetch('/api/admin/interface', { method: 'PATCH', body: JSON.stringify({ id: c.id, sort_order: index + 1 }) })));
-      fetchData();
+      const results = await Promise.all(
+        children.map((c, index) =>
+          fetch('/api/admin/interface', {
+            method: 'PATCH',
+            headers: jsonHeaders,
+            body: JSON.stringify({ id: c.id, sort_order: index + 1 }),
+          })
+        )
+      );
+      const failed = results.filter((r) => !r.ok).length;
+      if (failed > 0) {
+        alert(`정렬 일부 실패 (${failed}/${results.length})`);
+      }
+      await fetchData();
     } catch(e) { alert("정렬 실패"); }
   };
   
@@ -151,7 +207,13 @@ export default function AdminInterfacePage() {
     if (!confirm(`[${menu.name}] 카드를 삭제하시겠습니까?`)) return;
     try {
       const res = await fetch(`/api/admin/interface?id=${menu.id}`, { method: 'DELETE' });
-      if (res.ok) { if (selectedMenu?.id === menu.id) setSelectedMenu(null); fetchData(); }
+      if (res.ok) {
+        if (selectedMenu?.id === menu.id) setSelectedMenu(null);
+        await fetchData();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        alert(err.message || '삭제에 실패했습니다.');
+      }
     } catch (error) { alert('삭제 실패'); }
   };
   
@@ -165,18 +227,46 @@ export default function AdminInterfacePage() {
     const l1Menus = menus.filter(m => m.level === 1);
     const nextSort = l1Menus.length > 0 ? Math.max(...l1Menus.map(m => m.sort_order)) + 1 : 1;
     const path = generateAlphabetPath(l1Menus.length);
-    await fetch('/api/admin/interface', { method: 'POST', body: JSON.stringify({ level: 1, name: '신규 서비스', path: path, sort_order: nextSort }) });
-    fetchData();
+    try {
+      const res = await fetch('/api/admin/interface', {
+        method: 'POST',
+        headers: jsonHeaders,
+        body: JSON.stringify({ level: 1, name: '신규 서비스', path: path, sort_order: nextSort }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        alert(err.message || '메뉴 추가에 실패했습니다.');
+        return;
+      }
+      await fetchData();
+    } catch {
+      alert('메뉴 추가 중 오류가 발생했습니다.');
+    }
   };
   
   const handleAddSub = async (parentId: string, parentPath: string, level: number) => {
     const newPath = `${parentPath.replace(/\/$/, '')}/sub-${Date.now().toString(36)}`;
     const nextSort = menus.filter(m => m.parent_id === parentId).length + 1;
     try {
-      const res = await fetch('/api/admin/interface', { method: 'POST', body: JSON.stringify({ level, name: `신규 L${level} 하위 메뉴`, parent_id: parentId, path: newPath, sort_order: nextSort, entry_sidebar: true }) });
-      if (!res.ok) throw new Error('생성 실패');
+      const res = await fetch('/api/admin/interface', {
+        method: 'POST',
+        headers: jsonHeaders,
+        body: JSON.stringify({
+          level,
+          name: `신규 L${level} 하위 메뉴`,
+          parent_id: parentId,
+          path: newPath,
+          sort_order: nextSort,
+          entry_sidebar: true,
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        alert(err.message || '생성 오류');
+        return;
+      }
       setCollapsedParents(prev => ({ ...prev, [parentId]: false }));
-      fetchData();
+      await fetchData();
     } catch (error) { alert('생성 오류'); }
   };
   
@@ -244,7 +334,7 @@ export default function AdminInterfacePage() {
         return (a.name || '').localeCompare(b.name || '');
       });
   
-  if (loading) return <div className="p-10 text-center font-black text-slate-300 uppercase tracking-widest animate-pulse">Syncing...</div>;
+  if (loading) return <LoadingState />;
   
   const tabsInfo = [
     { lv: 1, title: 'Step 1 Home View', desc: '전체 서비스 진입로 (기존 대분류)' },
@@ -255,18 +345,40 @@ export default function AdminInterfacePage() {
   
   return (
     <div className="p-5 space-y-6 bg-gray-50 min-h-screen font-sans text-slate-800 relative">
-      
+      {loadError ? (
+        <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-bold text-rose-700">
+          {loadError}
+          <button
+            type="button"
+            onClick={() => {
+              setLoading(true);
+              fetchData();
+            }}
+            className="ml-3 underline underline-offset-2 hover:text-rose-900"
+          >
+            다시 시도
+          </button>
+        </div>
+      ) : null}
+
       {/* 헤더 영역 */}
       <div className="bg-slate-900 p-8 rounded-[2.5rem] text-white shadow-2xl border-b-8 border-blue-600">
         <div className="flex flex-col lg:flex-row gap-8 items-start mb-8">
-          <div className="flex-1 grid grid-cols-2 gap-4 w-full">
+          <div className="flex-1 grid grid-cols-1 md:grid-cols-3 gap-4 w-full">
+            <div className="space-y-1">
+              <label className="text-[10px] font-black text-blue-400 uppercase tracking-widest">Tagline</label>
+              <p className="text-[9px] text-slate-500 font-bold -mt-0.5">홈 상단 배지 문구</p>
+              <input defaultValue={config?.tagline ?? 'Workplace Innovative System for Efficiency'} onBlur={(e) => handleConfigUpdate({tagline: e.target.value})} className="w-full bg-slate-800 rounded-xl p-3 text-[11px] font-bold text-indigo-300 outline-none border border-slate-700 focus:ring-2 focus:ring-blue-500" placeholder="Workplace Innovative System for Efficiency" />
+            </div>
             <div className="space-y-1">
               <label className="text-[10px] font-black text-blue-400 uppercase tracking-widest">Main Headline</label>
-              <input defaultValue={config?.main_headline} onBlur={(e) => handleConfigUpdate({main_headline: e.target.value})} className="w-full bg-slate-800 rounded-xl p-3 text-sm font-black outline-none border border-slate-700 focus:ring-2 focus:ring-blue-500" />
+              <p className="text-[9px] text-slate-500 font-bold -mt-0.5">홈 메인 타이틀</p>
+              <input defaultValue={config?.main_headline ?? 'KPCQA WISE'} onBlur={(e) => handleConfigUpdate({main_headline: e.target.value})} className="w-full bg-slate-800 rounded-xl p-3 text-sm font-black outline-none border border-slate-700 focus:ring-2 focus:ring-blue-500" placeholder="KPCQA WISE" />
             </div>
             <div className="space-y-1">
               <label className="text-[10px] font-black text-blue-400 uppercase tracking-widest">Sub Headline</label>
-              <input defaultValue={config?.sub_headline} onBlur={(e) => handleConfigUpdate({sub_headline: e.target.value})} className="w-full bg-slate-800 rounded-xl p-3 text-xs font-bold text-slate-400 outline-none border border-slate-700 focus:ring-2 focus:ring-blue-500" />
+              <p className="text-[9px] text-slate-500 font-bold -mt-0.5">홈 보조 설명</p>
+              <input defaultValue={config?.sub_headline ?? 'KPCQA 통합업무지원시스템'} onBlur={(e) => handleConfigUpdate({sub_headline: e.target.value})} className="w-full bg-slate-800 rounded-xl p-3 text-xs font-bold text-slate-400 outline-none border border-slate-700 focus:ring-2 focus:ring-blue-500" placeholder="KPCQA 통합업무지원시스템" />
             </div>
           </div>
           <div className="bg-slate-800 p-6 rounded-3xl border border-slate-700 flex items-center justify-between min-w-[320px]">
@@ -403,16 +515,10 @@ export default function AdminInterfacePage() {
                           ? validEScopes.map((s: string) => (s === 'OWN' ? '본인' : s === 'DEPT' ? '부서' : '전체')).join(', ')
                           : '제한';
 
-                      // Task Editor 지정: 이름(부서|전사) 나열
+                      // Task Editor 지정: 이름만 (Edit Scope는 3️⃣ 공통)
                       const editDesignateStr = taskMasterList.length > 0
                         ? taskMasterList
-                            .map((tm: any) => {
-                              const name = users.find((u) => u.email === tm.email)?.name || tm.email || '?';
-                              const sc = String(tm.scope || '').toUpperCase();
-                              const scopeKo =
-                                sc === 'GLOBAL' || sc === 'TOTAL' ? '전사' : sc === 'DEPT' ? '부서' : sc === 'OWN' ? '본인' : '-';
-                              return `${name}(${scopeKo})`;
-                            })
+                            .map((tm: any) => users.find((u) => u.email === tm.email)?.name || tm.email || '?')
                             .join(', ')
                         : '미지정';
   
@@ -528,6 +634,12 @@ export default function AdminInterfacePage() {
           </div>
           
           <div className="flex-1 overflow-y-auto p-5 space-y-6 bg-slate-50 scrollbar-thin pb-24">
+            <div className="rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-2.5 flex gap-2 items-start">
+              <span className="text-amber-600 shrink-0 text-[12px] leading-none pt-0.5" aria-hidden>⚠️</span>
+              <p className="text-[10px] font-bold text-amber-900 leading-relaxed">
+                설정을 바꾸면 <span className="font-black">즉시 저장</span>됩니다.
+              </p>
+            </div>
             
             <div className="flex gap-3 bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
               <div className="space-y-1 w-16 shrink-0">
@@ -611,9 +723,7 @@ export default function AdminInterfacePage() {
             <div className="bg-slate-800 p-5 rounded-2xl border border-slate-700 shadow-md">
               <h4 className="text-white font-black text-[11px] mb-1 uppercase flex items-center gap-1">👑 편집/접근권한 MASTER 지정 (1명만 가능)</h4>
               <p className="text-[9px] text-slate-400 mb-3 font-bold leading-relaxed">
-                이 카드에 한해 <span className="text-indigo-300">LV_1과 동일</span>한 권한(Access·Edit 전부 · Org/Level 우회 · View/Edit Scope TOTAL).
-                하위(L4 등)에만 Master를 지정해도 상위 Step3/2 메뉴가 사이드바에 노출됩니다.
-                Access·Edit보다 우선합니다. 지정 인원의 소속 부서와 무관합니다.
+                이 페이지에 한해 LV_1과 동일한 권한(Access·Edit)이 부여됩니다.
               </p>
               <div className="space-y-2">
                 <div className="relative">
@@ -648,7 +758,6 @@ export default function AdminInterfacePage() {
                     <span className="text-purple-700 font-black whitespace-nowrap">[예외]</span>
                     <div className="text-slate-500">
                       <div>Task Access는 규칙 2️⃣·3️⃣ 만 우회합니다.</div>
-                      <div className="text-slate-400 font-semibold">(전부 프리패스 아님)</div>
                     </div>
                   </div>
                 </div>
@@ -656,7 +765,7 @@ export default function AdminInterfacePage() {
                   <span className="shrink-0 leading-none pt-0.5">📌</span>
                   <div className="min-w-0 grid grid-cols-[auto_1fr] gap-x-1">
                     <span className="text-purple-700 font-black whitespace-nowrap">[규칙 2️⃣·3️⃣]</span>
-                    <span className="text-slate-500">모두 충족해야 페이지에 진입합니다.</span>
+                    <span className="text-slate-500">2️⃣·3️⃣ 모두 충족해야 페이지에 진입합니다.</span>
                   </div>
                 </div>
                 <div className="flex gap-1.5 items-start">
@@ -674,6 +783,7 @@ export default function AdminInterfacePage() {
               {/* 1️⃣ [예외] Task Access */}
               <div className="space-y-2">
                 <span className="text-[10px] font-black text-slate-800 tracking-tighter">1️⃣ [예외] Task Access — 규칙 2️⃣·3️⃣ 만 우회</span>
+                <p className="text-[9px] font-bold text-slate-400 -mt-1">지정된 사람은 Org·Level 없이 진입 가능하며, 보이는 범위는 아래 4️⃣ View Scope를 따릅니다.</p>
                 <div className="relative">
                   <input type="text" value={taSearch} onChange={(e) => setTaSearch(e.target.value)} className="w-full p-2 bg-gray-50 border border-gray-200 rounded-lg text-[10px] font-bold focus:border-purple-500 outline-none" placeholder="이름으로 조회 권한자 추가..." />
                   {taSearch && (
@@ -897,11 +1007,11 @@ export default function AdminInterfacePage() {
                       <div className="text-[9px] font-bold text-slate-500 px-1">
                         {coded
                           ? '※ 코드화 ON: 이 페이지는 Scope 설정을 쓰지 않습니다. (표시용, 런타임 동작 변경 없음)'
-                          : '※ 진입자 전원 적용(Task Access 포함). 본인/부서/전사 중 ≥1 필수.'}
+                          : '※ 진입자·Task Access 모두 이 View Scope 범위를 따릅니다. 본인/부서/전사 중 ≥1 필수.'}
                       </div>
                       {!coded && viewScopes.length === 0 && (
                         <div className="text-[9px] font-bold text-red-500 px-1">
-                          ※ View Scope 미지정: 본인/부서/전사 중 하나 이상 선택하거나, 코드화를 켜 주세요.
+                          ※ View Scope 미지정(제한): Level·Task Access 모두 조회 범위가 없습니다. 본인/부서/전사 중 하나 이상 선택하세요.
                         </div>
                       )}
                     </>
@@ -922,8 +1032,7 @@ export default function AdminInterfacePage() {
                   <div className="min-w-0 grid grid-cols-[auto_1fr] gap-x-1 gap-y-0.5">
                     <span className="text-emerald-700 font-black whitespace-nowrap">[예외]</span>
                     <div className="text-slate-500">
-                      <div>Task Editor는 규칙 2️⃣ 만 우회합니다.</div>
-                      <div className="text-slate-400 font-semibold">(전부 프리패스 아님 · 개인 부서/전사는 결과 Scope와 합집합)</div>
+                      <div>Task Editor는 규칙 2️⃣만 우회합니다.</div>
                     </div>
                   </div>
                 </div>
@@ -932,7 +1041,7 @@ export default function AdminInterfacePage() {
                   <div className="min-w-0 grid grid-cols-[auto_1fr] gap-x-1 gap-y-0.5">
                     <span className="text-emerald-700 font-black whitespace-nowrap">[규칙 2️⃣]</span>
                     <div className="text-slate-500">
-                      <div>Editor Level을 충족해야 편집할 수 있습니다.</div>
+                      <div>선택된 레벨만 편집 권한이 있습니다.</div>
                       <div className="text-slate-400 font-semibold">(Access 통과자에게만 Edit 적용 · 미지정=제한)</div>
                     </div>
                   </div>
@@ -954,6 +1063,7 @@ export default function AdminInterfacePage() {
                 {/* 1️⃣ [예외] Task Editor */}
                 <div className="flex flex-col gap-2">
                   <label className="text-[10px] font-black text-slate-800 block">1️⃣ [예외] Task Editor — 규칙 2️⃣ 만 우회</label>
+                  <p className="text-[9px] font-bold text-slate-400 -mt-1">지정된 사람은 Editor Level 없이 편집 가능하며, 범위는 아래 3️⃣ Edit Scope를 따릅니다.</p>
                   <div className="relative">
                     <input type="text" value={tmSearch} onChange={(e) => setTmSearch(e.target.value)} className="w-full p-2 bg-gray-50 border border-gray-200 rounded-lg text-[10px] outline-none focus:border-emerald-500 font-bold" placeholder="이름으로 Editor 검색..." />
                     {tmSearch && (
@@ -962,7 +1072,7 @@ export default function AdminInterfacePage() {
                           <div key={u.id} onClick={() => {
                             const cur = selectedMenu.task_masters || [];
                             if(!cur.find((item:any) => item.email === u.email)) {
-                              const next = [...cur, { email: u.email, scope: 'DEPT' }];
+                              const next = [...cur, { email: u.email }];
                               handleUpdate(selectedMenu.id, { task_masters: next }); setSelectedMenu({...selectedMenu, task_masters: next});
                             }
                             setTmSearch('');
@@ -971,22 +1081,14 @@ export default function AdminInterfacePage() {
                       </div>
                     )}
                   </div>
-                  <div className="space-y-1.5 mt-2">
+                  <div className="flex flex-wrap gap-1 mt-2">
                     {selectedMenu.task_masters?.map((tm: any) => (
-                      <div key={tm.email} className="bg-emerald-50/50 border border-emerald-100 p-2 rounded-lg flex items-center justify-between shadow-sm">
-                        <span className="text-[10px] font-black text-slate-700 ml-1">{users.find(u => u.email === tm.email)?.name || tm.email}</span>
-                        <div className="flex gap-1.5">
-                          {['DEPT', 'GLOBAL'].map(sc => (
-                            <button key={sc} onClick={() => {
-                              const next = selectedMenu.task_masters.map((item:any) => item.email === tm.email ? { ...item, scope: sc } : item);
-                              handleUpdate(selectedMenu.id, { task_masters: next }); setSelectedMenu({...selectedMenu, task_masters: next});
-                            }} className={`px-2 py-1 rounded text-[9px] font-black transition-all ${tm.scope === sc ? 'bg-emerald-600 text-white shadow-sm' : 'bg-white border border-gray-200 text-slate-500 hover:bg-gray-100'}`}>{sc === 'DEPT' ? '부서자료' : '전사자료'}</button>
-                          ))}
-                          <button onClick={() => {
-                            const next = selectedMenu.task_masters.filter((item:any) => item.email !== tm.email);
-                            handleUpdate(selectedMenu.id, { task_masters: next }); setSelectedMenu({...selectedMenu, task_masters: next});
-                          }} className="px-1.5 text-[12px] text-red-400 hover:text-red-600 font-black">✕</button>
-                        </div>
+                      <div key={tm.email} className="bg-emerald-50 border border-emerald-200 px-2 py-1 rounded-lg flex items-center gap-1 shadow-sm">
+                        <span className="text-[9px] font-bold text-emerald-800">{users.find(u => u.email === tm.email)?.name || tm.email}</span>
+                        <button onClick={() => {
+                          const next = selectedMenu.task_masters.filter((item:any) => item.email !== tm.email);
+                          handleUpdate(selectedMenu.id, { task_masters: next }); setSelectedMenu({...selectedMenu, task_masters: next});
+                        }} className="text-[10px] text-emerald-400 hover:text-red-500 font-black ml-1">✕</button>
                       </div>
                     ))}
                   </div>
@@ -1083,11 +1185,11 @@ export default function AdminInterfacePage() {
                         <div className="text-[9px] font-bold text-slate-500 px-1">
                           {coded
                             ? '※ 코드화 ON: Edit Scope 설정을 이 페이지에 쓰지 않습니다. (표시용)'
-                            : '※ Level 통과자: 이 범위만 편집. 미지정(제한)이면 편집 범위 없음. Task Editor는 개인 부서/전사로 보완.'}
+                            : '※ Level 통과자·Task Editor 모두 이 Edit Scope 범위를 따릅니다. 미지정(제한)이면 편집 범위 없음.'}
                         </div>
                         {!coded && dataScopes.length === 0 && (
                           <div className="text-[9px] font-bold text-red-500 px-1">
-                            ※ Scope 미지정(제한): Level만으로는 편집 불가. Task Editor 개인(부서/전사)만 범위가 생깁니다.
+                            ※ Scope 미지정(제한): Level·Task Editor 모두 편집 범위가 없습니다. 본인/부서/전사 중 하나 이상 선택하세요.
                           </div>
                         )}
                       </>
@@ -1100,7 +1202,7 @@ export default function AdminInterfacePage() {
           </div>
           
           <div className="p-5 bg-white border-t border-slate-200 mt-auto shrink-0 z-10 relative">
-            <button onClick={() => setSelectedMenu(null)} className="w-full py-3.5 bg-blue-600 text-white rounded-xl font-black text-[12px] shadow-lg hover:bg-blue-700 active:scale-[0.98] transition-all tracking-widest">SAVE & CLOSE</button>
+            <button onClick={() => setSelectedMenu(null)} className="w-full py-3.5 bg-blue-600 text-white rounded-xl font-black text-[12px] shadow-lg hover:bg-blue-700 active:scale-[0.98] transition-all tracking-widest">닫기</button>
           </div>
         </div>
       )}

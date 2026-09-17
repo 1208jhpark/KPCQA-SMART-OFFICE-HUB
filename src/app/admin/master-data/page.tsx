@@ -1,6 +1,7 @@
 'use client';
     
 import { useEffect, useState, useMemo } from 'react';
+import LoadingState from '@/components/common/LoadingState';
     
 interface CodeItem {
   id: string;
@@ -216,7 +217,7 @@ export default function MasterDataPage() {
     };
   }, [activeGroup, searchQuery]);
   
-  if (loading) return <div className="p-10 text-center font-black text-slate-300 animate-pulse uppercase">Syncing Master Hub...</div>;
+  if (loading) return <LoadingState />;
   
   return (
     <div className="p-5 min-h-screen bg-gray-50 font-sans text-slate-800 flex flex-col h-screen overflow-hidden" onClick={() => setOpenOrgDropdownId(null)}>

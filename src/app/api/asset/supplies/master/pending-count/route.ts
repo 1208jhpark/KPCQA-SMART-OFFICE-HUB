@@ -8,7 +8,8 @@ export const dynamic = 'force-dynamic';
 const MASTER_MENU_PATHS = [
   '/asset/supplies/master/dashboard',
   '/asset/supplies/master/requests',
-  '/asset/supplies/master/purchase',
+  '/asset/supplies/master/restock',
+  '/asset/supplies/master/purchase', // 구 경로(마이그레이션 전)
   '/asset/supplies/master/archive',
 ];
 

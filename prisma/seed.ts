@@ -2,6 +2,11 @@ import { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 import { seedBusinessCardMasters } from './seed-businesscard-masters';
 import { seedProductionMasters } from './seed-production-masters';
+import {
+  DEFAULT_USER_DUTY_OPTIONS,
+  DEFAULT_USER_GRADE_OPTIONS,
+} from '../src/lib/user-job-options';
+import { SEED_EMPLOYEES } from '../src/lib/user-seed-employees';
 // 🚀 1분 컷으로 빼둔 메뉴 백업 데이터를 불러옵니다. (같은 prisma 폴더 안에 있어야 합니다)
 import menuData from './menu-backup.json';
   
@@ -23,8 +28,6 @@ async function main() {
   await prisma.orgUnit.deleteMany({});
   await prisma.systemConfig.deleteMany({});
   
-  const hashedPassword = await bcrypt.hash('password123', 10);
-  
   // ─────────────────────────────────────────────────────────────
   // 2. SystemConfig (id: 'global') — 한 행에 성격이 다른 설정이 공존
   // ─────────────────────────────────────────────────────────────
@@ -34,8 +37,9 @@ async function main() {
 
       // ── [A] /admin/interface 최상위 설정 탭 ─────────────────────
       //     홈 메인 문구 · 그리드 · 연동 사이트
-      main_headline: 'SMART OFFICE HUB',
-      sub_headline: 'KPCQA 통합 자산 및 업무 관리 시스템',
+      main_headline: 'KPCQA WISE',
+      sub_headline: 'KPCQA 통합업무지원시스템',
+      tagline: 'Workplace Innovative System for Efficiency',
       home_grid_cols: 4,
       linked_sites: [
         { name: 'KPCQA Main Home', url: 'https://www.kpcqa.or.kr/' },
@@ -43,7 +47,6 @@ async function main() {
         { name: 'News Clipping', url: 'http://ax.kpcqa.or.kr:9043/' },
         { name: 'ProdAI', url: 'https://ax.kpcqa.or.kr:8000/' },
         { name: '다과신청', url: 'https://qa.kpcqa.or.kr:8500/' },
-        { name: '법정의무교육', url: 'https://onkpc.or.kr/prohrd' },
         { name: 'KPI SYSTEM - coming soon', url: '-' },
       ],
 
@@ -53,9 +56,9 @@ async function main() {
       // ── [B] /admin/settings 마스터 그룹 연동 ────────────────────
       //     MasterGroup.id 와 연결 (아래 §5에서 동일 ID로 생성)
       //     → /admin/master-data 의 그룹을 각 기능 드롭다운에 바인딩
-      // 인사 (직책·직급 → 명함/유저관리)
-      job_duty_group: 'GRP_DUTY',
-      job_grade_group: 'GRP_GRADE',
+      // 인사 (legacy — 명함은 User.duty/grade 사용, master 직책·직급 그룹 시드 제외)
+      job_duty_group: '',
+      job_grade_group: '',
       // 일반 (고객사 / 소모품 / 단위)
       client_category_group: 'GRP_CLIENT_CATEGORY',
       supply_category_group: 'GRP_SUPPLY',
@@ -64,13 +67,19 @@ async function main() {
       it_category_group: 'GRP_IT_CATEGORY',
       it_master_group: 'GRP_IT_TYPE',
       it_rental_group: 'GRP_PROCUREMENT',
-      // 외주 업무 서비스 (업체 / 품목 / 상세1 / 상세2)
-      outsourcing_vendor_group: 'GRP_OUT_VENDOR',
-      outsourcing_item_group: 'GRP_OUT_ITEM',
-      outsourcing_detail1_group: 'GRP_OUT_DETAIL1',
-      outsourcing_detail2_group: 'GRP_OUT_DETAIL2',
     },
   });
+
+  // /admin/users 전용 직책·직급 옵션 (lib DEFAULT 와 동일 · 시드 복구용)
+  await prisma.$executeRawUnsafe(
+    `UPDATE "SystemConfig"
+     SET "user_duty_options" = $1::jsonb,
+         "user_grade_options" = $2::jsonb,
+         "updatedAt" = NOW()
+     WHERE id = 'global'`,
+    JSON.stringify(DEFAULT_USER_DUTY_OPTIONS),
+    JSON.stringify(DEFAULT_USER_GRADE_OPTIONS)
+  );
   
   // 3. 조직 체계 생성 (💡 영문명 · unit_code 포함)
   const createOrg = async (
@@ -95,11 +104,11 @@ async function main() {
   };
 
   const rootOrg = await createOrg('KPCQA', 'KPCQA', 'ORGANIZATION', null, 1, 'ORG');
-  await createOrg('KPCQA[원장]', '', 'HQ', rootOrg.id, 5, 'EX01');
-  await createOrg('KPCQA[부원장]', '', 'HQ', rootOrg.id, 6, 'EX02');
-  await createOrg('KPCQA[상무]', '', 'HQ', rootOrg.id, 7, 'EX03');
+  await createOrg('KPCQA[원장]', 'KPCQA', 'HQ', rootOrg.id, 5, 'EX01');
+  await createOrg('KPCQA[부원장]', 'KPCQA', 'HQ', rootOrg.id, 6, 'EX02');
+  await createOrg('KPCQA[상무]', 'KPCQA', 'HQ', rootOrg.id, 7, 'EX03');
   const hqPlanning = await createOrg('경영기획본부', 'Planning and Management Division', 'HQ', rootOrg.id, 10, 'PMD');
-  const centerPlanning = await createOrg('경영기획센터', 'Planning and Management Center', 'CENTER', hqPlanning.id, 11, 'PMC');
+  await createOrg('경영기획센터', 'Planning and Management Center', 'CENTER', hqPlanning.id, 11, 'PMC');
   const hqGreen = await createOrg('녹색건축본부', 'Green Building Division', 'HQ', rootOrg.id, 20, 'GBD');
   await createOrg('녹색건축인증센터', 'Green Building Certification Center', 'CENTER', hqGreen.id, 21, 'GBC');
   await createOrg('건축안전인증센터', 'Building Safety Certification Center', 'CENTER', hqGreen.id, 22, 'BSC');
@@ -114,75 +123,63 @@ async function main() {
   await createOrg('ISMS인증센터', 'ISMS Certification Center', 'CENTER', hqFuture.id, 51, 'ISMSC');
   await createOrg('AX혁신센터', 'AX Innovation Center', 'CENTER', hqFuture.id, 52, 'AXIC');
   
-  // 4. 사용자 생성 (가입 체계: 성명/영문명/사번/소속 필수 · 직책·직급은 관리자 배정)
-  await prisma.user.create({
-    data: {
-      email: 'admin@kpcqa.or.kr',
-      name: '관리자',
-      name_en: 'Admin User',
-      employee_no: '100001',
-      password: hashedPassword,
-      roles: ['LV_1'],
-      unit_id: centerPlanning.id,
-      status: 'Active',
-      duty: '',
-      duty_en: '',
-      grade: '수석전문위원',
-      grade_en: 'Chief Expert Advisor',
-      must_reset_password: false,
-    },
+  // 4. 전사 사용자 시드 (WISE_empList → src/lib/user-seed-employees.json)
+  const orgUnits = await prisma.orgUnit.findMany({
+    where: { is_deleted: false },
+    select: { id: true, unit_name: true },
   });
-  await prisma.user.create({
-    data: {
-      email: 'center@kpcqa.or.kr',
-      name: '센터장',
-      name_en: 'Center Manager',
-      employee_no: '100002',
-      password: hashedPassword,
-      roles: ['LV_2'],
-      unit_id: centerPlanning.id,
-      status: 'Active',
-      duty: '센터장',
-      duty_en: 'Manager',
-      grade: '책임전문위원',
-      grade_en: 'Chief Technical Expert',
-      must_reset_password: false,
-    },
-  });
-  await prisma.user.create({
-    data: {
-      email: 'user@kpcqa.or.kr',
-      name: '사용자',
-      name_en: 'Normal User',
-      employee_no: '100003',
-      password: hashedPassword,
-      roles: ['LV_3'],
-      unit_id: centerPlanning.id,
-      status: 'Active',
-      duty: '',
-      duty_en: '',
-      grade: '전문위원',
-      grade_en: 'Technical Expert',
-      must_reset_password: false,
-    },
-  });
-  await prisma.user.create({
-    data: {
-      email: 'jhpark1@kpcqa.or.kr',
-      name: '박지혜',
-      name_en: 'Ji-Hye Park',
-      employee_no: '2014101302',
-      password: hashedPassword,
-      roles: ['LV_1'],
-      unit_id: centerPlanning.id,
-      status: 'Active',
-      duty: '',
-      duty_en: '',
-      grade: '전문위원',
-      grade_en: 'Technical Expert',
-      must_reset_password: false,
-    },
-  });
+  const unitIdByName = new Map(orgUnits.map((u) => [u.unit_name, u.id]));
+  const missingUnits = new Set<string>();
+
+  for (const emp of SEED_EMPLOYEES) {
+    const email = `${emp.email_local}@kpcqa.or.kr`;
+    const unit_id = emp.unit_name ? unitIdByName.get(emp.unit_name) ?? null : null;
+    if (emp.unit_name && !unit_id) missingUnits.add(emp.unit_name);
+
+    const status =
+      String(emp.status || '').toUpperCase() === 'ACTIVE'
+        ? 'Active'
+        : String(emp.status || '').toUpperCase() === 'SUSPENDED'
+          ? 'Suspended'
+          : 'Active';
+
+    const opsPasswords: Record<string, string> = {
+      adminlv1: 'admin1password9073',
+      adminlv2: 'admin2password9073',
+      adminlv3: 'admin3password9073',
+    };
+    const local = String(emp.email_local || '').trim().toLowerCase();
+    const isOpsAccount = local in opsPasswords;
+    // 운영 계정: 고정 비번 유지 · 일반: 사번(없으면 fallback)
+    const tempPassword = isOpsAccount
+      ? opsPasswords[local]
+      : emp.employee_no || 'adminpassword9073';
+    const password = await bcrypt.hash(tempPassword, 10);
+
+    await prisma.user.create({
+      data: {
+        email,
+        name: emp.name,
+        name_en: emp.name_en || '',
+        employee_no: emp.employee_no || '',
+        password,
+        roles: [emp.roles || 'LV_3'],
+        status,
+        unit_id,
+        duty: emp.duty || '',
+        duty_en: emp.duty_en || '',
+        grade: emp.grade || '',
+        grade_en: emp.grade_en || '',
+        // 운영 계정(adminlv*): 계정별 고정 비번 · 일반 직원은 사번 임시비번 후 강제 변경
+        must_reset_password: isOpsAccount ? false : true,
+      },
+    });
+  }
+
+  if (missingUnits.size) {
+    console.warn('⚠️ 시드 직원 unit_name 미매칭:', [...missingUnits].join(', '));
+  }
+  console.log(`👤 전사 사용자 시드 완료: ${SEED_EMPLOYEES.length}명`);
   
   // 5. 공통 마스터 데이터 시딩 (/admin/master-data + SystemConfig 매핑 대상)
   console.log('📦 공통 마스터 데이터 엔진 가동 중...');
@@ -191,8 +188,8 @@ async function main() {
       id: 'GRP_SUPPLY', name: '소모품(경영)', sort_order: 10,
       codes: [
         { label: 'A4 용지', value: 'VAL_1' }, { label: 'A3 용지', value: 'VAL_2' }, { label: '상장케이스', value: 'VAL_3' }, 
-        { label: '컬러대봉투(양면테잎)(330*245)', value: 'VAL_4' }, { label: '쇼핑백(중)(230*70*320)', value: 'VAL_5' }, 
-        { label: '쇼핑백(대)(300*100*450)', value: 'VAL_6' }, { label: '경조사봉투(축의)', value: 'VAL_7' }, { label: '경조사봉투(조의)', value: 'VAL_8' }
+        { label: '컬러대봉투(양면테이프) /330×245', value: 'VAL_4' }, { label: '쇼핑백(중) /230×70×320', value: 'VAL_5' }, 
+        { label: '쇼핑백(대) /300×100×450', value: 'VAL_6' }, { label: '경조사봉투(축의)', value: 'VAL_7' }, { label: '경조사봉투(조의)', value: 'VAL_8' }
       ] 
     },
     { 
@@ -227,62 +224,7 @@ async function main() {
       id: 'GRP_PROCUREMENT', name: '조달유형', sort_order: 60,
       codes: [{ label: '구매', value: 'VAL_1' }, { label: '렌탈', value: 'VAL_2' }, { label: '구독', value: 'VAL_3' }] 
     },
-    { 
-      id: 'GRP_DUTY', name: '직책', sort_order: 70,
-      codes: [
-        { label: '원장', value: 'CEO' }, { label: '부원장', value: 'Vice President' }, { label: '상무', value: 'Executive Director' },
-        { label: '본부장', value: 'Director' }, { label: '센터장', value: 'Manager' }
-      ] 
-    },
-    { 
-      id: 'GRP_GRADE', name: '직급', sort_order: 80,
-      codes: [
-        { label: '수석전문위원', value: 'Chief Expert Advisor' }, { label: '책임전문위원', value: 'Chief Technical Expert' },
-        { label: '선임전문위원', value: 'Senior Technical Expert' }, { label: '전문위원', value: 'Technical Expert' },
-        { label: '연구원', value: 'Researcher' }, { label: '사무원', value: 'Specialist' }, { label: '인턴', value: 'Intern' }
-      ] 
-    },
-    {
-      id: 'GRP_OUT_VENDOR',
-      name: '외주 업체 마스터',
-      sort_order: 90,
-      codes: [
-        { label: '아트로릭', value: 'VENDOR_ARTROLIC' },
-        { label: '한생미디어', value: 'VENDOR_HANSAENG' },
-        { label: '드림디포', value: 'VENDOR_DREAMDEPO' },
-      ],
-    },
-    {
-      id: 'GRP_OUT_ITEM',
-      name: '외주 품목 리스트',
-      sort_order: 91,
-      codes: [
-        { label: '현판/명판/상패', value: 'ITEM_SIGN' },
-        { label: '제본', value: 'ITEM_JEBON' },
-        { label: '기타 제작물', value: 'ITEM_PRINT' },
-        { label: '사무문구류', value: 'ITEM_SUPPLIES' },
-      ],
-    },
-    {
-      id: 'GRP_OUT_DETAIL1',
-      name: '외주 품목 상세1',
-      sort_order: 92,
-      codes: [
-        { label: '표준', value: 'D1_STANDARD' },
-        { label: '긴급', value: 'D1_URGENT' },
-        { label: '재제작', value: 'D1_REMAKE' },
-      ],
-    },
-    {
-      id: 'GRP_OUT_DETAIL2',
-      name: '외주 품목 상세2',
-      sort_order: 93,
-      codes: [
-        { label: '컬러', value: 'D2_COLOR' },
-        { label: '흑백', value: 'D2_BW' },
-        { label: '혼합', value: 'D2_MIX' },
-      ],
-    },
+    // ※ GRP_DUTY / GRP_GRADE 제거 — 직책·직급은 /admin/users SystemConfig 옵션 + User 필드
   ];
   
   for (const group of masterGroups) {
@@ -371,6 +313,22 @@ const INTERFACE_JSON_FIELDS = [
 const defaultAccessOrgIds = [rootOrg.id];
 
 const sortedMenus = [...menuData].sort((a: any, b: any) => a.level - b.level);
+
+// 구 경로 purchase → restock (메뉴 path unique)
+{
+  const oldPath = '/asset/supplies/master/purchase';
+  const newPath = '/asset/supplies/master/restock';
+  const existingNew = await prisma.interfaceConfig.findUnique({ where: { path: newPath } });
+  const existingOld = await prisma.interfaceConfig.findUnique({ where: { path: oldPath } });
+  if (existingOld && existingNew) {
+    await prisma.interfaceConfig.delete({ where: { path: oldPath } });
+  } else if (existingOld && !existingNew) {
+    await prisma.interfaceConfig.update({
+      where: { path: oldPath },
+      data: { path: newPath },
+    });
+  }
+}
 
 for (const m of sortedMenus) {
   const { createdAt, updatedAt, id, ...rawSafeData } = m;

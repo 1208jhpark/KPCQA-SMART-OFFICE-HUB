@@ -594,28 +594,20 @@ export default function ProductionApplyHistory() {
 
                     const opts = (item.options || {}) as Record<string, unknown>;
                     const isDispatched = opts.vendorDispatched === true;
-                    const dispatchedDate = opts.vendorDispatchedAt
-                      ? getKSTDateString(opts.vendorDispatchedAt as string)
-                      : '';
 
-                    // 1) 공정상태 판정
+                    // 1) 공정상태 판정 — 접수대기 → 발주대기 → 수령대기 → 수령완료
                     let statusLabel = item.status;
                     let statusClass = 'text-slate-500';
 
                     if (isPending) {
                       statusLabel = '접수대기';
                       statusClass = 'text-orange-600 font-bold';
-                    } else if (isAccepted) {
+                    } else if (isAccepted || (isOrdered && !isDispatched)) {
                       statusLabel = '발주대기';
                       statusClass = 'text-blue-600 font-bold';
-                    } else if (isOrdered) {
-                      if (isDispatched) {
-                        statusLabel = '발주완료';
-                        statusClass = 'text-emerald-700 font-bold';
-                      } else {
-                        statusLabel = '발주중';
-                        statusClass = 'text-indigo-600 font-bold';
-                      }
+                    } else if (isOrdered && isDispatched) {
+                      statusLabel = '수령대기';
+                      statusClass = 'text-teal-700 font-bold';
                     } else if (isVerified) {
                       statusLabel = '수령완료';
                       statusClass = 'text-slate-900 font-bold';
@@ -694,16 +686,9 @@ export default function ProductionApplyHistory() {
                       </td>
                       <td className="px-2 text-center">
                         {isOrdered && isDispatched ? (
-                          <div className="inline-flex flex-col items-center leading-tight">
-                            <span className="text-[10px] font-bold text-emerald-700 whitespace-nowrap">
-                              발주완료
-                            </span>
-                            {dispatchedDate && (
-                              <span className="text-[10px] font-medium text-slate-400 font-mono whitespace-nowrap">
-                                ({dispatchedDate})
-                              </span>
-                            )}
-                          </div>
+                          <span className="text-[10px] font-bold text-teal-700 whitespace-nowrap">
+                            수령대기
+                          </span>
                         ) : isRejected ? (
                           (() => {
                             const rejectReason = String(opts.rejectReason || '').trim();

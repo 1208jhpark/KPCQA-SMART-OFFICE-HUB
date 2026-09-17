@@ -595,7 +595,7 @@ export default function DeptOrderPanel() {
       관리용제목: r.title,
       수량: `${r.quantity}${formatQuantityUnit(r)}`,
       외주업체: (r.options as any)?.vendor || '',
-      현재상태: productionStatusLabel(r.status),
+      현재상태: productionStatusLabel(r.status, r.options as Record<string, unknown> | null),
     }));
     const ws = XLSX.utils.json_to_sheet(rows);
     const wb = XLSX.utils.book_new();
@@ -886,9 +886,9 @@ export default function DeptOrderPanel() {
                         </td>
                         <td className="px-2 text-center">
                           <span
-                            className={`text-[10px] font-bold whitespace-nowrap ${productionStatusTextClass(item.status)}`}
+                            className={`text-[10px] font-bold whitespace-nowrap ${productionStatusTextClass(item.status, item.options as Record<string, unknown> | null)}`}
                           >
-                            {productionStatusLabel(item.status)}
+                            {productionStatusLabel(item.status, item.options as Record<string, unknown> | null)}
                           </span>
                         </td>
                         <td className="px-2 text-center">
@@ -960,7 +960,7 @@ export default function DeptOrderPanel() {
                             </div>
                           ) : (
                             <span className="text-[10px] text-slate-500 font-bold whitespace-nowrap">
-                              {productionActionHint(item.status)}
+                              {productionActionHint(item.status, item.options as Record<string, unknown> | null)}
                             </span>
                           )}
                         </td>

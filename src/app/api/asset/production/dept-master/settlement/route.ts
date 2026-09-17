@@ -397,6 +397,9 @@ export async function POST(req: Request) {
           ...(inspectMatchedPrice != null
             ? { inspectMatchedPrice }
             : {}),
+          ...(Array.isArray(row?.suppliesLineSettlements)
+            ? { suppliesLineSettlements: row.suppliesLineSettlements }
+            : {}),
         };
 
         const result = await prisma.productionRequest.updateMany({

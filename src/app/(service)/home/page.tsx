@@ -1,15 +1,21 @@
 'use client';
   
-import { useEffect, useState } from 'react';
+import { useLayoutEffect, useState } from 'react';
 import Link from 'next/link';
 import { resolveEntryHref } from '@/lib/resolve-entry-href';
+import LoadingState from '@/components/common/LoadingState';
+import {
+  readHomeConfigCache,
+  writeHomeConfigCache,
+  readServiceShellCache,
+} from '@/lib/service-shell-cache';
   
 export default function ServiceHomePage() {
   const [menus, setMenus] = useState<any[]>([]);
   const [config, setConfig] = useState<any>(null);
   const [user, setUser] = useState<any>(null);
   const [unitsList, setUnitsList] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [bootReady, setBootReady] = useState(false);
   
   const fetchData = async () => {
     try {
@@ -20,18 +26,35 @@ export default function ServiceHomePage() {
         fetch('/api/auth/me?t=' + ts, { cache: 'no-store' }).catch(() => null),
         fetch('/api/admin/units?active=true&t=' + ts, { cache: 'no-store' }).catch(() => null),
       ]);
-      if (menuRes.ok) setMenus(await menuRes.json());
-      if (configRes.ok) setConfig(await configRes.json());
+      const nextMenus = menuRes.ok ? await menuRes.json() : [];
+      const nextConfig = configRes.ok ? await configRes.json() : null;
+      if (Array.isArray(nextMenus)) setMenus(nextMenus);
+      if (nextConfig) {
+        setConfig(nextConfig);
+        writeHomeConfigCache({ config: nextConfig, menus: Array.isArray(nextMenus) ? nextMenus : [] });
+      }
       if (unitsRes && unitsRes.ok) setUnitsList(await unitsRes.json());
       if (meRes && meRes.ok) setUser(await meRes.json());
     } catch (error) {
       console.error("Home Data Fetch Error:", error);
-    } finally {
-      setLoading(false);
     }
   };
-  
-  useEffect(() => { fetchData(); }, []);
+
+  useLayoutEffect(() => {
+    const homeCache = readHomeConfigCache();
+    const shell = readServiceShellCache();
+    if (homeCache?.config) {
+      setConfig(homeCache.config);
+      setMenus(Array.isArray(homeCache.menus) ? homeCache.menus : []);
+    }
+    if (shell?.user) {
+      setUser(shell.user);
+      setUnitsList(Array.isArray(shell.units) ? shell.units : []);
+      if (!homeCache?.menus?.length && Array.isArray(shell.menus)) setMenus(shell.menus);
+    }
+    setBootReady(true);
+    fetchData();
+  }, []);
   
   const handleInactiveClick = (e: React.MouseEvent, name: string) => {
     e.preventDefault();
@@ -43,16 +66,9 @@ export default function ServiceHomePage() {
     // admin/interface Step 1 Entry Mode 반영 (화면 UI는 그대로, 클릭 목적지만)
     return resolveEntryHref(menu, menus, user, unitsList);
   };
-  
-  if (loading || !config) return (
-    <div className="w-full h-[calc(100vh-64px)] bg-white flex items-center justify-center">
-      <div className="flex flex-col items-center gap-4">
-        <div className="w-12 h-0.5 bg-gray-100 overflow-hidden relative border rounded-full">
-          <div className="absolute inset-0 bg-indigo-600 animate-progress origin-left" />
-        </div>
-      </div>
-    </div>
-  );
+
+  if (!bootReady) return null;
+  if (!config) return <LoadingState />;
   
   const isVertical = config.layout_type === 'vertical';
   const gridCols = config.home_grid_cols || 4;
@@ -90,10 +106,12 @@ export default function ServiceHomePage() {
   
       {/* Hero Section */}
       <header className={`relative z-10 shrink-0 w-full max-w-[1600px] px-8 md:px-16 mt-16 md:mt-20 ${isVertical ? 'text-left' : 'text-center'}`}>
-        <div className={`inline-flex items-center space-x-2 px-3 py-1 rounded-full bg-white/60 backdrop-blur-sm border border-slate-200/80 text-[10px] font-black text-indigo-600 uppercase tracking-widest mb-5 shadow-sm ${!isVertical && 'mx-auto'}`}>
-          <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full animate-pulse" />
-          <span>Integrated Smart Governance Hub</span>
-        </div>
+        {String(config.tagline || '').trim() ? (
+          <div className={`inline-flex items-center space-x-2 px-3 py-1 rounded-full bg-white/60 backdrop-blur-sm border border-slate-200/80 text-[10px] font-black text-indigo-600 uppercase tracking-widest mb-5 shadow-sm ${!isVertical && 'mx-auto'}`}>
+            <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full animate-pulse" />
+            <span>{config.tagline}</span>
+          </div>
+        ) : null}
 
         <h1 className={`font-black tracking-tight text-slate-900 leading-[0.95] transition-all ${isVertical ? 'text-6xl md:text-7xl' : 'text-5xl md:text-6xl'}`}>
           {config.main_headline}
@@ -123,7 +141,7 @@ export default function ServiceHomePage() {
               href={hrefForStep1(menu)}
               onClick={(e) => !menu.is_active && handleInactiveClick(e, menu.name)}
               className={`group flex flex-row items-center gap-5 bg-white/80 backdrop-blur-md rounded-[1.5rem] border border-slate-200/80 shadow-sm transition-all duration-300 relative overflow-hidden
-                p-5 h-28
+                px-5 py-3.5 h-24
                 ${menu.icon ? '' : 'justify-center'}
                 ${!menu.is_active 
                   ? 'opacity-30 grayscale cursor-not-allowed border-dashed bg-transparent' 
@@ -137,7 +155,7 @@ export default function ServiceHomePage() {
               ) : null}
               
               <div className={menu.icon ? 'text-left' : 'text-center'}>
-                <h3 className={`font-black text-slate-800 tracking-tight mb-1 flex items-center text-lg ${menu.icon ? '' : 'justify-center'}`}>
+                <h3 className={`font-bold text-slate-800 tracking-tight mb-1 flex items-center text-[21px] ${menu.icon ? '' : 'justify-center'}`}>
                   {menu.name}
                   {menu.is_active && (
                     <span className="ml-2 inline-flex items-center justify-center opacity-0 -translate-x-1.5 group-hover:opacity-100 group-hover:translate-x-0 transition-all duration-300 ease-out">

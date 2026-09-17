@@ -205,14 +205,78 @@ export async function GET() {
 }
 
 /**
- * [PATCH] 부서 소모품 보관 위치 메모 저장
- * - Access(조회) 통과 + Editor만 가능 (authorizeApi requireEditor)
- * - 수정 가능 조직 범위는 editScope (viewScope가 아님)
- * - unit_id 우선, 없으면 unit_name
+ * [PATCH] 두 가지 용도
+ * 1) action: 'cancel' — 본인 PENDING 신청 취소(CANCELLED) + 선차감 재고 복구
+ * 2) 보관 위치 메모 저장 — Access + viewScope
  */
 export async function PATCH(req: Request) {
   try {
-    const auth = await authorizeApi(MENU_PATH, { requireEditor: true });
+    const body = await req.json().catch(() => ({}));
+    const action = String(body.action || '').trim().toLowerCase();
+
+    // ── 신청자 본인 취소 ──
+    if (action === 'cancel') {
+      const auth = await authorizeApi(MENU_PATH);
+      const id = String(body.id || '').trim();
+      if (!id) {
+        return NextResponse.json({ error: '신청 ID가 필요합니다.' }, { status: 400 });
+      }
+
+      const existing = await prisma.supplyRequest.findUnique({ where: { id } });
+      if (!existing) {
+        return NextResponse.json({ error: '신청 내역을 찾을 수 없습니다.' }, { status: 404 });
+      }
+
+      if (existing.user_email !== auth.user.email) {
+        return NextResponse.json(
+          { error: '본인이 신청한 건만 취소할 수 있습니다.' },
+          { status: 403 }
+        );
+      }
+
+      const prev = String(existing.status || '').trim();
+      if (prev !== 'PENDING' && prev !== '대기중' && prev !== '대기') {
+        return NextResponse.json(
+          { error: '대기 중인 신청만 취소할 수 있습니다.' },
+          { status: 409 }
+        );
+      }
+
+      try {
+        await prisma.$transaction(async (tx) => {
+          const claimed = await tx.supplyRequest.updateMany({
+            where: { id, status: existing.status },
+            data: {
+              status: 'CANCELLED',
+              admin_opinion: '신청자 취소',
+              admin_name: auth.user.name || '신청자',
+              admin_dept: auth.user.unit?.unit_name || existing.dept_name || '',
+              processedAt: new Date(),
+            },
+          });
+          if (claimed.count === 0) {
+            throw new Error('STATUS_CONFLICT');
+          }
+          await tx.supplyItem.update({
+            where: { id: existing.item_id },
+            data: { current_stock: { increment: existing.qty } },
+          });
+        });
+      } catch (e: any) {
+        if (e?.message === 'STATUS_CONFLICT') {
+          return NextResponse.json(
+            { error: '이미 처리된 신청입니다. 새로고침 후 다시 확인해 주세요.' },
+            { status: 409 }
+          );
+        }
+        throw e;
+      }
+
+      return NextResponse.json({ success: true, status: 'CANCELLED' });
+    }
+
+    // ── 보관 메모 저장 (메뉴 Access + viewScope 내 조직) ──
+    const auth = await authorizeApi(MENU_PATH);
 
     const myUnit = auth.user.unit;
     if (!myUnit?.id || !myUnit.unit_name) {
@@ -228,21 +292,20 @@ export async function PATCH(req: Request) {
       parent_id: (u.parent_id ?? null) as string | null,
     }));
 
-    const editScopeRaw = String(auth.permission.editScope || 'NONE').toUpperCase();
+    const viewScopeRaw = String(auth.permission.viewScope || 'NONE').toUpperCase();
     const scope = resolveScopeFromUnits(
       { id: myUnit.id, unit_name: myUnit.unit_name },
       allUnits,
-      editScopeRaw
+      viewScopeRaw
     );
 
-    if (editScopeRaw === 'NONE' || scope.viewScope === 'NONE') {
+    if (viewScopeRaw === 'NONE' || scope.viewScope === 'NONE') {
       return NextResponse.json(
         { error: '해당 조직의 보관 안내는 수정할 수 없습니다.' },
         { status: 403 }
       );
     }
 
-    const body = await req.json().catch(() => ({}));
     const unitId = String(body.unit_id || body.dept_id || '').trim();
     const deptName = String(body.dept_name || body.deptName || '').trim();
     const note = String(body.note ?? body.supply_storage_note ?? '');
@@ -289,8 +352,9 @@ export async function PATCH(req: Request) {
     if (authRes.status !== 500) return authRes;
     console.error('[supplies/dept PATCH]', error);
     return NextResponse.json(
-      { error: '보관 안내 저장 중 오류가 발생했습니다.' },
+      { error: '요청 처리 중 오류가 발생했습니다.' },
       { status: 500 }
     );
   }
 }
+

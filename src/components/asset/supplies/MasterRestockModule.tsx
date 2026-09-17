@@ -1,4 +1,4 @@
-'use client';
+﻿'use client';
 import React, { useState, useEffect, useMemo, Suspense } from 'react';
 import * as XLSX from 'xlsx';
 import { usePathname } from 'next/navigation';
@@ -11,7 +11,7 @@ import {
   useInterfaceStepTabs,
 } from '@/lib/interface-step-tabs';
 
-const MENU_PATH = '/asset/supplies/master/purchase';
+const MENU_PATH = '/asset/supplies/master/restock';
 
 /** KST 기준 연·월 문자열 (year: '2026', month: '07') */
 function getKSTYearMonthParts(dateInput: Date | string | number | null | undefined) {
@@ -23,11 +23,39 @@ function getKSTYearMonthParts(dateInput: Date | string | number | null | undefin
     month: String(ym.month).padStart(2, '0'),
   };
 }
+
+/** KST YYYY-MM-DD 두 날짜의 일수 차 (b - a) */
+function kstDayDiff(fromYmd: string, toYmd: string) {
+  if (!fromYmd || !toYmd) return null;
+  const a = new Date(`${fromYmd}T12:00:00+09:00`);
+  const b = new Date(`${toYmd}T12:00:00+09:00`);
+  if (Number.isNaN(a.getTime()) || Number.isNaN(b.getTime())) return null;
+  return Math.round((b.getTime() - a.getTime()) / (1000 * 60 * 60 * 24));
+}
+
+/** 안전재고 대비 현재고 비율 (바·표기 모두 100% 캡) */
+function getStockLevelVisual(current: number, safety: number) {
+  if (safety <= 0) {
+    return current > 0
+      ? { fillPct: 100, label: '100%', healthy: true }
+      : { fillPct: 0, label: '0%', healthy: false };
+  }
+  const rawPct = (current / safety) * 100;
+  const healthy = current > safety;
+  const capped = Math.min(100, Math.round(rawPct));
+  return {
+    fillPct: capped,
+    label: `${capped}%`,
+    healthy,
+  };
+}
      
-function MasterPurchaseContent() {
+function MasterRestockContent() {
   const pathname = usePathname();
   const tabs = useInterfaceStepTabs(SUPPLIES_MASTER_TABS, '/asset/supplies/master');
   const [purchases, setPurchases] = useState<any[]>([]);
+  /** 대시보드와 동일: 활성 등록 물품 */
+  const [catalogItems, setCatalogItems] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [currentUser, setCurrentUser] = useState<any>(null);
   const [pendingReqCount, setPendingReqCount] = useState(0);
@@ -47,6 +75,8 @@ function MasterPurchaseContent() {
   const [selectedYear, setSelectedYear] = useState(String(getKSTNowYearMonth().year));
   const [selectedMonth, setSelectedMonth] = useState('ALL');
   const [selectedItemFilter, setSelectedItemFilter] = useState<string | null>(null);
+  /** 입고 주기 보드: 현재고 ≤ 안전재고만 보기 */
+  const [stockWarnOnly, setStockWarnOnly] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 10;
      
@@ -58,9 +88,10 @@ function MasterPurchaseContent() {
     setLoading(true);
     try {
       const ts = Date.now();
-      const [userRes, purchaseRes, summaryRes, pendingRes, ifRes] = await Promise.all([
+      const [userRes, purchaseRes, dashRes, summaryRes, pendingRes, ifRes] = await Promise.all([
         fetch(`/api/auth/me?t=${ts}`, { cache: 'no-store' }),
-        fetch(`/api/asset/supplies/master/purchase?t=${ts}`, { cache: 'no-store' }),
+        fetch(`/api/asset/supplies/master/restock?t=${ts}`, { cache: 'no-store' }),
+        fetch(`/api/asset/supplies/master/dashboard?t=${ts}`, { cache: 'no-store' }).catch(() => null),
         fetch(`/api/admin/interface/summary?path=${encodeURIComponent(MENU_PATH)}&t=${ts}`, {
           cache: 'no-store',
         }).catch(() => null),
@@ -78,12 +109,37 @@ function MasterPurchaseContent() {
         const err = await purchaseRes.json().catch(() => ({}));
         alert(err.error || '입고 내역을 불러오지 못했습니다.');
       }
-      if (summaryRes && summaryRes.ok) setPermissionSummary(await summaryRes.json());
-      else setPermissionSummary(null);
+      if (dashRes && dashRes.ok) {
+        const dash = await dashRes.json();
+        setCatalogItems(Array.isArray(dash.items) ? dash.items : []);
+      } else {
+        setCatalogItems([]);
+      }
+      let summaryOk = summaryRes && summaryRes.ok;
+      if (summaryOk) {
+        setPermissionSummary(await summaryRes!.json());
+      } else {
+        // 구 메뉴 path 잔존 시 summary 폴백
+        const legacySummary = await fetch(
+          `/api/admin/interface/summary?path=${encodeURIComponent('/asset/supplies/master/purchase')}&t=${ts}`,
+          { cache: 'no-store' }
+        ).catch(() => null);
+        if (legacySummary && legacySummary.ok) {
+          setPermissionSummary(await legacySummary.json());
+          summaryOk = true;
+        } else {
+          setPermissionSummary(null);
+        }
+      }
       if (ifRes && ifRes.ok) {
         const interfaces = await ifRes.json();
         const menu = Array.isArray(interfaces)
-          ? interfaces.find((m: any) => m.path === MENU_PATH || m.path?.includes('/supplies/master/purchase'))
+          ? interfaces.find(
+              (m: any) =>
+                m.path === MENU_PATH ||
+                m.path?.includes('/supplies/master/restock') ||
+                m.path?.includes('/supplies/master/purchase')
+            )
           : null;
         setInterfaceConfig(menu || null);
       } else {
@@ -96,7 +152,7 @@ function MasterPurchaseContent() {
         setPendingReqCount(0);
       }
     } catch (e) {
-      console.error("Purchase Sync Error", e);
+      console.error("Restock Sync Error", e);
       alert('서버와 통신할 수 없습니다.');
     } finally {
       setLoading(false);
@@ -124,37 +180,98 @@ function MasterPurchaseContent() {
       const itemName = p.item?.name || '알 수 없는 품목';
       const searchMatch = !searchQuery || 
         itemName.toLowerCase().includes(searchQuery.toLowerCase()) || 
-        (p.old_vendor || p.vendor || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
         (p.purchaser_name || '').toLowerCase().includes(searchQuery.toLowerCase());
       
       return yearMatch && monthMatch && searchMatch;
     }).sort((a, b) => new Date(b.purchase_date || b.createdAt).getTime() - new Date(a.purchase_date || a.createdAt).getTime());
   }, [purchases, selectedYear, selectedMonth, searchQuery]);
      
-  const totalBaseAmount = useMemo(() => baseFilteredPurchases.reduce((acc, cur) => acc + (Number(cur.total_price) || 0), 0), [baseFilteredPurchases]);
-  
-  const itemStats = useMemo(() => {
-    const statsMap: Record<string, number> = {};
-    baseFilteredPurchases.forEach(p => {
-      const name = p.item?.name || '(삭제된 품목)';
-      statsMap[name] = (statsMap[name] || 0) + (Number(p.total_price) || 0);
+  /** 등록 물품 기준 입고 주기 (평균·경과일=전체 이력 / 입고횟수=연·월 필터) */
+  const itemCycleStats = useMemo(() => {
+    const today = getKSTDateString();
+    const byItemId = new Map<string, any[]>();
+    purchases.forEach((p) => {
+      const id = p.item_id || p.item?.id;
+      if (!id) return;
+      if (!byItemId.has(id)) byItemId.set(id, []);
+      byItemId.get(id)!.push(p);
     });
-    return Object.entries(statsMap)
-      .map(([name, price]) => ({ name, price, percent: totalBaseAmount > 0 ? ((price / totalBaseAmount) * 100).toFixed(1) : '0.0' }))
-      .sort((a, b) => b.price - a.price);
-  }, [baseFilteredPurchases, totalBaseAmount]);
+
+    const rows = catalogItems.map((item) => {
+      const logs = (byItemId.get(item.id) || [])
+        .map((p) => ({
+          ...p,
+          ymd: getKSTDateString(p.purchase_date || p.createdAt),
+        }))
+        .filter((p) => p.ymd)
+        .sort((a, b) => a.ymd.localeCompare(b.ymd));
+
+      const lastYmd = logs.length ? logs[logs.length - 1].ymd : '';
+      const daysSince = lastYmd ? kstDayDiff(lastYmd, today) : null;
+
+      let avgGapDays: number | null = null;
+      if (logs.length >= 2) {
+        const gaps: number[] = [];
+        for (let i = 1; i < logs.length; i++) {
+          const d = kstDayDiff(logs[i - 1].ymd, logs[i].ymd);
+          if (d !== null && d >= 0) gaps.push(d);
+        }
+        if (gaps.length) {
+          avgGapDays = Math.round(gaps.reduce((s, n) => s + n, 0) / gaps.length);
+        }
+      }
+
+      const periodCount = logs.filter((p) => {
+        const ym = getKSTYearMonthParts(p.ymd);
+        const yearMatch = selectedYear === 'ALL' || ym?.year === selectedYear;
+        const monthMatch = selectedMonth === 'ALL' || ym?.month === selectedMonth;
+        return yearMatch && monthMatch;
+      }).length;
+
+      const currentStock = Number(item.current_stock) || 0;
+      const safetyStock = Number(item.alert_qty) || 0;
+      const isStockWarn = currentStock <= safetyStock;
+
+      return {
+        id: item.id,
+        name: item.name || '(이름 없음)',
+        currentStock,
+        safetyStock,
+        lastYmd,
+        daysSince,
+        avgGapDays,
+        periodCount,
+        totalCount: logs.length,
+        isStockWarn,
+      };
+    });
+
+    return rows.sort((a, b) => {
+      if (a.isStockWarn !== b.isStockWarn) return a.isStockWarn ? -1 : 1;
+      if (a.currentStock !== b.currentStock) return a.currentStock - b.currentStock;
+      return a.name.localeCompare(b.name, 'ko');
+    });
+  }, [catalogItems, purchases, selectedYear, selectedMonth]);
+
+  const stockWarnCount = useMemo(
+    () => itemCycleStats.filter((r) => r.isStockWarn).length,
+    [itemCycleStats]
+  );
+
+  const visibleCycleStats = useMemo(
+    () => (stockWarnOnly ? itemCycleStats.filter((r) => r.isStockWarn) : itemCycleStats),
+    [itemCycleStats, stockWarnOnly]
+  );
      
   const finalFilteredPurchases = useMemo(() => {
     if (!selectedItemFilter) return baseFilteredPurchases;
     return baseFilteredPurchases.filter(p => (p.item?.name || '(삭제된 품목)') === selectedItemFilter);
   }, [baseFilteredPurchases, selectedItemFilter]);
      
-  const finalTotalAmount = useMemo(() => finalFilteredPurchases.reduce((acc, cur) => acc + (Number(cur.total_price) || 0), 0), [finalFilteredPurchases]);
-     
   const totalPages = Math.max(1, Math.ceil(finalFilteredPurchases.length / itemsPerPage));
   const paginatedPurchases = finalFilteredPurchases.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
      
-  useEffect(() => { setCurrentPage(1); setSelectedIds(new Set()); }, [selectedYear, selectedMonth, searchQuery, selectedItemFilter]);
+  useEffect(() => { setCurrentPage(1); setSelectedIds(new Set()); }, [selectedYear, selectedMonth, searchQuery, selectedItemFilter, stockWarnOnly]);
      
   const handleCancelPurchase = async (purchaseData: any) => {
     if (!canEdit) return alertNoEditPermission();
@@ -168,7 +285,7 @@ function MasterPurchaseContent() {
     }
 
     try {
-      const res = await fetch(`/api/asset/supplies/master/purchase?id=${purchaseData.id}`, {
+      const res = await fetch(`/api/asset/supplies/master/restock?id=${purchaseData.id}`, {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id: purchaseData.id }),
@@ -202,7 +319,7 @@ function MasterPurchaseContent() {
     }
 
     try {
-      const res = await fetch(`/api/asset/supplies/master/purchase?id=${purchaseData.id}`, {
+      const res = await fetch(`/api/asset/supplies/master/restock?id=${purchaseData.id}`, {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id: purchaseData.id }),
@@ -226,8 +343,6 @@ function MasterPurchaseContent() {
     
     // 엑셀 다운로드 — 입고 팝업/장부 라벨과 동일
     const exportData = targetList.map((p, idx) => {
-      let extraCost = 0;
-      let boughtDate = '';
       let pQty = Number(p.qty) || 0;
       let pUnit = '';
       let linkQty = 1;
@@ -245,8 +360,6 @@ function MasterPurchaseContent() {
       try {
         if (p.note) {
           const parsed = JSON.parse(p.note);
-          extraCost = Number(parsed.extra_cost) || 0;
-          boughtDate = parsed.bought_date || '';
           if (Number(parsed.p_qty) > 0) pQty = Number(parsed.p_qty);
           if (parsed.p_unit) pUnit = parsed.p_unit;
           if (Number(parsed.link_qty) > 0) linkQty = Number(parsed.link_qty);
@@ -258,17 +371,12 @@ function MasterPurchaseContent() {
       return {
         'NO': targetList.length - idx,
         '창고 입고일': p.purchase_date ? getKSTDateString(p.purchase_date) : '-',
-        '구입 일자': boughtDate ? getKSTDateString(boughtDate) : '-',
         '물품명': p.item?.name || '(삭제된 품목)',
-        '구입처(벤더)': p.old_vendor || '-',
         '입고수량': pQty,
         '입고단위': pUnit || '-',
-        '연동수량': linkQty,
-        '재고반영(지급단위)': stockQty,
+        '환산수량 (지급/입고)': linkQty,
+        '환산 입고수량': stockQty,
         '지급단위': sUnit || '-',
-        '물품 순수 단가(입고단위)': p.unit_price,
-        '부대비용(원)': extraCost,
-        '결산 총비용(원)': p.total_price,
         '등록자': p.purchaser_name || '관리자',
         '소속부서': p.purchaser_dept || '-',
       };
@@ -277,13 +385,16 @@ function MasterPurchaseContent() {
     const ws = XLSX.utils.json_to_sheet(exportData);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "입고대장");
-    XLSX.writeFile(wb, `소모품_입고매입대장_${selectedYear}년${selectedMonth !== 'ALL' ? `_${selectedMonth}월` : ''}.xlsx`);
+    XLSX.writeFile(wb, `소모품_입고대장_${selectedYear}년${selectedMonth !== 'ALL' ? `_${selectedMonth}월` : ''}.xlsx`);
   };
      
   const isLv1 = useMemo(() => {
     if (!currentUser) return false;
     const roles = Array.isArray(currentUser.roles) ? currentUser.roles : [currentUser.role];
-    return roles?.includes('LV_1');
+    return (roles || []).some((r: any) => {
+      const m = String(r || '').match(/\d+/);
+      return m ? `LV_${m[0]}` === 'LV_1' : String(r) === 'LV_1';
+    });
   }, [currentUser]);
 
   const canEdit = useMemo(
@@ -375,12 +486,173 @@ function MasterPurchaseContent() {
         </p>
       </div>
   
+      {/* 입고 주기 보드 — 장부 카드 밖 */}
+      <section className="mt-6 bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+        <div className="px-5 py-4 border-b border-slate-100 flex flex-wrap items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center gap-3 min-w-0">
+            <h2 className="text-sm font-black text-slate-800 tracking-tight">입고 주기 보드</h2>
+            <span className="text-[11px] font-bold text-slate-500">
+              등록 물품 <strong className="text-slate-800 tabular-nums">{itemCycleStats.length}</strong>
+            </span>
+            <button
+              type="button"
+              onClick={() => setStockWarnOnly((prev) => !prev)}
+              title="현재고 ≤ 안전재고 품목만 보기"
+              className={`text-[11px] font-black px-2.5 py-1 rounded-md border transition-colors tabular-nums ${
+                stockWarnOnly
+                  ? 'bg-amber-500 text-white border-amber-500'
+                  : stockWarnCount > 0
+                    ? 'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100'
+                    : 'bg-slate-50 text-slate-400 border-slate-200'
+              }`}
+            >
+              재고 주의 {stockWarnCount}
+            </button>
+            <span className="text-[10px] font-bold text-slate-400 hidden sm:inline">
+              · 행 클릭 시 아래 장부 필터
+            </span>
+          </div>
+          {(selectedItemFilter || stockWarnOnly) && (
+            <button
+              type="button"
+              onClick={() => {
+                setSelectedItemFilter(null);
+                setStockWarnOnly(false);
+              }}
+              className="text-[11px] font-black text-indigo-600 hover:underline"
+            >
+              필터 초기화 ✕
+            </button>
+          )}
+        </div>
+
+        {itemCycleStats.length === 0 ? (
+          <p className="px-5 py-8 text-xs text-slate-400 font-bold text-center">
+            등록된 활성 물품이 없습니다. 대시보드에서 물품을 등록하세요.
+          </p>
+        ) : visibleCycleStats.length === 0 ? (
+          <p className="px-5 py-8 text-xs text-slate-400 font-bold text-center">
+            재고 주의 품목이 없습니다.
+          </p>
+        ) : (
+          <div className="divide-y divide-slate-100">
+            <div className="hidden sm:grid grid-cols-[minmax(0,1.4fr)_11rem_64px_64px_108px_68px_92px_76px] gap-3 px-5 py-1.5 bg-slate-50 text-[10px] font-black uppercase tracking-wider text-slate-400">
+              <span>물품명</span>
+              <span className="text-center inline-flex items-center justify-center gap-0.5">
+                재고 수준
+                <span
+                  className="normal-case tracking-normal font-bold text-slate-400 cursor-help"
+                  title="안전재고 대비 현재고 보유 비율 (현재고 / 안전재고)"
+                  aria-label="안전재고 대비 현재고 보유 비율 (현재고 / 안전재고)"
+                >
+                  ⓘ
+                </span>
+              </span>
+              <span className="text-right">현재고</span>
+              <span className="text-right">안전재고</span>
+              <span className="text-center">최근 입고</span>
+              <span className="text-right">경과일</span>
+              <span className="text-right inline-flex items-center justify-end gap-0.5">
+                평균간격
+                <span
+                  className="normal-case tracking-normal font-bold text-slate-400 cursor-help"
+                  title="2회 이상 입고 시 자동 계산"
+                  aria-label="2회 이상 입고 시 자동 계산"
+                >
+                  ⓘ
+                </span>
+              </span>
+              <span className="text-right">입고 횟수</span>
+            </div>
+            {visibleCycleStats.map((stat) => {
+              const isSelected = selectedItemFilter === stat.name;
+              const level = getStockLevelVisual(stat.currentStock, stat.safetyStock);
+              return (
+                <button
+                  type="button"
+                  key={stat.id}
+                  onClick={() => setSelectedItemFilter((prev) => (prev === stat.name ? null : stat.name))}
+                  className={`w-full text-left px-5 py-1.5 transition-colors sm:grid sm:grid-cols-[minmax(0,1.4fr)_11rem_64px_64px_108px_68px_92px_76px] sm:gap-3 sm:items-center ${
+                    isSelected
+                      ? 'bg-indigo-50 ring-1 ring-inset ring-indigo-200'
+                      : stat.isStockWarn
+                        ? 'bg-amber-50/50 hover:bg-amber-50'
+                        : 'hover:bg-slate-50'
+                  }`}
+                >
+                  <div className="min-w-0 flex items-center gap-2">
+                    {stat.isStockWarn && (
+                      <span className="shrink-0 w-1.5 h-1.5 rounded-full bg-amber-500" title="재고 주의 (현재고 ≤ 안전재고)" />
+                    )}
+                    <span
+                      className={`text-[12px] font-black truncate ${isSelected ? 'text-indigo-800' : 'text-slate-800'}`}
+                      title={stat.name}
+                    >
+                      {stat.name}
+                    </span>
+                  </div>
+                  <div
+                    className="flex items-center gap-2 w-full"
+                    title={`현재고 ${stat.currentStock.toLocaleString()} / 안전재고 ${stat.safetyStock.toLocaleString()}`}
+                  >
+                    <div className="w-36 shrink-0 h-1.5 rounded-full bg-slate-200 overflow-hidden">
+                      <div
+                        className={`h-full rounded-full transition-all ${
+                          level.healthy ? 'bg-emerald-500' : 'bg-amber-500'
+                        }`}
+                        style={{ width: `${level.fillPct}%` }}
+                      />
+                    </div>
+                    <span
+                      className={`shrink-0 text-[10px] font-black tabular-nums w-9 text-right ${
+                        level.healthy ? 'text-emerald-600' : 'text-amber-600'
+                      }`}
+                    >
+                      {level.label}
+                    </span>
+                  </div>
+                  <div className="mt-1 sm:mt-0 flex flex-wrap sm:contents gap-x-4 gap-y-0.5 text-[11px] font-bold tabular-nums">
+                    <span className={`sm:text-right ${stat.isStockWarn ? 'text-amber-700' : 'text-slate-600'}`}>
+                      <span className="sm:hidden text-slate-400 mr-1">현재고</span>
+                      {stat.currentStock.toLocaleString()}
+                    </span>
+                    <span className="text-slate-500 sm:text-right">
+                      <span className="sm:hidden text-slate-400 mr-1">안전재고</span>
+                      {stat.safetyStock.toLocaleString()}
+                    </span>
+                    <span className="text-slate-700 sm:text-center">
+                      <span className="sm:hidden text-slate-400 mr-1">최근</span>
+                      {stat.lastYmd || '—'}
+                    </span>
+                    <span className="text-slate-500 sm:text-right">
+                      <span className="sm:hidden text-slate-400 mr-1">경과</span>
+                      {stat.daysSince === null ? '이력없음' : `${stat.daysSince}일`}
+                    </span>
+                    <span
+                      className="text-emerald-700 sm:text-right"
+                      title="2회 이상 입고 시 자동 계산"
+                    >
+                      <span className="sm:hidden text-slate-400 mr-1">평균</span>
+                      {stat.avgGapDays !== null ? `${stat.avgGapDays}일` : '—'}
+                    </span>
+                    <span className="text-slate-600 sm:text-right">
+                      <span className="sm:hidden text-slate-400 mr-1">입고 횟수</span>
+                      {stat.periodCount}회
+                    </span>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </section>
+
       <section className="bg-white rounded-[2.5rem] border border-slate-200 shadow-sm overflow-hidden mt-6">
         
         <div className="p-4 px-6 bg-slate-200/70 border-b border-slate-300 flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-2 flex-wrap min-w-0">
             <div className="w-2.5 h-2.5 rounded-full bg-blue-600 shrink-0"></div>
-            <h2 className="text-sm font-black text-slate-800 tracking-tight">입고(매입) 내역 장부</h2>
+            <h2 className="text-sm font-black text-slate-800 tracking-tight">입고 내역 장부</h2>
             <span className="text-[11px] font-bold bg-slate-300/80 text-slate-700 px-2 py-0.5 rounded-md">{finalFilteredPurchases.length}건</span>
           </div>
           
@@ -400,63 +672,27 @@ function MasterPurchaseContent() {
             </div>
             <div className="relative w-48">
               <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-[10px]">🔍</span>
-              <input type="text" placeholder="물품, 구입처, 등록자 검색..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} className="w-full pl-7 pr-3 py-1.5 bg-white border border-slate-200 rounded-lg text-[11px] font-bold outline-none focus:border-indigo-500 shadow-sm transition-colors" />
+              <input type="text" placeholder="물품, 등록자 검색..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} className="w-full pl-7 pr-3 py-1.5 bg-white border border-slate-200 rounded-lg text-[11px] font-bold outline-none focus:border-indigo-500 shadow-sm transition-colors" />
             </div>
             <button onClick={handleDownloadExcel} className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-[10px] font-black shadow-sm hover:bg-emerald-700 transition-all whitespace-nowrap">
               {selectedIds.size > 0 ? `선택 EXCEL 다운로드(${selectedIds.size})` : '화면 목록 EXCEL 다운로드'}
             </button>
           </div>
         </div>
-     
-        <div className="p-6 bg-slate-50 border-b border-slate-200 grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-          <div className="lg:col-span-3 bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex flex-col justify-center min-h-[110px]">
-            <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">조회 기간 총 입고(매입)액</span>
-            <div className="text-2xl font-mono font-black text-emerald-600 mt-1">
-              {finalTotalAmount.toLocaleString()} <span className="text-xs text-slate-500 font-sans font-bold">원</span>
-            </div>
-          </div>
-          <div className="lg:col-span-9 bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
-            <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 block flex justify-between items-center">
-              <span>📦 품목별 입고 비용 지출 요약 (클릭하여 해당 물품만 필터링)</span>
-              {selectedItemFilter && (
-                <button onClick={() => setSelectedItemFilter(null)} className="text-indigo-500 hover:underline">필터 초기화 ✕</button>
-              )}
-            </span>
-            <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-hide max-h-[70px] items-center">
-              {itemStats.length === 0 ? (
-                <span className="text-xs text-slate-400 font-bold py-2">입고 매입 통계 데이터가 존재하지 않습니다.</span>
-              ) : itemStats.map(stat => {
-                const isSelected = selectedItemFilter === stat.name;
-                return (
-                  <div key={stat.name} onClick={() => setSelectedItemFilter(prev => prev === stat.name ? null : stat.name)} className={`shrink-0 border rounded-xl px-4 py-2 flex flex-col justify-center min-w-[140px] cursor-pointer transition-all ${isSelected ? 'bg-indigo-100 border-indigo-300 shadow-md scale-105' : 'bg-slate-50 border-slate-200 hover:bg-white hover:border-slate-300 hover:shadow-sm'}`}>
-                    <span className={`text-[11px] font-black truncate text-left ${isSelected ? 'text-indigo-900' : 'text-slate-700'}`}>{stat.name}</span>
-                    <span className="text-[12px] font-mono font-black text-emerald-600 mt-0.5">
-                      {stat.price.toLocaleString()}원 <strong className={`text-[10px] ml-1 ${isSelected ? 'text-indigo-600' : 'text-slate-400'}`}>({stat.percent}%)</strong>
-                    </span>
-                  </div>
-                )
-              })}
-            </div>
-          </div>
-        </div>
         
         <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse table-fixed min-w-[1360px]">
+          <table className="w-full text-left border-collapse table-fixed min-w-[1240px]">
             <colgroup>
               <col className="w-[40px]" />
               <col className="w-[48px]" />
-              <col className="w-[88px]" />
-              <col className="w-[88px]" />
-              <col className="w-[140px]" />
               <col className="w-[100px]" />
-              <col className="w-[72px]" />
-              <col className="w-[72px]" />
+              <col className="w-[150px]" />
               <col className="w-[72px]" />
               <col className="w-[88px]" />
-              <col className="w-[100px]" />
+              <col className="w-[150px]" />
+              <col className="w-[80px]" />
               <col className="w-[88px]" />
-              <col className="w-[100px]" />
-              <col className="w-[110px]" />
+              <col className="w-[120px]" />
               <col className="w-[168px]" />
             </colgroup>
             <thead className="bg-slate-100 text-slate-700 text-[10px] font-black uppercase tracking-widest border-b border-slate-200">
@@ -472,23 +708,19 @@ function MasterPurchaseContent() {
                 </th>
                 <th className="h-12 px-2 text-center">NO</th>
                 <th className="h-12 px-2 text-center whitespace-nowrap">창고 입고 일자</th>
-                <th className="h-12 px-2 text-center whitespace-nowrap">구입 일자</th>
                 <th className="h-12 px-2 text-indigo-600">물품명</th>
-                <th className="h-12 px-2 text-center whitespace-nowrap">구입처(벤더)</th>
-                <th className="h-12 px-2 text-center text-indigo-600 whitespace-nowrap">입고수량</th>
+                <th className="h-12 px-2 text-center whitespace-nowrap">입고수량</th>
                 <th className="h-12 px-2 text-center whitespace-nowrap">입고단위</th>
-                <th className="h-12 px-2 text-center whitespace-nowrap">연동수량</th>
-                <th className="h-12 px-2 text-center text-indigo-600 whitespace-nowrap">재고반영</th>
-                <th className="h-12 px-2 text-right whitespace-nowrap">물품 순수 단가</th>
-                <th className="h-12 px-2 text-right whitespace-nowrap">부대비용</th>
-                <th className="h-12 px-2 text-right text-emerald-700 whitespace-nowrap">결산 총비용</th>
+                <th className="h-12 px-2 text-center whitespace-nowrap">환산수량 (지급/입고)</th>
+                <th className="h-12 px-2 text-center text-indigo-600 whitespace-nowrap">환산 입고수량</th>
+                <th className="h-12 px-2 text-center whitespace-nowrap">지급단위</th>
                 <th className="h-12 px-2 text-center border-l border-slate-200 whitespace-nowrap">부서 / 등록자</th>
-                <th className="h-12 px-2 text-center whitespace-nowrap border-l border-slate-200">관리 액션</th>
+                <th className="h-12 px-2 text-center whitespace-nowrap border-l border-slate-200">관리액션(Edit)</th>
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-slate-100 text-[11px] font-bold text-slate-700">
               {paginatedPurchases.length === 0 ? (
-                <tr><td colSpan={15} className="p-16 text-center text-slate-400 text-xs">조건에 맞는 입고 내역이 없습니다.</td></tr>
+                <tr><td colSpan={11} className="p-16 text-center text-slate-400 text-xs">조건에 맞는 입고 내역이 없습니다.</td></tr>
               ) : paginatedPurchases.map((p, i) => {
                 const isSelected = selectedIds.has(p.id);
                 const itemName = p.item?.name || '(삭제된 품목)';
@@ -498,8 +730,6 @@ function MasterPurchaseContent() {
                 let linkQty = 1;
                 let sUnit = '';
                 let stockQty = Number(p.qty) || 0;
-                let extraCost = 0;
-                let boughtDate = '';
 
                 try {
                   if (p.item?.description) {
@@ -512,8 +742,6 @@ function MasterPurchaseContent() {
                 try {
                   if (p.note) {
                     const parsedNote = JSON.parse(p.note);
-                    extraCost = Number(parsedNote.extra_cost) || 0;
-                    boughtDate = parsedNote.bought_date || '';
                     if (Number(parsedNote.p_qty) > 0) pQty = Number(parsedNote.p_qty);
                     if (parsedNote.p_unit) pUnit = parsedNote.p_unit;
                     if (Number(parsedNote.link_qty) > 0) linkQty = Number(parsedNote.link_qty);
@@ -533,21 +761,14 @@ function MasterPurchaseContent() {
                     <td className="px-2 text-center whitespace-nowrap tabular-nums text-slate-800">
                       {p.purchase_date ? getKSTDateString(p.purchase_date) : '-'}
                     </td>
-                    <td className="px-2 text-center whitespace-nowrap tabular-nums text-slate-700">
-                      {boughtDate ? getKSTDateString(boughtDate) : '-'}
-                    </td>
                     <td className="px-2 text-indigo-700 truncate" title={itemName}>{itemName}</td>
-                    <td className="px-2 text-center text-slate-700 truncate" title={p.old_vendor}>{p.old_vendor || '-'}</td>
-                    <td className="px-2 text-center font-mono whitespace-nowrap tabular-nums text-indigo-600">{pQty}</td>
-                    <td className="px-2 text-center text-slate-500">{pUnit}</td>
+                    <td className="px-2 text-center font-mono whitespace-nowrap tabular-nums text-slate-900">{pQty}</td>
+                    <td className="px-2 text-center text-slate-900">{pUnit}</td>
                     <td className="px-2 text-center font-mono tabular-nums text-slate-600">{linkQty}</td>
-                    <td className="px-2 text-center font-mono whitespace-nowrap tabular-nums text-indigo-600" title={`지급단위: ${sUnit || '-'}`}>
+                    <td className="px-2 text-center font-mono whitespace-nowrap tabular-nums text-indigo-600">
                       {stockQty}
-                      {sUnit && <span className="text-[9px] text-indigo-500 font-bold ml-0.5">{sUnit}</span>}
                     </td>
-                    <td className="px-2 text-right font-mono tabular-nums text-slate-700">{Number(p.unit_price || 0).toLocaleString()}</td>
-                    <td className="px-2 text-right font-mono tabular-nums text-slate-700">{extraCost.toLocaleString()}</td>
-                    <td className="px-2 text-right font-mono tabular-nums text-emerald-600">{Number(p.total_price || 0).toLocaleString()}</td>
+                    <td className="px-2 text-center text-slate-900 whitespace-nowrap">{sUnit || '-'}</td>
                     <td className="px-2 text-center border-l border-slate-200">
                       <div className="truncate">
                         <span className="text-[10px] text-slate-500 block truncate">{p.purchaser_dept || '-'}</span>
@@ -558,6 +779,7 @@ function MasterPurchaseContent() {
                       <div className="inline-flex items-center justify-center gap-1 whitespace-nowrap">
                         <button
                           type="button"
+                          disabled={!canEdit}
                           onClick={() => handleCancelPurchase(p)}
                           title={canEdit ? '입고 철회 (재고 차감)' : '편집 권한 필요'}
                           className={
@@ -612,6 +834,6 @@ function MasterPurchaseContent() {
   );
 }
      
-export default function MasterPurchaseModule() {
-  return <Suspense fallback={<LoadingState />}><MasterPurchaseContent /></Suspense>;
+export default function MasterRestockModule() {
+  return <Suspense fallback={<LoadingState />}><MasterRestockContent /></Suspense>;
 }

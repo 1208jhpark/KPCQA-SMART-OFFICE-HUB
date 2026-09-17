@@ -2,7 +2,7 @@
      
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import * as XLSX from 'xlsx'; 
-import { getKSTDateString, getKSTDaysUntil, getKSTNowYearMonth, getKSTYearMonth, toSortableTime } from '@/utils/dateUtils';
+import { getKSTDateString, getKSTDaysUntil, getKSTNowYearMonth, getKSTYearMonth, toSortableTime, formatKSTDateTime } from '@/utils/dateUtils';
 import LoadingState from '@/components/common/LoadingState';
 import {
   buildInfoCorrectionPending,
@@ -55,24 +55,36 @@ function isAdminInquiryRow(req: any) {
 
 function historyStatusLabel(status: string, req?: any, opts?: { isThreadRoot?: boolean }) {
   if (opts?.isThreadRoot) {
-    return isAdminInquiryRow(req) ? '관리자 문의/요청' : '사용자 문의/요청';
+    return isAdminInquiryRow(req) ? '관리자 신규접수' : '사용자 신규접수';
   }
   const s = String(status || '').trim();
   if (s === '처리완료' || s === '관리자 확인완료' || s === '사용자 종료처리') return '처리 완료(종료)';
-  if (s === '사용자 확인완료' || isAdminInquiryRow(req)) return '관리자 문의/요청';
+  if (s === '사용자 확인완료' || isAdminInquiryRow(req)) return '관리자 신규접수';
   if (s === '관리자 답변') return '관리자 답변';
-  if (s === '관리자 의견발송') return '관리자 문의/요청';
+  if (s === '관리자 의견발송') return '관리자 신규접수';
   if (s === '답변회신' || (req && String(req.adminOpinion || '').includes(':::REPLY:::'))) return '사용자 답변';
-  if (s === '의견전송' || s === '답변 대기중' || s === '대기중') return '사용자 문의/요청';
+  if (s === '의견전송' || s === '답변 대기중' || s === '대기중') return '사용자 신규접수';
   return s || '-';
 }
 
 function isUserPendingStatus(status: string) {
-  return status === '의견전송' || status === '답변 대기중' || status === '답변회신';
+  return status === '의견전송' || status === '답변 대기중' || status === '답변회신' || status === '대기중';
 }
 
 function isClosedStatus(status: string) {
   return status === '처리완료' || status === '관리자 확인완료' || status === '사용자 종료처리';
+}
+
+/** 스레드 종결 = 시간순 최신 행이 종결 상태일 때만 */
+function isThreadClosed(root: any, children: any[] = []) {
+  const members = [root, ...(children || [])].filter(Boolean);
+  if (members.length === 0) return false;
+  const latest = [...members].sort((a, b) => {
+    const d = reqTime(b) - reqTime(a);
+    if (d !== 0) return d;
+    return String(b.id || '').localeCompare(String(a.id || ''));
+  })[0];
+  return isClosedStatus(String(latest?.status || ''));
 }
 
 function isAdminClosedStatus(status: string) {
@@ -194,45 +206,117 @@ function threadTurns(req: any) {
   const userText = String(req?.content || '').trim();
   const userOk = userText && userText !== '(관리자 의견)';
   const adminText = opinionDisplay(req?.adminOpinion);
-  const reqDate = getKSTDateString(req?.requestDate || req?.createdAt) || req?.requestDate || '';
-  const doneDate = getKSTDateString(req?.completedAt || req?.updatedAt || req?.createdAt) || reqDate;
-  const turns: { role: 'admin' | 'user'; label: string; text: string; date: string }[] = [];
+  const reqDateRaw = req?.requestDate || req?.createdAt;
+  const doneDateRaw = req?.completedAt || req?.updatedAt || req?.createdAt || reqDateRaw;
+  const reqDate =
+    formatKSTDateTime(reqDateRaw) !== '-'
+      ? formatKSTDateTime(reqDateRaw)
+      : getKSTDateString(reqDateRaw) || '';
+  const doneDate =
+    formatKSTDateTime(doneDateRaw) !== '-'
+      ? formatKSTDateTime(doneDateRaw)
+      : reqDate;
+  const userName = String(req?.requester || req?.name || '').trim() || '사용자';
+  const adminName = '관리자';
+  const turns: { role: 'admin' | 'user'; name: string; text: string; date: string }[] = [];
   if (status === '관리자 의견발송' || status === '사용자 확인완료' || status === '관리자 답변') {
-    if (adminText) turns.push({ role: 'admin', label: status === '관리자 답변' ? '관리자 답변' : '관리자 문의/요청', text: adminText, date: reqDate });
+    if (adminText) turns.push({ role: 'admin', name: adminName, text: adminText, date: reqDate });
   } else if (status === '답변회신' || status === '의견전송' || status === '답변 대기중') {
-    if (userOk) turns.push({ role: 'user', label: status === '답변회신' ? '사용자 답변' : '사용자 문의/요청', text: userText, date: reqDate });
+    if (userOk) turns.push({ role: 'user', name: userName, text: userText, date: reqDate });
   } else if (isClosedStatus(status)) {
-    if (userOk) turns.push({ role: 'user', label: '사용자 답변', text: userText, date: reqDate });
-    if (adminText) turns.push({ role: 'admin', label: '관리자 답변', text: adminText, date: doneDate });
+    if (userOk) turns.push({ role: 'user', name: userName, text: userText, date: reqDate });
+    if (adminText) turns.push({ role: 'admin', name: adminName, text: adminText, date: doneDate });
   }
   return turns;
 }
 
-function ThreadTurnList({ turns }: { turns: { role: 'admin' | 'user'; label: string; text: string; date: string }[] }) {
+function ThreadTurnList({ turns }: { turns: { role: 'admin' | 'user'; name: string; text: string; date: string }[] }) {
   return (
-    <>
-      {turns.map((turn, idx) => (
-        <div key={`${turn.role}-${idx}`}>
-          <p className={`text-[10px] font-black uppercase tracking-wider mb-2 ${turn.role === 'admin' ? 'text-rose-600' : 'text-amber-600'}`}>
-            {turn.label}
-          </p>
-          <div className={`w-full min-h-[4rem] p-4 text-[11px] font-bold rounded-xl whitespace-pre-wrap leading-relaxed ${
-            turn.role === 'admin'
-              ? 'bg-rose-50 border border-rose-100 text-rose-900'
-              : 'bg-amber-50 border border-amber-100 text-amber-900'
-          }`}>
-            {turn.text}
+    <div className="border-l-2 border-slate-200 ml-2 space-y-4">
+      {turns.map((turn, idx) => {
+        const isAdmin = turn.role === 'admin';
+        const roleTag = isAdmin ? '관리자' : '사용자';
+        return (
+          <div key={`${turn.role}-${idx}`} className="relative pl-5">
+            <span
+              className={`absolute -left-[5px] top-2 w-2 h-2 rounded-full ring-2 ring-white ${
+                isAdmin ? 'bg-blue-500' : 'bg-slate-400'
+              }`}
+              aria-hidden
+            />
+            <div className="flex items-center justify-between gap-3 mb-1.5">
+              <span
+                className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-black whitespace-nowrap ${
+                  isAdmin ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-600'
+                }`}
+              >
+                [{roleTag}] {turn.name}
+              </span>
+              {turn.date && (
+                <span className="text-[10px] font-bold text-slate-400 tabular-nums shrink-0">{turn.date}</span>
+              )}
+            </div>
+            <div
+              className={`rounded-md border p-3.5 text-[11px] font-semibold whitespace-pre-wrap leading-relaxed ${
+                isAdmin
+                  ? 'bg-blue-50/40 border-blue-200 text-slate-800'
+                  : 'bg-white border-slate-200 text-slate-800'
+              }`}
+            >
+              {turn.text}
+            </div>
           </div>
-          {turn.date && (
-            <p className="mt-1.5 text-[10px] font-bold text-slate-400 text-right tabular-nums">{turn.date}</p>
-          )}
-        </div>
-      ))}
-    </>
+        );
+      })}
+    </div>
   );
 }
 
-/** 하단 표 '관리자 답변' / '관리자 문의/요청'과 동일 계열 (미확인) */
+function TimelineComposeCard({
+  role,
+  name,
+  dateLabel,
+  children,
+}: {
+  role: 'admin' | 'user';
+  name: string;
+  dateLabel: string;
+  children: React.ReactNode;
+}) {
+  const isAdmin = role === 'admin';
+  const roleTag = isAdmin ? '관리자' : '사용자';
+  return (
+    <div className="border-l-2 border-slate-200 ml-2">
+      <div className="relative pl-5">
+        <span
+          className={`absolute -left-[5px] top-2 w-2 h-2 rounded-full ring-2 ring-white ${
+            isAdmin ? 'bg-blue-500' : 'bg-slate-400'
+          }`}
+          aria-hidden
+        />
+        <div className="flex items-center justify-between gap-3 mb-1.5">
+          <span
+            className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-black whitespace-nowrap ${
+              isAdmin ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-600'
+            }`}
+          >
+            [{roleTag}] {name}
+          </span>
+          <span className="text-[10px] font-bold text-slate-400 tabular-nums shrink-0">{dateLabel}</span>
+        </div>
+        <div
+          className={`rounded-md border p-3.5 ${
+            isAdmin ? 'border-blue-200 bg-blue-50/40' : 'border-slate-200 bg-white'
+          }`}
+        >
+          {children}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** 하단 표 '관리자 답변' / '관리자 신규접수'와 동일 계열 (미확인) */
 function isAdminFeedbackStatus(status: string) {
   return status === '관리자 의견발송' || status === '관리자 답변';
 }
@@ -335,8 +419,6 @@ export default function PersonalModule() {
 
   /** assets | history — personal 워크스페이스 탭 */
   const [mainTab, setMainTab] = useState<'assets' | 'history'>('assets');
-  /** 송수신 대장 상태 필터 (의견/요청 대시보드 딥링크) */
-  const [historyStatusFilter, setHistoryStatusFilter] = useState<'ALL' | 'PENDING' | 'FEEDBACK'>('ALL');
   
   const [unifiedCommModal, setUnifiedCommModal] = useState<any | null>(null);
   const [pendingRequest, setPendingRequest] = useState<any | null>(null);
@@ -355,12 +437,10 @@ export default function PersonalModule() {
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 10;
   
-  const [historyTypeFilter, setHistoryTypeFilter] = useState('ALL');
   const [historyYear, setHistoryYear] = useState(() => String(getKSTNowYearMonth().year));
   const [historyMonth, setHistoryMonth] = useState('ALL');
   const [historyCodeQuery, setHistoryCodeQuery] = useState('');
   const [historyModelQuery, setHistoryModelQuery] = useState('');
-  const [historyExpandedIds, setHistoryExpandedIds] = useState<Set<string>>(new Set());
   
   const todayStr = getKSTDateString();
   const canEdit = useMemo(
@@ -406,16 +486,14 @@ export default function PersonalModule() {
   };
 
   const goAssetsTab = () => setMainTab('assets');
-  const goHistoryTab = (status: 'ALL' | 'PENDING' | 'FEEDBACK' = 'ALL') => {
+  const goHistoryTab = () => {
     setMainTab('history');
-    setHistoryStatusFilter(status);
     setShowFeedbackOnly(false);
     setShowSentOnly(false);
   };
   /** 나의 전송 내역 → 업무자산 목록에서 사용자→관리자 대기 행만 */
   const toggleSentAssetFilter = () => {
     setMainTab('assets');
-    setHistoryStatusFilter('ALL');
     setShowReplaceableOnly(false);
     setDdayFilter('all');
     setShowStatusFilter('all');
@@ -425,7 +503,6 @@ export default function PersonalModule() {
   /** 나의 수신 내역 → 업무자산 목록에서 관리자→사용자 행만 */
   const toggleFeedbackAssetFilter = () => {
     setMainTab('assets');
-    setHistoryStatusFilter('ALL');
     setShowReplaceableOnly(false);
     setDdayFilter('all');
     setShowStatusFilter('all');
@@ -719,20 +796,20 @@ export default function PersonalModule() {
     if (latestReq) {
       const reqDate = getKSTDateString(latestReq.requestDate || latestReq.createdAt) || latestReq.requestDate || null;
       if (isUserPendingStatus(latestReq.status)) {
-        commStatusLabel = isUserReplyRow(latestReq) ? '사용자 답변' : '사용자 문의/요청';
+        commStatusLabel = isUserReplyRow(latestReq) ? '사용자 답변' : '사용자 신규접수';
         commStatusDate = reqDate;
         commStatusColor = 'bg-amber-50 border-amber-300 text-amber-800 hover:bg-amber-100';
         isAwaitingAdminReply = true;
       } else if (latestReq.status === '관리자 의견발송') {
-        commStatusLabel = '관리자 문의/요청';
+        commStatusLabel = '관리자 신규접수';
         commStatusDate = getKSTDateString(latestReq.completedAt || latestReq.updatedAt || latestReq.createdAt) || reqDate;
         hasUnreadFeedback = true;
-        commStatusColor = 'bg-rose-50 border-rose-300 text-rose-800 hover:bg-rose-100 animate-pulse shadow-sm';
+        commStatusColor = 'bg-blue-50 border-blue-200 text-blue-700 hover:bg-blue-100 animate-pulse shadow-sm';
       } else if (latestReq.status === '관리자 답변') {
         commStatusLabel = '관리자 답변';
         commStatusDate = getKSTDateString(latestReq.completedAt || latestReq.updatedAt || latestReq.createdAt) || reqDate;
         hasUnreadFeedback = true;
-        commStatusColor = 'bg-rose-50 border-rose-300 text-rose-800 hover:bg-rose-100 shadow-sm';
+        commStatusColor = 'bg-blue-50 border-blue-200 text-blue-700 hover:bg-blue-100 shadow-sm';
       } else if (isAdminClosedStatus(latestReq.status)) {
         commStatusLabel = '처리 완료(종료)';
         commStatusDate = getKSTDateString(latestReq.completedAt || latestReq.updatedAt || latestReq.createdAt) || reqDate;
@@ -1056,18 +1133,6 @@ export default function PersonalModule() {
       });
   }, [requests, currentUser]);
 
-  const historyUniqueTypes = useMemo(() => {
-    const counts: Record<string, number> = {};
-    myBaseHistoryReqs.forEach((r) => {
-      const key = String(r.assetType || '').trim();
-      if (!key) return;
-      counts[key] = (counts[key] || 0) + 1;
-    });
-    return Object.entries(counts)
-      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'ko'))
-      .map(([k]) => k);
-  }, [myBaseHistoryReqs]);
-
   const historyAvailableYears = useMemo(() => {
     const years = myBaseHistoryReqs
       .map((r) => getKSTYearMonthParts(r.requestDate || r.createdAt)?.year)
@@ -1112,20 +1177,10 @@ export default function PersonalModule() {
       const ym = getKSTYearMonthParts(r.requestDate || r.createdAt);
       const yearMatch = historyYear === 'ALL' || ym?.year === historyYear;
       const monthMatch = historyMonth === 'ALL' || ym?.month === historyMonth;
-      const typeMatch = historyTypeFilter === 'ALL' || r.assetType === historyTypeFilter;
       const model = parseHistoryModel(r, assets);
       const codeMatch = !codeQ || String(r.assetCode || '').toLowerCase().includes(codeQ);
       const modelMatch = !modelQ || String(model).toLowerCase().includes(modelQ);
-      return yearMatch && monthMatch && typeMatch && codeMatch && modelMatch;
-    };
-    const matchesStatus = (r: any) => {
-      const isPending = isUserPendingStatus(r.status);
-      const isFeedback = isAdminFeedbackStatus(r.status) && !ackedRequestIds.has(String(r.id || ''));
-      return (
-        historyStatusFilter === 'ALL' ||
-        (historyStatusFilter === 'PENDING' && isPending) ||
-        (historyStatusFilter === 'FEEDBACK' && isFeedback)
-      );
+      return yearMatch && monthMatch && codeMatch && modelMatch;
     };
 
     const roots = myBaseHistoryReqs.filter((r) => {
@@ -1139,25 +1194,36 @@ export default function PersonalModule() {
         children: childrenOf.get(String(root.id)) || [],
       }))
       .filter((t) => {
-        const members = [t.root, ...t.children];
-        if (!members.some(matchesMeta)) return false;
-        return members.some(matchesStatus);
+        if (!isThreadClosed(t.root, t.children)) return false;
+        return matchesMeta(t.root);
       })
       .sort((a, b) => {
-        const ta = Math.max(reqTime(a.root), ...a.children.map(reqTime));
-        const tb = Math.max(reqTime(b.root), ...b.children.map(reqTime));
-        return tb - ta;
+        const closedAt = (r: any) =>
+          isClosedStatus(String(r?.status || ''))
+            ? toSortableTime(r.completedAt || r.updatedAt || r.requestDate || r.createdAt || 0)
+            : 0;
+        const ta = Math.max(closedAt(a.root), ...a.children.map(closedAt), reqTime(a.root));
+        const tb = Math.max(closedAt(b.root), ...b.children.map(closedAt), reqTime(b.root));
+        if (tb !== ta) return tb - ta;
+        return String(b.root.id || '').localeCompare(String(a.root.id || ''));
       });
-  }, [myBaseHistoryReqs, historyYear, historyMonth, historyTypeFilter, historyCodeQuery, historyModelQuery, historyStatusFilter, assets, ackedRequestIds]);
+  }, [myBaseHistoryReqs, historyYear, historyMonth, historyCodeQuery, historyModelQuery, assets]);
 
-  const toggleHistoryExpand = (id: string) => {
-    setHistoryExpandedIds((prev) => {
-      const next = new Set(prev);
-      const key = String(id);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
+  const openHistoryThreadDetail = (thread: { root: any; children: any[] }) => {
+    const members = [thread.root, ...(thread.children || [])].filter(Boolean);
+    const latest =
+      [...members].sort((a, b) => {
+        const d = reqTime(b) - reqTime(a);
+        if (d !== 0) return d;
+        return String(b.id || '').localeCompare(String(a.id || ''));
+      })[0] || thread.root;
+    const asset = assetFromRequest(thread.root);
+    if (!asset?.code) return;
+    setUnifiedCommModal(asset);
+    setPendingRequest(null);
+    setCompletedRequest(latest);
+    setCommEditMode(false);
+    setRequestContent('');
   };
   
   const handleExcelDownload = () => {
@@ -1165,7 +1231,7 @@ export default function PersonalModule() {
     if (targetAssets.length === 0) return alert('다운로드할 데이터가 없습니다.');
     const excelData = targetAssets.map((a, index) => {
       const logic = getAssetLogic(a);
-      return { 'NO': targetAssets.length - index, '조직': a.dept || '-', '사용자': a.user || '-', '범주': a.category, '자산 분류': a.it_type, '조달유형': a.is_rental || '-', '자산번호': a.code, '모델명': a.model, 'S/N': a.sn, '제조사': a.brand || '-', '기본 사양': a.spec, '입고일': a.in_date || '-', '교체주기(M)': a.cycle, '교체예정일': logic.repDate, '최근실사일': a.last_audit_date || '-', '기타(메모)': a.memo };
+      return { 'NO': targetAssets.length - index, '조직': a.dept || '-', '사용자': a.user || '-', '범주': a.category, '자산 분류': a.it_type, '조달유형': a.is_rental || '-', '자산번호': a.code, '모델명': a.model, 'S/N': a.sn, '제조사': a.brand || '-', '기본 사양': a.spec, '교체주기(M)': a.cycle, '교체예정일': logic.repDate, '최근실사일': a.last_audit_date || '-', '기타(메모)': a.memo };
     });
     const ws = XLSX.utils.json_to_sheet(excelData); const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "My_Assets"); XLSX.writeFile(wb, `나의업무자산현황_${currentUser?.name}.xlsx`);
@@ -1308,13 +1374,6 @@ const openCommModal = (asset: any) => {
     setCompletedRequest(null);
     setRequestContent('');
   }
-};
-
-const startNewRequestFromHistory = () => {
-  setPendingRequest(null);
-  setCompletedRequest(null);
-  setCommEditMode(false);
-  setRequestContent('');
 };
 
 const handleSubmitAdminReply = async () => {
@@ -1764,12 +1823,12 @@ const handleCancelRequest = async (id: string) => {
               onClick={toggleFeedbackAssetFilter}
               className={`w-full px-3 py-2.5 rounded-xl text-[11px] font-bold border transition-all flex items-center justify-between ${
                 mainTab === 'assets' && showFeedbackOnly
-                  ? 'bg-rose-600 border-rose-600 text-white shadow-sm'
-                  : 'bg-white text-slate-700 border-slate-200 hover:bg-rose-50 hover:border-rose-200'
+                  ? 'bg-blue-600 border-blue-600 text-white shadow-sm'
+                  : 'bg-white text-slate-700 border-slate-200 hover:bg-blue-50 hover:border-blue-200'
               }`}
             >
               <span className="text-left leading-snug">나의 수신 내역<br /><span className="text-[10px] font-bold opacity-90">(관리자 → 사용자)</span></span>
-              <span className={`text-sm font-black tabular-nums ${mainTab === 'assets' && showFeedbackOnly ? 'text-white' : 'text-rose-600'}`}>
+              <span className={`text-sm font-black tabular-nums ${mainTab === 'assets' && showFeedbackOnly ? 'text-white' : 'text-blue-600'}`}>
                 {stats.feedbackCount}
               </span>
             </button>
@@ -1793,14 +1852,14 @@ const handleCancelRequest = async (id: string) => {
           </button>
           <button
             type="button"
-            onClick={() => goHistoryTab(historyStatusFilter === 'ALL' ? 'ALL' : historyStatusFilter)}
+            onClick={() => goHistoryTab()}
             className={`px-5 py-2 rounded-md text-xs font-black transition-all ${
               mainTab === 'history'
                 ? 'bg-white text-indigo-600 shadow-sm border border-slate-200/80'
                 : 'text-slate-500 hover:text-slate-700'
             }`}
           >
-            💬 기타 의견/요청 송수신 대장
+            💬 의견/요청 송수신 대장
           </button>
         </div>
       </div>
@@ -1808,36 +1867,41 @@ const handleCancelRequest = async (id: string) => {
       {mainTab === 'assets' && (
       <div className="bg-white border border-slate-200 rounded-[2.5rem] shadow-sm overflow-hidden animate-in fade-in duration-300 slide-in-from-top-4">
         <div className="p-4 px-6 bg-slate-200/70 border-b border-slate-300 flex flex-wrap items-center justify-between gap-4">
-          <div className="flex items-center gap-2 flex-wrap min-w-0">
-            <div className="w-2.5 h-2.5 rounded-full bg-blue-600 shrink-0" />
-            <h2 className="text-sm font-black text-slate-800 tracking-tight">나의 업무자산 목록</h2>
-            <span className="text-[11px] font-bold bg-slate-300/80 text-slate-700 px-2 py-0.5 rounded-md">{filteredAssets.length}건</span>
-            {showReplaceableOnly && (
-              <span className="text-[10px] font-black text-blue-600 bg-blue-50 border border-blue-200 px-2 py-0.5 rounded-md">교체대상만</span>
-            )}
-            {ddayFilter !== 'all' && (
-              <span className="text-[10px] font-black text-blue-600 bg-blue-50 border border-blue-200 px-2 py-0.5 rounded-md">
-                {ddayFilter === 'd-30' ? '교체(D-30)' : ddayFilter === 'd-day' ? '교체(D-Day)' : '교체(D+)'}만
-              </span>
-            )}
-            {showStatusFilter === 'done' && (
-              <span className="text-[10px] font-black text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-md">실사 완료만</span>
-            )}
-            {showStatusFilter === 'pending' && (
-              <span className="text-[10px] font-black text-slate-600 bg-slate-100 border border-slate-200 px-2 py-0.5 rounded-md">미실사만</span>
-            )}
-            {showStatusFilter === 'nudge' && (
-              <span className="text-[10px] font-black text-rose-600 bg-rose-50 border border-rose-200 px-2 py-0.5 rounded-md">마감 임박만</span>
-            )}
-            {showStatusFilter === 'info_correction' && (
-              <span className="text-[10px] font-black text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-md">정보수정 승인대기만</span>
-            )}
-            {showSentOnly && (
-              <span className="text-[10px] font-black text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-md">나의 전송(대기)만</span>
-            )}
-            {showFeedbackOnly && (
-              <span className="text-[10px] font-black text-rose-600 bg-rose-50 border border-rose-200 px-2 py-0.5 rounded-md">나의 수신(관리자 요청·답변)만</span>
-            )}
+          <div className="flex flex-col gap-1 min-w-0">
+            <div className="flex items-center gap-2 flex-wrap min-w-0">
+              <div className="w-2.5 h-2.5 rounded-full bg-blue-600 shrink-0" />
+              <h2 className="text-sm font-black text-slate-800 tracking-tight">나의 업무자산 목록</h2>
+              <span className="text-[11px] font-bold bg-slate-300/80 text-slate-700 px-2 py-0.5 rounded-md tabular-nums">{filteredAssets.length}건</span>
+              {showReplaceableOnly && (
+                <span className="text-[10px] font-black text-blue-600 bg-blue-50 border border-blue-200 px-2 py-0.5 rounded-md">교체대상만</span>
+              )}
+              {ddayFilter !== 'all' && (
+                <span className="text-[10px] font-black text-blue-600 bg-blue-50 border border-blue-200 px-2 py-0.5 rounded-md">
+                  {ddayFilter === 'd-30' ? '교체(D-30)' : ddayFilter === 'd-day' ? '교체(D-Day)' : '교체(D+)'}만
+                </span>
+              )}
+              {showStatusFilter === 'done' && (
+                <span className="text-[10px] font-black text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-md">실사 완료만</span>
+              )}
+              {showStatusFilter === 'pending' && (
+                <span className="text-[10px] font-black text-slate-600 bg-slate-100 border border-slate-200 px-2 py-0.5 rounded-md">미실사만</span>
+              )}
+              {showStatusFilter === 'nudge' && (
+                <span className="text-[10px] font-black text-rose-600 bg-rose-50 border border-rose-200 px-2 py-0.5 rounded-md">마감 임박만</span>
+              )}
+              {showStatusFilter === 'info_correction' && (
+                <span className="text-[10px] font-black text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-md">정보수정 승인대기만</span>
+              )}
+              {showSentOnly && (
+                <span className="text-[10px] font-black text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-md">나의 전송(대기)만</span>
+              )}
+              {showFeedbackOnly && (
+                <span className="text-[10px] font-black text-blue-600 bg-blue-50 border border-blue-200 px-2 py-0.5 rounded-md">나의 수신(관리자 요청·답변)만</span>
+              )}
+            </div>
+            <p className="text-[11px] font-bold text-slate-400 pl-[18px]">
+              ※ 교체예정일 도래·경과 장비는 우측 [신규 요청하기]로 신청하세요.
+            </p>
           </div>
 
           <div className="flex items-center gap-2 flex-wrap">
@@ -1907,19 +1971,18 @@ const handleCancelRequest = async (id: string) => {
         </div>
 
         <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse table-fixed min-w-[1360px]">
+          <table className="w-full text-left border-collapse table-fixed min-w-[1260px]">
             <colgroup>
               <col className="w-[40px]" />
               <col className="w-[48px]" />
+              <col className="w-[68px]" />
+              <col className="w-[124px]" />
               <col className="w-[72px]" />
+              <col className="w-[128px]" />
+              <col className="w-[132px]" />
+              <col className="w-[104px]" />
               <col className="w-[88px]" />
-              <col className="w-[72px]" />
-              <col className="w-[130px]" />
               <col className="w-[140px]" />
-              <col className="w-[110px]" />
-              <col className="w-[96px]" />
-              <col className="w-[160px]" />
-              <col className="w-[96px]" />
               <col className="w-[64px]" />
               <col className="w-[110px]" />
               <col className="w-[120px]" />
@@ -1948,16 +2011,15 @@ const handleCancelRequest = async (id: string) => {
                 <th className="h-12 px-2 text-slate-900">S/N</th>
                 <th className="h-12 px-2 text-slate-900 whitespace-nowrap">제조사</th>
                 <th className="h-12 px-2 text-slate-900">기본 사양</th>
-                <th className="h-12 px-1 text-center text-slate-900 whitespace-nowrap">입고일</th>
                 <th className="h-12 px-1 text-center text-slate-900 whitespace-nowrap">교체주기(M)</th>
                 <th className="h-12 px-1 text-center whitespace-nowrap">교체예정일</th>
                 <th className="h-12 px-1 text-center border-l border-slate-200 whitespace-nowrap">실사/정보수정</th>
-                <th className="h-12 px-1 text-center text-rose-600 whitespace-nowrap">의견/요청</th>
+                <th className="h-12 px-1 text-center text-blue-700 whitespace-nowrap">의견/요청</th>
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-slate-100 text-[11px] font-bold text-slate-700">
               {paginatedAssets.length === 0 ? (
-                <tr><td colSpan={15} className="p-16 text-center text-slate-400 text-xs">조건에 맞는 자산이 없습니다.</td></tr>
+                <tr><td colSpan={14} className="p-16 text-center text-slate-400 text-xs">조건에 맞는 자산이 없습니다.</td></tr>
               ) : (
                 paginatedAssets.map((a, idx) => {
                   const logic = getAssetLogic(a);
@@ -2010,9 +2072,6 @@ const handleCancelRequest = async (id: string) => {
                           const d = getDisplayFieldValue(a, 'spec');
                           return <span className={d.isPending ? 'text-red-600 font-black' : 'text-slate-900'}>{d.value || '-'}</span>;
                         })()}
-                      </td>
-                      <td className="px-1 text-center text-slate-900 font-mono tabular-nums whitespace-nowrap" title={a.in_date || ''}>
-                        {a.in_date || '-'}
                       </td>
                       <td className="px-1 text-center text-slate-900 tabular-nums">{a.cycle ?? '-'}</td>
                       <td className="px-1 text-center whitespace-nowrap" title={logic.repDate}>
@@ -2102,32 +2161,15 @@ const handleCancelRequest = async (id: string) => {
         <div className="p-4 px-6 bg-slate-200/70 border-b border-slate-300 flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-2 flex-wrap min-w-0">
             <div className="w-2.5 h-2.5 rounded-full bg-blue-600 shrink-0" />
-            <h2 className="text-sm font-black text-slate-800 tracking-tight">나의 의견 및 요구사항 송수신 대장</h2>
+            <h2 className="text-sm font-black text-slate-800 tracking-tight">의견/요청 송수신 대장</h2>
             <span className="text-[11px] font-bold bg-slate-300/80 text-slate-700 px-2 py-0.5 rounded-md">{myHistoryThreads.length}건</span>
-            {historyStatusFilter === 'PENDING' && (
-              <span className="text-[10px] font-black text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-md">답변대기만</span>
-            )}
-            {historyStatusFilter === 'FEEDBACK' && (
-              <span className="text-[10px] font-black text-rose-600 bg-rose-50 border border-rose-200 px-2 py-0.5 rounded-md">관리자 답변·요청(미확인)만</span>
-            )}
+            <span className="text-[10px] font-black text-slate-500 bg-white border border-slate-200 px-2 py-0.5 rounded-md">
+              처리 완료(종료)만 · 본인 이력
+            </span>
           </div>
 
           <div className="flex items-center gap-2 flex-wrap">
             <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm">
-              <span className="text-[10px] font-black text-slate-400 uppercase whitespace-nowrap">{typeLabel}</span>
-              <select
-                value={historyTypeFilter}
-                onChange={(e) => setHistoryTypeFilter(e.target.value)}
-                className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent max-w-[120px]"
-              >
-                <option value="ALL">전체</option>
-                {historyUniqueTypes.map((t) => (
-                  <option key={t} value={t}>{t}</option>
-                ))}
-              </select>
-
-              <div className="w-px h-3.5 bg-slate-300 mx-0.5" />
-
               <span className="text-[10px] font-black text-slate-400 uppercase">연도</span>
               <select
                 value={historyYear}
@@ -2182,7 +2224,7 @@ const handleCancelRequest = async (id: string) => {
         </div>
 
         <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse table-fixed min-w-[1420px]">
+          <table className="w-full text-left border-collapse table-fixed min-w-[1280px]">
             <colgroup>
               <col className="w-[48px]" />
               <col className="w-[120px]" />
@@ -2193,7 +2235,7 @@ const handleCancelRequest = async (id: string) => {
               <col className="w-[180px]" />
               <col className="w-[120px]" />
               <col className="w-[110px]" />
-              <col className="w-[140px]" />
+              <col className="w-[108px]" />
               <col className="w-[120px]" />
             </colgroup>
             <thead className="bg-slate-100 text-slate-700 text-[10px] font-black tracking-widest border-b border-slate-200">
@@ -2202,12 +2244,12 @@ const handleCancelRequest = async (id: string) => {
                 <th colSpan={5} className="h-8 px-2 text-center bg-slate-50 text-slate-600 border-b border-slate-100">
                   사용자 영역
                 </th>
-                <th colSpan={2} className="h-8 px-2 text-center bg-rose-50/70 text-rose-700 border-b border-rose-100 border-l border-slate-200">
+                <th colSpan={2} className="h-8 px-2 text-center bg-blue-50 text-blue-700 border-b border-blue-200 border-l border-slate-200">
                   관리자 영역
                 </th>
                 <th rowSpan={2} className="h-10 px-2 text-center align-middle whitespace-nowrap border-l border-slate-200">요청/처리일자</th>
-                <th rowSpan={2} className="h-10 px-2 text-center align-middle border-l border-slate-200">상태</th>
-                <th rowSpan={2} className="h-10 px-2 text-center align-middle whitespace-nowrap border-l border-slate-200">관리 액션</th>
+                <th rowSpan={2} className="h-10 px-2 text-center align-middle">상세보기</th>
+                <th rowSpan={2} className="h-10 px-2 text-center align-middle whitespace-nowrap">진행상태</th>
               </tr>
               <tr>
                 <th className="h-10 px-2 text-center whitespace-nowrap">부서 / 사용자</th>
@@ -2215,171 +2257,98 @@ const handleCancelRequest = async (id: string) => {
                 <th className="h-10 px-2">자산번호</th>
                 <th className="h-10 px-2">모델명</th>
                 <th className="h-10 px-2">사용자 요청/답변</th>
-                <th className="h-10 px-2 border-l border-slate-200">관리자 요청/답변</th>
-                <th className="h-10 px-2 text-center whitespace-nowrap">부서 / 관리자</th>
+                <th className="h-10 px-2 border-l border-slate-200 bg-blue-50/40 text-blue-800">관리자 요청/답변</th>
+                <th className="h-10 px-2 text-center whitespace-nowrap bg-blue-50/40 text-blue-800">부서 / 관리자</th>
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-slate-100 text-[11px] font-bold text-slate-700">
               {myHistoryThreads.length === 0 ? (
                 <tr>
-                  <td colSpan={11} className="p-16 text-center text-slate-400 text-xs">조건에 맞는 송수신 내역이 없습니다.</td>
+                  <td colSpan={11} className="p-16 text-center text-slate-400 text-xs">
+                    처리 완료(종료)된 송수신 내역이 없습니다.
+                  </td>
                 </tr>
               ) : (
                 myHistoryThreads.map((thread, idx) => {
-                  const expanded = historyExpandedIds.has(String(thread.root.id));
                   const rowNo = myHistoryThreads.length - idx;
                   const userLabel = threadUserLabel(thread.root);
                   const adminLabel = pickThreadAdminLabel([thread.root, ...thread.children]);
-                  const renderHistoryRow = (req: any, depth: number, no: number | string) => {
-                    const threadLatestId = String((thread.children[thread.children.length - 1] || thread.root).id);
-                    const isLatestInThread = String(req.id) === threadLatestId;
-                    const waitingReply = isUserPendingStatus(req.status) && isLatestInThread;
-                    const isPastStep = depth > 0 && !isLatestInThread;
-                    // 각 행은 자기 내용에 맞는 상태만 표기 (첫 행도 최종상태 아님)
-                    const statusLabel = historyStatusLabel(req.status, req, { isThreadRoot: depth === 0 });
-                    const rowIsAdminStart = statusLabel === '관리자 문의/요청';
-                    const rowIsAdminReply = statusLabel === '관리자 답변';
-                    const rowIsUserStart = statusLabel === '사용자 문의/요청';
-                    const rowIsUserReply = statusLabel === '사용자 답변';
-                    const { opinionText } = parseAdminOpinion(req.adminOpinion);
-                    const modelName = parseHistoryModel(req, assets);
-                    const rowDate =
-                      getKSTDateString(req.completedAt || req.requestDate || req.createdAt) ||
-                      req.completedAt ||
-                      req.requestDate ||
-                      '-';
-                    const isRoot = depth === 0;
-                    const thisUserLabel = threadUserLabel(req);
-                    const thisAdminLabel = rowAdminLabel(req);
-                    // 사용자·관리자 영역: 매 행마다 해당 행(없으면 스레드 루트) 부서/이름 표기
-                    const rowUserLabel = thisUserLabel || userLabel;
-                    const rowAdminName = thisAdminLabel || adminLabel;
-                    const childCount = depth === 0 ? thread.children.length : 0;
-                    const hasChildren = childCount > 0;
-                    const threadLatest = thread.children[thread.children.length - 1] || thread.root;
-                    const threadClosed = isClosedStatus(threadLatest.status);
-
-                    return (
-                      <tr
-                        key={req.id || `${depth}-${no}`}
-                        className={`h-12 transition-colors ${
-                          depth > 0 ? 'bg-slate-50/70 hover:bg-slate-50' : 'hover:bg-slate-50/50'
-                        }`}
-                      >
-                        <td className="px-2 text-center font-mono text-slate-500 tabular-nums">
-                          {depth > 0 ? <span className="text-slate-400">└</span> : no}
-                        </td>
-                        <td className="px-2 text-center">
-                          {rowUserLabel ? (
-                            <span className="text-slate-800 truncate block" title={rowUserLabel}>{rowUserLabel}</span>
-                          ) : (
-                            <span className="text-slate-300">-</span>
-                          )}
-                        </td>
-                        <td className="px-2 text-center">
-                          {isRoot ? (
-                            <span className="text-[9px] font-black uppercase tracking-wider text-indigo-600 bg-indigo-50 border border-indigo-100 px-2 py-0.5 rounded-md whitespace-nowrap">
-                              {req.assetType || '일반'}
-                            </span>
-                          ) : (
-                            <span className="text-slate-300">-</span>
-                          )}
-                        </td>
-                        <td className="px-2 text-slate-900 truncate" title={isRoot ? (req.assetCode || '') : ''}>
-                          {isRoot ? (req.assetCode || '-') : <span className="text-slate-300">-</span>}
-                        </td>
-                        <td className="px-2 text-slate-800 truncate" title={isRoot ? modelName : ''}>
-                          {isRoot ? modelName : <span className="text-slate-300">-</span>}
-                        </td>
-                        <td className="px-2 text-slate-700 truncate" title={userRequestContent(req.content)}>
-                          {userRequestContent(req.content)}
-                        </td>
-                        <td className="px-2 border-l border-slate-200">
-                          {waitingReply ? (
-                            <span className="text-slate-400 italic font-bold">아직 답변이 없습니다.</span>
-                          ) : (
-                            <span className="text-slate-700 truncate block w-full" title={opinionText}>
-                              {opinionText ? `" ${opinionText} "` : '-'}
-                            </span>
-                          )}
-                        </td>
-                        <td className="px-2 text-center">
-                          {rowAdminName ? (
-                            <span className="text-slate-800 truncate block" title={rowAdminName}>{rowAdminName}</span>
-                          ) : (
-                            <span className="text-slate-300">-</span>
-                          )}
-                        </td>
-                        <td className="px-2 text-center whitespace-nowrap tabular-nums text-slate-800 border-l border-slate-200">{rowDate}</td>
-                        <td className="px-2 text-center overflow-hidden border-l border-slate-200">
-                          <button
-                            type="button"
-                            title="클릭하여 대화 내역 확인"
-                            onClick={() => openCommModalFromRequest(req)}
-                            className={`inline-block max-w-full border px-1.5 py-0.5 rounded text-[10px] font-bold whitespace-nowrap cursor-pointer hover:scale-105 transition-transform ${
-                              threadClosed || statusLabel === '처리 완료(종료)'
-                                ? 'bg-slate-100 text-slate-500 border-slate-200'
-                                : isPastStep
-                                  ? 'bg-slate-50 text-slate-500 border-slate-200'
-                                  : rowIsUserReply
-                                    ? 'bg-amber-50/80 text-amber-800 border-amber-200/80'
-                                    : rowIsUserStart
-                                      ? 'bg-amber-50/80 text-amber-800 border-amber-200/80'
-                                      : rowIsAdminReply || rowIsAdminStart
-                                        ? 'bg-rose-50 text-rose-700 border-rose-200'
-                                        : 'bg-slate-100 text-slate-500 border-slate-300'
-                            }`}
-                          >
-                            {statusLabel}
-                          </button>
-                        </td>
-                        <td className="px-2 text-center border-l border-slate-200 overflow-hidden">
-                          <div className="inline-flex items-center justify-center gap-1.5 flex-nowrap">
-                            {hasChildren ? (
-                              <button
-                                type="button"
-                                title={expanded ? '연관 회신 접기' : threadClosed ? '종료 내역 상세보기' : '연관 회신 상세보기'}
-                                onClick={() => toggleHistoryExpand(req.id)}
-                                className="inline-flex items-center gap-0.5 px-1.5 py-1 bg-white text-slate-600 border border-slate-200 rounded-md text-[10px] font-black hover:bg-slate-50 whitespace-nowrap"
-                              >
-                                {threadClosed ? '종료/상세보기' : '상세보기'}
-                                <span className="text-[11px] leading-none">{expanded ? '▲' : '▼'}</span>
-                              </button>
-                            ) : isRoot && threadClosed ? (
-                              <button
-                                type="button"
-                                title="종료된 대화 · 클릭하여 내역 확인"
-                                onClick={() => openCommModalFromRequest(req)}
-                                className="inline-flex items-center gap-0.5 px-1.5 py-1 bg-white text-slate-600 border border-slate-200 rounded-md text-[10px] font-black hover:bg-slate-50 whitespace-nowrap"
-                              >
-                                종료
-                              </button>
-                            ) : null}
-                            {waitingReply ? (
-                              <button
-                                type="button"
-                                onClick={() => handleCancelRequest(req.id)}
-                                className="px-1.5 py-1 bg-rose-50 text-rose-600 border border-rose-200 rounded-md text-[10px] font-black hover:bg-rose-100 hover:text-rose-700 whitespace-nowrap"
-                                title="답변이 오기 전에만 전송을 취소할 수 있습니다."
-                              >
-                                전송 취소
-                              </button>
-                            ) : isRoot && !hasChildren && !threadClosed ? (
-                              <span className="text-slate-300">-</span>
-                            ) : !isRoot && !waitingReply ? (
-                              <span className="text-slate-300">-</span>
-                            ) : null}
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  };
+                  const req = thread.root;
+                  const relatedChildren = thread.children || [];
+                  const threadMembers = [req, ...relatedChildren];
+                  const latestRelated =
+                    [...threadMembers].sort((a, b) => {
+                      const d = reqTime(b) - reqTime(a);
+                      if (d !== 0) return d;
+                      return String(b.id || '').localeCompare(String(a.id || ''));
+                    })[0] || req;
+                  const modelName = parseHistoryModel(req, assets);
+                  const rowDate =
+                    getKSTDateString(latestRelated.completedAt || latestRelated.requestDate || latestRelated.createdAt) ||
+                    latestRelated.completedAt ||
+                    latestRelated.requestDate ||
+                    '-';
+                  const adminStarted = isAdminInquiryRow(req);
 
                   return (
-                    <React.Fragment key={thread.root.id}>
-                      {renderHistoryRow(thread.root, 0, rowNo)}
-                      {expanded && thread.children.map((child) => renderHistoryRow(child, 1, ''))}
-                    </React.Fragment>
+                    <tr key={req.id} className="h-12 transition-colors bg-white hover:bg-slate-50/50">
+                      <td className="px-2 text-center font-mono text-slate-500 tabular-nums">{rowNo}</td>
+                      <td className="px-2 text-center">
+                        {userLabel ? (
+                          <span className="text-slate-800 truncate block" title={userLabel}>{userLabel}</span>
+                        ) : (
+                          <span className="text-slate-300">-</span>
+                        )}
+                      </td>
+                      <td className="px-2 text-center">
+                        <span className="text-[9px] font-black uppercase tracking-wider text-indigo-600 bg-indigo-50 border border-indigo-100 px-2 py-0.5 rounded-md whitespace-nowrap">
+                          {req.assetType || '일반'}
+                        </span>
+                      </td>
+                      <td className="px-2 text-slate-900 truncate" title={req.assetCode || ''}>
+                        {req.assetCode || '-'}
+                      </td>
+                      <td className="px-2 text-slate-800 truncate" title={modelName}>
+                        {modelName}
+                      </td>
+                      <td className="px-2 truncate" title={adminStarted ? '처리 완료(종료)' : '신규접수'}>
+                        {adminStarted ? (
+                          <span className="font-black text-slate-900">처리 완료(종료)</span>
+                        ) : (
+                          <span className="font-black text-slate-900">신규접수</span>
+                        )}
+                      </td>
+                      <td className="px-2 border-l border-slate-200 truncate" title={adminStarted ? '신규접수' : '처리 완료(종료)'}>
+                        {adminStarted ? (
+                          <span className="font-black text-slate-900">신규접수</span>
+                        ) : (
+                          <span className="font-black text-slate-900">처리 완료(종료)</span>
+                        )}
+                      </td>
+                      <td className="px-2 text-center">
+                        {adminLabel ? (
+                          <span className="text-slate-800 truncate block" title={adminLabel}>{adminLabel}</span>
+                        ) : (
+                          <span className="text-slate-300">-</span>
+                        )}
+                      </td>
+                      <td className="px-2 text-center whitespace-nowrap tabular-nums text-slate-800 border-l border-slate-200">{rowDate}</td>
+                      <td className="px-2 text-center overflow-hidden">
+                        <button
+                          type="button"
+                          title="클릭하여 대화 내역 확인"
+                          onClick={() => openHistoryThreadDetail(thread)}
+                          className="inline-block max-w-full border px-2 py-1 rounded-md text-[10px] font-black whitespace-nowrap bg-white text-indigo-600 border-indigo-200 hover:bg-indigo-50 shadow-sm transition-colors"
+                        >
+                          상세보기
+                        </button>
+                      </td>
+                      <td className="px-2 text-center overflow-hidden">
+                        <span className="text-[11px] font-black whitespace-nowrap text-slate-900">
+                          처리 완료(종료)
+                        </span>
+                      </td>
+                    </tr>
                   );
                 })
               )}
@@ -2580,7 +2549,7 @@ const handleCancelRequest = async (id: string) => {
                 return (
               <>
                 <h4 className="text-[14px] font-black text-slate-900 tracking-tight mb-2">
-                  {isReply ? '사용자 답변' : '사용자 문의/요청'}
+                  {isReply ? '사용자 답변' : '사용자 신규접수'}
                 </h4>
                 <p className="text-[10px] font-bold text-slate-400 mb-6 border-b-2 border-slate-900 pb-3">
                   관리자 답변 전 · 전송 취소 또는 내용 수정 가능
@@ -2606,22 +2575,23 @@ const handleCancelRequest = async (id: string) => {
 
                   <ThreadTurnList turns={priorTurns} />
 
-                  <div>
-                    <p className="text-[10px] font-black text-amber-600 uppercase tracking-wider mb-2">
-                      {isReply ? '답변 내용' : '요청 내용'}
-                    </p>
+                  <TimelineComposeCard
+                    role="user"
+                    name={String(pendingRequest.requester || pendingRequest.name || currentUser?.name || '사용자')}
+                    dateLabel={commEditMode ? '수정 중' : (isReply ? '답변' : '요청')}
+                  >
                     {commEditMode ? (
                       <textarea
                         value={requestContent}
                         onChange={(e) => setRequestContent(e.target.value)}
-                        className="w-full h-32 bg-white border border-amber-300 p-4 text-[11px] font-bold rounded-xl outline-none focus:border-amber-500 focus:ring-1 focus:ring-amber-300 transition-all resize-none shadow-inner"
+                        className="w-full min-h-[8rem] bg-transparent text-[11px] font-semibold text-slate-800 outline-none resize-none placeholder:text-slate-400 leading-relaxed"
                       />
                     ) : (
-                      <div className="w-full min-h-[8rem] bg-slate-50 border border-slate-200 p-4 text-[11px] font-bold text-slate-800 rounded-xl whitespace-pre-wrap leading-relaxed">
+                      <div className="min-h-[4rem] text-[11px] font-semibold text-slate-800 whitespace-pre-wrap leading-relaxed">
                         {pendingRequest.content || '-'}
                       </div>
                     )}
-                  </div>
+                  </TimelineComposeCard>
                 </div>
 
                 <div className="flex flex-col gap-2 mt-6 pt-4 border-t border-slate-100">
@@ -2688,11 +2658,11 @@ const handleCancelRequest = async (id: string) => {
                         ? '처리 완료(종료)'
                         : latest.status === '관리자 답변'
                           ? '관리자 답변'
-                          : '관리자 문의/요청'}
+                          : '관리자 신규접수'}
                     </h4>
                     <p className="text-[10px] font-bold text-slate-400 mb-6 border-b-2 border-slate-900 pb-3">
                       {threadClosed
-                        ? '주고받은 전체 이력을 확인할 수 있습니다'
+                        ? '주고받은 전체 이력을 확인할 수 있습니다 (조회 전용)'
                         : '답변을 작성해 관리자에게 회신할 수 있습니다'}
                     </p>
 
@@ -2704,7 +2674,7 @@ const handleCancelRequest = async (id: string) => {
                         </div>
                         <div className="flex justify-between gap-3 text-[11px] font-bold">
                           <span className="text-slate-400 shrink-0">상태</span>
-                          <span className={threadClosed ? 'text-slate-500' : 'text-rose-600'}>
+                          <span className={threadClosed ? 'text-slate-500' : 'text-blue-600'}>
                             {threadClosed ? '처리 완료(종료)' : '대화 진행중'}
                           </span>
                         </div>
@@ -2713,15 +2683,18 @@ const handleCancelRequest = async (id: string) => {
                       <ThreadTurnList turns={turns} />
 
                       {canUserReply && (
-                        <div>
-                          <p className="text-[10px] font-black text-amber-600 uppercase tracking-wider mb-2">답변 내용</p>
+                        <TimelineComposeCard
+                          role="user"
+                          name={String(currentUser?.name || completedRequest.requester || '사용자')}
+                          dateLabel="작성 중"
+                        >
                           <textarea
                             value={requestContent}
                             onChange={(e) => setRequestContent(e.target.value)}
                             placeholder="관리자 요청에 대한 답변을 작성하세요."
-                            className="w-full min-h-[8rem] bg-white border border-amber-200 p-4 text-[11px] font-bold text-slate-800 rounded-xl outline-none focus:border-amber-500 focus:ring-1 focus:ring-amber-300 transition-all resize-none shadow-inner"
+                            className="w-full min-h-[8rem] bg-transparent text-[11px] font-semibold text-slate-800 outline-none resize-none placeholder:text-slate-400 leading-relaxed"
                           />
-                        </div>
+                        </TimelineComposeCard>
                       )}
                     </div>
 
@@ -2733,24 +2706,14 @@ const handleCancelRequest = async (id: string) => {
                       >
                         닫기
                       </button>
-                      {threadClosed ? (
+                      {!threadClosed && canUserReply && (
                         <button
                           type="button"
-                          onClick={startNewRequestFromHistory}
+                          onClick={handleSubmitAdminReply}
                           className="flex-[1.4] py-3.5 bg-slate-900 text-white rounded-xl font-black text-[12px] shadow-md hover:bg-black active:scale-95 transition-all"
                         >
-                          신규 요청하기
+                          관리자에게 답변 전송
                         </button>
-                      ) : (
-                        canUserReply && (
-                          <button
-                            type="button"
-                            onClick={handleSubmitAdminReply}
-                            className="flex-[1.4] py-3.5 bg-slate-900 text-white rounded-xl font-black text-[12px] shadow-md hover:bg-black active:scale-95 transition-all"
-                          >
-                            관리자에게 답변 전송
-                          </button>
-                        )
                       )}
                     </div>
                   </>
@@ -2779,15 +2742,22 @@ const handleCancelRequest = async (id: string) => {
                     </div>
                   </div>
 
-                  <div>
-                    <p className="text-[10px] font-black text-amber-600 uppercase tracking-wider mb-2">요청 내용</p>
+                  <TimelineComposeCard
+                    role="user"
+                    name={String(currentUser?.name || '사용자')}
+                    dateLabel={
+                      formatKSTDateTime(new Date()) !== '-'
+                        ? formatKSTDateTime(new Date())
+                        : todayStr
+                    }
+                  >
                     <textarea
                       value={requestContent}
                       onChange={(e) => setRequestContent(e.target.value)}
                       placeholder="장비 불량, 교체 희망, 소프트웨어 설치 지원 등 관리자에게 전달할 내용을 작성하세요."
-                      className="w-full min-h-[8rem] bg-white border border-amber-200 p-4 text-[11px] font-bold text-slate-800 rounded-xl outline-none focus:border-amber-500 focus:ring-1 focus:ring-amber-300 transition-all resize-none shadow-inner"
+                      className="w-full min-h-[8rem] bg-transparent text-[11px] font-semibold text-slate-800 outline-none resize-none placeholder:text-slate-400 leading-relaxed"
                     />
-                  </div>
+                  </TimelineComposeCard>
                 </div>
 
                 <div className="flex gap-2 mt-6 pt-4 border-t border-slate-100">

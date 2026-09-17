@@ -9,7 +9,7 @@ export const SEED_COMPANY_ADDRESSES = [
     addressKo: '서울특별시 중구 세종대로 39 대한상공회의소빌딩 12층',
     addressEn: '12F, KCCI Buiding, Sejong-daero 39, Seoul, 04513 Korea',
     fax: '02-6973-9099',
-    faxEn: '+82-2-6973-9099',
+    faxEn: '82-2-6973-9099',
   },
   {
     label: '11F',
@@ -17,7 +17,7 @@ export const SEED_COMPANY_ADDRESSES = [
     addressKo: '서울특별시 중구 세종대로 39 대한상공회의소빌딩 11층',
     addressEn: '11F, KCCI Buiding, Sejong-daero 39, Seoul, 04513 Korea',
     fax: '02-6973-9098',
-    faxEn: '+82-2-6973-9098',
+    faxEn: '82-2-6973-9098',
   },
   {
     label: '12F',
@@ -25,7 +25,7 @@ export const SEED_COMPANY_ADDRESSES = [
     addressKo: '서울특별시 중구 세종대로 39 대한상공회의소빌딩 12층',
     addressEn: '12F, KCCI Buiding, Sejong-daero 39, Seoul, 04513 Korea',
     fax: '02-6973-9097',
-    faxEn: '+82-2-6973-9097',
+    faxEn: '82-2-6973-9097',
   },
 ] as const;
 

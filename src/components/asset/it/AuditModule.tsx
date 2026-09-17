@@ -573,7 +573,7 @@ export default function AuditModule() {
                 <th className="h-12 px-2 text-center whitespace-nowrap">대상범위</th>
                 <th className="h-12 px-2 text-center border-l border-slate-200 whitespace-nowrap">모바일/웹 배포 링크 (사내망)</th>
                 <th className="h-12 px-2 text-center whitespace-nowrap">상태</th>
-                <th className="h-12 pr-4 text-center border-l border-slate-200 whitespace-nowrap">관리 액션</th>
+                <th className="h-12 pr-4 text-center border-l border-slate-200 whitespace-nowrap">관리액션(Edit)</th>
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-slate-100 text-xs font-bold text-slate-700">
@@ -617,11 +617,11 @@ export default function AuditModule() {
                         {a.status === '작성중' || a.status === '게시중단' ? (
                           <>
                             <button type="button" disabled={!canEdit} title={!canEdit ? '편집 권한 필요' : undefined} onClick={() => handleStatusChange(a.id, 'PUBLISH')} className={`px-3 py-1.5 rounded-lg text-[10px] ${canEdit ? 'bg-indigo-600 text-white hover:bg-indigo-700' : disabledActionClass}`}>배포</button>
-                            <button type="button" disabled={!canEdit} title={!canEdit ? '편집 권한 필요' : undefined} onClick={() => { if (!canEdit) return; setEditModal(a); }} className={`px-3 py-1.5 rounded-lg text-[10px] border ${canEdit ? 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50' : disabledActionClass}`}>수정(Edit)</button>
+                            <button type="button" disabled={!canEdit} title={!canEdit ? '편집 권한 필요' : undefined} onClick={() => { if (!canEdit) return; setEditModal(a); }} className={`px-3 py-1.5 rounded-lg text-[10px] border ${canEdit ? 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50' : disabledActionClass}`}>수정</button>
                           </>
                         ) : a.status === '진행중' ? (
                           <>
-                            <button type="button" disabled={!canEdit} title={!canEdit ? '편집 권한 필요' : undefined} onClick={() => { if (!canEdit) return; setEditModal(a); }} className={`px-3 py-1.5 rounded-lg text-[10px] border ${canEdit ? 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50' : disabledActionClass}`}>수정(Edit)</button>
+                            <button type="button" disabled={!canEdit} title={!canEdit ? '편집 권한 필요' : undefined} onClick={() => { if (!canEdit) return; setEditModal(a); }} className={`px-3 py-1.5 rounded-lg text-[10px] border ${canEdit ? 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50' : disabledActionClass}`}>수정</button>
                             <button type="button" disabled={!canEdit} title={!canEdit ? '편집 권한 필요' : undefined} onClick={() => handleStatusChange(a.id, 'STOP')} className={`px-3 py-1.5 rounded-lg text-[10px] border ${canEdit ? 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50' : disabledActionClass}`}>중단</button>
                             <button type="button" disabled={!canEdit} title={!canEdit ? '편집 권한 필요' : undefined} onClick={() => handleStatusChange(a.id, 'CLOSE')} className={`px-3 py-1.5 rounded-lg text-[10px] ${canEdit ? 'bg-emerald-600 text-white hover:bg-emerald-700' : disabledActionClass}`}>마감</button>
                           </>
@@ -728,7 +728,7 @@ export default function AuditModule() {
                     <th className="h-12 px-2 text-center whitespace-nowrap">대상범위</th>
                     <th className="h-12 px-2 text-center border-l border-slate-200 whitespace-nowrap">모바일/웹 배포 링크 (사내망)</th>
                     <th className="h-12 px-2 text-center whitespace-nowrap">상태</th>
-                    <th className="h-12 pr-4 text-center border-l border-slate-200 whitespace-nowrap">관리 액션</th>
+                    <th className="h-12 pr-4 text-center border-l border-slate-200 whitespace-nowrap">관리액션(Edit)</th>
                   </tr>
                 </thead>
                 <tbody className="bg-white divide-y divide-slate-100 text-xs font-bold text-slate-700">

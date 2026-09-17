@@ -71,7 +71,7 @@ export function isMasterOfDescendantMenu(
 /**
  * FE/API 공통 편집 자격·스코프 (checkMenuPermission Edit 관문과 동일).
  * - edit_scopes 비움/CODED만 = NONE (TOTAL로 취급 금지)
- * - Task Editor: 규칙 ∪ 개인 scope → 더 넓은 쪽
+ * - Task Editor: Editor Level만 우회, Edit Scope는 규칙(3️⃣)과 동일
  * - hasAccess 기본 true (페이지 진입 후 FE). API는 hasAccessPassed를 넘김
  */
 export function resolveInterfaceEditState(
@@ -120,25 +120,13 @@ export function resolveInterfaceEditState(
     normalizedEditRoles.length > 0 && normalizedEditRoles.includes(myRole);
   const isEditorPassed = hasAccess && (isTaskEditor || editLevelPassed);
 
+  // Task Editor도 Edit Scope(3️⃣)만 사용 — 개인 부서/전사 scope 무시
   const validEditScopes = normalizePermissionScopes(pEditScopes);
-  let personalEditScope: string | null = null;
-  if (isTaskEditor) {
-    const tm = pTMasters.find(
-      (t: any) => String(t?.email || '').trim().toLowerCase() === myEmailNorm
-    );
-    const tmScope = String(tm?.scope || '').toUpperCase();
-    if (tmScope === 'GLOBAL' || tmScope === 'TOTAL') personalEditScope = 'TOTAL';
-    else if (tmScope === 'DEPT') personalEditScope = 'DEPT';
-    else if (tmScope === 'OWN') personalEditScope = 'OWN';
-    else personalEditScope = 'DEPT';
-  }
-
-  let editScope: PermissionScope = 'NONE';
-  if (isEditorPassed) {
-    const combined: string[] = [...validEditScopes];
-    if (personalEditScope) combined.push(personalEditScope);
-    editScope = combined.length > 0 ? pickWidestPermissionScope(combined) : 'NONE';
-  }
+  const editScope: PermissionScope = isEditorPassed
+    ? validEditScopes.length > 0
+      ? pickWidestPermissionScope(validEditScopes)
+      : 'NONE'
+    : 'NONE';
 
   return {
     isEditor: isEditorPassed && editScope !== 'NONE',
@@ -255,10 +243,10 @@ export function resolveInterfaceEditState(
     // ---------------------------------------------------------
     // 👁️ [접근 권한(ACCESS) 관문]
     // 규칙: Org ∧ Level → 진입
-    // 예외: Task Access는 Org·Level만 우회 (View Scope는 예외 아님)
+    // 예외: Task Access는 Org·Level만 우회 (View Scope는 예외 아님 · 4️⃣와 동일)
     // 결과: 진입자 전원(예외 포함)이 동일 view_scopes를 따름
     // ---------------------------------------------------------
-    // 1️⃣ [예외] Task Access — 규칙 1·2만 우회
+    // 1️⃣ [예외] Task Access — Org·Level만 우회, View Scope는 공통
     const isTaskAccess = pTAccess.some(
       (ta: any) => String(ta?.email || '').trim().toLowerCase() === myEmailNorm
     );
@@ -291,7 +279,7 @@ export function resolveInterfaceEditState(
 
     // ---------------------------------------------------------
     // ✍️ [편집 권한(EDIT) 관문] — Access 통과자만 대상
-    // edit_scopes 미지정=NONE. Task Editor 개인 scope ∪ 규칙
+    // edit_scopes 미지정=NONE. Task Editor는 Level만 우회, Scope는 3️⃣와 동일
     // ---------------------------------------------------------
     const editState = resolveInterfaceEditState(user, menu, { hasAccess: hasAccessPassed });
   

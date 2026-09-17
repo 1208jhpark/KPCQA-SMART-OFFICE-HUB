@@ -814,7 +814,7 @@ export default function ClientSearchModule() {
                 )}
                 <th className="h-12 text-center w-[50px]">NO</th>
                 <th className="h-12 pl-2 w-[280px]">회사명 (클릭 상세보기)</th>
-                <th className="h-12 text-center w-[220px]">부서관리</th>
+                <th className="h-12 text-center w-[220px]">부서관리(Edit)</th>
                 <th className="h-12 px-3 text-center w-[120px]">업무범주</th>
                 <th className="h-12 px-3 w-[260px] text-center">소재지 (주소)</th>
                 <th className="h-12 px-3 w-[100px] text-right whitespace-nowrap">이번 달 지급 수량</th>
@@ -826,7 +826,7 @@ export default function ClientSearchModule() {
                     <th className="h-12 px-2 text-center w-[120px] whitespace-nowrap">처리자(소속)</th>
                   </>
                 )}
-                <th className="h-12 pr-4 text-center w-[160px] whitespace-nowrap">마스터 관리</th>
+                <th className="h-12 pr-4 text-center w-[160px] whitespace-nowrap">관리액션(Edit)</th>
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-slate-100 text-xs font-bold text-slate-700">
@@ -901,7 +901,7 @@ export default function ClientSearchModule() {
                               className="px-1.5 py-0.5 flex items-center justify-center bg-indigo-600 text-white rounded-md text-[9px] font-black hover:bg-slate-800 shadow-sm whitespace-nowrap"
                               title="부서 추가"
                             >
-                              부서+(Edit)
+                              부서+
                             </button>
                           )}
                         </div>
@@ -945,7 +945,7 @@ export default function ClientSearchModule() {
                           <div className="flex justify-center items-center gap-1 flex-nowrap">
                             {canEditMaster && (
                               <>
-                                <button onClick={() => { setEditClient(client); setFormData({name:client.name, location:client.location||'', category:client.category||''}); setShowModal(true); }} className="px-3 py-1 bg-white border border-slate-200 text-slate-600 rounded-lg text-[9px] font-black hover:bg-slate-50 transition-colors shadow-sm whitespace-nowrap">수정(Edit)</button>
+                                <button onClick={() => { setEditClient(client); setFormData({name:client.name, location:client.location||'', category:client.category||''}); setShowModal(true); }} className="px-3 py-1 bg-white border border-slate-200 text-slate-600 rounded-lg text-[9px] font-black hover:bg-slate-50 transition-colors shadow-sm whitespace-nowrap">수정</button>
                                 <button onClick={() => handleArchiveClient(client.id)} className="px-3 py-1 bg-slate-50 border border-slate-200 text-slate-400 rounded-lg text-[9px] font-black hover:bg-slate-200 transition-colors shadow-sm whitespace-nowrap">보관함</button>
                               </>
                             )}
@@ -971,7 +971,7 @@ export default function ClientSearchModule() {
                         ) : (
                           <div className="flex justify-center items-center gap-1 flex-nowrap">
                             {canEditMaster && (
-                              <button onClick={() => handleRestoreClient(client.id)} className="px-3 py-1 bg-white border border-slate-200 text-slate-600 rounded-lg text-[9px] font-black hover:bg-slate-50 transition-colors shadow-sm whitespace-nowrap">복구(Edit)</button>
+                              <button onClick={() => handleRestoreClient(client.id)} className="px-3 py-1 bg-white border border-slate-200 text-slate-600 rounded-lg text-[9px] font-black hover:bg-slate-50 transition-colors shadow-sm whitespace-nowrap">복구</button>
                             )}
                             {canHardDeleteClient() && (
                               clientHasDistributions(client) ? (
@@ -1032,7 +1032,7 @@ export default function ClientSearchModule() {
                                     onClick={() => setDeptModal({ isOpen: true, client, deptIndex: originalIndex, name: dept.name })}
                                     className="px-1.5 py-1 bg-white border border-slate-200 rounded text-[9px] font-black text-slate-500 hover:bg-indigo-600 hover:text-white shadow-sm transition-colors whitespace-nowrap"
                                   >
-                                    부서명수정(Edit)
+                                    부서명수정
                                   </button>
                                   {(dept.name !== "전사" || dept.is_hidden) && (
                                     <button
@@ -1040,7 +1040,7 @@ export default function ClientSearchModule() {
                                       onClick={() => handleToggleDeptHide(client, originalIndex)}
                                       className={`px-1.5 py-1 border rounded text-[9px] font-black shadow-sm transition-colors whitespace-nowrap ${dept.is_hidden ? 'bg-indigo-50 border-indigo-200 text-indigo-600 hover:bg-indigo-600 hover:text-white' : 'bg-white border-slate-200 text-slate-400 hover:bg-slate-600 hover:text-white'}`}
                                     >
-                                      {dept.is_hidden ? '숨김복구(Edit)' : '부서숨김(Edit)'}
+                                      {dept.is_hidden ? '숨김복구' : '부서숨김'}
                                     </button>
                                   )}
                                   {dept.name !== "전사" && (
@@ -1049,7 +1049,7 @@ export default function ClientSearchModule() {
                                       onClick={() => handleDeleteDept(client, dept.name)}
                                       className="px-1.5 py-1 bg-red-50 border border-red-100 text-red-400 rounded text-[9px] font-black hover:bg-red-500 hover:text-white transition-colors shadow-sm whitespace-nowrap"
                                     >
-                                      삭제(Edit)
+                                      삭제
                                     </button>
                                   )}
                               </div>

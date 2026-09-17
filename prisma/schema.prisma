@@ -12,8 +12,10 @@ datasource db {
 // -----------------------------------------------------------------
 model SystemConfig {
   id                      String   @id @default("global")
-  main_headline           String   @default("SMART OFFICE HUB")
-  sub_headline            String   @default("서비스 모듈을 선택하세요.")
+  main_headline           String   @default("KPCQA WISE")
+  sub_headline            String   @default("KPCQA 통합업무지원시스템")
+  /** 홈 히어로 상단 배지 (Main/Sub Headline 위) */
+  tagline                 String   @default("Workplace Innovative System for Efficiency")
   home_grid_cols          Int      @default(4)
   layout_type             String   @default("horizontal")
   linked_sites            Json?    @default("[]")
@@ -27,9 +29,13 @@ model SystemConfig {
   it_master_group         String   @default("") // IT·업무자산 > 품목
   job_duty_group          String   @default("")
   job_grade_group         String   @default("")
+  user_duty_options       Json?    // /admin/users 직책 옵션 [{label,value}]
+  user_grade_options      Json?    // /admin/users 직급 옵션 [{label,value}]
   bc_sheets_per_pack      Int      @default(200) // 명함 1통당 장수 (업체별 상이)
   bc_statement_col_map    Json?    // 거래명세표 칼럼 제목(이름/소속/수량/공급가액)
   bc_mail_shortcut_url    String   @default("")
+  bc_mail_subject_template String  @default("")
+  bc_mail_body_template   String   @default("")
   mkt_groupware_shortcut_url String @default("https://ep.kpcqa.or.kr/ea/edoc/eapproval/docCommonDrafWrite.do?template_key=8")
   // 🤝 외주 업무 서비스 — /admin/settings 마스터 그룹 매핑
   outsourcing_vendor_group  String @default("") // 외주 업체 마스터 그룹
@@ -47,7 +53,7 @@ model User {
   email        String   @unique
   name         String   // 한글 성명
   name_en      String   @default("") // 영문 성명
-  employee_no  String   @default("") // 사번
+  employee_no  String   @default("") // 사번 (비어있지 않으면 partial unique — migration)
   password     String
   roles        Json     @default("[\"LV_3\"]")
   status       String   @default("Pending")

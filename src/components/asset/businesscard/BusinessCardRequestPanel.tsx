@@ -11,7 +11,7 @@ import {
   useInterfaceStepTabs,
 } from '@/lib/interface-step-tabs';
 import BusinessCardAdminApplyModal from '@/components/asset/businesscard/BusinessCardAdminApplyModal';
-import { formatBusinessCardEnNumber } from '@/lib/businesscard-phone';
+import { formatBusinessCardEnNumber, stripBusinessCardEnPlus } from '@/lib/businesscard-phone';
 import { formatBusinessCardAdminStatusLabel } from '@/lib/businesscard-status';
 
 const MENU_PATH = '/asset/businesscard/master/requests';
@@ -210,7 +210,13 @@ export default function BusinessCardRequestPanel() {
     () => resolveInterfaceEditState(currentUser, interfaceConfig).isEditor,
     [currentUser, interfaceConfig]
   );
+  const isLV1 = useMemo(() => {
+    if (!currentUser) return false;
+    const roles = Array.isArray(currentUser.roles) ? currentUser.roles : [currentUser.role];
+    return roles?.some((r: any) => String(r).includes('LV_1')) || currentUser.permissionLevel === 'LV_1';
+  }, [currentUser]);
   const alertNoEditPermission = () => alert('편집 권한이 없습니다.');
+  const [deletingBulk, setDeletingBulk] = useState(false);
 
   const fetchAddresses = async () => {
     const res = await fetch(`/api/asset/businesscard/master/addresses?t=${Date.now()}`, { cache: 'no-store' });
@@ -276,22 +282,30 @@ export default function BusinessCardRequestPanel() {
       const data = await res.json();
       const n = Number(data?.sheetsPerPack);
       if (Number.isFinite(n) && n > 0) setSheetsPerPack(Math.round(n));
+      // 직책·직급: /admin/users SystemConfig 옵션
+      if (Array.isArray(data?.duties)) {
+        setDuties(
+          data.duties
+            .filter((o: any) => o?.label)
+            .map((o: any, i: number) => ({
+              id: `duty-${i}-${o.label}`,
+              label: String(o.label),
+              value: String(o.value ?? ''),
+            }))
+        );
+      }
+      if (Array.isArray(data?.grades)) {
+        setGrades(
+          data.grades
+            .filter((o: any) => o?.label)
+            .map((o: any, i: number) => ({
+              id: `grade-${i}-${o.label}`,
+              label: String(o.label),
+              value: String(o.value ?? ''),
+            }))
+        );
+      }
     }
-  };
-
-  const fetchMasterRoles = async () => {
-    const ts = Date.now();
-    const [configRes, masterRes] = await Promise.all([
-      fetch(`/api/admin/config?t=${ts}`, { cache: 'no-store' }),
-      fetch(`/api/admin/master-data?t=${ts}`, { cache: 'no-store' }),
-    ]);
-    if (!configRes.ok || !masterRes.ok) return;
-    const config = await configRes.json();
-    const allMaster = await masterRes.json();
-    const dutyGroup = allMaster.find((g: any) => g.id === config.job_duty_group);
-    const gradeGroup = allMaster.find((g: any) => g.id === config.job_grade_group);
-    if (dutyGroup?.codes) setDuties(dutyGroup.codes);
-    if (gradeGroup?.codes) setGrades(gradeGroup.codes);
   };
 
   const fetchUnits = async () => {
@@ -334,11 +348,33 @@ export default function BusinessCardRequestPanel() {
         }).catch(() => null),
       ]);
 
+      let meUser: any = null;
+      if (meRes && meRes.ok) {
+        meUser = await meRes.json();
+        setCurrentUser(meUser);
+      }
+
+      let nextInterface: any = null;
+      if (ifRes && ifRes.ok) {
+        const interfaces = await ifRes.json();
+        nextInterface = Array.isArray(interfaces)
+          ? interfaces.find(
+              (m: any) =>
+                m.path === MENU_PATH || m.path?.includes('/businesscard/master/requests')
+            )
+          : null;
+        setInterfaceConfig(nextInterface || null);
+      } else {
+        setInterfaceConfig(null);
+      }
+
+      const canHealOrphans = resolveInterfaceEditState(meUser, nextInterface).isEditor;
+
       if (reqRes.ok) {
         const data = await reqRes.json();
         const list = Array.isArray(data) ? data : [];
-        const orphans = list.filter((r: any) => r.adminStatus === '발주완료' && !r.orderGroupId && !r.batchId);
-        if (orphans.length > 0) {
+        const orphans = list.filter((r: any) => r.adminStatus === '발주완료' && !r.orderGroupId);
+        if (canHealOrphans && orphans.length > 0) {
           await Promise.all(
             orphans.map((r: any) =>
               fetch('/api/asset/businesscard/master/requests', {
@@ -348,25 +384,14 @@ export default function BusinessCardRequestPanel() {
               })
             )
           );
-        }
-        setRequests(
-          list.map((r: any) =>
-            orphans.some((o: any) => o.id === r.id) ? { ...r, adminStatus: '접수완료' } : r
-          )
-        );
-      }
-      if (meRes && meRes.ok) setCurrentUser(await meRes.json());
-      if (ifRes && ifRes.ok) {
-        const interfaces = await ifRes.json();
-        const menu = Array.isArray(interfaces)
-          ? interfaces.find(
-              (m: any) =>
-                m.path === MENU_PATH || m.path?.includes('/businesscard/master/requests')
+          setRequests(
+            list.map((r: any) =>
+              orphans.some((o: any) => o.id === r.id) ? { ...r, adminStatus: '접수완료' } : r
             )
-          : null;
-        setInterfaceConfig(menu || null);
-      } else {
-        setInterfaceConfig(null);
+          );
+        } else {
+          setRequests(list);
+        }
       }
       if (summaryRes && summaryRes.ok) setPermissionSummary(await summaryRes.json());
       else setPermissionSummary(null);
@@ -382,7 +407,6 @@ export default function BusinessCardRequestPanel() {
     fetchAddresses(); 
     fetchQualifications();
     fetchSheetsPerPack();
-    fetchMasterRoles();
     fetchUnits();
   }, []);
 
@@ -511,9 +535,9 @@ export default function BusinessCardRequestPanel() {
       '영문직책': r.titleEn || '',
       '영문추가': r.additionalEn || '',
       '영문주소': r.addressEn || '',
-      '영문 휴대전화': r.mobileEn || '',
-      '영문전화': r.phoneEn || '',
-      '영문팩스': r.faxEn || '',
+      '영문 휴대전화': stripBusinessCardEnPlus(r.mobileEn || ''),
+      '영문전화': stripBusinessCardEnPlus(r.phoneEn || ''),
+      '영문팩스': stripBusinessCardEnPlus(r.faxEn || ''),
       '이메일(영문)': r.emailEn || r.email
     }));
 
@@ -571,14 +595,30 @@ export default function BusinessCardRequestPanel() {
   const createOrderBatch = async (targets: RequestHistory[]) => {
     if (targets.length === 0) throw new Error('발주 처리할 명함이 없습니다.');
     const dayKey = getKSTDateString().replace(/-/g, '');
-    let sameDayCount = 0;
-    const batchRes = await fetch(`/api/asset/businesscard/master/order?t=${Date.now()}`, { cache: 'no-store' });
-    if (batchRes.ok) {
-      const batchData = await batchRes.json();
-      const list = Array.isArray(batchData) ? batchData : [];
-      sameDayCount = list.filter((b: any) => String(b.id || '').includes(dayKey)).length;
+    const idPrefix = `PO-BC-${dayKey}-`;
+    const ts = Date.now();
+    // 미보관 + 보관함 모두 조회 — 같은 날 발주번호 충돌 방지 (보관 이관 시 번호는 그대로 유지됨)
+    const [activeRes, archivedRes] = await Promise.all([
+      fetch(`/api/asset/businesscard/master/order?t=${ts}`, { cache: 'no-store' }),
+      fetch(`/api/asset/businesscard/master/order?isArchived=true&t=${ts}`, { cache: 'no-store' }),
+    ]);
+    const [activeData, archivedData] = await Promise.all([
+      activeRes.ok ? activeRes.json() : [],
+      archivedRes.ok ? archivedRes.json() : [],
+    ]);
+    const allBatches = [
+      ...(Array.isArray(activeData) ? activeData : []),
+      ...(Array.isArray(archivedData) ? archivedData : []),
+    ];
+    let maxSeq = 0;
+    for (const b of allBatches) {
+      const id = String(b?.id || '');
+      if (!id.includes(dayKey)) continue;
+      const m = id.match(/-(\d+)$/);
+      if (!m) continue;
+      maxSeq = Math.max(maxSeq, parseInt(m[1], 10) || 0);
     }
-    const batchId = `PO-BC-${dayKey}-${String(sameDayCount + 1).padStart(2, '0')}`;
+    const batchId = `${idPrefix}${String(maxSeq + 1).padStart(2, '0')}`;
     const distinctDepts = Array.from(new Set(targets.map((t) => t.deptHead))).join(', ');
 
     const res = await fetch('/api/asset/businesscard/master/order', {
@@ -701,6 +741,46 @@ export default function BusinessCardRequestPanel() {
     }
   };
 
+  const handleBulkDeleteLv1 = async () => {
+    if (!isLV1) return alert('삭제는 LV_1만 가능합니다.');
+    if (deletingBulk) return;
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0) return alert('삭제할 신청을 체크박스로 선택해 주세요.');
+    const folderLabel = activeFolder === 'PENDING' ? '접수대기' : '발주대기';
+    if (
+      !confirm(
+        `경고: 선택한 ${ids.length}건(${folderLabel})을 영구 삭제하시겠습니까?\n대상자 마이페이지 내역에서도 함께 삭제됩니다.`
+      )
+    ) {
+      return;
+    }
+
+    setDeletingBulk(true);
+    let ok = 0;
+    let fail = 0;
+    try {
+      for (const id of ids) {
+        const res = await fetch(
+          `/api/asset/businesscard/master/requests?id=${encodeURIComponent(id)}&purge=1`,
+          { method: 'DELETE' }
+        );
+        if (res.ok) ok += 1;
+        else fail += 1;
+      }
+      alert(
+        fail > 0
+          ? `삭제 완료 ${ok}건 / 실패 ${fail}건`
+          : `🗑️ ${ok}건 삭제되었습니다.`
+      );
+      setSelectedIds(new Set());
+      await fetchRequests();
+    } catch {
+      alert('일괄 삭제 중 오류가 발생했습니다.');
+    } finally {
+      setDeletingBulk(false);
+    }
+  };
+
   const handleSaveRequestPayload = async () => {
     if (!canEditMaster) return alertNoEditPermission();
     if (!requestEditForm) return;
@@ -714,10 +794,11 @@ export default function BusinessCardRequestPanel() {
           ...requestEditForm,
           mobileEn:
             formatBusinessCardEnNumber('mobile', requestEditForm.mobile) ||
-            requestEditForm.mobileEn,
+            stripBusinessCardEnPlus(requestEditForm.mobileEn),
           phoneEn:
             formatBusinessCardEnNumber('phone', requestEditForm.phone) ||
-            requestEditForm.phoneEn,
+            stripBusinessCardEnPlus(requestEditForm.phoneEn),
+          faxEn: stripBusinessCardEnPlus(requestEditForm.faxEn),
           isModifiedByAdmin: true,
           adminMemo: adminMemoInput,
           adminModifierName: currentUser?.name || currentUser?.email || '',
@@ -1076,6 +1157,21 @@ export default function BusinessCardRequestPanel() {
           </div>
 
           <div className={`flex items-center gap-2 flex-wrap ml-auto ${orgMenuOpen ? 'relative z-[90] overflow-visible' : ''}`}>
+            {isLV1 && (
+              <button
+                type="button"
+                disabled={selectedIds.size === 0 || deletingBulk}
+                onClick={handleBulkDeleteLv1}
+                title="체크한 신청을 영구 삭제 (LV_1 전용 · 접수대기/발주대기)"
+                className="h-7 px-2.5 rounded-lg text-[10px] font-black border border-red-200 bg-red-50 text-red-600 hover:bg-red-100 disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
+              >
+                {deletingBulk
+                  ? '삭제중…'
+                  : selectedIds.size > 0
+                    ? `삭제(LV_1) ${selectedIds.size}`
+                    : '삭제(LV_1)'}
+              </button>
+            )}
             {activeFolder === 'ACCEPTED' && (
               <button
                 type="button"
@@ -1267,13 +1363,15 @@ export default function BusinessCardRequestPanel() {
                   const statusClass =
                     row.adminStatus === '지급완료'
                       ? 'text-purple-700'
-                      : row.adminStatus === '발주완료'
-                        ? 'text-emerald-600'
-                        : row.adminStatus === '접수완료'
-                          ? 'text-blue-600'
-                          : row.adminStatus === '반려'
-                            ? 'text-red-600'
-                            : 'text-orange-600';
+                      : row.adminStatus === '수령완료'
+                        ? 'text-teal-700'
+                        : row.adminStatus === '발주완료'
+                          ? 'text-emerald-600'
+                          : row.adminStatus === '접수완료'
+                            ? 'text-blue-600'
+                            : row.adminStatus === '반려'
+                              ? 'text-red-600'
+                              : 'text-orange-600';
 
                   return (
                     <tr key={row.id} className={`hover:bg-slate-50/50 h-12 transition-colors ${isSelected ? 'bg-indigo-50/50' : ''}`}>
@@ -1448,12 +1546,14 @@ export default function BusinessCardRequestPanel() {
                         ) : (
                           <span className="text-[10px] text-slate-500 font-bold whitespace-nowrap">
                             {row.adminStatus === '발주완료'
-                              ? '지급 대기'
-                              : row.adminStatus === '지급완료'
-                                ? '명세표 검수 대기'
-                                : row.adminStatus === '반려'
-                                  ? '반려됨'
-                                  : '-'}
+                              ? '수령 검수 대기'
+                              : row.adminStatus === '수령완료'
+                                ? '지급 대기'
+                                : row.adminStatus === '지급완료'
+                                  ? '명세표 검수 대기'
+                                  : row.adminStatus === '반려'
+                                    ? '반려됨'
+                                    : '-'}
                           </span>
                         )}
                       </td>
@@ -1601,11 +1701,11 @@ export default function BusinessCardRequestPanel() {
                 const syncedCls = 'w-full p-1.5 border border-slate-200 rounded bg-slate-50 text-xs font-black text-slate-500 cursor-not-allowed';
                 const previewMobileEn =
                   formatBusinessCardEnNumber('mobile', preview.mobile || '') ||
-                  preview.mobileEn ||
+                  stripBusinessCardEnPlus(preview.mobileEn) ||
                   '';
                 const previewPhoneEn =
                   formatBusinessCardEnNumber('phone', preview.phone || '') ||
-                  preview.phoneEn ||
+                  stripBusinessCardEnPlus(preview.phoneEn) ||
                   '';
                 const hqUnits = (() => {
                   const hqs = units.filter((u) => isBusinessCardHqUnit(u) || !u.parent_id);
@@ -1749,7 +1849,7 @@ export default function BusinessCardRequestPanel() {
                   ) : (
                     <p className="text-indigo-900 font-black">{detailTarget.deptNameEn || '-'}</p>
                   )}
-                  <label className="block text-[10px] text-slate-400 mt-1">영문 직책/직급 (마스터 연동)🔒</label>
+                  <label className="block text-[10px] text-slate-400 mt-1">영문 직책/직급🔒</label>
                   {isRequestEditing ? (
                     <input type="text" readOnly value={preview.titleEn || '-'} className={syncedCls} />
                   ) : (
@@ -1777,7 +1877,7 @@ export default function BusinessCardRequestPanel() {
                   )}
                 </div>
                 <div className="mt-4 p-3 bg-white rounded-xl border border-indigo-100">
-                  <p className="text-[11px] font-bold text-slate-600 mb-1">영문 팩스: <span className="font-mono text-indigo-900">{preview.faxEn || '-'}</span></p>
+                  <p className="text-[11px] font-bold text-slate-600 mb-1">영문 팩스: <span className="font-mono text-indigo-900">{stripBusinessCardEnPlus(preview.faxEn) || '-'}</span></p>
                   <p className="text-[11px] font-bold text-slate-600 leading-relaxed">영문 주소: <span className="text-indigo-900">{preview.addressEn || '-'}</span></p>
                 </div>
               </div>

@@ -6,6 +6,10 @@ import {
   authorizeAnyMenuPaths,
   authErrorToResponse,
 } from '@/lib/server-auth-guard';
+import {
+  applyOfficeQuoteLinesToOptions,
+  normalizeOfficeQuoteLines,
+} from '@/lib/production-office-statement-match';
 
 export const dynamic = 'force-dynamic';
 
@@ -291,6 +295,66 @@ export async function POST(req: Request) {
     const body = await req.json().catch(() => ({}));
     const action = String(body.action || '').trim().toLowerCase();
 
+    if (action === 'save-office-quote-lines') {
+      const auth = await authorizeApi(MENU_PATH, { requireEditor: true });
+      const requestId = String(body.requestId || '').trim();
+      if (!requestId) {
+        return NextResponse.json({ message: '신청 ID가 필요합니다.' }, { status: 400 });
+      }
+      const lines = normalizeOfficeQuoteLines(body.lines);
+      if (lines.length === 0) {
+        return NextResponse.json(
+          { message: '저장할 제품 항목이 없습니다. 최소 1개 이상 입력해 주세요.' },
+          { status: 400 }
+        );
+      }
+
+      const row = await prisma.productionRequest.findUnique({ where: { id: requestId } });
+      if (!row) {
+        return NextResponse.json({ message: '신청 건을 찾을 수 없습니다.' }, { status: 404 });
+      }
+      if (String(row.category || '').toUpperCase() !== 'OFFICE_SUPPLIES') {
+        return NextResponse.json(
+          { message: '사무문구류 견적 리스트만 수정할 수 있습니다.' },
+          { status: 400 }
+        );
+      }
+      const opts = asOptionsRecord(row.options);
+      if (opts.masterSettledArchived === true) {
+        return NextResponse.json(
+          { message: '정산완료 보관함으로 이동된 건은 수정할 수 없습니다.' },
+          { status: 400 }
+        );
+      }
+
+      const nextOpts = applyOfficeQuoteLinesToOptions(opts, lines);
+      const receivedNos = Array.isArray(nextOpts.suppliesReceivedLineNos)
+        ? (nextOpts.suppliesReceivedLineNos as number[])
+        : [];
+      const allReceived =
+        lines.length > 0 && lines.every((l) => receivedNos.includes(l.lineNo));
+
+      await prisma.productionRequest.update({
+        where: { id: requestId },
+        data: {
+          options: asInputJson(nextOpts),
+          status:
+            row.status === 'VERIFIED' && !allReceived
+              ? 'ORDERED'
+              : row.status === 'ORDERED' && allReceived
+                ? 'VERIFIED'
+                : row.status,
+        },
+      });
+
+      return NextResponse.json({
+        message: `견적 리스트 ${lines.length}품목을 저장했습니다.`,
+        id: requestId,
+        lineCount: lines.length,
+        updatedBy: String(auth.user?.name || '').trim() || undefined,
+      });
+    }
+
     // 정산완료 아카이브 테스트용 영구삭제 — LV_1 / 메뉴 Master 전용
     if (action === 'purge-archived-batches') {
       const auth = await authorizeAnyMenuPaths(
@@ -456,6 +520,9 @@ export async function POST(req: Request) {
         inspectStatus: finalPrice > 0 ? 'match' : prevOpts.inspectStatus || 'idle',
         settlementLastEdit,
         ...(inspectMatchedPrice != null ? { inspectMatchedPrice } : {}),
+        ...(Array.isArray(row?.suppliesLineSettlements)
+          ? { suppliesLineSettlements: row.suppliesLineSettlements }
+          : {}),
       };
 
       const result = await prisma.productionRequest.updateMany({

@@ -2,7 +2,7 @@
      
 import React, { useState, useMemo, useEffect, useRef, Suspense } from 'react';
 import * as XLSX from 'xlsx';
-import { getKSTDateString, addMonthsToKSTDateOnly, getKSTDaysUntil, parseExcelCellToKSTDateString, toSortableTime } from '@/utils/dateUtils';
+import { getKSTDateString, addMonthsToKSTDateOnly, getKSTDaysUntil, parseExcelCellToKSTDateString, toSortableTime, formatKSTDateTime } from '@/utils/dateUtils';
 import { resolveTopOrgName } from '@/utils/orgUnits';
 import ItAssetQrImage from '@/components/asset/it/ItAssetQrImage';
 import { generateItAssetQrDataUrls } from '@/utils/equipmentQr';
@@ -226,16 +226,26 @@ function threadTurns(req: any) {
   const status = String(req?.status || '').trim();
   const userText = userContentDisplay(req?.content);
   const adminText = opinionDisplay(req?.adminOpinion);
-  const reqDate = getKSTDateString(req?.requestDate || req?.createdAt) || req?.requestDate || '';
-  const doneDate = getKSTDateString(req?.completedAt || req?.updatedAt || req?.createdAt) || reqDate;
-  const turns: { role: 'admin' | 'user'; label: string; text: string; date: string }[] = [];
+  const reqDateRaw = req?.requestDate || req?.createdAt;
+  const doneDateRaw = req?.completedAt || req?.updatedAt || req?.createdAt || reqDateRaw;
+  const reqDate =
+    formatKSTDateTime(reqDateRaw) !== '-'
+      ? formatKSTDateTime(reqDateRaw)
+      : getKSTDateString(reqDateRaw) || '';
+  const doneDate =
+    formatKSTDateTime(doneDateRaw) !== '-'
+      ? formatKSTDateTime(doneDateRaw)
+      : reqDate;
+  const userName = String(req?.requester || req?.name || '').trim() || '사용자';
+  const adminName = '관리자';
+  const turns: { role: 'admin' | 'user'; name: string; text: string; date: string }[] = [];
   if (status === '관리자 의견발송' || status === '사용자 확인완료' || status === '관리자 답변') {
-    if (adminText) turns.push({ role: 'admin', label: status === '관리자 답변' ? '관리자 답변' : '관리자 요청', text: adminText, date: reqDate });
+    if (adminText) turns.push({ role: 'admin', name: adminName, text: adminText, date: reqDate });
   } else if (status === '답변회신' || status === '의견전송' || status === '답변 대기중' || status === '대기중') {
-    if (userText) turns.push({ role: 'user', label: status === '답변회신' ? '사용자 답변' : '사용자 요청', text: userText, date: reqDate });
+    if (userText) turns.push({ role: 'user', name: userName, text: userText, date: reqDate });
   } else if (isClosedStatus(status)) {
-    if (userText) turns.push({ role: 'user', label: '사용자 답변', text: userText, date: reqDate });
-    if (adminText) turns.push({ role: 'admin', label: '관리자 답변', text: adminText, date: doneDate });
+    if (userText) turns.push({ role: 'user', name: userName, text: userText, date: reqDate });
+    if (adminText) turns.push({ role: 'admin', name: adminName, text: adminText, date: doneDate });
   }
   return turns;
 }
@@ -1012,7 +1022,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
         isChecked = false;
         auditStatusLabel = '마감임박 독촉 전송';
         auditStatusDate = a.audit_request_date;
-        // 의견요청 · 관리자 문의/요청과 동일 톤
+        // 독촉 전용 rose (긴급) — admin 의견/요청 blue와 별도
         auditStatusColor = 'bg-rose-50 border-rose-300 text-rose-800 hover:bg-rose-100 cursor-pointer';
       } else {
         isChecked = false;
@@ -1059,19 +1069,19 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
         commStatusColor = 'bg-amber-50 border-amber-300 text-amber-800 animate-pulse shadow-sm cursor-pointer';
         hasUserIncomingRequest = true;
       } else if (isUserPendingStatus(latestReq.status)) {
-        commStatusLabel = '사용자 문의/요청';
+        commStatusLabel = '사용자 신규접수';
         commStatusDate = reqDate;
         commStatusColor = 'bg-amber-50 border-amber-300 text-amber-800 animate-pulse shadow-sm cursor-pointer';
         hasUserIncomingRequest = true;
       } else if (latestReq.status === '관리자 의견발송') {
-        commStatusLabel = '관리자 문의/요청';
+        commStatusLabel = '관리자 신규접수';
         commStatusDate = getKSTDateString(latestReq.completedAt || latestReq.updatedAt || latestReq.createdAt) || reqDate;
-        commStatusColor = 'bg-rose-50 border-rose-300 text-rose-800 hover:bg-rose-100 cursor-pointer';
+        commStatusColor = 'bg-blue-50 border-blue-200 text-blue-700 hover:bg-blue-100 cursor-pointer';
         hasAdminOutboundRequest = true;
       } else if (latestReq.status === '관리자 답변') {
         commStatusLabel = '관리자 답변';
         commStatusDate = getKSTDateString(latestReq.completedAt || latestReq.updatedAt || latestReq.createdAt) || reqDate;
-        commStatusColor = 'bg-rose-50 border-rose-300 text-rose-800 hover:bg-rose-100 cursor-pointer';
+        commStatusColor = 'bg-blue-50 border-blue-200 text-blue-700 hover:bg-blue-100 cursor-pointer';
         hasAdminOutboundRequest = true;
       } else if (isAdminClosedStatus(latestReq.status)) {
         commStatusLabel = '처리 완료(종료)';
@@ -2138,12 +2148,12 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
               }}
               className={`w-full px-3 py-2.5 rounded-xl text-[11px] font-bold border transition-all flex items-center justify-between ${
                 showAdminOutboundFilter
-                  ? 'bg-rose-600 border-rose-600 text-white shadow-sm'
-                  : 'bg-white text-slate-700 border-slate-200 hover:bg-rose-50 hover:border-rose-200'
+                  ? 'bg-blue-600 border-blue-600 text-white shadow-sm'
+                  : 'bg-white text-slate-700 border-slate-200 hover:bg-blue-50 hover:border-blue-200'
               }`}
             >
               <span className="text-left leading-snug">관리자 전송 내역<br /><span className="text-[10px] font-bold opacity-90">(관리자 → 사용자)</span></span>
-              <span className={`text-sm font-black tabular-nums shrink-0 ml-2 ${showAdminOutboundFilter ? 'text-white' : 'text-rose-600'}`}>
+              <span className={`text-sm font-black tabular-nums shrink-0 ml-2 ${showAdminOutboundFilter ? 'text-white' : 'text-blue-600'}`}>
                 {stats.adminOutboundCount}
               </span>
             </button>
@@ -2188,7 +2198,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
               <span className="text-[10px] font-black text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-md">정보수정 승인대기만</span>
             )}
             {showAdminOutboundFilter && (
-              <span className="text-[10px] font-black text-rose-700 bg-rose-50 border border-rose-200 px-2 py-0.5 rounded-md">관리자 요청만</span>
+              <span className="text-[10px] font-black text-blue-700 bg-blue-50 border border-blue-200 px-2 py-0.5 rounded-md">관리자 요청만</span>
             )}
             {showFeedbackFilter && (
               <span className="text-[10px] font-black text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-md">의견수신만</span>
@@ -2529,9 +2539,9 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                 </th>
                 <th className="h-11 px-1.5 text-black border-r border-slate-200 bg-blue-50/50">메모</th>
                 <th className="h-11 text-center border-l border-slate-200 px-0.5">실사/정보수정</th>
-                <th className="h-11 text-center text-rose-600 px-0.5">의견/요청</th>
+                <th className="h-11 text-center text-blue-700 px-0.5">의견/요청</th>
                 <th className="h-11 text-center text-purple-700 pl-0.5 pr-2">QR</th>
-                <th className="h-11 text-center border-l border-slate-200 whitespace-nowrap pl-3 pr-2">관리 액션</th>
+                <th className="h-11 text-center border-l border-slate-200 whitespace-nowrap pl-3 pr-2">관리액션(Edit)</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 text-[11px] font-bold text-slate-800 bg-white">
@@ -2880,7 +2890,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                                 : DISABLED_ACTION_BTN
                             }`}
                           >
-                            수정(Edit)
+                            수정
                           </button>
                           <button
                             type="button"
@@ -2906,7 +2916,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                                 : DISABLED_ACTION_BTN
                             }`}
                           >
-                            삭제(Edit)
+                            삭제
                           </button>
                         </div>
                       )}
@@ -3248,10 +3258,10 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                 {threadClosed
                   ? '처리 완료(종료)'
                   : waitingForUser
-                    ? (latest.status === '관리자 답변' ? '관리자 답변' : '관리자 문의/요청')
+                    ? (latest.status === '관리자 답변' ? '관리자 답변' : '관리자 신규접수')
                     : isIncomingReply(latest, requests)
                       ? '사용자 답변'
-                      : '사용자 문의/요청'}
+                      : '사용자 신규접수'}
               </h4>
               <p className="text-[10px] font-bold text-slate-400 mb-6 border-b-2 border-slate-900 pb-3">
                 {threadClosed
@@ -3275,7 +3285,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                   </div>
                   <div className="flex justify-between gap-3 text-[11px] font-bold">
                     <span className="text-slate-400 shrink-0">상태</span>
-                    <span className={threadClosed ? 'text-slate-500' : waitingForUser ? 'text-rose-600' : 'text-amber-600'}>
+                    <span className={threadClosed ? 'text-slate-500' : waitingForUser ? 'text-blue-600' : 'text-amber-600'}>
                       {threadClosed
                         ? '처리 완료(종료)'
                         : waitingForUser
@@ -3285,44 +3295,92 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                   </div>
                 </div>
 
-                {turns.map((turn, idx) => (
-                  <div key={`${turn.role}-${idx}`}>
-                    <p className={`text-[10px] font-black uppercase tracking-wider mb-2 ${turn.role === 'admin' ? 'text-rose-600' : 'text-amber-600'}`}>
-                      {turn.label}
-                    </p>
-                    <div className={`w-full min-h-[4rem] p-4 text-[11px] font-bold rounded-xl whitespace-pre-wrap leading-relaxed ${
-                      turn.role === 'admin'
-                        ? 'bg-rose-50 border border-rose-100 text-rose-900'
-                        : 'bg-amber-50 border border-amber-100 text-amber-900'
-                    }`}>
-                      {turn.text}
-                    </div>
-                    {turn.date && (
-                      <p className="mt-1.5 text-[10px] font-bold text-slate-400 text-right tabular-nums">{turn.date}</p>
-                    )}
-                  </div>
-                ))}
+                <div className="border-l-2 border-slate-200 ml-2 space-y-4">
+                  {turns.map((turn, idx) => {
+                    const isAdmin = turn.role === 'admin';
+                    const roleTag = isAdmin ? '관리자' : '사용자';
+                    return (
+                      <div key={`${turn.role}-${idx}`} className="relative pl-5">
+                        <span
+                          className={`absolute -left-[5px] top-2 w-2 h-2 rounded-full ring-2 ring-white ${
+                            isAdmin ? 'bg-blue-500' : 'bg-slate-400'
+                          }`}
+                          aria-hidden
+                        />
+                        <div className="flex items-center justify-between gap-3 mb-1.5">
+                          <span
+                            className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-black whitespace-nowrap ${
+                              isAdmin ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-600'
+                            }`}
+                          >
+                            [{roleTag}] {turn.name}
+                          </span>
+                          {turn.date && (
+                            <span className="text-[10px] font-bold text-slate-400 tabular-nums shrink-0">
+                              {turn.date}
+                            </span>
+                          )}
+                        </div>
+                        <div
+                          className={`rounded-md border p-3.5 text-[11px] font-semibold whitespace-pre-wrap leading-relaxed ${
+                            isAdmin
+                              ? 'bg-blue-50/40 border-blue-200 text-slate-800'
+                              : 'bg-white border-slate-200 text-slate-800'
+                          }`}
+                        >
+                          {turn.text}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
 
                 {canAdminReply && (
-                  <div>
-                    <p className="text-[10px] font-black text-rose-600 uppercase tracking-wider mb-2">답변 내용</p>
-                    <textarea
-                      value={editOpinion}
-                      onChange={(e) => setEditOpinion(e.target.value)}
-                      placeholder="사용자에게 전달할 답변·조치 내용을 작성하세요."
-                      className="w-full min-h-[8rem] bg-white border border-rose-200 p-4 text-[11px] font-bold text-slate-800 rounded-xl outline-none focus:border-rose-500 focus:ring-1 focus:ring-rose-300 transition-all resize-none shadow-inner"
-                    />
+                  <div className="border-l-2 border-slate-200 ml-2">
+                    <div className="relative pl-5">
+                      <span
+                        className="absolute -left-[5px] top-2 w-2 h-2 rounded-full bg-blue-500 ring-2 ring-white"
+                        aria-hidden
+                      />
+                      <div className="flex items-center justify-between gap-3 mb-1.5">
+                        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-black whitespace-nowrap bg-blue-100 text-blue-700">
+                          [관리자] 관리자
+                        </span>
+                        <span className="text-[10px] font-bold text-slate-400 tabular-nums shrink-0">작성 중</span>
+                      </div>
+                      <div className="rounded-md border border-blue-200 bg-blue-50/40 p-3.5">
+                        <textarea
+                          value={editOpinion}
+                          onChange={(e) => setEditOpinion(e.target.value)}
+                          placeholder="사용자에게 전달할 답변·조치 내용을 작성하세요."
+                          className="w-full min-h-[8rem] bg-transparent text-[11px] font-semibold text-slate-800 outline-none resize-none placeholder:text-slate-400 leading-relaxed"
+                        />
+                      </div>
+                    </div>
                   </div>
                 )}
                 {waitingForUser && commEditMode && (
-                  <div>
-                    <p className="text-[10px] font-black text-rose-600 uppercase tracking-wider mb-2">내용 수정</p>
-                    <textarea
-                      value={editOpinion}
-                      onChange={(e) => setEditOpinion(e.target.value)}
-                      placeholder="사용자에게 전달할 내용을 수정하세요."
-                      className="w-full min-h-[8rem] bg-white border border-amber-300 p-4 text-[11px] font-bold text-slate-800 rounded-xl outline-none focus:border-amber-500 focus:ring-1 focus:ring-amber-300 transition-all resize-none shadow-inner"
-                    />
+                  <div className="border-l-2 border-slate-200 ml-2">
+                    <div className="relative pl-5">
+                      <span
+                        className="absolute -left-[5px] top-2 w-2 h-2 rounded-full bg-blue-500 ring-2 ring-white"
+                        aria-hidden
+                      />
+                      <div className="flex items-center justify-between gap-3 mb-1.5">
+                        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-black whitespace-nowrap bg-blue-100 text-blue-700">
+                          [관리자] 관리자
+                        </span>
+                        <span className="text-[10px] font-bold text-slate-400 tabular-nums shrink-0">수정 중</span>
+                      </div>
+                      <div className="rounded-md border border-blue-200 bg-blue-50/40 p-3.5">
+                        <textarea
+                          value={editOpinion}
+                          onChange={(e) => setEditOpinion(e.target.value)}
+                          placeholder="사용자에게 전달할 내용을 수정하세요."
+                          className="w-full min-h-[8rem] bg-transparent text-[11px] font-semibold text-slate-800 outline-none resize-none placeholder:text-slate-400 leading-relaxed"
+                        />
+                      </div>
+                    </div>
                   </div>
                 )}
               </div>
@@ -3343,7 +3401,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                     <button
                       type="button"
                       onClick={handleUpdateAdminOutbound}
-                      className="flex-[2] py-3.5 bg-amber-500 text-white rounded-xl font-black text-[12px] shadow-md hover:bg-amber-600 active:scale-95 transition-all"
+                      className="flex-[2] py-3.5 bg-blue-600 text-white rounded-xl font-black text-[12px] shadow-md hover:bg-blue-700 active:scale-95 transition-all"
                     >
                       내용 저장
                     </button>
@@ -3438,16 +3496,12 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
             </p>
 
             <div className="overflow-y-auto flex-1 pr-2 space-y-4 scrollbar-hide">
-              <div className="rounded-xl bg-slate-50 border border-slate-100 px-4 py-3 space-y-2">
+              <div className="rounded-md bg-slate-50 border border-slate-200 px-4 py-3 space-y-2">
                 <div className="flex justify-between gap-3 text-[11px] font-bold">
                   <span className="text-slate-400 shrink-0">대상자산</span>
                   <span className="text-slate-800 text-right">
                     {adminComposeAsset.it_type} | {adminComposeAsset.code} / {adminComposeAsset.model || '-'}
                   </span>
-                </div>
-                <div className="flex justify-between gap-3 text-[11px] font-bold">
-                  <span className="text-slate-400 shrink-0">발송일</span>
-                  <span className="text-slate-800 tabular-nums">{getKSTDateString()}</span>
                 </div>
                 <div className="flex justify-between gap-3 text-[11px] font-bold">
                   <span className="text-slate-400 shrink-0">대상 사용자</span>
@@ -3457,14 +3511,31 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                 </div>
               </div>
 
-              <div>
-                <p className="text-[10px] font-black text-rose-600 uppercase tracking-wider mb-2">의견 내용</p>
-                <textarea
-                  value={editOpinion}
-                  onChange={(e) => setEditOpinion(e.target.value)}
-                  placeholder="실사 안내, 자산 확인 요청, 교체 일정 협의 등 사용자에게 전달할 내용을 작성하세요."
-                  className="w-full min-h-[8rem] bg-white border border-rose-200 p-4 text-[11px] font-bold text-slate-800 rounded-xl outline-none focus:border-rose-500 focus:ring-1 focus:ring-rose-300 transition-all resize-none shadow-inner"
-                />
+              <div className="border-l-2 border-slate-200 ml-2">
+                <div className="relative pl-5">
+                  <span
+                    className="absolute -left-[5px] top-2 w-2 h-2 rounded-full bg-blue-500 ring-2 ring-white"
+                    aria-hidden
+                  />
+                  <div className="flex items-center justify-between gap-3 mb-1.5">
+                    <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-black whitespace-nowrap bg-blue-100 text-blue-700">
+                      [관리자] 관리자
+                    </span>
+                    <span className="text-[10px] font-bold text-slate-400 tabular-nums shrink-0">
+                      {formatKSTDateTime(new Date()) !== '-'
+                        ? formatKSTDateTime(new Date())
+                        : getKSTDateString()}
+                    </span>
+                  </div>
+                  <div className="rounded-md border border-blue-200 bg-blue-50/40 p-3.5">
+                    <textarea
+                      value={editOpinion}
+                      onChange={(e) => setEditOpinion(e.target.value)}
+                      placeholder="실사 안내, 자산 확인 요청, 교체 일정 협의 등 사용자에게 전달할 내용을 작성하세요."
+                      className="w-full min-h-[8rem] bg-transparent text-[11px] font-semibold text-slate-800 outline-none resize-none placeholder:text-slate-400 leading-relaxed"
+                    />
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -3479,7 +3550,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
               <button
                 type="button"
                 onClick={submitAdminOpinionRequest}
-                className="flex-[2] py-3.5 bg-rose-600 text-white rounded-xl font-black text-[12px] shadow-md hover:bg-rose-700 active:scale-95 transition-all"
+                className="flex-[2] py-3.5 bg-slate-900 text-white rounded-xl font-black text-[12px] shadow-md hover:bg-black active:scale-95 transition-all"
               >
                 사용자에게 의견/요청 전송
               </button>

@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import { formatBusinessCardEnNumber, stripBusinessCardEnPlus } from '@/lib/businesscard-phone';
 
 interface UnitItem {
   id: string;
@@ -71,28 +72,7 @@ function toManualQualValue(text: string) {
 }
 
 function formatEnNumber(type: 'mobile' | 'phone', value: string) {
-  const clean = value.replace(/[^0-9]/g, '');
-  if (!clean) return '';
-  if (type === 'mobile') {
-    return clean.startsWith('010') && clean.length === 11
-      ? `+82-10-${clean.substring(3, 7)}-${clean.substring(7)}`
-      : value;
-  }
-  if (clean.startsWith('02')) {
-    const rest = clean.substring(2);
-    if (rest.length === 7 || rest.length === 8) {
-      const mid = rest.length === 8 ? rest.substring(0, 4) : rest.substring(0, 3);
-      return `+82-2-${mid}-${rest.substring(rest.length - 4)}`;
-    }
-  } else if (clean.startsWith('0')) {
-    const areaCode = clean.substring(1, 3);
-    const rest = clean.substring(3);
-    if (rest.length === 7 || rest.length === 8) {
-      const mid = rest.length === 8 ? rest.substring(0, 4) : rest.substring(0, 3);
-      return `+82-${areaCode}-${mid}-${rest.substring(rest.length - 4)}`;
-    }
-  }
-  return value;
+  return formatBusinessCardEnNumber(type, value) || value;
 }
 
 const emptyForm = (addr?: any) => ({
@@ -397,11 +377,11 @@ export default function BusinessCardAdminApplyModal({
           additionalKo: paired.map((p) => p.ko).join(', '),
           additionalEn: paired.map((p) => p.en).filter(Boolean).join(', '),
           mobile: form.mobile,
-          mobileEn: form.mobileEn,
+          mobileEn: formatBusinessCardEnNumber('mobile', form.mobile) || stripBusinessCardEnPlus(form.mobileEn),
           phone: form.phone,
-          phoneEn: form.phoneEn,
+          phoneEn: formatBusinessCardEnNumber('phone', form.phone) || stripBusinessCardEnPlus(form.phoneEn),
           fax: form.fax,
-          faxEn: form.faxEn,
+          faxEn: stripBusinessCardEnPlus(form.faxEn),
           addressId: form.addressId,
           zipCode: form.zipCode,
           addressKo: form.addressKo,
@@ -680,15 +660,15 @@ export default function BusinessCardAdminApplyModal({
               </div>
               <div>
                 <label className="block text-[10px] font-black text-slate-400 mb-1">영문 휴대전화🔒</label>
-                <input type="text" readOnly value={form.mobileEn} className={`${syncedFieldCls} text-slate-500 cursor-not-allowed font-mono`} />
+                <input type="text" readOnly value={stripBusinessCardEnPlus(form.mobileEn)} className={`${syncedFieldCls} text-slate-500 cursor-not-allowed font-mono`} />
               </div>
               <div>
                 <label className="block text-[10px] font-black text-slate-400 mb-1">영문 전화🔒</label>
-                <input type="text" readOnly value={form.phoneEn} className={`${syncedFieldCls} text-slate-500 cursor-not-allowed font-mono`} />
+                <input type="text" readOnly value={stripBusinessCardEnPlus(form.phoneEn)} className={`${syncedFieldCls} text-slate-500 cursor-not-allowed font-mono`} />
               </div>
               <div>
                 <label className="block text-[10px] font-black text-slate-400 mb-1">영문 팩스🔒</label>
-                <input type="text" readOnly value={form.faxEn} className={`${syncedFieldCls} text-slate-500 cursor-not-allowed font-mono`} />
+                <input type="text" readOnly value={stripBusinessCardEnPlus(form.faxEn)} className={`${syncedFieldCls} text-slate-500 cursor-not-allowed font-mono`} />
               </div>
               <div>
                 <label className="block text-[10px] font-black text-slate-400 mb-1">영문 이메일🔒</label>

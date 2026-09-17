@@ -3,6 +3,7 @@ import prisma from '@/lib/prisma';
 import { authorizeApi, authErrorToResponse } from '@/lib/server-auth-guard';
 import { getKSTDateString } from '@/utils/dateUtils';
 import { nextBusinessCardPostNumber } from '@/lib/businesscard-post-number';
+import { stripBusinessCardEnPlus } from '@/lib/businesscard-phone';
 
 export const dynamic = 'force-dynamic';
 
@@ -44,7 +45,15 @@ function pickWritable(body: Record<string, unknown>) {
       continue;
     }
     const v = body[key];
-    data[key] = v == null ? null : String(v);
+    if (v == null) {
+      data[key] = null;
+      continue;
+    }
+    const s = String(v);
+    data[key] =
+      key === 'mobileEn' || key === 'phoneEn' || key === 'faxEn'
+        ? stripBusinessCardEnPlus(s)
+        : s;
   }
   return data;
 }

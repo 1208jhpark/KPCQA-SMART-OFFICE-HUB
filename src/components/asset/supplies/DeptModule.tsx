@@ -5,13 +5,14 @@ import * as XLSX from 'xlsx';
 import {
   isCompletedSupplyRequest,
   isPendingSupplyRequest,
+  isReadySupplyRequest,
+  isCancelledSupplyRequest,
   isRejectedSupplyRequest,
   normalizeSupplyRequestStatus,
-  supplyRequestStatusLabel,
+  supplyRequestStatusLabelDept,
 } from '@/utils/supplyRequestStatus';
 import { getKSTDateString, getKSTNowYearMonth, getKSTYearMonth, formatKSTDateTime } from '@/utils/dateUtils';
 import LoadingState from '@/components/common/LoadingState';
-import { resolveInterfaceEditState } from '@/lib/permission-utils';
 
 const MENU_PATH = '/asset/supplies/dept';
 
@@ -60,7 +61,6 @@ function DeptContent() {
   const [storageNotesByUnitId, setStorageNotesByUnitId] = useState<Record<string, string>>({});
   const [myDeptNameFromApi, setMyDeptNameFromApi] = useState<string>('');
   const [myUnitIdFromApi, setMyUnitIdFromApi] = useState<string>('');
-  const [editableUnitIds, setEditableUnitIds] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [currentUser, setCurrentUser] = useState<any>(null);
   const [interfaceConfig, setInterfaceConfig] = useState<any>(null);
@@ -85,12 +85,15 @@ function DeptContent() {
   const [selectedMonth, setSelectedMonth] = useState('ALL');
   const unitDefaultAppliedRef = useRef(false);
 
-  const [selectedStatus, setSelectedStatus] = useState<'ALL' | 'COMPLETED' | 'PENDING' | 'REJECTED'>('ALL');
+  const [selectedStatus, setSelectedStatus] = useState<
+    'ALL' | 'COMPLETED' | 'READY' | 'PENDING' | 'REJECTED'
+  >('ALL');
   const [selectedItemFilter, setSelectedItemFilter] = useState<string | null>(null);
 
   const [memoEditing, setMemoEditing] = useState(false);
   const [memoDraft, setMemoDraft] = useState('');
   const [memoSaving, setMemoSaving] = useState(false);
+  const [cancellingId, setCancellingId] = useState<string | null>(null);
 
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 10;
@@ -99,8 +102,8 @@ function DeptContent() {
     fetchData(); 
   }, []);
 
-  const fetchData = async () => {
-    setLoading(true);
+  const fetchData = async (opts?: { silent?: boolean }) => {
+    if (!opts?.silent) setLoading(true);
     try {
       const ts = Date.now();
       const [userRes, reqRes, summaryRes, ifRes] = await Promise.all([
@@ -136,7 +139,6 @@ function DeptContent() {
           setStorageNotesByUnitId({});
           setMyDeptNameFromApi('');
           setMyUnitIdFromApi('');
-          setEditableUnitIds([]);
         } else {
           setRequests(Array.isArray(data.requests) ? data.requests : []);
           const rawUnits = Array.isArray(data.scopeUnits)
@@ -169,11 +171,6 @@ function DeptContent() {
           }
           setMyDeptNameFromApi(asPlainLabel(data.myDeptName));
           setMyUnitIdFromApi(String(data.myUnitId || ''));
-          setEditableUnitIds(
-            Array.isArray(data.editableUnitIds)
-              ? data.editableUnitIds.map((id: unknown) => String(id || '').trim()).filter(Boolean)
-              : []
-          );
         }
         setMemoEditing(false);
       } else if (reqRes.status === 401 || reqRes.status === 403) {
@@ -182,14 +179,12 @@ function DeptContent() {
         setRequests([]);
         setScopeUnits([]);
         setStorageNotesByUnitId({});
-        setEditableUnitIds([]);
       } else {
         const err = await reqRes.json().catch(() => ({}));
         alert(err.error || '부서 소모품 내역을 불러오지 못했습니다.');
         setRequests([]);
         setScopeUnits([]);
         setStorageNotesByUnitId({});
-        setEditableUnitIds([]);
       }
     } catch(e) { 
       console.error("Data fetch error", e);
@@ -332,8 +327,11 @@ function DeptContent() {
       const itemMatch = !searchItemQuery || itemName.toLowerCase().includes(searchItemQuery.toLowerCase());
       const userMatch = !searchUserQuery || (r.user_name || '').toLowerCase().includes(searchUserQuery.toLowerCase());
       
+      if (isCancelledSupplyRequest(r.status)) return false;
+
       const statusMatch = selectedStatus === 'ALL' ||
         (selectedStatus === 'COMPLETED' && isCompletedSupplyRequest(r.status)) ||
+        (selectedStatus === 'READY' && isReadySupplyRequest(r.status)) ||
         (selectedStatus === 'PENDING' && isPendingSupplyRequest(r.status)) ||
         (selectedStatus === 'REJECTED' && isRejectedSupplyRequest(r.status));
       
@@ -358,6 +356,41 @@ function DeptContent() {
     if (allSelected) currentPageIds.forEach(id => next.delete(id));
     else currentPageIds.forEach(id => next.add(id));
     setSelectedIds(next);
+  };
+
+  const handleCancelRequest = async (req: any) => {
+    if (!req?.id) return;
+    if (!isPendingSupplyRequest(req.status)) {
+      alert('대기 중인 신청만 취소할 수 있습니다.');
+      return;
+    }
+    if (req.user_email !== currentUser?.email) {
+      alert('본인이 신청한 건만 취소할 수 있습니다.');
+      return;
+    }
+    const itemName = req.item_name || req.item?.name || '해당 물품';
+    if (!confirm(`[신청 취소]\n\n「${itemName}」 ${req.qty}건 신청을 취소하시겠습니까?\n(취소 시 선차감 재고가 복구됩니다.)`)) {
+      return;
+    }
+
+    setCancellingId(req.id);
+    try {
+      const res = await fetch('/api/asset/supplies/dept', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'cancel', id: req.id }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(data.error || '신청 취소에 실패했습니다.');
+        return;
+      }
+      await fetchData({ silent: true });
+    } catch {
+      alert('신청 취소 중 오류가 발생했습니다.');
+    } finally {
+      setCancellingId(null);
+    }
   };
 
   const formatDateTime = (dateStr: string) => {
@@ -388,7 +421,7 @@ function DeptContent() {
         '관리자 답변': r.admin_opinion || '',
         '처리자': r.admin_name || '',
         '처리일시': r.processedAt ? formatDateTime(r.processedAt) : '',
-        '상태': supplyRequestStatusLabel(r.status),
+        '상태': supplyRequestStatusLabelDept(r.status),
       };
     });
     const ws = XLSX.utils.json_to_sheet(exportData);
@@ -408,6 +441,7 @@ function DeptContent() {
 
   const statsData = useMemo(() => {
     const periodReqs = deptRequests.filter(r => {
+      if (isCancelledSupplyRequest(r.status)) return false;
       if (
         selectedUnitId !== 'ALL' &&
         requestUnitId(r) !== selectedUnitId &&
@@ -456,19 +490,21 @@ function DeptContent() {
       .sort((a, b) => b.qty - a.qty || a.name.localeCompare(b.name, 'ko'));
 
     const totalReqCount = periodReqs.length;
-    const statusMap = { COMPLETED: 0, PENDING: 0, REJECTED: 0 };
+    const statusMap = { COMPLETED: 0, READY: 0, PENDING: 0, REJECTED: 0 };
    
     periodReqs.forEach(r => {
       const s = normalizeSupplyRequestStatus(r.status);
       if (s === 'COMPLETED') statusMap.COMPLETED++;
+      else if (s === 'READY') statusMap.READY++;
       else if (s === 'REJECTED') statusMap.REJECTED++;
-      else statusMap.PENDING++;
+      else if (s === 'PENDING') statusMap.PENDING++;
     });
 
     const statusStats = [
-      { id: 'COMPLETED', label: '✅ 지급 완료', count: statusMap.COMPLETED, color: 'emerald' },
       { id: 'PENDING', label: '⏳ 승인 대기중', count: statusMap.PENDING, color: 'orange' },
-      { id: 'REJECTED', label: '❌ 반려 / 취소', count: statusMap.REJECTED, color: 'red' }
+      { id: 'READY', label: '📦 수령 대기', count: statusMap.READY, color: 'sky' },
+      { id: 'COMPLETED', label: '✅ 수령 완료', count: statusMap.COMPLETED, color: 'emerald' },
+      { id: 'REJECTED', label: '❌ 반려', count: statusMap.REJECTED, color: 'red' }
     ].map(s => ({
       ...s,
       percent: totalReqCount > 0 ? ((s.count / totalReqCount) * 100).toFixed(1) : '0.0'
@@ -477,11 +513,6 @@ function DeptContent() {
     return { totalQty, totalReqCount, allItems, statusStats };
   }, [deptRequests, selectedUnitId, selectedYear, selectedMonth, deptOptions]);
      
-  const editState = useMemo(
-    () => resolveInterfaceEditState(currentUser, interfaceConfig),
-    [currentUser, interfaceConfig]
-  );
-
   /** 보관 메모 대상 조직: 필터 ALL이면 내 소속, 아니면 선택한 조직 */
   const memoUnitId =
     selectedUnitId === 'ALL'
@@ -495,11 +526,11 @@ function DeptContent() {
   );
   const currentMemo = (memoUnitId && storageNotesByUnitId[memoUnitId]) || '';
 
-  /** Access 통과자 중 Editor + editScope 안 조직만 메모 수정 */
+  /** 공유 메모판: 열람 가능 조직이면 수정 가능 (Edit 불필요) */
   const canEditMemo =
-    editState.isEditor &&
     !!memoUnitId &&
-    editableUnitIds.includes(String(memoUnitId));
+    (scopeDeptOptions.some((d) => d.id === String(memoUnitId)) ||
+      String(memoUnitId) === String(myUnitId));
 
   useEffect(() => {
     setMemoEditing(false);
@@ -507,11 +538,8 @@ function DeptContent() {
   }, [memoUnitId, currentMemo]);
 
   const startMemoEdit = () => {
-    if (!editState.isEditor) {
-      return alert('보관 안내 수정 권한이 없습니다.\nadmin/interface에서 해당 메뉴 Edit 권한을 확인하세요.');
-    }
     if (!canEditMemo) {
-      return alert('선택한 조직은 Edit Scope 밖이라 보관 안내를 수정할 수 없습니다.');
+      return alert('선택한 조직의 공유 메모판을 수정할 수 없습니다.');
     }
     setMemoDraft(currentMemo);
     setMemoEditing(true);
@@ -523,8 +551,7 @@ function DeptContent() {
   };
 
   const saveMemo = async () => {
-    if (!editState.isEditor) return alert('보관 안내 수정 권한이 없습니다. (Edit 필요)');
-    if (!canEditMemo) return alert('선택한 조직은 Edit Scope 밖이라 보관 안내를 수정할 수 없습니다.');
+    if (!canEditMemo) return alert('선택한 조직의 공유 메모판을 수정할 수 없습니다.');
     if (!memoUnitId && !memoDeptName) return alert('대상 조직을 확인할 수 없습니다.');
     setMemoSaving(true);
     try {
@@ -716,7 +743,7 @@ function DeptContent() {
           {statsData.totalReqCount === 0 ? (
             <div className="py-4 text-center text-[11px] font-bold text-slate-300 italic">신청 내역 없음</div>
           ) : (
-            <div className="grid grid-cols-3 gap-1.5 shrink-0">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 shrink-0">
               {statsData.statusStats.map((status) => {
                 const isSelected = selectedStatus === status.id;
                 const tone =
@@ -736,6 +763,14 @@ function DeptContent() {
                         count: 'text-amber-800',
                         pct: 'text-amber-600/70',
                       }
+                    : status.color === 'sky'
+                    ? {
+                        idle: 'bg-sky-50/80 border-sky-100 hover:bg-sky-50',
+                        selected: 'bg-sky-100 border-sky-300 ring-2 ring-sky-200/80',
+                        label: 'text-sky-700',
+                        count: 'text-sky-800',
+                        pct: 'text-sky-600/70',
+                      }
                     : {
                         idle: 'bg-rose-50/80 border-rose-100 hover:bg-rose-50',
                         selected: 'bg-rose-100 border-rose-300 ring-2 ring-rose-200/80',
@@ -744,8 +779,9 @@ function DeptContent() {
                         pct: 'text-rose-600/70',
                       };
                 const shortLabel =
-                  status.id === 'COMPLETED' ? '지급완료' :
-                  status.id === 'PENDING' ? '승인대기' : '반려/취소';
+                  status.id === 'COMPLETED' ? '수령완료' :
+                  status.id === 'READY' ? '수령대기' :
+                  status.id === 'PENDING' ? '승인대기' : '반려';
 
                 return (
                   <button
@@ -767,7 +803,7 @@ function DeptContent() {
             </div>
           )}
 
-          {/* 부서 전용 메모판 — 열람은 Access, 수정은 Edit (DB: OrgUnit.supply_storage_note) */}
+          {/* 부서 전용 메모판 — Access 범위 조직이면 수정 가능 (DB: OrgUnit.supply_storage_note) */}
           <div className="bg-slate-50 border border-slate-100 rounded-2xl p-3 shadow-inner flex-1 min-h-0 flex flex-col">
             <div className="flex items-center justify-between mb-2 border-b border-slate-200/70 pb-1.5 gap-2">
               <h4 className="text-[11px] font-black text-slate-700 flex items-center gap-1.5 min-w-0">
@@ -786,10 +822,10 @@ function DeptContent() {
                     onClick={startMemoEdit}
                     className="text-[9px] font-bold text-slate-400 hover:text-indigo-600 transition-colors shrink-0"
                   >
-                    수정(Edit)
+                    수정
                   </button>
                 ) : (
-                  <span className="text-[9px] font-bold text-slate-300 shrink-0" title="Edit 권한 필요">
+                  <span className="text-[9px] font-bold text-slate-300 shrink-0" title="열람 범위 밖">
                     조회만
                   </span>
                 )
@@ -853,7 +889,7 @@ function DeptContent() {
               )}
               {selectedStatus !== 'ALL' && (
                 <span className="text-[10px] font-black text-slate-600 bg-slate-100 border border-slate-200 px-2 py-0.5 rounded-md ml-1">
-                  🎯 {supplyRequestStatusLabel(selectedStatus)} 상태
+                  🎯 {supplyRequestStatusLabelDept(selectedStatus)} 상태
                 </span>
               )}
             </div>
@@ -978,8 +1014,11 @@ function DeptContent() {
                 ) : (
                   paginatedRequests.map((req, i) => {
                     const isPending = isPendingSupplyRequest(req.status);
+                    const isReady = isReadySupplyRequest(req.status);
                     const isRejected = isRejectedSupplyRequest(req.status);
-                    const statusLabel = supplyRequestStatusLabel(req.status);
+                    const isCancelled = isCancelledSupplyRequest(req.status);
+                    const statusLabel = supplyRequestStatusLabelDept(req.status);
+                    const isMine = Boolean(currentUser?.email && req.user_email === currentUser.email);
                     let sUnit = '';
                     try {
                       const itemExt = req.item?.description ? JSON.parse(req.item.description) : {};
@@ -1026,13 +1065,30 @@ function DeptContent() {
                           {!isPending ? processDate : <span className="text-slate-300">-</span>}
                         </td>
                         <td className="px-2 text-center">
-                          <span className={`inline-block border px-1.5 py-0.5 rounded text-[10px] font-bold whitespace-nowrap ${
-                            isPending ? 'bg-orange-50 text-orange-600 border-orange-200' :
-                            isRejected ? 'bg-red-50 text-red-600 border-red-200' :
-                            'bg-emerald-50 text-emerald-600 border-emerald-200'
-                          }`}>
-                            {statusLabel === '대기중' ? '대기' : statusLabel}
-                          </span>
+                          {isPending && isMine ? (
+                            <button
+                              type="button"
+                              disabled={cancellingId === req.id}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleCancelRequest(req);
+                              }}
+                              className="px-1.5 py-0.5 rounded text-[9px] font-black border border-slate-300 text-slate-500 bg-white hover:bg-red-50 hover:text-red-600 hover:border-red-200 transition-colors disabled:opacity-40 whitespace-nowrap"
+                            >
+                              {cancellingId === req.id ? '처리중…' : '신청취소'}
+                            </button>
+                          ) : isPending ? (
+                            <span className="text-slate-300">-</span>
+                          ) : (
+                            <span className={`inline-block border px-1.5 py-0.5 rounded text-[10px] font-bold whitespace-nowrap ${
+                              isReady ? 'bg-sky-50 text-sky-700 border-sky-200' :
+                              isCancelled ? 'bg-slate-100 text-slate-500 border-slate-200' :
+                              isRejected ? 'bg-red-50 text-red-600 border-red-200' :
+                              'bg-emerald-50 text-emerald-600 border-emerald-200'
+                            }`}>
+                              {statusLabel}
+                            </span>
+                          )}
                         </td>
                       </tr>
                     );

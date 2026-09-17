@@ -636,7 +636,7 @@ function MasterArchiveContent() {
                 <th className="h-12 px-2 text-center whitespace-nowrap">반납처/매각처</th>
                 <th className="h-12 px-2 text-right whitespace-nowrap">매각금액</th>
                 <th className="h-12 px-2 text-center">상태</th>
-                <th className="h-12 px-2 text-center whitespace-nowrap border-l border-slate-200">관리 액션</th>
+                <th className="h-12 px-2 text-center whitespace-nowrap border-l border-slate-200">관리액션(Edit)</th>
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-slate-100 text-[11px] font-bold text-slate-700">

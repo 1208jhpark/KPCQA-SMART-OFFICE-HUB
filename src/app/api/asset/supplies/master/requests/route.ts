@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import prisma from '@/lib/prisma';
 import { authorizeApi, authErrorToResponse } from '@/lib/server-auth-guard';
 import {
+  canMasterTransitionSupplyStatus,
   isStockOutSupplyRequest,
   normalizeSupplyRequestStatus,
   type SupplyRequestStatus,
@@ -74,11 +75,23 @@ export async function PATCH(req: Request) {
     if (prevStatus === nextStatus) {
       return NextResponse.json({ success: true, message: '변경 사항 없음' });
     }
+    if (!canMasterTransitionSupplyStatus(prevStatus, nextStatus)) {
+      return NextResponse.json(
+        {
+          error: `허용되지 않은 상태 변경입니다. (${prevStatus} → ${nextStatus})`,
+        },
+        { status: 400 }
+      );
+    }
 
+    const isNegativeClose =
+      nextStatus === 'REJECTED' || nextStatus === 'CANCELLED';
+    const wasNegativeClose =
+      prevStatus === 'REJECTED' || prevStatus === 'CANCELLED';
     const needRestore =
-      isStockOutSupplyRequest(prevStatus) && nextStatus === 'REJECTED';
+      isStockOutSupplyRequest(prevStatus) && isNegativeClose;
     const needRededuct =
-      prevStatus === 'REJECTED' && isStockOutSupplyRequest(nextStatus);
+      wasNegativeClose && isStockOutSupplyRequest(nextStatus);
 
     const adminOpinion =
       body.admin_opinion !== undefined
@@ -149,14 +162,13 @@ export async function PATCH(req: Request) {
 }
 
 /**
- * [DELETE] 신청 영구 삭제 — 편집 권한 필요
- * - PENDING / REJECTED: 편집 관리자 가능
- * - COMPLETED: LV_1만
+ * [DELETE] 신청 영구 삭제 — LV_1만 (체크박스 일괄 삭제)
  * - 재고 복구는 status 조건부 deleteMany 선점 성공 후에만 (PATCH와 동일 경합 방지)
  */
 export async function DELETE(req: Request) {
   try {
     const auth = await authorizeApi(MENU_PATH, { requireEditor: true });
+    assertLv1(auth);
 
     const id = new URL(req.url).searchParams.get('id');
     if (!id) return NextResponse.json({ error: 'ID 누락' }, { status: 400 });
@@ -165,16 +177,10 @@ export async function DELETE(req: Request) {
     if (!existing) return NextResponse.json({ error: '신청 내역을 찾을 수 없습니다.' }, { status: 404 });
 
     const status = normalizeSupplyRequestStatus(existing.status) || existing.status;
-
-    if (status === 'COMPLETED') {
-      assertLv1(auth);
-    }
-
     const needRestore = isStockOutSupplyRequest(status);
 
     try {
       await prisma.$transaction(async (tx) => {
-        // 1) 동일 status일 때만 삭제 선점 — 이미 반려/삭제된 건이면 0건
         const claimed = await tx.supplyRequest.deleteMany({
           where: { id, status: existing.status },
         });
@@ -182,7 +188,6 @@ export async function DELETE(req: Request) {
           throw new Error('STATUS_CONFLICT');
         }
 
-        // 2) 선점(삭제) 성공 후에만 선차감분 복구
         if (needRestore) {
           await tx.supplyItem.update({
             where: { id: existing.item_id },
@@ -204,7 +209,7 @@ export async function DELETE(req: Request) {
   } catch (error: any) {
     if (error?.message === 'FORBIDDEN_ADMIN') {
       return NextResponse.json(
-        { error: '지급완료 건 삭제는 LV_1만 가능합니다.' },
+        { error: '신청 삭제는 LV_1만 가능합니다.' },
         { status: 403 }
       );
     }

@@ -1,4 +1,4 @@
-/** 사내 메일 도메인 — 가입/로그인은 로컬파트만 입력, DB에는 전체 주소 저장 */
+/** 사내 메일 도메인 — 로그인·계정발급은 로컬파트만 입력, DB에는 전체 주소 저장 */
 
 export const COMPANY_EMAIL_DOMAIN = 'kpcqa.or.kr';
 export const COMPANY_EMAIL_SUFFIX = `@${COMPANY_EMAIL_DOMAIN}`;

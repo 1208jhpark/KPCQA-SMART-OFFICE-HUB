@@ -10,6 +10,7 @@ import {
   BUSINESS_CARD_MASTER_TABS,
   useInterfaceStepTabs,
 } from '@/lib/interface-step-tabs';
+import { stripBusinessCardEnPlus } from '@/lib/businesscard-phone';
 
 const MENU_PATH = '/asset/businesscard/master/archive';
 const DISABLED_ACTION_BTN =
@@ -89,9 +90,9 @@ function toBulkOrderExcelRows(batch: ArchivedBatch, items: RequestItem[]) {
     '영문직책': r.titleEn || '',
     '영문추가': r.additionalEn || '',
     '영문주소': r.addressEn || '',
-    '영문 휴대전화': r.mobileEn || '',
-    '영문전화': r.phoneEn || '',
-    '영문팩스': r.faxEn || '',
+    '영문 휴대전화': stripBusinessCardEnPlus(r.mobileEn || ''),
+    '영문전화': stripBusinessCardEnPlus(r.phoneEn || ''),
+    '영문팩스': stripBusinessCardEnPlus(r.faxEn || ''),
     '이메일(영문)': r.emailEn || r.email,
   }));
 }
@@ -224,7 +225,13 @@ export default function BusinessCardArchivePanel() {
     () => resolveInterfaceEditState(currentUser, interfaceConfig).isEditor,
     [currentUser, interfaceConfig]
   );
+  const isLV1 = useMemo(() => {
+    if (!currentUser) return false;
+    const roles = Array.isArray(currentUser.roles) ? currentUser.roles : [currentUser.role];
+    return roles?.some((r: any) => String(r).includes('LV_1')) || currentUser.permissionLevel === 'LV_1';
+  }, [currentUser]);
   const alertNoEditPermission = () => alert('편집 권한이 없습니다.');
+  const [deletingBulk, setDeletingBulk] = useState(false);
 
   useEffect(() => {
     const fetchArchivedData = async () => {
@@ -415,6 +422,50 @@ export default function BusinessCardArchivePanel() {
     });
   };
 
+  const handleBulkDeleteLv1 = async () => {
+    if (!isLV1) return alert('삭제는 LV_1만 가능합니다.');
+    if (deletingBulk) return;
+    const ids = Array.from(selectedBatchIds);
+    if (ids.length === 0) return alert('삭제할 묶음을 체크박스로 선택해 주세요.');
+    if (
+      !confirm(
+        `경고: 선택한 ${ids.length}건의 보관 묶음을 영구 삭제하시겠습니까?\n(묶음에 포함된 명함 신청 건도 함께 삭제됩니다.)`
+      )
+    ) {
+      return;
+    }
+
+    setDeletingBulk(true);
+    let ok = 0;
+    let fail = 0;
+    try {
+      for (const id of ids) {
+        const res = await fetch(
+          `/api/asset/businesscard/master/order?batchId=${encodeURIComponent(id)}&purge=1`,
+          { method: 'DELETE' }
+        );
+        if (res.ok) ok += 1;
+        else fail += 1;
+      }
+      alert(
+        fail > 0
+          ? `삭제 완료 ${ok}건 / 실패 ${fail}건`
+          : `🗑️ ${ok}건 삭제되었습니다.`
+      );
+      setSelectedBatchIds(new Set());
+      setExpandedBatchIds(new Set());
+      const refresh = await fetch(
+        `/api/asset/businesscard/master/order?isArchived=true&t=${Date.now()}`,
+        { cache: 'no-store' }
+      );
+      if (refresh.ok) setArchivedBatches(await refresh.json());
+    } catch {
+      alert('일괄 삭제 중 오류가 발생했습니다.');
+    } finally {
+      setDeletingBulk(false);
+    }
+  };
+
   /** 대상자 검색 시 매칭 묶음 하위 상세(아코디언) 자동 펼침 */
   useEffect(() => {
     const qUser = nameSearch.trim();
@@ -515,18 +566,18 @@ export default function BusinessCardArchivePanel() {
           </p>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 items-stretch">
+        <div className="grid grid-cols-1 lg:grid-cols-[minmax(200px,15.5rem)_minmax(0,1fr)] gap-3 items-stretch">
           <div className="bg-white border border-slate-200 rounded-lg p-3 flex flex-col justify-center min-h-[64px]">
             <h3 className="text-slate-400 text-[9px] font-black tracking-widest mb-1.5">TOTAL SUMMARY</h3>
-            <div className="flex flex-row items-center gap-6 flex-wrap">
-              <div className="flex items-baseline gap-2">
+            <div className="flex flex-col gap-1.5">
+              <div className="flex items-baseline gap-2 flex-wrap">
                 <span className="text-xs font-bold text-slate-500 whitespace-nowrap">총 발주 수량</span>
                 <span className="text-lg font-black text-slate-800 font-mono tabular-nums">
                   {totalQty}
                   <span className="text-xs font-bold text-slate-500 ml-0.5">통</span>
                 </span>
               </div>
-              <div className="flex items-baseline gap-2">
+              <div className="flex items-baseline gap-2 flex-wrap">
                 <span className="text-xs font-bold text-slate-500 whitespace-nowrap">외주 정산 총액</span>
                 <span className="text-lg font-bold text-indigo-600 font-mono tabular-nums tracking-tight">
                   {totalPriceKnown > 0 ? `₩${totalCalculatedPrice.toLocaleString()}` : '-'}
@@ -535,7 +586,7 @@ export default function BusinessCardArchivePanel() {
             </div>
           </div>
 
-          <div className="lg:col-span-2 bg-white rounded-lg border border-slate-200 flex flex-col shadow-sm min-h-[64px]">
+          <div className="bg-white rounded-lg border border-slate-200 flex flex-col shadow-sm min-h-[64px] min-w-0">
             <div className="bg-slate-50/90 px-3 py-1 border-b border-slate-200 flex justify-between items-center shrink-0">
               <h3 className="text-slate-500 text-[10px] font-black tracking-widest">조직별 조회</h3>
               <span className="text-[10px] font-bold text-slate-400 bg-slate-200/50 px-1.5 py-0.5 rounded">
@@ -599,6 +650,21 @@ export default function BusinessCardArchivePanel() {
             <span className="text-[11px] font-bold bg-indigo-200/80 text-indigo-800 px-2 py-0.5 rounded-md">{processedBatches.length}건</span>
           </div>
           <div className={`flex items-center gap-2 flex-wrap ml-auto ${orgMenuOpen ? 'relative z-[90] overflow-visible' : ''}`}>
+            {isLV1 && (
+              <button
+                type="button"
+                disabled={selectedBatchIds.size === 0 || deletingBulk}
+                onClick={handleBulkDeleteLv1}
+                title="체크한 보관 묶음을 영구 삭제 (LV_1 전용)"
+                className="h-7 px-2.5 rounded-lg text-[10px] font-black border border-red-200 bg-red-50 text-red-600 hover:bg-red-100 disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
+              >
+                {deletingBulk
+                  ? '삭제중…'
+                  : selectedBatchIds.size > 0
+                    ? `삭제(LV_1) ${selectedBatchIds.size}`
+                    : '삭제(LV_1)'}
+              </button>
+            )}
             <div className={`relative group/filter flex items-center gap-1.5 bg-white px-2.5 rounded-lg border border-indigo-200 shadow-sm h-7 box-border ${orgMenuOpen ? 'relative z-[90]' : ''}`}>
               <span
                 role="tooltip"

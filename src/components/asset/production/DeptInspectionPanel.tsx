@@ -27,6 +27,11 @@ import {
   isCustomerDirectShip,
   isVendorDispatched,
 } from '@/lib/production-shipping';
+import {
+  getOfficeQuoteLinesFromOptions,
+  normalizeOfficeQuoteLines,
+  type OfficeQuoteLine,
+} from '@/lib/production-office-statement-match';
 
 const MENU_PATH = '/asset/production/dept-master/inspection';
 const BATCH_PAGE_SIZE = 10;
@@ -98,7 +103,7 @@ const EMPTY_VENDOR_FORM: {
 
 function formatQuantityUnit(item: BatchItem) {
   if (item.category === 'JEBON') return '부';
-  if (item.category === 'OFFICE_SUPPLIES') return '건';
+  if (item.category === 'OFFICE_SUPPLIES') return '개';
   if (item.category === 'PRINT') {
     const label = (item.options as any)?.printItemMasterInfo?.unitLabel;
     if (label) {
@@ -109,6 +114,41 @@ function formatQuantityUnit(item: BatchItem) {
     }
   }
   return 'EA';
+}
+
+function getOfficeReceivedLineNos(options: Record<string, unknown> | null | undefined): number[] {
+  const raw = options?.suppliesReceivedLineNos;
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((n) => Number(n))
+    .filter((n) => Number.isFinite(n) && n > 0);
+}
+
+function isOfficeQuoteLineReceived(
+  item: BatchItem,
+  lineNo: number
+): boolean {
+  if (item.status === PRODUCTION_STATUS.VERIFIED) return true;
+  return getOfficeReceivedLineNos(item.options || {}).includes(lineNo);
+}
+
+function getOfficeQuoteReceiveStats(item: BatchItem): {
+  lines: OfficeQuoteLine[];
+  receivedCount: number;
+  allReceived: boolean;
+} {
+  const lines = getOfficeQuoteLinesFromOptions(
+    (item.options || {}) as Record<string, unknown>
+  );
+  if (lines.length === 0) {
+    return { lines: [], receivedCount: 0, allReceived: item.status === PRODUCTION_STATUS.VERIFIED };
+  }
+  const receivedCount = lines.filter((l) => isOfficeQuoteLineReceived(item, l.lineNo)).length;
+  return {
+    lines,
+    receivedCount,
+    allReceived: receivedCount >= lines.length,
+  };
 }
 
 function formatBatchNo(id: string) {
@@ -188,6 +228,11 @@ export default function DeptInspectionPanel() {
   const [dispatchModalBatch, setDispatchModalBatch] = useState<OrderBatch | null>(null);
   const [dispatchDateInput, setDispatchDateInput] = useState<string>('');
   const [dispatchSubmitting, setDispatchSubmitting] = useState(false);
+
+  /** 사무문구 견적 강제수정모드 */
+  const [officeEditRequestId, setOfficeEditRequestId] = useState<string | null>(null);
+  const [officeEditDrafts, setOfficeEditDrafts] = useState<OfficeQuoteLine[]>([]);
+  const [officeEditSaving, setOfficeEditSaving] = useState(false);
 
   const [selectedYear, setSelectedYear] = useState(() => String(getKSTNowYearMonth().year));
   const [selectedMonth, setSelectedMonth] = useState('ALL');
@@ -498,7 +543,7 @@ export default function DeptInspectionPanel() {
       관리용제목: r.title,
       수량: `${r.quantity}${formatQuantityUnit(r)}`,
       외주업체: (r.options as any)?.vendor || '',
-      상태: productionStatusLabel(r.status),
+      상태: productionStatusLabel(r.status, r.options as Record<string, unknown> | null),
     }));
     const ws = XLSX.utils.json_to_sheet(rows);
     const wb = XLSX.utils.book_new();
@@ -577,6 +622,7 @@ export default function DeptInspectionPanel() {
 
   const handleConfirmReceive = async (item: BatchItem) => {
     if (!canEdit) return alert('수령확정 권한(Edit)이 없습니다.');
+    if (officeEditRequestId) return alert('강제수정모드를 종료한 뒤 수령확정해 주세요.');
     if (
       !confirm(`[${item.postNumber}] 수령확정 처리할까요?`)
     ) {
@@ -597,6 +643,97 @@ export default function DeptInspectionPanel() {
       await fetchData();
     } catch {
       alert('서버와 통신할 수 없습니다.');
+    }
+  };
+
+  /** 사무문구 견적 줄 단위 수령 체크 */
+  const handleConfirmReceiveLine = async (
+    item: BatchItem,
+    line: OfficeQuoteLine,
+    received: boolean
+  ) => {
+    if (!canEdit) return alert('수령확정 권한(Edit)이 없습니다.');
+    if (officeEditRequestId) return alert('강제수정모드를 종료한 뒤 수령 체크해 주세요.');
+    try {
+      const res = await fetch('/api/asset/production/dept-master/inspection', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'confirm-receive-line',
+          requestId: item.id,
+          lineNo: line.lineNo,
+          received,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(data.message || '줄 수령 처리에 실패했습니다.');
+        return;
+      }
+      await fetchData();
+    } catch {
+      alert('서버와 통신할 수 없습니다.');
+    }
+  };
+
+  const beginOfficeForceEdit = (item: BatchItem) => {
+    if (!canEdit) return alert('편집 권한(Edit)이 필요합니다.');
+    const lines = getOfficeQuoteLinesFromOptions(
+      (item.options || {}) as Record<string, unknown>
+    );
+    setOfficeEditRequestId(item.id);
+    setOfficeEditDrafts(
+      lines.length > 0
+        ? lines.map((l) => ({ ...l }))
+        : [
+            {
+              lineNo: 1,
+              code: '',
+              productName: '',
+              unitPrice: 0,
+              qty: 1,
+              supplyPrice: 0,
+            },
+          ]
+    );
+  };
+
+  const cancelOfficeForceEdit = () => {
+    setOfficeEditRequestId(null);
+    setOfficeEditDrafts([]);
+    setOfficeEditSaving(false);
+  };
+
+  const saveOfficeForceEdit = async (item: BatchItem) => {
+    if (!canEdit) return alert('편집 권한(Edit)이 필요합니다.');
+    const lines = normalizeOfficeQuoteLines(officeEditDrafts);
+    if (lines.length === 0) {
+      return alert('제품명이 있는 항목이 최소 1개 필요합니다.');
+    }
+    if (!confirm(`견적 리스트 ${lines.length}품목을 저장할까요?`)) return;
+    setOfficeEditSaving(true);
+    try {
+      const res = await fetch('/api/asset/production/dept-master/inspection', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'save-office-quote-lines',
+          requestId: item.id,
+          lines,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(data.message || '저장에 실패했습니다.');
+        return;
+      }
+      cancelOfficeForceEdit();
+      alert(data.message || '저장되었습니다.');
+      await fetchData();
+    } catch {
+      alert('서버와 통신할 수 없습니다.');
+    } finally {
+      setOfficeEditSaving(false);
     }
   };
 
@@ -647,15 +784,50 @@ export default function DeptInspectionPanel() {
       (i) => i.status === PRODUCTION_STATUS.VERIFIED
     ).length;
 
-    const normalTotal = normalItems.length;
-    const normalReceived = normalItems.filter(
+    // 사무문구: 견적 줄 단위로 수령 집계
+    const officeNormal = normalItems.filter((i) => i.category === 'OFFICE_SUPPLIES');
+    const otherNormal = normalItems.filter((i) => i.category !== 'OFFICE_SUPPLIES');
+
+    let officeTotal = 0;
+    let officeReceived = 0;
+    let officePending = 0;
+    for (const item of officeNormal) {
+      const stats = getOfficeQuoteReceiveStats(item);
+      if (stats.lines.length > 0) {
+        officeTotal += stats.lines.length;
+        officeReceived += stats.receivedCount;
+        if (
+          item.status === PRODUCTION_STATUS.ORDERED &&
+          isVendorDispatched(item.options || {}) &&
+          stats.receivedCount < stats.lines.length
+        ) {
+          officePending += stats.lines.length - stats.receivedCount;
+        }
+      } else {
+        officeTotal += 1;
+        if (item.status === PRODUCTION_STATUS.VERIFIED) officeReceived += 1;
+        else if (
+          item.status === PRODUCTION_STATUS.ORDERED &&
+          isVendorDispatched(item.options || {})
+        ) {
+          officePending += 1;
+        }
+      }
+    }
+
+    const otherTotal = otherNormal.length;
+    const otherReceived = otherNormal.filter(
       (i) => i.status === PRODUCTION_STATUS.VERIFIED
     ).length;
-    const normalPending = normalItems.filter(
+    const otherPending = otherNormal.filter(
       (i) =>
         i.status === PRODUCTION_STATUS.ORDERED &&
         isVendorDispatched(i.options || {})
     ).length;
+
+    const normalTotal = officeTotal + otherTotal;
+    const normalReceived = officeReceived + otherReceived;
+    const normalPending = officePending + otherPending;
 
     return {
       directTotal,
@@ -1370,7 +1542,9 @@ export default function DeptInspectionPanel() {
                                     <th className="h-10 px-2 text-center whitespace-nowrap bg-transparent">대상자</th>
                                     <th className="h-10 px-1 text-center whitespace-nowrap bg-transparent">분류</th>
                                     <th className="h-10 px-2 text-left whitespace-nowrap bg-transparent">
-                                      관리용 제목
+                                      {activeCategory === 'OFFICE_SUPPLIES'
+                                        ? '제품명(견적 리스트)'
+                                        : '관리용 제목'}
                                     </th>
                                     <th className="h-10 px-1 text-center whitespace-nowrap bg-transparent">수량</th>
                                     <th className="h-10 px-1 text-center whitespace-nowrap bg-transparent">
@@ -1382,113 +1556,487 @@ export default function DeptInspectionPanel() {
                                   </tr>
                                 </thead>
                                 <tbody className="divide-y divide-slate-200/80 text-[11px] font-bold text-slate-700 bg-transparent">
-                                  {batch.items?.map((item, idx) => (
-                                    <tr
-                                      key={item.id}
-                                      className="h-12 bg-transparent hover:bg-slate-200/40 transition-colors"
-                                    >
-                                      <td className="px-1 text-center font-mono text-slate-500 tabular-nums bg-transparent">
-                                        {idx + 1}
-                                      </td>
-                                      <td
-                                        className="px-2 text-center font-mono text-slate-900 tabular-nums truncate bg-transparent"
-                                        title={item.postNumber}
-                                      >
-                                        {item.postNumber}
-                                      </td>
-                                      <td className="px-1 text-center whitespace-nowrap tabular-nums text-slate-800 bg-transparent">
-                                        {getKSTDateString(item.createdAt)}
-                                      </td>
-                                      <td
-                                        className="px-2 truncate text-slate-700 bg-transparent"
-                                        title={item.deptName || ''}
-                                      >
-                                        {item.deptName || (
-                                          <span className="text-slate-300">-</span>
-                                        )}
-                                      </td>
-                                      <td
-                                        className="px-2 text-center text-slate-800 truncate bg-transparent"
-                                        title={item.userName || ''}
-                                      >
-                                        {item.userName || '-'}
-                                      </td>
-                                      <td className="px-1 text-center whitespace-nowrap bg-transparent">
-                                        <span
-                                          className={`px-2 py-0.5 rounded text-[10px] font-bold tracking-tight border whitespace-nowrap inline-block ${getProductionCategoryBadgeClass(item.category)}`}
-                                        >
-                                          {CATEGORY_LABEL[item.category] || item.category}
-                                        </span>
-                                      </td>
-                                      <td
-                                        className="px-2 text-slate-800 truncate bg-transparent"
-                                        title={item.title || ''}
-                                      >
-                                        {item.title || '-'}
-                                      </td>
-                                      <td className="px-1 text-center whitespace-nowrap bg-transparent">
-                                        <span className="font-mono tabular-nums">
-                                          {item.quantity}
-                                        </span>
-                                        <span className="ml-0.5 text-[10px] font-medium text-slate-500">
-                                          {formatQuantityUnit(item)}
-                                        </span>
-                                      </td>
-                                      <td className="px-1 text-center whitespace-nowrap bg-transparent">
-                                        <button
-                                          type="button"
-                                          onClick={() => setDetailItem(item)}
-                                          className="px-2.5 py-1 text-[10px] font-bold rounded-lg transition-colors bg-slate-200 text-slate-600 hover:bg-slate-300 border border-slate-300"
-                                        >
-                                          원문확인
-                                        </button>
-                                      </td>
-                                      <td className="px-1 text-center whitespace-nowrap bg-transparent">
-                                        {(() => {
-                                          const direct = isCustomerDirectShip(item);
-                                          const dispatched = isVendorDispatched(
-                                            item.options || {}
-                                          );
-                                          if (direct) {
-                                            return (
-                                              <span className="text-[10px] font-bold text-indigo-600 whitespace-nowrap">
-                                                고객사 직발송
-                                              </span>
-                                            );
-                                          }
-                                          if (item.status === PRODUCTION_STATUS.VERIFIED) {
-                                            return (
-                                              <span className="text-[10px] font-bold text-slate-900 whitespace-nowrap">
-                                                수령완료
-                                              </span>
-                                            );
-                                          }
-                                          if (!dispatched) {
-                                            return (
-                                              <span className="text-[10px] font-bold text-slate-400 whitespace-nowrap">
-                                                발주완료 대기
-                                              </span>
-                                            );
-                                          }
-                                          return (
-                                            <button
-                                              type="button"
-                                              disabled={!canEdit}
-                                              title={!canEdit ? '편집 권한 필요' : undefined}
-                                              onClick={() => handleConfirmReceive(item)}
-                                              className={`px-2.5 py-1 text-[10px] font-black rounded-lg whitespace-nowrap transition-colors ${
-                                                canEdit
-                                                  ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
-                                                  : DISABLED_ACTION_BTN
-                                              }`}
+                                  {(batch.items || []).flatMap((item, idx) => {
+                                    const officeStats =
+                                      item.category === 'OFFICE_SUPPLIES'
+                                        ? getOfficeQuoteReceiveStats(item)
+                                        : null;
+                                    const direct = isCustomerDirectShip(item);
+                                    const dispatched = isVendorDispatched(item.options || {});
+
+                                    if (item.category === 'OFFICE_SUPPLIES') {
+                                      const editing = officeEditRequestId === item.id;
+                                      const displayLines = editing
+                                        ? officeEditDrafts
+                                        : officeStats?.lines || [];
+                                      const lineRows =
+                                        displayLines.length > 0
+                                          ? displayLines
+                                          : editing
+                                            ? []
+                                            : [
+                                                {
+                                                  lineNo: 0,
+                                                  code: '',
+                                                  productName: '(견적 품목 없음 — 강제수정으로 추가)',
+                                                  unitPrice: 0,
+                                                  qty: 0,
+                                                  supplyPrice: 0,
+                                                } as OfficeQuoteLine,
+                                              ];
+
+                                      const mapped = lineRows.map((line, lineIdx) => {
+                                        const lineReceived =
+                                          line.lineNo > 0 &&
+                                          isOfficeQuoteLineReceived(item, line.lineNo);
+                                        return (
+                                          <tr
+                                            key={`${item.id}-q${editing ? `e${lineIdx}` : line.lineNo}`}
+                                            className={`h-12 bg-transparent hover:bg-slate-200/40 transition-colors ${
+                                              editing ? 'bg-amber-50/40' : ''
+                                            }`}
+                                          >
+                                            <td className="px-1 text-center font-mono text-slate-500 tabular-nums bg-transparent">
+                                              {idx + 1}-{editing ? lineIdx + 1 : line.lineNo || '-'}
+                                            </td>
+                                            <td
+                                              className="px-2 text-center font-mono text-slate-900 tabular-nums truncate bg-transparent"
+                                              title={item.postNumber}
                                             >
-                                              수령확정
-                                            </button>
-                                          );
-                                        })()}
-                                      </td>
-                                    </tr>
-                                  ))}
+                                              {item.postNumber}
+                                            </td>
+                                            <td className="px-1 text-center whitespace-nowrap tabular-nums text-slate-800 bg-transparent">
+                                              {getKSTDateString(item.createdAt)}
+                                            </td>
+                                            <td
+                                              className="px-2 truncate text-slate-700 bg-transparent"
+                                              title={item.deptName || ''}
+                                            >
+                                              {item.deptName || (
+                                                <span className="text-slate-300">-</span>
+                                              )}
+                                            </td>
+                                            <td
+                                              className="px-2 text-center text-slate-800 truncate bg-transparent"
+                                              title={item.userName || ''}
+                                            >
+                                              {item.userName || '-'}
+                                            </td>
+                                            <td className="px-1 text-center whitespace-nowrap bg-transparent">
+                                              <span
+                                                className={`px-2 py-0.5 rounded text-[10px] font-bold tracking-tight border whitespace-nowrap inline-block ${getProductionCategoryBadgeClass(item.category)}`}
+                                              >
+                                                {CATEGORY_LABEL[item.category] || item.category}
+                                              </span>
+                                            </td>
+                                            <td className="px-2 text-slate-800 bg-transparent">
+                                              {editing ? (
+                                                <input
+                                                  type="text"
+                                                  value={line.productName}
+                                                  onChange={(e) => {
+                                                    const v = e.target.value;
+                                                    setOfficeEditDrafts((prev) =>
+                                                      prev.map((row, i) =>
+                                                        i === lineIdx
+                                                          ? { ...row, productName: v }
+                                                          : row
+                                                      )
+                                                    );
+                                                  }}
+                                                  className="w-full rounded-lg border border-amber-300 bg-white px-2 py-1 text-[11px] font-bold text-slate-800 outline-none focus:border-amber-500"
+                                                  placeholder="제품명"
+                                                />
+                                              ) : (
+                                                <span className="truncate block" title={line.productName}>
+                                                  {line.lineNo > 0 && (
+                                                    <span className="text-[10px] text-slate-400 font-mono mr-1">
+                                                      #{line.lineNo}
+                                                    </span>
+                                                  )}
+                                                  {line.productName}
+                                                </span>
+                                              )}
+                                            </td>
+                                            <td className="px-1 text-center whitespace-nowrap bg-transparent">
+                                              {editing ? (
+                                                <input
+                                                  type="number"
+                                                  min={1}
+                                                  value={line.qty || 1}
+                                                  onChange={(e) => {
+                                                    const qty = Math.max(
+                                                      1,
+                                                      parseInt(e.target.value, 10) || 1
+                                                    );
+                                                    setOfficeEditDrafts((prev) =>
+                                                      prev.map((row, i) =>
+                                                        i === lineIdx
+                                                          ? {
+                                                              ...row,
+                                                              qty,
+                                                              supplyPrice:
+                                                                (row.unitPrice || 0) > 0
+                                                                  ? row.unitPrice * qty
+                                                                  : row.supplyPrice,
+                                                            }
+                                                          : row
+                                                      )
+                                                    );
+                                                  }}
+                                                  className="w-14 rounded-lg border border-amber-300 bg-white px-1 py-1 text-center text-[11px] font-mono outline-none focus:border-amber-500"
+                                                />
+                                              ) : (
+                                                <>
+                                                  <span className="font-mono tabular-nums">
+                                                    {line.qty || '-'}
+                                                  </span>
+                                                  {line.qty > 0 && (
+                                                    <span className="ml-0.5 text-[10px] font-medium text-slate-500">
+                                                      개
+                                                    </span>
+                                                  )}
+                                                </>
+                                              )}
+                                            </td>
+                                            <td className="px-1 text-center whitespace-nowrap bg-transparent">
+                                              {editing ? (
+                                                <button
+                                                  type="button"
+                                                  disabled={officeEditDrafts.length <= 1}
+                                                  title="항목 삭제"
+                                                  onClick={() =>
+                                                    setOfficeEditDrafts((prev) =>
+                                                      prev.filter((_, i) => i !== lineIdx)
+                                                    )
+                                                  }
+                                                  className="px-2 py-1 text-[10px] font-bold rounded-lg text-rose-600 bg-rose-50 border border-rose-200 hover:bg-rose-100 disabled:opacity-40"
+                                                >
+                                                  삭제
+                                                </button>
+                                              ) : lineIdx === 0 ? (
+                                                <button
+                                                  type="button"
+                                                  onClick={() => setDetailItem(item)}
+                                                  className="px-2.5 py-1 text-[10px] font-bold rounded-lg transition-colors bg-slate-200 text-slate-600 hover:bg-slate-300 border border-slate-300"
+                                                >
+                                                  원문확인
+                                                </button>
+                                              ) : (
+                                                <span className="text-slate-300 text-[10px]">—</span>
+                                              )}
+                                            </td>
+                                            <td className="px-1 text-center whitespace-nowrap bg-transparent">
+                                              {editing ? (
+                                                <span className="text-[10px] font-bold text-amber-700">
+                                                  수정중
+                                                </span>
+                                              ) : (
+                                                (() => {
+                                                  if (direct) {
+                                                    return (
+                                                      <span className="text-[10px] font-bold text-indigo-600 whitespace-nowrap">
+                                                        고객사 직발송
+                                                      </span>
+                                                    );
+                                                  }
+                                                  if (
+                                                    !dispatched &&
+                                                    item.status !== PRODUCTION_STATUS.VERIFIED
+                                                  ) {
+                                                    return (
+                                                      <span className="text-[10px] font-bold text-slate-400 whitespace-nowrap">
+                                                        발주완료 대기
+                                                      </span>
+                                                    );
+                                                  }
+                                                  if (line.lineNo <= 0) {
+                                                    return (
+                                                      <span className="text-[10px] font-bold text-slate-400">
+                                                        —
+                                                      </span>
+                                                    );
+                                                  }
+                                                  if (lineReceived) {
+                                                    return (
+                                                      <button
+                                                        type="button"
+                                                        disabled={!canEdit}
+                                                        title={
+                                                          canEdit
+                                                            ? '클릭 시 이 품목 수령 해제'
+                                                            : '편집 권한 필요'
+                                                        }
+                                                        onClick={() =>
+                                                          handleConfirmReceiveLine(
+                                                            item,
+                                                            line,
+                                                            false
+                                                          )
+                                                        }
+                                                        className={`px-2.5 py-1 text-[10px] font-bold rounded-lg whitespace-nowrap transition-colors ${
+                                                          canEdit
+                                                            ? 'bg-emerald-50 text-emerald-800 border border-emerald-200 hover:bg-emerald-100'
+                                                            : DISABLED_ACTION_BTN
+                                                        }`}
+                                                      >
+                                                        ✓ 수령
+                                                      </button>
+                                                    );
+                                                  }
+                                                  return (
+                                                    <button
+                                                      type="button"
+                                                      disabled={!canEdit}
+                                                      title={
+                                                        !canEdit
+                                                          ? '편집 권한 필요'
+                                                          : '이 품목 수령 체크'
+                                                      }
+                                                      onClick={() =>
+                                                        handleConfirmReceiveLine(item, line, true)
+                                                      }
+                                                      className={`px-2.5 py-1 text-[10px] font-black rounded-lg whitespace-nowrap transition-colors ${
+                                                        canEdit
+                                                          ? 'bg-white hover:bg-emerald-50 text-emerald-700 border border-emerald-300'
+                                                          : DISABLED_ACTION_BTN
+                                                      }`}
+                                                    >
+                                                      수령
+                                                    </button>
+                                                  );
+                                                })()
+                                              )}
+                                            </td>
+                                          </tr>
+                                        );
+                                      });
+
+                                      const footer: React.ReactElement[] = [];
+                                      if (editing) {
+                                        footer.push(
+                                          <tr key={`${item.id}-office-edit-bar`} className="bg-amber-50/70">
+                                            <td colSpan={10} className="px-3 py-2">
+                                              <div className="flex flex-wrap items-center justify-end gap-2">
+                                                <button
+                                                  type="button"
+                                                  disabled={officeEditSaving}
+                                                  onClick={() =>
+                                                    setOfficeEditDrafts((prev) => [
+                                                      ...prev,
+                                                      {
+                                                        lineNo: prev.length + 1,
+                                                        code: '',
+                                                        productName: '',
+                                                        unitPrice: 0,
+                                                        qty: 1,
+                                                        supplyPrice: 0,
+                                                      },
+                                                    ])
+                                                  }
+                                                  className="px-2.5 py-1 text-[10px] font-black rounded-lg bg-white border border-amber-300 text-amber-900 hover:bg-amber-100"
+                                                >
+                                                  + 항목 추가
+                                                </button>
+                                                <button
+                                                  type="button"
+                                                  disabled={officeEditSaving}
+                                                  onClick={cancelOfficeForceEdit}
+                                                  className="px-2.5 py-1 text-[10px] font-black rounded-lg bg-slate-100 text-slate-600 hover:bg-slate-200"
+                                                >
+                                                  취소
+                                                </button>
+                                                <button
+                                                  type="button"
+                                                  disabled={officeEditSaving || !canEdit}
+                                                  onClick={() => saveOfficeForceEdit(item)}
+                                                  className="px-2.5 py-1 text-[10px] font-black rounded-lg bg-indigo-600 text-white hover:bg-indigo-500 disabled:opacity-50"
+                                                >
+                                                  {officeEditSaving ? '저장 중…' : '저장'}
+                                                </button>
+                                              </div>
+                                            </td>
+                                          </tr>
+                                        );
+                                      } else {
+                                        footer.push(
+                                          <tr
+                                            key={`${item.id}-office-tools`}
+                                            className="bg-slate-50/80"
+                                          >
+                                            <td colSpan={10} className="px-3 py-2">
+                                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                                <button
+                                                  type="button"
+                                                  disabled={!canEdit}
+                                                  title={
+                                                    !canEdit
+                                                      ? '편집 권한 필요'
+                                                      : '견적 품목 강제 수정·삭제·추가'
+                                                  }
+                                                  onClick={() => beginOfficeForceEdit(item)}
+                                                  className={`px-2.5 py-1 text-[10px] font-black rounded-lg whitespace-nowrap transition-colors ${
+                                                    canEdit
+                                                      ? 'bg-white border border-slate-300 text-slate-700 hover:bg-slate-100'
+                                                      : DISABLED_ACTION_BTN
+                                                  }`}
+                                                >
+                                                  강제수정모드
+                                                </button>
+                                                <div className="flex flex-wrap items-center gap-2">
+                                                  {!officeStats?.allReceived &&
+                                                  dispatched &&
+                                                  !direct &&
+                                                  item.status !== PRODUCTION_STATUS.VERIFIED ? (
+                                                    <>
+                                                      <span className="text-[10px] font-bold text-emerald-800">
+                                                        견적 수령 {officeStats?.receivedCount || 0}/
+                                                        {officeStats?.lines.length || 0}품목
+                                                      </span>
+                                                      <button
+                                                        type="button"
+                                                        disabled={!canEdit}
+                                                        title={
+                                                          !canEdit
+                                                            ? '편집 권한 필요'
+                                                            : '남은 품목 포함 전체 수령확정'
+                                                        }
+                                                        onClick={() => handleConfirmReceive(item)}
+                                                        className={`px-2.5 py-1 text-[10px] font-black rounded-lg whitespace-nowrap transition-colors ${
+                                                          canEdit
+                                                            ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                                                            : DISABLED_ACTION_BTN
+                                                        }`}
+                                                      >
+                                                        전체 수령확정
+                                                      </button>
+                                                    </>
+                                                  ) : officeStats?.allReceived ? (
+                                                    <span className="text-[10px] font-bold text-slate-600">
+                                                      견적 {officeStats.lines.length}품목 수령완료
+                                                      {item.status === PRODUCTION_STATUS.VERIFIED
+                                                        ? ' · 신청건 수령확정됨'
+                                                        : ''}
+                                                    </span>
+                                                  ) : (
+                                                    <span className="text-[10px] font-bold text-slate-400">
+                                                      견적 {officeStats?.lines.length || 0}품목
+                                                    </span>
+                                                  )}
+                                                </div>
+                                              </div>
+                                            </td>
+                                          </tr>
+                                        );
+                                      }
+
+                                      return mapped.concat(footer);
+                                    }
+
+                                    return [
+                                      <tr
+                                        key={item.id}
+                                        className="h-12 bg-transparent hover:bg-slate-200/40 transition-colors"
+                                      >
+                                        <td className="px-1 text-center font-mono text-slate-500 tabular-nums bg-transparent">
+                                          {idx + 1}
+                                        </td>
+                                        <td
+                                          className="px-2 text-center font-mono text-slate-900 tabular-nums truncate bg-transparent"
+                                          title={item.postNumber}
+                                        >
+                                          {item.postNumber}
+                                        </td>
+                                        <td className="px-1 text-center whitespace-nowrap tabular-nums text-slate-800 bg-transparent">
+                                          {getKSTDateString(item.createdAt)}
+                                        </td>
+                                        <td
+                                          className="px-2 truncate text-slate-700 bg-transparent"
+                                          title={item.deptName || ''}
+                                        >
+                                          {item.deptName || (
+                                            <span className="text-slate-300">-</span>
+                                          )}
+                                        </td>
+                                        <td
+                                          className="px-2 text-center text-slate-800 truncate bg-transparent"
+                                          title={item.userName || ''}
+                                        >
+                                          {item.userName || '-'}
+                                        </td>
+                                        <td className="px-1 text-center whitespace-nowrap bg-transparent">
+                                          <span
+                                            className={`px-2 py-0.5 rounded text-[10px] font-bold tracking-tight border whitespace-nowrap inline-block ${getProductionCategoryBadgeClass(item.category)}`}
+                                          >
+                                            {CATEGORY_LABEL[item.category] || item.category}
+                                          </span>
+                                        </td>
+                                        <td
+                                          className="px-2 text-slate-800 truncate bg-transparent"
+                                          title={item.title || ''}
+                                        >
+                                          {item.title || '-'}
+                                        </td>
+                                        <td className="px-1 text-center whitespace-nowrap bg-transparent">
+                                          <span className="font-mono tabular-nums">
+                                            {item.quantity}
+                                          </span>
+                                          <span className="ml-0.5 text-[10px] font-medium text-slate-500">
+                                            {formatQuantityUnit(item)}
+                                          </span>
+                                        </td>
+                                        <td className="px-1 text-center whitespace-nowrap bg-transparent">
+                                          <button
+                                            type="button"
+                                            onClick={() => setDetailItem(item)}
+                                            className="px-2.5 py-1 text-[10px] font-bold rounded-lg transition-colors bg-slate-200 text-slate-600 hover:bg-slate-300 border border-slate-300"
+                                          >
+                                            원문확인
+                                          </button>
+                                        </td>
+                                        <td className="px-1 text-center whitespace-nowrap bg-transparent">
+                                          {(() => {
+                                            if (direct) {
+                                              return (
+                                                <span className="text-[10px] font-bold text-indigo-600 whitespace-nowrap">
+                                                  고객사 직발송
+                                                </span>
+                                              );
+                                            }
+                                            if (item.status === PRODUCTION_STATUS.VERIFIED) {
+                                              return (
+                                                <span className="text-[10px] font-bold text-slate-900 whitespace-nowrap">
+                                                  수령완료
+                                                </span>
+                                              );
+                                            }
+                                            if (!dispatched) {
+                                              return (
+                                                <span className="text-[10px] font-bold text-slate-400 whitespace-nowrap">
+                                                  발주완료 대기
+                                                </span>
+                                              );
+                                            }
+                                            return (
+                                              <button
+                                                type="button"
+                                                disabled={!canEdit}
+                                                title={!canEdit ? '편집 권한 필요' : undefined}
+                                                onClick={() => handleConfirmReceive(item)}
+                                                className={`px-2.5 py-1 text-[10px] font-black rounded-lg whitespace-nowrap transition-colors ${
+                                                  canEdit
+                                                    ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                                                    : DISABLED_ACTION_BTN
+                                                }`}
+                                              >
+                                                수령확정
+                                              </button>
+                                            );
+                                          })()}
+                                        </td>
+                                      </tr>,
+                                    ];
+                                  })}
                                 </tbody>
                               </table>
                             </div>

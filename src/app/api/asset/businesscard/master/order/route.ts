@@ -107,7 +107,7 @@ export async function POST(req: Request) {
 /** 보관함 이관 */
 export async function PUT(req: Request) {
   try {
-    await authorizeApi(MENU_PATH);
+    await authorizeApi(MENU_PATH, { requireEditor: true });
     const body = await req.json();
     const { batchIds } = body;
 
@@ -161,17 +161,112 @@ export async function PUT(req: Request) {
   }
 }
 
-/** 지급 완료 */
+/**
+ * PATCH
+ * - action: 'confirm-receive' + requestId → 건별 수령확인 (발주완료 → 수령완료)
+ * - batchId (기본) → 묶음 지급완료 (전 건 수령완료 후)
+ */
 export async function PATCH(req: Request) {
   try {
-    await authorizeApi(MENU_PATH);
-    const { batchId } = await req.json();
+    await authorizeApi(MENU_PATH, { requireEditor: true });
+    const body = await req.json();
+    const action = String(body.action || '').trim();
 
+    /** 건별 수령확인 */
+    if (action === 'confirm-receive') {
+      const requestId = String(body.requestId || '').trim();
+      if (!requestId) {
+        return NextResponse.json({ message: '신청 ID가 없습니다.' }, { status: 400 });
+      }
+
+      const result = await prisma.$transaction(async (tx) => {
+        const item = await tx.businessCardRequest.findUnique({ where: { id: requestId } });
+        if (!item) {
+          throw Object.assign(new Error('신청 건을 찾을 수 없습니다.'), { status: 404 });
+        }
+        if (item.isArchived) {
+          throw Object.assign(new Error('보관된 건은 수령확인할 수 없습니다.'), { status: 400 });
+        }
+        if (item.adminStatus === '수령완료' || item.adminStatus === '지급완료') {
+          return { success: true, already: true, batchStatus: null as string | null };
+        }
+        if (item.adminStatus !== '발주완료') {
+          throw Object.assign(new Error('발주완료 상태의 건만 수령확인할 수 있습니다.'), {
+            status: 400,
+          });
+        }
+        if (!item.orderGroupId) {
+          throw Object.assign(new Error('발주 묶음에 속하지 않은 건입니다.'), { status: 400 });
+        }
+
+        await tx.businessCardRequest.update({
+          where: { id: requestId },
+          data: { adminStatus: '수령완료' },
+        });
+
+        const siblings = await tx.businessCardRequest.findMany({
+          where: { orderGroupId: item.orderGroupId },
+          select: { adminStatus: true },
+        });
+        const allReceived = siblings.every(
+          (s) => s.adminStatus === '수령완료' || s.adminStatus === '지급완료'
+        );
+
+        let batchStatus: string | null = null;
+        if (allReceived) {
+          await tx.businessCardOrderBatch.update({
+            where: { id: item.orderGroupId },
+            data: { status: '수령완료' },
+          });
+          batchStatus = '수령완료';
+        }
+
+        return { success: true, already: false, batchStatus };
+      });
+
+      return NextResponse.json({
+        ...result,
+        message: result.already ? '이미 수령확인된 건입니다.' : '수령확인 처리되었습니다.',
+      });
+    }
+
+    /** 묶음 지급완료 */
+    const batchId = String(body.batchId || '').trim();
     if (!batchId) {
       return NextResponse.json({ message: '묶음 ID가 없습니다.' }, { status: 400 });
     }
 
     const result = await prisma.$transaction(async (tx) => {
+      const batch = await tx.businessCardOrderBatch.findUnique({ where: { id: batchId } });
+      if (!batch) {
+        throw Object.assign(new Error('묶음을 찾을 수 없습니다.'), { status: 404 });
+      }
+      if (batch.isArchived) {
+        throw Object.assign(new Error('보관된 묶음은 지급처리할 수 없습니다.'), { status: 400 });
+      }
+      if (batch.status === '지급완료') {
+        return { success: true, already: true };
+      }
+
+      const items = await tx.businessCardRequest.findMany({
+        where: { orderGroupId: batchId },
+        select: { id: true, adminStatus: true },
+      });
+      if (items.length === 0) {
+        throw Object.assign(new Error('묶음에 신청 건이 없습니다.'), { status: 400 });
+      }
+      const notReceived = items.filter(
+        (i) => i.adminStatus !== '수령완료' && i.adminStatus !== '지급완료'
+      );
+      if (notReceived.length > 0) {
+        throw Object.assign(
+          new Error(
+            `수령검수가 끝나지 않은 건이 ${notReceived.length}건 있습니다. 상세보기에서 수령확인을 먼저 완료해 주세요.`
+          ),
+          { status: 400 }
+        );
+      }
+
       await tx.businessCardOrderBatch.update({
         where: { id: batchId },
         data: { status: '지급완료' },
@@ -182,27 +277,66 @@ export async function PATCH(req: Request) {
         data: { adminStatus: '지급완료' },
       });
 
-      return { success: true };
+      return { success: true, already: false };
     });
 
     return NextResponse.json(result);
   } catch (error: any) {
     const authRes = authErrorToResponse(error);
     if (authRes.status !== 500) return authRes;
+    const status = Number(error?.status) || 500;
+    if (status !== 500) {
+      return NextResponse.json({ message: error.message || '처리 실패' }, { status });
+    }
     console.error('Batch PATCH Error:', error);
     return NextResponse.json({ message: '지급 완료 처리 실패', error: error.message }, { status: 500 });
   }
 }
 
-/** 발주 묶음 취소 → 접수완료 대기열 복귀 */
+/** 발주 묶음 취소 → 접수완료 대기열 복귀 / purge=1 → 보관함 영구 삭제(LV_1) */
 export async function DELETE(req: Request) {
   try {
-    await authorizeApi(MENU_PATH, { requireEditor: true });
     const { searchParams } = new URL(req.url);
     const batchId = searchParams.get('batchId');
+    const purge = searchParams.get('purge') === '1';
+
     if (!batchId) {
       return NextResponse.json({ message: '묶음 ID가 없습니다.' }, { status: 400 });
     }
+
+    /** 보관함 영구 삭제 — LV_1만 · 보관된 묶음만 */
+    if (purge) {
+      const auth = await authorizeAnyMenuPaths(
+        ['/asset/businesscard/master/archive', '/asset/businesscard/master/order'],
+        { requireEditor: true }
+      );
+      if (auth.permission.myRole !== 'LV_1') {
+        return NextResponse.json(
+          { message: '보관함 영구 삭제는 LV_1만 가능합니다.' },
+          { status: 403 }
+        );
+      }
+
+      const batch = await prisma.businessCardOrderBatch.findUnique({ where: { id: batchId } });
+      if (!batch) {
+        return NextResponse.json({ message: '묶음을 찾을 수 없습니다.' }, { status: 404 });
+      }
+      if (!batch.isArchived) {
+        return NextResponse.json(
+          { message: '보관함으로 이관된 묶음만 영구 삭제할 수 있습니다.' },
+          { status: 400 }
+        );
+      }
+
+      await prisma.$transaction(async (tx) => {
+        await tx.businessCardRequest.deleteMany({ where: { orderGroupId: batchId } });
+        await tx.businessCardOrderBatch.delete({ where: { id: batchId } });
+      });
+
+      return NextResponse.json({ success: true });
+    }
+
+    await authorizeApi(MENU_PATH, { requireEditor: true });
 
     const batch = await prisma.businessCardOrderBatch.findUnique({ where: { id: batchId } });
     if (!batch) {
@@ -211,8 +345,11 @@ export async function DELETE(req: Request) {
     if (batch.isArchived) {
       return NextResponse.json({ message: '보관된 묶음은 발주 취소할 수 없습니다.' }, { status: 400 });
     }
-    if (batch.status === '지급완료') {
-      return NextResponse.json({ message: '지급 처리된 묶음은 발주 취소할 수 없습니다.' }, { status: 400 });
+    if (batch.status === '지급완료' || batch.status === '수령완료') {
+      return NextResponse.json(
+        { message: '수령·지급 처리된 묶음은 발주 취소할 수 없습니다.' },
+        { status: 400 }
+      );
     }
 
     await prisma.$transaction(async (tx) => {
@@ -231,6 +368,6 @@ export async function DELETE(req: Request) {
     const authRes = authErrorToResponse(error);
     if (authRes.status !== 500) return authRes;
     console.error('[businesscard/master/order DELETE]', error);
-    return NextResponse.json({ message: '발주 취소 실패', error: error.message }, { status: 500 });
+    return NextResponse.json({ message: '발주 취소 실패' }, { status: 500 });
   }
 }

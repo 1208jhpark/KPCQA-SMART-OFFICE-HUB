@@ -74,16 +74,16 @@ export const DEFAULT_COLUMN_HEADERS_PRINT: StatementColumnHeaderKeywords = {
   supplyPrice: ['청구금액', '공급가액', '금액'],
 };
 
-/** 사무문구류(OFFICE_SUPPLIES) 제목행 칼럼 검색 기본값 */
+/** 사무문구류(OFFICE_SUPPLIES) 제목행 칼럼 검색 기본값 — 드림디포 거래명세서(품명/수량/단가/금액) */
 export const DEFAULT_COLUMN_HEADERS_OFFICE: StatementColumnHeaderKeywords = {
-  certType: ['품목'],
-  plateItem: ['품목'],
+  certType: ['품명', '품목', '제품명'],
+  plateItem: ['품명', '품목', '제품명'],
   spec: ['규격'],
-  projectName: ['품목'],
+  projectName: [],
   quantity: ['수량'],
-  dept: ['비고'],
+  dept: [], // 부서는 엑셀 시트(탭)명으로 부여
   unitPrice: ['단가'],
-  supplyPrice: ['공급가액'],
+  supplyPrice: ['금액', '합계', '합계(원)', '공급가액'],
 };
 
 /**
@@ -165,9 +165,15 @@ export const DEFAULT_PLATE_ITEM_ALIASES_PRINT: PlateItemAliasMap = {
   '경조사봉투(조의)': ['조의', '경조사봉투(조의)', '경조사봉투인쇄', '경조사봉투'],
 };
 
-/** 사무문구류(OFFICE_SUPPLIES) 품목 매칭 기본값 */
+/** 사무문구류(OFFICE_SUPPLIES) 품목 매칭 기본값 — 축약 품명 보조 (전용 엔진에서도 사용) */
 export const DEFAULT_PLATE_ITEM_ALIASES_OFFICE: PlateItemAliasMap = {
-  '사무문구류': ['문구', '사무용품'],
+  각티슈: ['티슈', '로션티슈', '명품로션티슈'],
+  건전지: ['건전지', '알카라인', '벡셀'],
+  다색리필: ['다색리필', '다색 리필'],
+  물티슈: ['물티슈'],
+  다용도테이프: ['다용도테이프', '스카치'],
+  복사용지: ['복사용지'],
+  사무문구류: ['문구', '사무용품'],
 };
 
 /**

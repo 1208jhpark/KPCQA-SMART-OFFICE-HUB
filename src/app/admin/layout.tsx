@@ -65,10 +65,9 @@ export default async function AdminLayout({ children }: { children: ReactNode })
       {/* 🛠️ 관리자 왼쪽 사이드바 */}
       <aside className="w-64 bg-white border-r border-slate-200 hidden md:flex flex-col shrink-0 z-10 shadow-sm">
         <div className="p-8 border-b border-slate-100">
-           <Link href="/home" className="text-xl font-black italic tracking-tighter text-blue-600 uppercase hover:opacity-80 transition-opacity">
-             Smart OFFICE Hub<span className="text-slate-900 not-italic"></span>
+           <Link href="/home" className="font-black text-[14px] uppercase tracking-widest text-indigo-700 not-italic hover:opacity-80 transition-opacity">
+             WISE HOME
            </Link>
-           <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mt-2">Admin Control Tower</p>
         </div>
         
         <nav className="flex-1 p-5 space-y-2 overflow-y-auto">

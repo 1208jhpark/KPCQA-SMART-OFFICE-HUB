@@ -1,13 +1,17 @@
 'use client';
 
-import { useState, Suspense } from 'react';
+import { useState, Suspense, useEffect } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import Link from 'next/link';
 import {
   COMPANY_EMAIL_SUFFIX,
   extractEmailLocalPart,
   resolveCompanyEmail,
 } from '@/utils/companyEmail';
+
+const DEFAULT_BRANDING = {
+  main_headline: 'KPCQA WISE',
+  sub_headline: 'KPCQA 통합업무지원시스템',
+};
 
 /** open-redirect 방지: 같은 사이트 상대 경로만 허용 */
 function resolveSafeNext(raw: string | null): string | null {
@@ -31,9 +35,30 @@ function LoginForm() {
   const [showPassword, setShowPassword] = useState(false);
   const [showForgotModal, setShowForgotModal] = useState(false);
   const [requesting, setRequesting] = useState(false);
+  const [branding, setBranding] = useState(DEFAULT_BRANDING);
 
-  const fullEmail = resolveCompanyEmail(formData.emailLocal);
   const returnNext = resolveSafeNext(searchParams.get('next'));
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch('/api/public/branding', { cache: 'no-store' });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (cancelled) return;
+        setBranding({
+          main_headline: String(data.main_headline || '').trim() || DEFAULT_BRANDING.main_headline,
+          sub_headline: String(data.sub_headline || '').trim() || DEFAULT_BRANDING.sub_headline,
+        });
+      } catch {
+        /* keep fallback */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -65,7 +90,7 @@ function LoginForm() {
   const handleRequestReset = async () => {
     const email = resolveCompanyEmail(formData.emailLocal);
     if (!email) {
-      alert('위에 사내 메일 아이디를 먼저 입력한 뒤 초기화 요청을 해 주세요.');
+      alert('사내 메일 아이디를 입력해 주세요.');
       return;
     }
     setRequesting(true);
@@ -93,10 +118,14 @@ function LoginForm() {
     <div className="min-h-screen flex items-center justify-center bg-[#F8FAFC] font-sans">
       <form onSubmit={handleLogin} className="p-12 bg-white rounded-[3rem] shadow-2xl w-full max-w-md border border-gray-100 animate-in fade-in zoom-in duration-300">
         <div className="text-center mb-10">
-          <h1 className="text-4xl font-black text-slate-900 tracking-tighter italic">
-            <br /> SMART OFFICE HUB
+          <h1 className="text-4xl font-black text-slate-900 tracking-tighter">
+            {branding.main_headline}
           </h1>
-          <p className="text-blue-500 text-[10px] font-black uppercase tracking-[0.3em] mt-2">KPCQA 통합 자산 및 업무 관리 플랫폼</p>
+          {branding.sub_headline ? (
+            <p className="text-blue-500 text-[10px] font-black uppercase tracking-[0.3em] mt-2">
+              {branding.sub_headline}
+            </p>
+          ) : null}
           {returnNext?.startsWith('/survey/public/') && (
             <p className="text-[11px] font-bold text-indigo-600 mt-4 leading-relaxed">
               배포 링크는 Hub 로그인 없이
@@ -138,7 +167,7 @@ function LoginForm() {
               <input
                 type={showPassword ? 'text' : 'password'}
                 autoComplete="current-password"
-                placeholder="Smart Office Hub 비밀번호"
+                placeholder=""
                 className="w-full p-5 pr-14 bg-slate-50 rounded-2xl outline-none focus:ring-2 focus:ring-blue-500 font-bold text-slate-700 transition-all"
                 value={formData.password}
                 onChange={(e) => setFormData({ ...formData, password: e.target.value })}
@@ -180,15 +209,6 @@ function LoginForm() {
             로그인
           </button>
         </div>
-
-        <div className="mt-10 pt-6 border-t border-slate-100 text-center space-y-4">
-          <p className="text-xs font-bold text-slate-400">
-            아직 계정이 없으신가요?
-            <Link href="/signup" className="text-blue-600 underline underline-offset-4 ml-2 hover:text-blue-800">
-              회원가입 신청
-            </Link>
-          </p>
-        </div>
       </form>
 
       {showForgotModal && (
@@ -200,33 +220,29 @@ function LoginForm() {
             className="bg-white w-full max-w-sm rounded-[2rem] shadow-2xl p-8 border border-slate-100"
             onClick={(e) => e.stopPropagation()}
           >
-            <h3 className="text-lg font-black text-slate-800 mb-3">비밀번호를 잊으셨나요?</h3>
-            <p className="text-[12px] font-bold text-slate-600 leading-relaxed mb-5">
-              이 시스템은 사내 폐쇄망에서 운영되며,
-              <br />
-              이메일로 재설정 링크를 보내는 기능은 제공하지 않습니다.
-            </p>
-            <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 mb-4">
-              <p className="text-[11px] font-black text-amber-800 mb-1">해결 방법</p>
-              <p className="text-[11px] font-bold text-amber-700 leading-relaxed">
-                시스템 관리자(운영관리자 LV_1)에게
-                <br />
-                비밀번호 초기화를 요청해 주세요.
-                <br />
-                관리자가 발급한 임시 비밀번호로 로그인한 뒤
-                <br />
-                새 비밀번호로 변경할 수 있습니다.
-              </p>
+            <h3 className="text-lg font-black text-slate-800 mb-5">비밀번호를 잊으셨나요?</h3>
+            <div className="space-y-1 mb-6">
+              <label className="text-[10px] font-black text-slate-400 ml-2 uppercase">Email</label>
+              <div className="flex items-stretch overflow-hidden rounded-2xl bg-slate-50 focus-within:ring-2 focus-within:ring-blue-500 transition-all">
+                <input
+                  type="text"
+                  autoComplete="username"
+                  inputMode="email"
+                  placeholder="메일 아이디"
+                  className="min-w-0 flex-1 p-4 bg-transparent outline-none font-bold text-slate-700"
+                  value={formData.emailLocal}
+                  onChange={(e) =>
+                    setFormData({
+                      ...formData,
+                      emailLocal: extractEmailLocalPart(e.target.value),
+                    })
+                  }
+                />
+                <span className="shrink-0 flex items-center px-3 bg-slate-50 text-sm font-black text-slate-500 select-none">
+                  {COMPANY_EMAIL_SUFFIX}
+                </span>
+              </div>
             </div>
-            {fullEmail ? (
-              <p className="text-[11px] font-bold text-slate-500 mb-5 text-center">
-                요청 계정: <span className="text-indigo-600 font-black">{fullEmail}</span>
-              </p>
-            ) : (
-              <p className="text-[11px] font-bold text-rose-500 mb-5 text-center">
-                로그인 화면에 사내 메일 아이디를 먼저 입력해 주세요.
-              </p>
-            )}
             <div className="flex gap-3">
               <button
                 type="button"

@@ -8,6 +8,8 @@
     "start": "next start",
     "lint": "next lint",
     "db:push": "prisma db push",
+    "db:migrate": "prisma migrate deploy",
+    "db:generate": "prisma generate",
     "db:seed": "prisma db seed",
     "db:seed:production": "tsx scripts/seed-production-masters.ts",
     "db:seed:production:sync": "tsx scripts/seed-production-masters.ts --sync",

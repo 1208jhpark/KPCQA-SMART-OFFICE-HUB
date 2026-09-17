@@ -23,6 +23,15 @@ import {
   getStatementSettledPrice,
   getItemBatchAmount,
 } from '@/lib/production-statement-match';
+import {
+  analyzeOfficeSuppliesExcelWorkbook,
+  runOfficeSuppliesStatementMatch,
+  aggregateOfficeLineMatchesForSave,
+  parseOfficeQuoteLineId,
+  getOfficeQuoteLinesFromOptions,
+  serializeOfficeQuoteLinesToRawText,
+  type OfficeDbItemSource,
+} from '@/lib/production-office-statement-match';
 
 const DISABLED_ACTION_BTN =
   'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed opacity-70 shadow-none';
@@ -45,6 +54,7 @@ export type CompareModalBatch = {
   inspectStatus?: 'idle' | 'match' | 'mismatch';
   inspectFileName?: string | null;
   inspectResult?: any;
+  inspectedAt?: string | null;
 };
 
 type Props = {
@@ -228,9 +238,10 @@ export default function ProductionStatementCompareModal({
   const [statementIssuesExpanded, setStatementIssuesExpanded] = useState(false);
 
   const isJebonCategory = String(categoryKey || '').toUpperCase() === 'JEBON';
-  const isPrintLikeCategory =
-    String(categoryKey || '').toUpperCase() === 'PRINT' ||
+  const isOfficeCategory =
     String(categoryKey || '').toUpperCase() === 'OFFICE_SUPPLIES';
+  const isPrintLikeCategory =
+    String(categoryKey || '').toUpperCase() === 'PRINT' || isOfficeCategory;
   const priceColumnLabel = isJebonCategory || isPrintLikeCategory ? '최종금액' : '확정단가';
   const priceInputLabel = isJebonCategory ? '최종 금액(원)' : '확정 단가(개당, 원)';
 
@@ -305,6 +316,27 @@ export default function ProductionStatementCompareModal({
         };
       });
   }, [selectedBatches, categoryKey]);
+
+  /** 사무문구: 견적 붙여넣기 텍스트를 매칭 엔진에 전달 */
+  const officeDbItems: OfficeDbItemSource[] = useMemo(() => {
+    if (!isOfficeCategory) return [];
+    const byId = new Map(
+      selectedBatches.flatMap((b) => b.items || []).map((item) => [item.id, item])
+    );
+    return dbItems.map((di) => {
+      const raw = byId.get(di.id);
+      const opts = (raw?.options || {}) as Record<string, unknown>;
+      const lines = getOfficeQuoteLinesFromOptions(opts);
+      const quoteRawText =
+        lines.length > 0
+          ? serializeOfficeQuoteLinesToRawText(lines)
+          : String(opts.suppliesQuoteRawText || '').trim();
+      return {
+        ...di,
+        quoteRawText,
+      };
+    });
+  }, [dbItems, isOfficeCategory, selectedBatches]);
 
   const [activeStatementFiles, setActiveStatementFiles] = useState<StatementFileRecord[]>(categoryStatementFiles);
 
@@ -577,33 +609,61 @@ export default function ProductionStatementCompareModal({
         // 엑셀 파싱
         const data = await file.arrayBuffer();
         const workbook = XLSX.read(data, { type: 'array' });
-        const sheet = workbook.Sheets[workbook.SheetNames[0]];
-        const json: any[][] = XLSX.utils.sheet_to_json(sheet, { header: 1 });
-        const parsedRows = extractProductionExcelRows(json, currentRules.columnHeaders);
 
-        if (parsedRows.length === 0) {
-          throw new Error(
-            '엑셀 시트에서 품목·수량(또는 청구금액) 제목열을 감지하지 못했습니다. [명세표 매칭 규칙 설정]의 제목행 키워드(예: 원고명, 부수, 청구금액)를 확인해 주세요.'
+        if (isOfficeCategory) {
+          const matchResult = analyzeOfficeSuppliesExcelWorkbook(
+            workbook,
+            (sheet) => XLSX.utils.sheet_to_json(sheet as XLSX.WorkSheet, { header: 1 }) as unknown[][],
+            officeDbItems,
+            currentRules,
+            manualOverrides
           );
-        }
+          if (matchResult.statementRows.length === 0) {
+            throw new Error(
+              '사무문구 거래명세서에서 부서 탭 품목(품명·수량·금액)을 찾지 못했습니다. 합계 탭이 아닌 부서별 시트가 있는지 확인해 주세요.'
+            );
+          }
+          setStatementRows(matchResult.statementRows);
+          setGroupSummaries(matchResult.groupSummaries);
+          setItemMatches(matchResult.itemMatches);
+          setTotalDocPrice(matchResult.totalDocPrice);
+          setMatchedBatchDocPrice(matchResult.matchedBatchDocPrice);
+          setAllMatched(matchResult.allMatched);
+          setLogs((prev) => [
+            ...prev,
+            ...matchResult.logs,
+            `✅ 멀티시트 파싱 완료: ${workbook.SheetNames.length}탭 · 품목 ${matchResult.statementRows.length}행`,
+            `🎯 신청 ${officeDbItems.length}건 중 ${matchResult.itemMatches.filter((m) => m.matchStatus === 'match').length}건 일치`,
+          ]);
+        } else {
+          const sheet = workbook.Sheets[workbook.SheetNames[0]];
+          const json: any[][] = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+          const parsedRows = extractProductionExcelRows(json, currentRules.columnHeaders);
 
-        const matchResult = runProductionStatementMatch(
-          dbItems,
-          parsedRows,
-          currentRules,
-          manualOverrides
-        );
-        setStatementRows(parsedRows);
-        setGroupSummaries(matchResult.groupSummaries);
-        setItemMatches(matchResult.itemMatches);
-        setTotalDocPrice(matchResult.totalDocPrice);
-        setMatchedBatchDocPrice(matchResult.matchedBatchDocPrice);
-        setAllMatched(matchResult.allMatched);
-        setLogs((prev) => [
-          ...prev,
-          `✅ 엑셀 시트 파싱 완료: 총 ${parsedRows.length}개 품목 그룹 인식`,
-          `🎯 DB 신청 ${dbItems.length}건 중 ${matchResult.itemMatches.filter((m) => m.matchStatus === 'match').length}건 일치`,
-        ]);
+          if (parsedRows.length === 0) {
+            throw new Error(
+              '엑셀 시트에서 품목·수량(또는 청구금액) 제목열을 감지하지 못했습니다. [명세표 매칭 규칙 설정]의 제목행 키워드(예: 원고명, 부수, 청구금액)를 확인해 주세요.'
+            );
+          }
+
+          const matchResult = runProductionStatementMatch(
+            dbItems,
+            parsedRows,
+            currentRules,
+            manualOverrides
+          );
+          setStatementRows(parsedRows);
+          setGroupSummaries(matchResult.groupSummaries);
+          setItemMatches(matchResult.itemMatches);
+          setTotalDocPrice(matchResult.totalDocPrice);
+          setMatchedBatchDocPrice(matchResult.matchedBatchDocPrice);
+          setAllMatched(matchResult.allMatched);
+          setLogs((prev) => [
+            ...prev,
+            `✅ 엑셀 시트 파싱 완료: 총 ${parsedRows.length}개 품목 그룹 인식`,
+            `🎯 DB 신청 ${dbItems.length}건 중 ${matchResult.itemMatches.filter((m) => m.matchStatus === 'match').length}건 일치`,
+          ]);
+        }
       } else if (lower.endsWith('.pdf')) {
         // 서버 PDF OCR 파싱
         const formData = new FormData();
@@ -668,6 +728,36 @@ export default function ProductionStatementCompareModal({
   };
 
   // 수기 강제 매칭 처리 (명세표 행 드롭다운 선택)
+  const applyRematch = useCallback(
+    (nextOverrides: Record<string, { rowIndex: number; unitPrice?: number }>) => {
+      if (isOfficeCategory) {
+        const reMatched = runOfficeSuppliesStatementMatch(
+          officeDbItems,
+          statementRows,
+          nextOverrides
+        );
+        setGroupSummaries(reMatched.groupSummaries);
+        setItemMatches(reMatched.itemMatches);
+        setTotalDocPrice(reMatched.totalDocPrice);
+        setMatchedBatchDocPrice(reMatched.matchedBatchDocPrice);
+        setAllMatched(reMatched.allMatched);
+        return;
+      }
+      const reMatched = runProductionStatementMatch(
+        dbItems,
+        statementRows,
+        rules,
+        nextOverrides
+      );
+      setGroupSummaries(reMatched.groupSummaries);
+      setItemMatches(reMatched.itemMatches);
+      setTotalDocPrice(reMatched.totalDocPrice);
+      setMatchedBatchDocPrice(reMatched.matchedBatchDocPrice);
+      setAllMatched(reMatched.allMatched);
+    },
+    [dbItems, isOfficeCategory, officeDbItems, rules, statementRows]
+  );
+
   const handleAssignRowToItem = (itemId: string, rowIndex: number) => {
     if (!canEdit) return alert('편집 권한이 필요합니다.');
     const targetRow = statementRows.find((r) => r.rawIndex === rowIndex);
@@ -677,13 +767,7 @@ export default function ProductionStatementCompareModal({
       [itemId]: { rowIndex, unitPrice: settled },
     };
     setManualOverrides(nextOverrides);
-
-    const reMatched = runProductionStatementMatch(dbItems, statementRows, rules, nextOverrides);
-    setGroupSummaries(reMatched.groupSummaries);
-    setItemMatches(reMatched.itemMatches);
-    setTotalDocPrice(reMatched.totalDocPrice);
-    setMatchedBatchDocPrice(reMatched.matchedBatchDocPrice);
-    setAllMatched(reMatched.allMatched);
+    applyRematch(nextOverrides);
   };
 
   const openAdminApproveDialog = (item: ItemMatchResult) => {
@@ -733,13 +817,7 @@ export default function ProductionStatementCompareModal({
     const nextOverrides = { ...manualOverrides };
     delete nextOverrides[itemId];
     setManualOverrides(nextOverrides);
-
-    const reMatched = runProductionStatementMatch(dbItems, statementRows, rules, nextOverrides);
-    setGroupSummaries(reMatched.groupSummaries);
-    setItemMatches(reMatched.itemMatches);
-    setTotalDocPrice(reMatched.totalDocPrice);
-    setMatchedBatchDocPrice(reMatched.matchedBatchDocPrice);
-    setAllMatched(reMatched.allMatched);
+    applyRematch(nextOverrides);
   };
 
   // 단가 직접 수정 저장
@@ -772,28 +850,38 @@ export default function ProductionStatementCompareModal({
     if (!canEdit) return alert('편집 권한이 필요합니다.');
     if (itemMatches.length === 0) return alert('저장할 검수 결과가 없습니다.');
 
-    const matchCount = itemMatches.filter(
-      (m) => m.matchStatus === 'match' || m.adminOverride
-    ).length;
-    const mismatchCount = itemMatches.length - matchCount;
-
     const payload = selectedBatches.map((batch) => {
       const ids = new Set((batch.items || []).map((i) => i.id));
-      const batchDetails = itemMatches.filter((m) => ids.has(m.id));
-      const itemStatus: Record<string, string> = {};
-      const itemPrice: Record<string, number> = {};
+      const batchDetails = isOfficeCategory
+        ? itemMatches.filter((m) => {
+            const parsed = parseOfficeQuoteLineId(m.id);
+            return ids.has(parsed?.requestId || m.id);
+          })
+        : itemMatches.filter((m) => ids.has(m.id));
 
-      batchDetails.forEach((m) => {
-        itemStatus[m.id] = m.matchStatus === 'match' || m.adminOverride ? 'match' : 'mismatch';
-        itemPrice[m.id] = m.docUnitPrice || 0;
-      });
+      let itemStatus: Record<string, string> = {};
+      let itemPrice: Record<string, number> = {};
 
-      const batchMatchCount = batchDetails.filter(
-        (m) => m.matchStatus === 'match' || m.adminOverride
-      ).length;
-      const batchMismatchCount = batchDetails.length - batchMatchCount;
+      if (isOfficeCategory) {
+        const agg = aggregateOfficeLineMatchesForSave(batchDetails);
+        itemStatus = agg.itemStatus;
+        itemPrice = agg.itemPrice;
+      } else {
+        batchDetails.forEach((m) => {
+          itemStatus[m.id] = m.matchStatus === 'match' || m.adminOverride ? 'match' : 'mismatch';
+          itemPrice[m.id] = m.docUnitPrice || 0;
+        });
+      }
+
+      const batchMatchCount = isOfficeCategory
+        ? Object.values(itemStatus).filter((s) => s === 'match').length
+        : batchDetails.filter((m) => m.matchStatus === 'match' || m.adminOverride).length;
+      const batchMismatchCount = isOfficeCategory
+        ? Object.values(itemStatus).filter((s) => s !== 'match').length
+        : batchDetails.length - batchMatchCount;
       const isBatchAllMatched =
-        batchDetails.length > 0 && batchMismatchCount === 0;
+        (isOfficeCategory ? Object.keys(itemStatus).length : batchDetails.length) > 0 &&
+        batchMismatchCount === 0;
 
       return {
         batchId: batch.id,
@@ -802,21 +890,30 @@ export default function ProductionStatementCompareModal({
         inspectResult: {
           fileName: analyzingFileName,
           matched: isBatchAllMatched,
-          matchCount: batchMatchCount,
-          mismatchCount: batchMismatchCount,
+          matchCount: isOfficeCategory
+            ? batchDetails.filter((m) => m.matchStatus === 'match' || m.adminOverride).length
+            : batchMatchCount,
+          mismatchCount: isOfficeCategory
+            ? batchDetails.filter((m) => m.matchStatus !== 'match' && !m.adminOverride).length
+            : batchMismatchCount,
           docTotalPrice: totalDocPrice,
           matchedBatchPrice: matchedBatchDocPrice,
           logs,
-          // 중간 저장 복원용 전체 스냅샷
           details: batchDetails,
           statementRows,
           groupSummaries,
           manualOverrides,
           itemStatus,
           itemPrice,
+          officeLineMode: isOfficeCategory,
         },
       };
     });
+
+    const matchCount = isOfficeCategory
+      ? itemMatches.filter((m) => m.matchStatus === 'match' || m.adminOverride).length
+      : itemMatches.filter((m) => m.matchStatus === 'match' || m.adminOverride).length;
+    const mismatchCount = itemMatches.length - matchCount;
 
     try {
       const res = await fetch(apiPath, {
@@ -1263,22 +1360,28 @@ export default function ProductionStatementCompareModal({
                       <th className="p-2.5 pl-3 w-10 text-center">NO</th>
                       <th className="p-2.5 w-24">관리번호</th>
                       <th className="p-2.5 w-16">대상자</th>
-                      <th className="p-2.5 w-28">
-                        {categoryKey === 'PRINT' || categoryKey === 'OFFICE_SUPPLIES'
-                          ? '제작품목'
-                          : '인증종류'}
+                      <th className="p-2.5 w-24">
+                        {categoryKey === 'OFFICE_SUPPLIES'
+                          ? '부서'
+                          : categoryKey === 'PRINT'
+                            ? '제작품목'
+                            : '인증종류'}
                       </th>
-                      <th className="p-2.5 min-w-[140px]">
-                        {categoryKey === 'PRINT' || categoryKey === 'OFFICE_SUPPLIES'
-                          ? '관리용 제목'
-                          : '프로젝트명'}
+                      <th className="p-2.5 min-w-[180px]">
+                        {categoryKey === 'OFFICE_SUPPLIES'
+                          ? '제품명(견적)'
+                          : categoryKey === 'PRINT'
+                            ? '관리용 제목'
+                            : '프로젝트명'}
                       </th>
                       <th className="p-2.5 w-20 text-center">
                         {categoryKey === 'JEBON'
                           ? '품목/판형'
-                          : categoryKey === 'PRINT' || categoryKey === 'OFFICE_SUPPLIES'
-                            ? '규격'
-                            : '품목/재질'}
+                          : categoryKey === 'OFFICE_SUPPLIES'
+                            ? '코드'
+                            : categoryKey === 'PRINT'
+                              ? '규격'
+                              : '품목/재질'}
                       </th>
                       <th className="p-2.5 w-14 text-center border-r border-slate-200">수량</th>
                       <th className="p-2.5 min-w-[140px]">명세표 매칭 품목</th>
@@ -1298,52 +1401,85 @@ export default function ProductionStatementCompareModal({
                           <td className="p-2.5 text-center font-mono text-slate-400">{idx + 1}</td>
                           <td className="p-2.5 font-mono text-slate-800 text-[10px]">{item.postNumber}</td>
                           <td className="p-2.5 text-slate-800">{item.userName}</td>
-                          <td className="p-2.5 text-slate-700 truncate max-w-[110px]" title={item.certType || item.plateLabel}>
-                            {isPrintLikeCategory ? item.plateLabel || '-' : item.certType || '-'}
+                          <td className="p-2.5 text-slate-700 truncate max-w-[110px]" title={isOfficeCategory ? item.deptName : item.certType || item.plateLabel}>
+                            {isOfficeCategory
+                              ? item.deptName || '-'
+                              : isPrintLikeCategory
+                                ? item.plateLabel || '-'
+                                : item.certType || '-'}
                           </td>
                           <td className="p-2.5">
-                            <span className="text-slate-900 font-black">{item.projectName}</span>
-                            {item.docProjectName && item.docProjectName !== item.projectName && (
-                              <p className="text-[10px] text-indigo-600 font-normal">
-                                명세서: {item.docProjectName}
-                              </p>
+                            {isOfficeCategory ? (
+                              <>
+                                <span
+                                  className="text-slate-900 font-black text-[11px] line-clamp-2"
+                                  title={item.plateLabel}
+                                >
+                                  {item.plateLabel || '-'}
+                                </span>
+                                {item.docProjectName && (
+                                  <p className="text-[10px] text-indigo-600 font-normal">
+                                    명세탭: {item.docProjectName}
+                                  </p>
+                                )}
+                              </>
+                            ) : (
+                              <>
+                                <span className="text-slate-900 font-black">{item.projectName}</span>
+                                {item.docProjectName && item.docProjectName !== item.projectName && (
+                                  <p className="text-[10px] text-indigo-600 font-normal">
+                                    명세서: {item.docProjectName}
+                                  </p>
+                                )}
+                              </>
                             )}
                           </td>
                           <td className="p-2.5 text-center">
                             <div className="flex flex-col items-center gap-0.5">
-                              {categoryKey === 'SIGN' && (
+                              {isOfficeCategory ? (
                                 <span
-                                  className={`px-1.5 py-0.5 rounded text-[10px] font-black ${
-                                    item.isJumul
-                                      ? 'bg-amber-100 text-amber-800 border border-amber-200'
-                                      : 'bg-slate-100 text-slate-600'
-                                  }`}
+                                  className="text-[10px] font-mono text-slate-600 truncate max-w-[88px]"
+                                  title={item.certType || item.plateSize || ''}
                                 >
-                                  {item.isJumul ? '주물' : '일반'}
+                                  {item.certType || item.plateSize || '-'}
                                 </span>
-                              )}
-                              {categoryKey === 'JEBON' && item.plateLabel && (
-                                <span
-                                  className="px-1.5 py-0.5 rounded text-[10px] font-black bg-slate-100 text-slate-700 border border-slate-200"
-                                  title="신청서 판형"
-                                >
-                                  {item.plateLabel}
-                                </span>
-                              )}
-                              {categoryKey === 'SIGN' && item.plateLabel && (
-                                <span className="text-[9px] text-slate-600 font-bold truncate max-w-[80px]" title={`신청 품목: ${item.plateLabel}`}>
-                                  {item.plateLabel}
-                                </span>
-                              )}
-                              {(categoryKey === 'JEBON' || isPrintLikeCategory) &&
-                                item.plateSize &&
-                                item.plateSize !== item.plateLabel && (
-                                <span className="text-[9px] text-slate-500 font-bold truncate max-w-[80px]" title={`신청 규격: ${item.plateSize}`}>
-                                  {item.plateSize}
-                                </span>
-                              )}
-                              {isPrintLikeCategory && !item.plateSize && (
-                                <span className="text-[9px] text-slate-400 font-bold">-</span>
+                              ) : (
+                                <>
+                                  {categoryKey === 'SIGN' && (
+                                    <span
+                                      className={`px-1.5 py-0.5 rounded text-[10px] font-black ${
+                                        item.isJumul
+                                          ? 'bg-amber-100 text-amber-800 border border-amber-200'
+                                          : 'bg-slate-100 text-slate-600'
+                                      }`}
+                                    >
+                                      {item.isJumul ? '주물' : '일반'}
+                                    </span>
+                                  )}
+                                  {categoryKey === 'JEBON' && item.plateLabel && (
+                                    <span
+                                      className="px-1.5 py-0.5 rounded text-[10px] font-black bg-slate-100 text-slate-700 border border-slate-200"
+                                      title="신청서 판형"
+                                    >
+                                      {item.plateLabel}
+                                    </span>
+                                  )}
+                                  {categoryKey === 'SIGN' && item.plateLabel && (
+                                    <span className="text-[9px] text-slate-600 font-bold truncate max-w-[80px]" title={`신청 품목: ${item.plateLabel}`}>
+                                      {item.plateLabel}
+                                    </span>
+                                  )}
+                                  {(categoryKey === 'JEBON' || categoryKey === 'PRINT') &&
+                                    item.plateSize &&
+                                    item.plateSize !== item.plateLabel && (
+                                    <span className="text-[9px] text-slate-500 font-bold truncate max-w-[80px]" title={`신청 규격: ${item.plateSize}`}>
+                                      {item.plateSize}
+                                    </span>
+                                  )}
+                                  {categoryKey === 'PRINT' && !item.plateSize && (
+                                    <span className="text-[9px] text-slate-400 font-bold">-</span>
+                                  )}
+                                </>
                               )}
                             </div>
                           </td>

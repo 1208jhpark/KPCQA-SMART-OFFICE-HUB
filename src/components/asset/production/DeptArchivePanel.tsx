@@ -25,6 +25,12 @@ import {
   buildPrintOrderExcelRows,
   buildSignOrderExcelRows,
 } from '@/lib/production-sign-excel';
+import {
+  getOfficeQuoteLinesFromOptions,
+  makeOfficeQuoteLineId,
+  normalizeOfficeQuoteLines,
+  type OfficeQuoteLine,
+} from '@/lib/production-office-statement-match';
 
 const DEPT_SETTLEMENT_MENU_PATH = '/asset/production/dept-master/settlement';
 const DEPT_ARCHIVE_MENU_PATH = '/asset/production/dept-master/archive';
@@ -91,12 +97,52 @@ type DeptArchivePanelProps = {
 
 function formatQuantityUnit(item: BatchItem) {
   if (item.category === 'JEBON') return '부';
-  if (item.category === 'OFFICE_SUPPLIES') return '건';
+  if (item.category === 'OFFICE_SUPPLIES') return '개';
   if (item.category === 'PRINT') {
     const label = (item.options as any)?.printItemMasterInfo?.unitLabel;
     if (label) return String(label);
   }
   return 'EA';
+}
+
+function getOfficeQuoteStats(item: BatchItem): {
+  lines: OfficeQuoteLine[];
+  lineCount: number;
+  qtySum: number;
+  amountSum: number;
+} {
+  const lines = getOfficeQuoteLinesFromOptions(
+    (item.options || {}) as Record<string, unknown>
+  );
+  return {
+    lines,
+    lineCount: lines.length,
+    qtySum: lines.reduce((s, l) => s + (l.qty || 0), 0),
+    amountSum: lines.reduce((s, l) => s + (l.supplyPrice || 0), 0),
+  };
+}
+
+/** 묶음 총 수량 표시 — 사무문구는 견적 제품 수량 합 */
+function formatBatchQuantityLabel(batch: ArchiveBatch): string {
+  const items = batch.items || [];
+  if (items.length === 0) return '0 건';
+  const allOffice = items.every((i) => i.category === 'OFFICE_SUPPLIES');
+  if (allOffice) {
+    let qty = 0;
+    let lines = 0;
+    for (const item of items) {
+      const s = getOfficeQuoteStats(item);
+      if (s.lineCount > 0) {
+        qty += s.qtySum;
+        lines += s.lineCount;
+      } else {
+        qty += Number(item.quantity) || 1;
+        lines += 1;
+      }
+    }
+    return `${qty.toLocaleString('ko-KR')}개 · ${lines}품목`;
+  }
+  return `${items.length} 건`;
 }
 
 /** 명세표 검수에서 따라온 기준 단가 (최종 정산단가와 비교용) */
@@ -492,6 +538,9 @@ export default function DeptArchivePanel({ variant = 'dept' }: DeptArchivePanelP
   const [selectedBatchIds, setSelectedBatchIds] = useState<Set<string>>(new Set());
   const [currentPage, setCurrentPage] = useState(1);
   const [detailItem, setDetailItem] = useState<BatchItem | null>(null);
+  const [officeEditRequestId, setOfficeEditRequestId] = useState<string | null>(null);
+  const [officeEditDrafts, setOfficeEditDrafts] = useState<OfficeQuoteLine[]>([]);
+  const [officeEditSaving, setOfficeEditSaving] = useState(false);
   const [statementBatch, setStatementBatch] = useState<ArchiveBatch | null>(null);
   const [priceDrafts, setPriceDrafts] = useState<Record<string, string>>({});
   /** 모달 오픈 시 따라온 단가(검수 확정값) — 수정 여부 하이라이트용 */
@@ -1275,7 +1324,7 @@ export default function DeptArchivePanel({ variant = 'dept' }: DeptArchivePanelP
       관리용제목: r.title,
       수량: `${r.quantity}${formatQuantityUnit(r)}`,
       외주업체: (r.options as any)?.vendor || '',
-      상태: productionStatusLabel(r.status),
+      상태: productionStatusLabel(r.status, r.options as Record<string, unknown> | null),
     }));
     const ws = XLSX.utils.json_to_sheet(rows);
     const wb = XLSX.utils.book_new();
@@ -1284,6 +1333,72 @@ export default function DeptArchivePanel({ variant = 'dept' }: DeptArchivePanelP
       wb,
       `${formatBatchExcelBaseName(batch.id, batchLabelOpts(labelKind))}.xlsx`
     );
+  };
+
+  const beginOfficeForceEdit = (item: BatchItem) => {
+    if (!isMasterDashboard) return;
+    if (!canEdit) return alert('편집 권한(Edit)이 필요합니다.');
+    if ((item.options || {}).masterSettledArchived === true) {
+      return alert('정산완료 보관함으로 이동된 건은 수정할 수 없습니다.');
+    }
+    const lines = getOfficeQuoteLinesFromOptions(
+      (item.options || {}) as Record<string, unknown>
+    );
+    setOfficeEditRequestId(item.id);
+    setOfficeEditDrafts(
+      lines.length > 0
+        ? lines.map((l) => ({ ...l }))
+        : [
+            {
+              lineNo: 1,
+              code: '',
+              productName: '',
+              unitPrice: 0,
+              qty: 1,
+              supplyPrice: 0,
+            },
+          ]
+    );
+  };
+
+  const cancelOfficeForceEdit = () => {
+    setOfficeEditRequestId(null);
+    setOfficeEditDrafts([]);
+    setOfficeEditSaving(false);
+  };
+
+  const saveOfficeForceEdit = async (item: BatchItem) => {
+    if (!isMasterDashboard) return;
+    if (!canEdit) return alert('편집 권한(Edit)이 필요합니다.');
+    const lines = normalizeOfficeQuoteLines(officeEditDrafts);
+    if (lines.length === 0) {
+      return alert('제품명이 있는 항목이 최소 1개 필요합니다.');
+    }
+    if (!confirm(`견적 리스트 ${lines.length}품목을 저장할까요?`)) return;
+    setOfficeEditSaving(true);
+    try {
+      const res = await fetch(MASTER_API_PATH, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'save-office-quote-lines',
+          requestId: item.id,
+          lines,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(data.message || '저장에 실패했습니다.');
+        return;
+      }
+      cancelOfficeForceEdit();
+      alert(data.message || '저장되었습니다.');
+      await fetchData();
+    } catch {
+      alert('서버와 통신할 수 없습니다.');
+    } finally {
+      setOfficeEditSaving(false);
+    }
   };
 
   const openStatementModal = (batch: ArchiveBatch) => {
@@ -1298,10 +1413,50 @@ export default function DeptArchivePanel({ variant = 'dept' }: DeptArchivePanelP
         item.finalPrice != null && Number.isFinite(Number(item.finalPrice))
           ? Math.trunc(Number(item.finalPrice))
           : null;
-      drafts[item.id] = current != null && current > 0 ? String(current) : '';
-      // 검수 따라온 기준가 우선 · 없으면 현재값을 세션 기준으로만 사용
-      const baseline = matched ?? current;
-      baselines[item.id] = baseline != null && baseline > 0 ? String(baseline) : '';
+      const opts = (item.options || {}) as Record<string, unknown>;
+      const savedLines = Array.isArray(opts.suppliesLineSettlements)
+        ? (opts.suppliesLineSettlements as Array<{ lineNo?: number; finalPrice?: number }>)
+        : [];
+      const quoteStats = getOfficeQuoteStats(item);
+
+      if (item.category === 'OFFICE_SUPPLIES' && quoteStats.lines.length > 0) {
+        const inspectDetails = (
+          opts.inspectResult as { details?: Array<{ id?: string; docUnitPrice?: number }> } | undefined
+        )?.details;
+        for (const line of quoteStats.lines) {
+          const lineId = makeOfficeQuoteLineId(item.id, line.lineNo);
+          const saved = savedLines.find((s) => Number(s.lineNo) === line.lineNo);
+          const fromInspect = inspectDetails?.find((d) => d.id === lineId);
+          const linePrice =
+            saved?.finalPrice != null && Number.isFinite(Number(saved.finalPrice))
+              ? Math.trunc(Number(saved.finalPrice))
+              : fromInspect?.docUnitPrice != null && Number(fromInspect.docUnitPrice) > 0
+                ? Math.trunc(Number(fromInspect.docUnitPrice))
+                : line.supplyPrice > 0
+                  ? line.supplyPrice
+                  : null;
+          drafts[lineId] = linePrice != null && linePrice > 0 ? String(linePrice) : '';
+          baselines[lineId] =
+            fromInspect?.docUnitPrice != null && Number(fromInspect.docUnitPrice) > 0
+              ? String(Math.trunc(Number(fromInspect.docUnitPrice)))
+              : line.supplyPrice > 0
+                ? String(line.supplyPrice)
+                : '';
+        }
+        // 신청 합계 키도 보관(표시용 아님)
+        drafts[item.id] =
+          current != null && current > 0
+            ? String(current)
+            : quoteStats.amountSum > 0
+              ? String(quoteStats.amountSum)
+              : '';
+        const baseline = matched ?? (quoteStats.amountSum > 0 ? quoteStats.amountSum : current);
+        baselines[item.id] = baseline != null && baseline > 0 ? String(baseline) : '';
+      } else {
+        drafts[item.id] = current != null && current > 0 ? String(current) : '';
+        const baseline = matched ?? current;
+        baselines[item.id] = baseline != null && baseline > 0 ? String(baseline) : '';
+      }
     });
     setPriceDrafts(drafts);
     setPriceBaselines(baselines);
@@ -1368,20 +1523,56 @@ export default function DeptArchivePanel({ variant = 'dept' }: DeptArchivePanelP
     if (!canEdit) return alert('편집 권한이 필요합니다.');
     if (!statementBatch) return;
     if (isStatementModalReadOnly) return;
-    const prices = (statementBatch.items || [])
-      .map((item) => ({
-        requestId: item.id,
-        finalPrice: Number(moneyDigitsOnly(priceDrafts[item.id] || '') || 'NaN'),
-        baselinePrice: Number(moneyDigitsOnly(priceBaselines[item.id] || '') || 'NaN'),
-      }))
-      .filter((p) => Number.isFinite(p.finalPrice) && p.finalPrice >= 0)
-      .map((p) => ({
-        requestId: p.requestId,
-        finalPrice: p.finalPrice,
-        ...(Number.isFinite(p.baselinePrice) && p.baselinePrice > 0
-          ? { baselinePrice: p.baselinePrice }
-          : {}),
-      }));
+
+    const prices: Array<{
+      requestId: string;
+      finalPrice: number;
+      baselinePrice?: number;
+      suppliesLineSettlements?: Array<{
+        lineNo: number;
+        code: string;
+        productName: string;
+        qty: number;
+        finalPrice: number;
+      }>;
+    }> = [];
+
+    for (const item of statementBatch.items || []) {
+      const quoteStats = getOfficeQuoteStats(item);
+      if (item.category === 'OFFICE_SUPPLIES' && quoteStats.lines.length > 0) {
+        const lineSettlements = quoteStats.lines.map((line) => {
+          const lineId = makeOfficeQuoteLineId(item.id, line.lineNo);
+          const finalPrice = Number(moneyDigitsOnly(priceDrafts[lineId] || '') || 'NaN');
+          return {
+            lineNo: line.lineNo,
+            code: line.code,
+            productName: line.productName,
+            qty: line.qty,
+            finalPrice: Number.isFinite(finalPrice) && finalPrice >= 0 ? finalPrice : 0,
+          };
+        });
+        const sum = lineSettlements.reduce((s, l) => s + l.finalPrice, 0);
+        if (!lineSettlements.some((l) => l.finalPrice > 0) && sum <= 0) continue;
+        const baseline = Number(moneyDigitsOnly(priceBaselines[item.id] || '') || 'NaN');
+        prices.push({
+          requestId: item.id,
+          finalPrice: sum,
+          ...(Number.isFinite(baseline) && baseline > 0 ? { baselinePrice: baseline } : {}),
+          suppliesLineSettlements: lineSettlements,
+        });
+      } else {
+        const finalPrice = Number(moneyDigitsOnly(priceDrafts[item.id] || '') || 'NaN');
+        if (!Number.isFinite(finalPrice) || finalPrice < 0) continue;
+        const baselinePrice = Number(moneyDigitsOnly(priceBaselines[item.id] || '') || 'NaN');
+        prices.push({
+          requestId: item.id,
+          finalPrice,
+          ...(Number.isFinite(baselinePrice) && baselinePrice > 0
+            ? { baselinePrice }
+            : {}),
+        });
+      }
+    }
 
     if (prices.length === 0) {
       return alert('저장할 단가를 입력해 주세요.');
@@ -2258,7 +2449,7 @@ export default function DeptArchivePanel({ variant = 'dept' }: DeptArchivePanelP
                                 ledgerCell ? 'px-1' : 'px-4'
                               }`}
                             >
-                              {batch.items?.length || 0} 건
+                              {formatBatchQuantityLabel(batch)}
                             </td>
                             {!isSettledArchiveView && (
                               <td
@@ -2473,11 +2664,236 @@ export default function DeptArchivePanel({ variant = 'dept' }: DeptArchivePanelP
                                   </tr>
                                 </thead>
                                 <tbody className="divide-y divide-slate-200/80 text-[11px] font-bold text-slate-700 bg-transparent">
-                                  {(batch.items || []).map((item, idx) => (
-                                    <tr
-                                      key={item.id}
-                                      className="h-12 bg-transparent hover:bg-slate-200/40 transition-colors"
-                                    >
+                                  {(batch.items || []).flatMap((item, idx) => {
+                                    const officeStats =
+                                      item.category === 'OFFICE_SUPPLIES'
+                                        ? getOfficeQuoteStats(item)
+                                        : null;
+                                    if (item.category === 'OFFICE_SUPPLIES') {
+                                      const canForceEdit =
+                                        isMasterDashboard &&
+                                        canEdit &&
+                                        (item.options || {}).masterSettledArchived !== true;
+                                      const editing =
+                                        isMasterDashboard && officeEditRequestId === item.id;
+                                      const displayLines = editing
+                                        ? officeEditDrafts
+                                        : officeStats?.lines || [];
+                                      const lineRows =
+                                        displayLines.length > 0
+                                          ? displayLines
+                                          : [
+                                              {
+                                                lineNo: 0,
+                                                code: '',
+                                                productName: '(견적 품목 없음)',
+                                                unitPrice: 0,
+                                                qty: 0,
+                                                supplyPrice: 0,
+                                              } as OfficeQuoteLine,
+                                            ];
+
+                                      const mapped = lineRows.map((line, lineIdx) => (
+                                        <tr
+                                          key={`${item.id}-${editing ? `e${lineIdx}` : line.lineNo}`}
+                                          className={`h-12 bg-transparent hover:bg-slate-200/40 transition-colors ${
+                                            editing ? 'bg-amber-50/40' : ''
+                                          }`}
+                                        >
+                                          <td className="px-1 text-center font-mono text-slate-500 tabular-nums bg-transparent">
+                                            {idx + 1}-{editing ? lineIdx + 1 : line.lineNo || '-'}
+                                          </td>
+                                          <td className="px-2 text-center font-mono text-slate-900 tabular-nums truncate bg-transparent" title={item.postNumber}>
+                                            {item.postNumber}
+                                          </td>
+                                          <td className="px-1 text-center whitespace-nowrap tabular-nums text-slate-800 bg-transparent">
+                                            {getKSTDateString(item.createdAt)}
+                                          </td>
+                                          <td
+                                            className="px-2 truncate text-slate-700 bg-transparent"
+                                            title={item.deptName || ''}
+                                          >
+                                            {item.deptName || (
+                                              <span className="text-slate-300">-</span>
+                                            )}
+                                          </td>
+                                          <td className="px-2 text-center text-slate-800 truncate bg-transparent" title={item.userName || ''}>
+                                            {item.userName || '-'}
+                                          </td>
+                                          <td className="px-1 text-center whitespace-nowrap bg-transparent">
+                                            <span
+                                              className={`px-2 py-0.5 rounded text-[10px] font-bold tracking-tight border whitespace-nowrap inline-block ${getProductionCategoryBadgeClass(item.category)}`}
+                                            >
+                                              {CATEGORY_LABEL[item.category] || item.category}
+                                            </span>
+                                          </td>
+                                          <td className="px-2 text-slate-800 bg-transparent">
+                                            {editing ? (
+                                              <input
+                                                type="text"
+                                                value={line.productName}
+                                                onChange={(e) => {
+                                                  const v = e.target.value;
+                                                  setOfficeEditDrafts((prev) =>
+                                                    prev.map((row, i) =>
+                                                      i === lineIdx ? { ...row, productName: v } : row
+                                                    )
+                                                  );
+                                                }}
+                                                className="w-full rounded-lg border border-amber-300 bg-white px-2 py-1 text-[11px] font-bold outline-none focus:border-amber-500"
+                                                placeholder="제품명"
+                                              />
+                                            ) : (
+                                              <span className="truncate block" title={line.productName}>
+                                                {line.lineNo > 0 && (
+                                                  <span className="text-[10px] text-slate-400 font-mono mr-1">
+                                                    #{line.lineNo}
+                                                  </span>
+                                                )}
+                                                {line.productName}
+                                              </span>
+                                            )}
+                                          </td>
+                                          <td className="px-1 text-center whitespace-nowrap bg-transparent">
+                                            {editing ? (
+                                              <input
+                                                type="number"
+                                                min={1}
+                                                value={line.qty || 1}
+                                                onChange={(e) => {
+                                                  const qty = Math.max(
+                                                    1,
+                                                    parseInt(e.target.value, 10) || 1
+                                                  );
+                                                  setOfficeEditDrafts((prev) =>
+                                                    prev.map((row, i) =>
+                                                      i === lineIdx
+                                                        ? {
+                                                            ...row,
+                                                            qty,
+                                                            supplyPrice:
+                                                              row.unitPrice > 0
+                                                                ? row.unitPrice * qty
+                                                                : row.supplyPrice,
+                                                          }
+                                                        : row
+                                                    )
+                                                  );
+                                                }}
+                                                className="w-14 rounded-lg border border-amber-300 bg-white px-1 py-1 text-center text-[11px] font-mono outline-none"
+                                              />
+                                            ) : (
+                                              <>
+                                                <span className="font-mono tabular-nums">
+                                                  {line.qty || '-'}
+                                                </span>
+                                                {line.qty > 0 && (
+                                                  <span className="ml-0.5 text-[10px] font-medium text-slate-500">
+                                                    개
+                                                  </span>
+                                                )}
+                                              </>
+                                            )}
+                                          </td>
+                                          <td className="px-1 text-center whitespace-nowrap bg-transparent">
+                                            {editing ? (
+                                              <button
+                                                type="button"
+                                                disabled={officeEditDrafts.length <= 1}
+                                                onClick={() =>
+                                                  setOfficeEditDrafts((prev) =>
+                                                    prev.filter((_, i) => i !== lineIdx)
+                                                  )
+                                                }
+                                                className="px-2 py-1 text-[10px] font-bold rounded-lg text-rose-600 bg-rose-50 border border-rose-200 hover:bg-rose-100 disabled:opacity-40"
+                                              >
+                                                삭제
+                                              </button>
+                                            ) : lineIdx === 0 ? (
+                                              <button
+                                                type="button"
+                                                onClick={() => setDetailItem(item)}
+                                                className="px-2.5 py-1 text-[10px] font-bold rounded-lg transition-colors bg-slate-200 text-slate-600 hover:bg-slate-300 border border-slate-300"
+                                              >
+                                                원문확인
+                                              </button>
+                                            ) : (
+                                              <span className="text-slate-300 text-[10px]">—</span>
+                                            )}
+                                          </td>
+                                        </tr>
+                                      ));
+
+                                      if (isMasterDashboard) {
+                                        if (editing) {
+                                          mapped.push(
+                                            <tr key={`${item.id}-office-edit`} className="bg-amber-50/70">
+                                              <td colSpan={9} className="px-3 py-2">
+                                                <div className="flex flex-wrap items-center justify-end gap-2">
+                                                  <button
+                                                    type="button"
+                                                    disabled={officeEditSaving}
+                                                    onClick={() =>
+                                                      setOfficeEditDrafts((prev) => [
+                                                        ...prev,
+                                                        {
+                                                          lineNo: prev.length + 1,
+                                                          code: '',
+                                                          productName: '',
+                                                          unitPrice: 0,
+                                                          qty: 1,
+                                                          supplyPrice: 0,
+                                                        },
+                                                      ])
+                                                    }
+                                                    className="px-2.5 py-1 text-[10px] font-black rounded-lg bg-white border border-amber-300 text-amber-900"
+                                                  >
+                                                    + 항목 추가
+                                                  </button>
+                                                  <button
+                                                    type="button"
+                                                    disabled={officeEditSaving}
+                                                    onClick={cancelOfficeForceEdit}
+                                                    className="px-2.5 py-1 text-[10px] font-black rounded-lg bg-slate-100 text-slate-600"
+                                                  >
+                                                    취소
+                                                  </button>
+                                                  <button
+                                                    type="button"
+                                                    disabled={officeEditSaving || !canEdit}
+                                                    onClick={() => saveOfficeForceEdit(item)}
+                                                    className="px-2.5 py-1 text-[10px] font-black rounded-lg bg-indigo-600 text-white disabled:opacity-50"
+                                                  >
+                                                    {officeEditSaving ? '저장 중…' : '저장'}
+                                                  </button>
+                                                </div>
+                                              </td>
+                                            </tr>
+                                          );
+                                        } else if (canForceEdit) {
+                                          mapped.push(
+                                            <tr key={`${item.id}-office-force`} className="bg-slate-50/80">
+                                              <td colSpan={9} className="px-3 py-2 text-right">
+                                                <button
+                                                  type="button"
+                                                  onClick={() => beginOfficeForceEdit(item)}
+                                                  className="px-2.5 py-1 text-[10px] font-black rounded-lg bg-white border border-slate-300 text-slate-700 hover:bg-slate-100"
+                                                >
+                                                  강제수정모드
+                                                </button>
+                                              </td>
+                                            </tr>
+                                          );
+                                        }
+                                      }
+
+                                      return mapped;
+                                    }
+                                    return [
+                                      <tr
+                                        key={item.id}
+                                        className="h-12 bg-transparent hover:bg-slate-200/40 transition-colors"
+                                      >
                                       <td className="px-1 text-center font-mono text-slate-500 tabular-nums bg-transparent">
                                         {idx + 1}
                                       </td>
@@ -2528,8 +2944,9 @@ export default function DeptArchivePanel({ variant = 'dept' }: DeptArchivePanelP
                                           원문확인
                                         </button>
                                       </td>
-                                    </tr>
-                                      ))}
+                                    </tr>,
+                                    ];
+                                  })}
                                     </tbody>
                                   </table>
                                 </div>
@@ -2609,19 +3026,44 @@ export default function DeptArchivePanel({ variant = 'dept' }: DeptArchivePanelP
             <div className="p-6 overflow-x-auto space-y-3">
               {(() => {
                 const items = statementBatch.items || [];
-                const totalQty = items.reduce((s, i) => s + (Number(i.quantity) || 0), 0);
-                const totalPrice = items.reduce((s, i) => {
-                  const n = moneyDigitsToNumber(priceDrafts[i.id] || '');
-                  return s + (n ?? 0);
-                }, 0);
-                const qtyUnit = items[0] ? formatQuantityUnit(items[0]) : '';
+                const officeRows = items.flatMap((item) => {
+                  if (item.category !== 'OFFICE_SUPPLIES') return [];
+                  const stats = getOfficeQuoteStats(item);
+                  return stats.lines.map((line) => ({
+                    key: makeOfficeQuoteLineId(item.id, line.lineNo),
+                    item,
+                    line,
+                  }));
+                });
+                const useOfficeLines = officeRows.length > 0;
+                const totalQty = useOfficeLines
+                  ? officeRows.reduce((s, r) => s + (r.line.qty || 0), 0)
+                  : items.reduce((s, i) => s + (Number(i.quantity) || 0), 0);
+                const totalPrice = useOfficeLines
+                  ? officeRows.reduce((s, r) => {
+                      const n = moneyDigitsToNumber(priceDrafts[r.key] || '');
+                      return s + (n ?? 0);
+                    }, 0)
+                  : items.reduce((s, i) => {
+                      const n = moneyDigitsToNumber(priceDrafts[i.id] || '');
+                      return s + (n ?? 0);
+                    }, 0);
+                const qtyUnit = useOfficeLines
+                  ? '개'
+                  : items[0]
+                    ? formatQuantityUnit(items[0])
+                    : '';
                 return (
+                  <>
                   <div className="flex items-center justify-end gap-4 px-1">
                     <div className="text-right">
-                      <p className="text-[10px] font-bold text-slate-400">수량 합계</p>
+                      <p className="text-[10px] font-bold text-slate-400">
+                        {useOfficeLines ? '수량 합계 · 품목' : '수량 합계'}
+                      </p>
                       <p className="text-sm font-black text-slate-800 font-mono">
                         {totalQty.toLocaleString()}
                         {qtyUnit}
+                        {useOfficeLines ? ` · ${officeRows.length}품목` : ''}
                       </p>
                     </div>
                     <div className="text-right min-w-[140px]">
@@ -2631,20 +3073,80 @@ export default function DeptArchivePanel({ variant = 'dept' }: DeptArchivePanelP
                       </p>
                     </div>
                   </div>
-                );
-              })()}
               <table className="w-full text-left text-xs">
                 <thead className="bg-slate-50 text-slate-600 font-black border-b border-slate-200 text-[10px]">
                   <tr>
                     <th className="h-10 px-2">관리번호</th>
-                    <th className="h-10 px-2">대상자</th>
-                    <th className="h-10 px-2">제목</th>
-                    <th className="h-10 px-2 text-center">수량</th>
-                    <th className="h-10 px-2 text-right w-[140px]">정산단가(원)</th>
+                    {useOfficeLines ? (
+                      <>
+                        <th className="h-10 px-2">No</th>
+                        <th className="h-10 px-2">제품명</th>
+                        <th className="h-10 px-2 text-center">수량</th>
+                        <th className="h-10 px-2 text-right w-[140px]">정산금액(원)</th>
+                      </>
+                    ) : (
+                      <>
+                        <th className="h-10 px-2">대상자</th>
+                        <th className="h-10 px-2">제목</th>
+                        <th className="h-10 px-2 text-center">수량</th>
+                        <th className="h-10 px-2 text-right w-[140px]">정산단가(원)</th>
+                      </>
+                    )}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 font-bold text-slate-700">
-                  {(statementBatch.items || []).map((item) => (
+                  {useOfficeLines
+                    ? officeRows.map(({ key, item, line }) => (
+                        <tr key={key} className="h-12">
+                          <td className="px-2 font-mono text-[11px]">{item.postNumber}</td>
+                          <td className="px-2 text-[11px] font-mono text-slate-500">{line.lineNo}</td>
+                          <td className="px-2 text-[11px] truncate max-w-[280px]" title={line.productName}>
+                            {line.productName}
+                          </td>
+                          <td className="px-2 text-center text-[11px]">
+                            {line.qty}개
+                          </td>
+                          <td className="px-2 text-right">
+                            {(() => {
+                              const changed = isPriceDraftChanged(key);
+                              const digits = moneyDigitsOnly(priceDrafts[key] || '');
+                              return (
+                                <input
+                                  type="text"
+                                  inputMode="numeric"
+                                  readOnly={isStatementModalReadOnly}
+                                  value={formatMoneyDigits(digits)}
+                                  title={
+                                    isStatementModalReadOnly
+                                      ? '조회 전용'
+                                      : changed
+                                        ? '견적/검수 기준과 다른 값으로 수정됨'
+                                        : priceBaselines[key]
+                                          ? '견적·검수 기준과 동일'
+                                          : '금액 미입력'
+                                  }
+                                  onChange={(e) => {
+                                    if (isStatementModalReadOnly) return;
+                                    setPriceDrafts((prev) => ({
+                                      ...prev,
+                                      [key]: moneyDigitsOnly(e.target.value),
+                                    }));
+                                  }}
+                                  className={`w-full rounded-lg px-2 py-1.5 text-right text-[11px] font-mono outline-none transition-colors ${
+                                    isStatementModalReadOnly
+                                      ? 'bg-slate-50 border border-slate-200 text-slate-600 cursor-default'
+                                      : changed
+                                        ? 'bg-amber-50 border-2 border-amber-400 text-amber-950 focus:border-amber-500 focus:ring-1 focus:ring-amber-200'
+                                        : 'bg-slate-50 border border-slate-200 text-slate-800 focus:border-indigo-400'
+                                  }`}
+                                  placeholder="0"
+                                />
+                              );
+                            })()}
+                          </td>
+                        </tr>
+                      ))
+                    : (statementBatch.items || []).map((item) => (
                     <tr key={item.id} className="h-12">
                       <td className="px-2 font-mono text-[11px]">{item.postNumber}</td>
                       <td className="px-2 text-[11px]">{item.userName}</td>
@@ -2697,6 +3199,9 @@ export default function DeptArchivePanel({ variant = 'dept' }: DeptArchivePanelP
                   ))}
                 </tbody>
               </table>
+                  </>
+                );
+              })()}
             </div>
             <div className="p-6 border-t border-slate-100 flex items-center justify-between gap-3">
               <p className="min-w-0 truncate text-[11px] font-semibold text-slate-500">

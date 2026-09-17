@@ -1,10 +1,7 @@
 'use client';
 
 import { useState, useEffect, useMemo, useRef, Suspense, Fragment } from 'react';
-import * as XLSX from 'xlsx';
-import JSZip from 'jszip';
-import { saveAs } from 'file-saver';
-import { getKSTDateString, getKSTNowYearMonth, getKSTYearMonth, toSortableTime } from '@/utils/dateUtils';
+import { getKSTDateString, getKSTNowYearMonth, getKSTYearMonth, toSortableTime, formatKSTDateTime } from '@/utils/dateUtils';
 import { resolveInterfaceEditState } from '@/lib/permission-utils';
 import LoadingState from '@/components/common/LoadingState';
 import ItMasterPageBanner from '@/components/asset/it/ItMasterPageBanner';
@@ -91,15 +88,15 @@ function isAdminInquiryRow(req: any) {
 function historyStatusLabel(status: string, req?: any, opts?: { isThreadRoot?: boolean }) {
   // 스레드 첫 행: 항상 최초 질의 유형만 표기 (종결 후에도 유지)
   if (opts?.isThreadRoot) {
-    return isAdminInquiryRow(req) ? '관리자 문의/요청' : '사용자 문의/요청';
+    return isAdminInquiryRow(req) ? '관리자 신규접수' : '사용자 신규접수';
   }
   const s = String(status || '').trim();
   if (s === '처리완료' || s === '관리자 확인완료' || s === '사용자 종료처리') return '처리 완료(종료)';
-  if (s === '사용자 확인완료' || isAdminInquiryRow(req)) return '관리자 문의/요청';
+  if (s === '사용자 확인완료' || isAdminInquiryRow(req)) return '관리자 신규접수';
   if (s === '관리자 답변') return '관리자 답변';
-  if (s === '관리자 의견발송') return '관리자 문의/요청';
+  if (s === '관리자 의견발송') return '관리자 신규접수';
   if (s === '답변회신' || (req && String(req.adminOpinion || '').includes(':::REPLY:::'))) return '사용자 답변';
-  if (s === '의견전송' || s === '답변 대기중' || s === '대기중') return '사용자 문의/요청';
+  if (s === '의견전송' || s === '답변 대기중' || s === '대기중') return '사용자 신규접수';
   return s || '-';
 }
 
@@ -118,6 +115,27 @@ function isThreadClosed(root: any, children: any[] = []) {
     return String(b.id || '').localeCompare(String(a.id || ''));
   })[0];
   return isClosedStatus(String(latest?.status || ''));
+}
+
+function hasMeaningfulUserContent(req: any) {
+  const c = String(req?.content || '').trim();
+  return !!c && c !== '(관리자 의견)';
+}
+
+function hasMeaningfulAdminContent(req: any) {
+  return !!String(
+    req?.adminOpinionText || parseAdminOpinion(req?.adminOpinion).opinionText || ''
+  ).trim();
+}
+
+/** 표준 3단계: 신규접수 → 진행중 → 처리완료 */
+function threadStage(root: any, children: any[] = []): 'NEW' | 'IN_PROGRESS' | 'DONE' {
+  if (isThreadClosed(root, children)) return 'DONE';
+  const members = [root, ...(children || [])].filter(Boolean);
+  if (isAdminInquiryRow(root)) {
+    return members.some((m) => hasMeaningfulUserContent(m)) ? 'IN_PROGRESS' : 'NEW';
+  }
+  return members.some((m) => hasMeaningfulAdminContent(m)) ? 'IN_PROGRESS' : 'NEW';
 }
 
 function isWaitingForUser(status: string) {
@@ -265,16 +283,44 @@ function threadTurns(req: any) {
   const userText = String(req?.content || '').trim();
   const userOk = userText && userText !== '(관리자 의견)';
   const adminText = opinionDisplay(req?.adminOpinion);
-  const reqDate = getKSTDateString(req?.requestDate || req?.createdAt) || req?.requestDate || '';
-  const doneDate = getKSTDateString(req?.completedAt || req?.updatedAt || req?.createdAt) || reqDate;
-  const turns: { role: 'admin' | 'user'; label: string; text: string; date: string }[] = [];
+  const reqDateRaw = req?.requestDate || req?.createdAt;
+  const doneDateRaw = req?.completedAt || req?.updatedAt || req?.createdAt || reqDateRaw;
+  const reqDate =
+    formatKSTDateTime(reqDateRaw) !== '-'
+      ? formatKSTDateTime(reqDateRaw)
+      : getKSTDateString(reqDateRaw) || '';
+  const doneDate =
+    formatKSTDateTime(doneDateRaw) !== '-'
+      ? formatKSTDateTime(doneDateRaw)
+      : reqDate;
+  const userName = String(req?.requester || req?.name || '').trim() || '사용자';
+  const adminName = '관리자';
+  const turns: { role: 'admin' | 'user'; name: string; text: string; date: string }[] = [];
   if (status === '관리자 의견발송' || status === '사용자 확인완료' || status === '관리자 답변') {
-    if (adminText) turns.push({ role: 'admin', label: status === '관리자 답변' ? '관리자 답변' : '관리자 문의/요청', text: adminText, date: reqDate });
+    if (adminText) {
+      turns.push({
+        role: 'admin',
+        name: adminName,
+        text: adminText,
+        date: reqDate,
+      });
+    }
   } else if (status === '답변회신' || status === '의견전송' || status === '답변 대기중') {
-    if (userOk) turns.push({ role: 'user', label: status === '답변회신' ? '사용자 답변' : '사용자 문의/요청', text: userText, date: reqDate });
+    if (userOk) {
+      turns.push({
+        role: 'user',
+        name: userName,
+        text: userText,
+        date: reqDate,
+      });
+    }
   } else if (isClosedStatus(status)) {
-    if (userOk) turns.push({ role: 'user', label: '사용자 답변', text: userText, date: reqDate });
-    if (adminText) turns.push({ role: 'admin', label: '관리자 답변', text: adminText, date: doneDate });
+    if (userOk) {
+      turns.push({ role: 'user', name: userName, text: userText, date: reqDate });
+    }
+    if (adminText) {
+      turns.push({ role: 'admin', name: adminName, text: adminText, date: doneDate });
+    }
   }
   return turns;
 }
@@ -364,7 +410,6 @@ function ITMasterRequestContent() {
 
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 10;
-  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     setCurrentPage(1);
@@ -669,10 +714,37 @@ function ITMasterRequestContent() {
     if (selectedIds.size === 0) {
       return alert('삭제할 항목을 체크박스로 선택해 주세요.');
     }
-    if (!confirm(`선택한 송수신 이력 ${selectedIds.size}건을 영구 삭제하시겠습니까?\n이 작업은 되돌릴 수 없습니다.`)) return;
+
+    // 목록은 대표(root)만 보이므로, 선택 건의 연계 회신까지 함께 삭제해야 잔여 행이 생기지 않음
+    const idsToDelete = new Set<string>();
+    selectedIds.forEach((rawId) => {
+      const id = String(rawId);
+      let rootId = id;
+      const seen = new Set<string>();
+      while (threadIndex.parentOf.has(rootId) && !seen.has(rootId)) {
+        seen.add(rootId);
+        rootId = threadIndex.parentOf.get(rootId) as string;
+      }
+      if (!requests.some((r) => String(r.id) === rootId)) rootId = id;
+      idsToDelete.add(rootId);
+      idsToDelete.add(id);
+      (threadIndex.childrenOf.get(rootId) || []).forEach((c) => idsToDelete.add(String(c.id)));
+    });
+
+    const ids = Array.from(idsToDelete);
+    const threadCount = selectedIds.size;
+    const extra = ids.length - threadCount;
+    if (
+      !confirm(
+        extra > 0
+          ? `선택한 ${threadCount}건(+연계 회신 ${extra}건, 합계 ${ids.length}건)을 영구 삭제하시겠습니까?\n이 작업은 되돌릴 수 없습니다.`
+          : `선택한 송수신 이력 ${ids.length}건을 영구 삭제하시겠습니까?\n이 작업은 되돌릴 수 없습니다.`
+      )
+    ) {
+      return;
+    }
 
     try {
-      const ids = Array.from(selectedIds);
       const res = await fetch(`/api/asset/it/requests?ids=${ids.map(encodeURIComponent).join(',')}`, { method: 'DELETE' });
       if (res.ok) {
         alert(`✅ ${ids.length}건이 정상적으로 삭제되었습니다.`);
@@ -859,22 +931,29 @@ function ITMasterRequestContent() {
   }, [requests, threadIndex, selectedYear, selectedMonth, filterStatus, filterDept, filterType, codeQuery, modelQuery, userQuery, selectedDeptNames, orgUnits, isOrgWideFilter]);
 
   const filteredRequests = useMemo(
-    () => filteredThreads.flatMap((t) => [t.root, ...t.children]),
+    () => filteredThreads.map((t) => t.root),
     [filteredThreads]
   );
 
   const totalPages = Math.max(1, Math.ceil(filteredThreads.length / itemsPerPage));
-  const currentThreads = filteredThreads.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
+  const safePage = Math.min(currentPage, totalPages);
+  const currentThreads = filteredThreads.slice((safePage - 1) * itemsPerPage, safePage * itemsPerPage);
 
-  const toggleExpand = (id: string) => {
-    setExpandedIds((prev) => {
-      const next = new Set(prev);
-      const key = String(id);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
-  };
+  useEffect(() => {
+    if (currentPage > totalPages) setCurrentPage(totalPages);
+  }, [currentPage, totalPages]);
+
+  const paginationPages = useMemo(() => {
+    if (totalPages <= 7) {
+      return Array.from({ length: totalPages }, (_, i) => i + 1);
+    }
+    const pages = new Set<number>([1, totalPages, safePage - 1, safePage, safePage + 1]);
+    if (safePage <= 3) [2, 3, 4].forEach((p) => pages.add(p));
+    if (safePage >= totalPages - 2) [totalPages - 3, totalPages - 2, totalPages - 1].forEach((p) => pages.add(p));
+    return Array.from(pages)
+      .filter((p) => p >= 1 && p <= totalPages)
+      .sort((a, b) => a - b);
+  }, [totalPages, safePage]);
 
   const toggleSelectAllFiltered = () => {
     const allIds = filteredRequests.map((r) => r.id);
@@ -885,42 +964,6 @@ function ITMasterRequestContent() {
 
   const allFilteredSelected =
     filteredRequests.length > 0 && filteredRequests.every((r) => selectedIds.has(r.id));
-
-  const handleExportExcel = () => {
-    const targets = selectedIds.size > 0 ? filteredRequests.filter((r) => selectedIds.has(r.id)) : filteredRequests;
-    if (targets.length === 0) return alert('다운로드할 데이터가 없습니다.');
-
-    const exportData = targets.map((req, idx) => ({
-      NO: targets.length - idx,
-      '부서 / 사용자': [req.dept || req.department, req.requester || req.name].filter(Boolean).join(' / ') || '-',
-      '자산 분류': req.assetType || req.category || '일반',
-      자산번호: req.assetCode || req.code || '-',
-      모델명: parseHistoryModel(req),
-      '사용자 요청/답변': req.content,
-      '관리자 요청/답변': req.adminOpinionText || '-',
-      '부서 / 관리자': req.responderLabel || req.responderName || '-',
-      상태: historyStatusLabel(req.status),
-      '요청/처리일자': req.completedAt || req.requestDate || req.createdAt || '-',
-    }));
-    const ws = XLSX.utils.json_to_sheet(exportData);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'Requests_Log');
-    XLSX.writeFile(wb, `IT_의견요청_송수신대장_${selectedYear === 'ALL' ? '전체' : selectedYear}.xlsx`);
-  };
-
-  const handleExportZip = async () => {
-    const targets = selectedIds.size > 0 ? filteredRequests.filter((r) => selectedIds.has(r.id)) : filteredRequests;
-    if (targets.length === 0) return alert('추출할 데이터가 없습니다.');
-
-    const zip = new JSZip();
-    targets.forEach((req, idx) => {
-      const content = `■ 요청/처리일자: ${req.completedAt || req.requestDate || req.createdAt || '-'}\n■ 사용자: ${req.requester} (${req.dept})\n■ 대상자산: ${req.assetType} | ${req.assetCode} | ${parseHistoryModel(req)}\n\n[사용자 요청/답변]\n${req.content}\n\n=================================\n\n■ 상태: ${historyStatusLabel(req.status)}\n■ 부서 / 관리자: ${req.responderLabel || req.responderName || '-'}\n\n[관리자 요청/답변]\n${req.adminOpinionText || '내역 없음'}`;
-      zip.file(`${idx + 1}_${req.requester}_${req.assetCode}.txt`, '\ufeff' + content);
-    });
-
-    const contentBlob = await zip.generateAsync({ type: 'blob' });
-    saveAs(contentBlob, `IT_의견요청_증빙자료_${getKSTDateString()}.zip`);
-  };
 
   const openReqModal = (req: any) => {
     setAdminComposeReq(null);
@@ -935,70 +978,52 @@ function ITMasterRequestContent() {
     req: any,
     opts: {
       rowNo: number | string;
-      depth: number;
-      childCount?: number;
-      expanded?: boolean;
       children?: any[];
-      latestId?: string;
       userLabel?: string;
       adminLabel?: string;
       threadClosed?: boolean;
     }
   ) => {
-    const isRoot = opts.depth === 0;
-    const relatedChildren = isRoot ? (opts.children || []) : [];
-    const threadMembers = isRoot ? [req, ...relatedChildren] : [req];
+    const relatedChildren = opts.children || [];
+    const threadMembers = [req, ...relatedChildren];
     const latestRelated =
-      [...threadMembers].sort((a, b) => reqTime(b) - reqTime(a))[0] || req;
-    const threadLatestId = opts.latestId || String(latestRelated?.id || req.id);
-    const isLatestInThread = String(req.id) === threadLatestId;
-    const isPastStep = opts.depth > 0 && !isLatestInThread;
-    const childCount = opts.childCount || 0;
-    const hasChildren = childCount > 0;
-    // personal과 동일: 최신 행 종결이면 스레드 전체 상태 회색
-    const threadClosed =
-      typeof opts.threadClosed === 'boolean'
-        ? opts.threadClosed
-        : isThreadClosed(req, relatedChildren);
-    // 각 행은 자기 내용에 맞는 상태만 표기 — 대표 줄은 종결 후에도 최초 질의 유형 유지
-    const rowStatusLabel = historyStatusLabel(req.status, req, { isThreadRoot: isRoot });
-    const rowIsAdminStart = rowStatusLabel === '관리자 문의/요청';
-    const rowIsAdminReply = rowStatusLabel === '관리자 답변';
-    const rowIsUserStart = rowStatusLabel === '사용자 문의/요청';
-    const rowIsUserReply = rowStatusLabel === '사용자 답변';
-    const canCancelAdminSend =
-      (req.status === '관리자 의견발송' || req.status === '관리자 답변') &&
-      isLatestInThread &&
-      !threadClosed;
+      [...threadMembers].sort((a, b) => {
+        const d = reqTime(b) - reqTime(a);
+        if (d !== 0) return d;
+        return String(b.id || '').localeCompare(String(a.id || ''));
+      })[0] || req;
+    const stage = threadStage(req, relatedChildren);
     const modelName = parseHistoryModel(req);
-    // 행별 관리자 의견만 표시 (최신 회신을 대표 줄로 끌어오지 않음)
-    const rowAdminText = String(
-      req.adminOpinionText || parseAdminOpinion(req.adminOpinion).opinionText || ''
-    ).trim();
-    const waitingReply =
-      !threadClosed && isUserPendingStatus(req.status) && isLatestInThread && !rowAdminText;
     const rowDate =
-      getKSTDateString(req.completedAt || req.requestDate || req.createdAt) ||
-      req.completedAt ||
-      req.requestDate ||
+      getKSTDateString(latestRelated.completedAt || latestRelated.requestDate || latestRelated.createdAt) ||
+      latestRelated.completedAt ||
+      latestRelated.requestDate ||
       '-';
-    const rootUserLabel = opts.userLabel || threadUserLabel(req);
-    const rootAdminLabel = opts.adminLabel || pickThreadAdminLabel([req, ...relatedChildren]);
-    const thisUserLabel = threadUserLabel(req);
-    const thisAdminLabel = rowAdminLabel(req);
-    // 사용자·관리자 영역: 매 행마다 해당 행(없으면 스레드 루트) 부서/이름 표기
-    const userLabel = thisUserLabel || rootUserLabel;
-    const adminLabel = thisAdminLabel || rootAdminLabel;
+    const userLabel = opts.userLabel || threadUserLabel(req);
+    const adminLabel = opts.adminLabel || pickThreadAdminLabel(threadMembers);
+    const adminStarted = isAdminInquiryRow(req);
+    const isNew = stage === 'NEW';
+    const isDone = stage === 'DONE';
+    const userNewReceiptClass = isDone ? 'font-black text-slate-900' : 'font-black text-amber-600';
+    const adminNewReceiptClass = isDone ? 'font-black text-slate-900' : 'font-black text-blue-600';
+    const counterpartLabel = isDone ? '처리 완료(종료)' : isNew ? '대기중' : '진행중';
+    const counterpartClass = isDone
+      ? 'font-black text-slate-800'
+      : isNew
+        ? 'font-bold text-slate-400'
+        : 'font-black text-blue-600';
+    const actionLabel = isDone ? '처리 완료(종료)' : isNew ? '신규접수' : '진행중';
+    const actionTextClass = isDone
+      ? 'text-slate-900'
+      : isNew
+        ? 'text-amber-600'
+        : 'text-blue-600';
 
     return (
       <tr
         key={req.id}
         className={`h-12 transition-colors ${
-          opts.depth > 0
-            ? 'bg-slate-50/70 hover:bg-slate-50'
-            : selectedIds.has(req.id)
-              ? 'bg-slate-50'
-              : 'hover:bg-slate-50/50'
+          selectedIds.has(req.id) ? 'bg-slate-50' : 'bg-white hover:bg-slate-50/50'
         }`}
       >
         <td className="px-2 text-center">
@@ -1013,9 +1038,7 @@ function ITMasterRequestContent() {
             className="accent-slate-800"
           />
         </td>
-        <td className="px-2 text-center font-mono text-slate-500 tabular-nums">
-          {opts.depth > 0 ? <span className="text-slate-400">└</span> : opts.rowNo}
-        </td>
+        <td className="px-2 text-center font-mono text-slate-500 tabular-nums">{opts.rowNo}</td>
         <td className="px-2 text-center">
           {userLabel ? (
             <span className="text-slate-800 truncate block" title={userLabel}>{userLabel}</span>
@@ -1024,30 +1047,28 @@ function ITMasterRequestContent() {
           )}
         </td>
         <td className="px-2 text-center">
-          {isRoot ? (
-            <span className="text-[9px] font-black uppercase tracking-wider text-indigo-600 bg-indigo-50 border border-indigo-100 px-2 py-0.5 rounded-md whitespace-nowrap">
-              {req.assetType || req.category || '일반'}
-            </span>
+          <span className="text-[9px] font-black uppercase tracking-wider text-indigo-600 bg-indigo-50 border border-indigo-100 px-2 py-0.5 rounded-md whitespace-nowrap">
+            {req.assetType || req.category || '일반'}
+          </span>
+        </td>
+        <td className="px-2 text-slate-900 truncate" title={req.assetCode || ''}>
+          {req.assetCode || req.code || '-'}
+        </td>
+        <td className="px-2 text-slate-800 truncate" title={modelName}>
+          {modelName}
+        </td>
+        <td className="px-2 truncate" title={adminStarted ? counterpartLabel : '신규접수'}>
+          {adminStarted ? (
+            <span className={counterpartClass}>{counterpartLabel}</span>
           ) : (
-            <span className="text-slate-300">-</span>
+            <span className={userNewReceiptClass}>신규접수</span>
           )}
         </td>
-        <td className="px-2 text-slate-900 truncate" title={isRoot ? (req.assetCode || '') : ''}>
-          {isRoot ? (req.assetCode || req.code || '-') : <span className="text-slate-300">-</span>}
-        </td>
-        <td className="px-2 text-slate-800 truncate" title={isRoot ? modelName : ''}>
-          {isRoot ? modelName : <span className="text-slate-300">-</span>}
-        </td>
-        <td className="px-2 text-slate-700 truncate" title={userRequestContent(req.content)}>
-          {userRequestContent(req.content)}
-        </td>
-        <td className="px-2 border-l border-slate-200">
-          {waitingReply ? (
-            <span className="text-slate-400 italic font-bold">아직 답변이 없습니다.</span>
+        <td className="px-2 border-l border-slate-200 truncate" title={adminStarted ? '신규접수' : counterpartLabel}>
+          {adminStarted ? (
+            <span className={adminNewReceiptClass}>신규접수</span>
           ) : (
-            <span className="text-slate-700 truncate block w-full" title={rowAdminText || ''}>
-              {rowAdminText ? `" ${rowAdminText} "` : '-'}
-            </span>
+            <span className={counterpartClass}>{counterpartLabel}</span>
           )}
         </td>
         <td className="px-2 text-center">
@@ -1058,74 +1079,24 @@ function ITMasterRequestContent() {
           )}
         </td>
         <td className="px-2 text-center whitespace-nowrap tabular-nums text-slate-800 border-l border-slate-200">{rowDate}</td>
-        <td className="px-2 text-center overflow-hidden border-l border-slate-200">
+        <td className="px-2 text-center overflow-hidden">
           <button
             type="button"
             title={
-              isLatestInThread && !isClosedStatus(String(latestRelated?.status || ''))
-                ? '클릭하여 답변/조치 (종료는 최신 행에서만)'
-                : '클릭하여 내역 확인'
+              !isDone
+                ? '클릭하여 대화 내역 확인 · 답변/조치'
+                : '클릭하여 대화 내역 확인'
             }
-            onClick={() => openReqModal(req)}
-            className={`inline-block max-w-full border px-1.5 py-0.5 rounded text-[10px] font-bold whitespace-nowrap ${
-              threadClosed || rowStatusLabel === '처리 완료(종료)'
-                ? 'bg-slate-100 text-slate-500 border-slate-200'
-                : isPastStep
-                  ? 'bg-slate-50 text-slate-500 border-slate-200'
-                  : rowIsUserReply
-                    ? 'bg-amber-50/80 text-amber-800 border-amber-200/80'
-                    : rowIsUserStart
-                      ? 'bg-amber-50/80 text-amber-800 border-amber-200/80'
-                      : rowIsAdminReply || rowIsAdminStart
-                        ? 'bg-rose-50 text-rose-700 border-rose-200'
-                        : 'bg-slate-100 text-slate-500 border-slate-300'
-            }`}
+            onClick={() => openReqModal(latestRelated)}
+            className="inline-block max-w-full border px-2 py-1 rounded-md text-[10px] font-black whitespace-nowrap bg-white text-indigo-600 border-indigo-200 hover:bg-indigo-50 shadow-sm transition-colors"
           >
-            {rowStatusLabel}
+            상세보기
           </button>
         </td>
-        <td className="px-2 text-center border-l border-slate-200 overflow-hidden">
-          <div className="inline-flex items-center justify-center gap-1.5 flex-nowrap">
-            {hasChildren ? (
-              <button
-                type="button"
-                title={opts.expanded ? '연관 회신 접기' : threadClosed ? '종료 내역 상세보기' : '연관 회신 상세보기'}
-                onClick={() => toggleExpand(req.id)}
-                className="inline-flex items-center gap-0.5 px-1.5 py-1 bg-white text-slate-600 border border-slate-200 rounded-md text-[10px] font-black hover:bg-slate-50 whitespace-nowrap"
-              >
-                {threadClosed ? '종료/상세보기' : '상세보기'}
-                <span className="text-[11px] leading-none">{opts.expanded ? '▲' : '▼'}</span>
-              </button>
-            ) : isRoot && threadClosed ? (
-              <button
-                type="button"
-                title="종료된 대화 · 클릭하여 내역 확인"
-                onClick={() => openReqModal(req)}
-                className="inline-flex items-center gap-0.5 px-1.5 py-1 bg-white text-slate-600 border border-slate-200 rounded-md text-[10px] font-black hover:bg-slate-50 whitespace-nowrap"
-              >
-                종료
-              </button>
-            ) : null}
-            {canCancelAdminSend ? (
-              <button
-                type="button"
-                disabled={!canEdit}
-                onClick={() => handleCancelSend(req.id)}
-                title={!canEdit ? '편집 권한 필요' : '상대 답변이 오기 전에만 전송을 취소할 수 있습니다.'}
-                className={`px-1.5 py-1 border rounded-md text-[10px] font-black whitespace-nowrap ${
-                  canEdit
-                    ? 'bg-rose-50 text-rose-600 border-rose-200 hover:bg-rose-100 hover:text-rose-700'
-                    : 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed opacity-70'
-                }`}
-              >
-                전송 취소
-              </button>
-            ) : isRoot && !hasChildren && !threadClosed ? (
-              <span className="text-slate-300">-</span>
-            ) : !isRoot && !canCancelAdminSend ? (
-              <span className="text-slate-300">-</span>
-            ) : null}
-          </div>
+        <td className="px-2 text-center overflow-hidden">
+          <span className={`text-[11px] font-black whitespace-nowrap ${actionTextClass}`}>
+            {actionLabel}
+          </span>
         </td>
       </tr>
     );
@@ -1138,7 +1109,7 @@ function ITMasterRequestContent() {
       <ItMasterPageBanner
         label="IT Asset Service Requests & History Log"
         title="전사 IT·업무자산 의견/요청 송수신 이력 아카이브"
-        description="최초 요청만 목록에 올리고, 연관 회신은 상태 클릭 시 하위로 펼칩니다."
+        description="최초 요청만 목록에 표시합니다. 상세보기 클릭 시 전체 대화 내역을 확인·조치할 수 있습니다."
         menuPath="/asset/it/master/requests"
         canEdit={canEdit}
       />
@@ -1303,20 +1274,6 @@ function ITMasterRequestContent() {
               />
             </div>
 
-            <button
-              type="button"
-              onClick={handleExportZip}
-              className="h-7 px-2 bg-slate-800 text-white rounded-lg text-[10px] font-black shadow-sm hover:bg-black transition-all whitespace-nowrap shrink-0 leading-none"
-            >
-              {selectedIds.size > 0 ? `ZIP(${selectedIds.size})` : 'ZIP'}
-            </button>
-            <button
-              type="button"
-              onClick={handleExportExcel}
-              className="h-7 px-2 bg-emerald-600 text-white rounded-lg text-[10px] font-black shadow-sm hover:bg-emerald-700 transition-all whitespace-nowrap shrink-0 leading-none"
-            >
-              {selectedIds.size > 0 ? `EXCEL(${selectedIds.size})` : 'EXCEL'}
-            </button>
             {isLV1 && (
               <button
                 type="button"
@@ -1363,12 +1320,12 @@ function ITMasterRequestContent() {
                 <th colSpan={5} className="h-8 px-2 text-center bg-slate-50 text-slate-600 border-b border-slate-100">
                   사용자 영역
                 </th>
-                <th colSpan={2} className="h-8 px-2 text-center bg-rose-50/70 text-rose-700 border-b border-rose-100 border-l border-slate-200">
+                <th colSpan={2} className="h-8 px-2 text-center bg-blue-50 text-blue-700 border-b border-blue-200 border-l border-slate-200">
                   관리자 영역
                 </th>
                 <th rowSpan={2} className="h-10 px-2 text-center align-middle whitespace-nowrap border-l border-slate-200">요청/처리일자</th>
-                <th rowSpan={2} className="h-10 px-2 text-center align-middle border-l border-slate-200">상태</th>
-                <th rowSpan={2} className="h-10 px-2 text-center align-middle whitespace-nowrap border-l border-slate-200">관리 액션</th>
+                <th rowSpan={2} className="h-10 px-2 text-center align-middle">상세보기</th>
+                <th rowSpan={2} className="h-10 px-2 text-center align-middle whitespace-nowrap">진행상태</th>
               </tr>
               <tr>
                 <th className="h-10 px-2 text-center whitespace-nowrap">부서 / 사용자</th>
@@ -1376,8 +1333,8 @@ function ITMasterRequestContent() {
                 <th className="h-10 px-2">자산번호</th>
                 <th className="h-10 px-2">모델명</th>
                 <th className="h-10 px-2">사용자 요청/답변</th>
-                <th className="h-10 px-2 border-l border-slate-200">관리자 요청/답변</th>
-                <th className="h-10 px-2 text-center whitespace-nowrap">부서 / 관리자</th>
+                <th className="h-10 px-2 border-l border-slate-200 bg-blue-50/40 text-blue-800">관리자 요청/답변</th>
+                <th className="h-10 px-2 text-center whitespace-nowrap bg-blue-50/40 text-blue-800">부서 / 관리자</th>
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-slate-100 text-[11px] font-bold text-slate-700">
@@ -1389,43 +1346,18 @@ function ITMasterRequestContent() {
                 </tr>
               ) : (
                 currentThreads.map((thread, i) => {
-                  const rowNo = filteredThreads.length - ((currentPage - 1) * itemsPerPage + i);
-                  const expanded = expandedIds.has(String(thread.root.id));
-                  const latestId = String(
-                    [...thread.children, thread.root].sort((a, b) => {
-                      const d = reqTime(b) - reqTime(a);
-                      if (d !== 0) return d;
-                      return String(b.id || '').localeCompare(String(a.id || ''));
-                    })[0]?.id || thread.root.id
-                  );
+                  const rowNo = filteredThreads.length - ((safePage - 1) * itemsPerPage + i);
                   const userLabel = threadUserLabel(thread.root);
                   const adminLabel = pickThreadAdminLabel([thread.root, ...thread.children]);
                   const threadClosed = isThreadClosed(thread.root, thread.children);
                   return (
-                    <Fragment key={thread.root.id}>
-                      {renderLedgerRow(thread.root, {
+                      renderLedgerRow(thread.root, {
                         rowNo,
-                        depth: 0,
-                        childCount: thread.children.length,
-                        expanded,
                         children: thread.children,
-                        latestId,
                         userLabel,
                         adminLabel,
                         threadClosed,
-                      })}
-                      {expanded &&
-                        thread.children.map((child) =>
-                          renderLedgerRow(child, {
-                            rowNo: '',
-                            depth: 1,
-                            latestId,
-                            userLabel,
-                            adminLabel,
-                            threadClosed,
-                          })
-                        )}
-                    </Fragment>
+                      })
                   );
                 })
               )}
@@ -1434,33 +1366,41 @@ function ITMasterRequestContent() {
         </div>
 
         {filteredThreads.length > 0 && (
-          <div className="flex justify-center items-center gap-1.5 py-3 border-t border-slate-100 bg-white">
+          <div className="flex justify-center items-center gap-1.5 py-3 border-t border-slate-100 bg-white flex-wrap">
             <button
               type="button"
-              disabled={currentPage === 1}
-              onClick={() => setCurrentPage((p) => p - 1)}
+              disabled={safePage === 1}
+              onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
               className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors"
             >
               이전
             </button>
-            {Array.from({ length: totalPages }).map((_, i) => (
-              <button
-                type="button"
-                key={i}
-                onClick={() => setCurrentPage(i + 1)}
-                className={`w-8 h-8 rounded-xl font-black text-xs transition-all ${
-                  currentPage === i + 1
-                    ? 'bg-slate-800 text-white shadow-sm scale-105'
-                    : 'bg-white border border-slate-200 text-slate-500 hover:bg-slate-50'
-                }`}
-              >
-                {i + 1}
-              </button>
-            ))}
+            {paginationPages.map((page, idx) => {
+              const prev = paginationPages[idx - 1];
+              const showEllipsis = idx > 0 && page - (prev || 0) > 1;
+              return (
+                <Fragment key={page}>
+                  {showEllipsis && (
+                    <span className="px-1 text-[11px] font-bold text-slate-400">…</span>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setCurrentPage(page)}
+                    className={`w-8 h-8 rounded-xl font-black text-xs transition-all ${
+                      safePage === page
+                        ? 'bg-slate-800 text-white shadow-sm scale-105'
+                        : 'bg-white border border-slate-200 text-slate-500 hover:bg-slate-50'
+                    }`}
+                  >
+                    {page}
+                  </button>
+                </Fragment>
+              );
+            })}
             <button
               type="button"
-              disabled={currentPage === totalPages}
-              onClick={() => setCurrentPage((p) => p + 1)}
+              disabled={safePage === totalPages}
+              onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
               className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors"
             >
               다음
@@ -1489,10 +1429,10 @@ function ITMasterRequestContent() {
                 {threadClosed
                   ? '처리 완료(종료)'
                   : waitingForUser
-                    ? (latest.status === '관리자 답변' ? '관리자 답변' : '관리자 문의/요청')
+                    ? (latest.status === '관리자 답변' ? '관리자 답변' : '관리자 신규접수')
                     : isIncomingReply(latest, requests)
                       ? '사용자 답변'
-                      : '사용자 문의/요청'}
+                      : '사용자 신규접수'}
               </h4>
               <p className="text-[10px] font-bold text-slate-400 mb-6 border-b-2 border-slate-900 pb-3">
                 {!canEdit
@@ -1522,7 +1462,7 @@ function ITMasterRequestContent() {
                   </div>
                   <div className="flex justify-between gap-3 text-[11px] font-bold">
                     <span className="text-slate-400 shrink-0">상태</span>
-                    <span className={threadClosed ? 'text-slate-500' : waitingForUser ? 'text-rose-600' : 'text-amber-600'}>
+                    <span className={threadClosed ? 'text-slate-500' : waitingForUser ? 'text-blue-600' : 'text-amber-600'}>
                       {threadClosed
                         ? '처리 완료(종료)'
                         : waitingForUser
@@ -1532,44 +1472,94 @@ function ITMasterRequestContent() {
                   </div>
                 </div>
 
-                {turns.map((turn, idx) => (
-                  <div key={`${turn.role}-${idx}`}>
-                    <p className={`text-[10px] font-black uppercase tracking-wider mb-2 ${turn.role === 'admin' ? 'text-rose-600' : 'text-amber-600'}`}>
-                      {turn.label}
-                    </p>
-                    <div className={`w-full min-h-[4rem] p-4 text-[11px] font-bold rounded-xl whitespace-pre-wrap leading-relaxed ${
-                      turn.role === 'admin'
-                        ? 'bg-rose-50 border border-rose-100 text-rose-900'
-                        : 'bg-amber-50 border border-amber-100 text-amber-900'
-                    }`}>
-                      {turn.text}
-                    </div>
-                    {turn.date && (
-                      <p className="mt-1.5 text-[10px] font-bold text-slate-400 text-right tabular-nums">{turn.date}</p>
-                    )}
-                  </div>
-                ))}
+                <div className="border-l-2 border-slate-200 ml-2 space-y-4">
+                  {turns.map((turn, idx) => {
+                    const isAdmin = turn.role === 'admin';
+                    const roleTag = isAdmin ? '관리자' : '사용자';
+                    return (
+                      <div key={`${turn.role}-${idx}`} className="relative pl-5">
+                        <span
+                          className={`absolute -left-[5px] top-2 w-2 h-2 rounded-full ring-2 ring-white ${
+                            isAdmin ? 'bg-blue-500' : 'bg-slate-400'
+                          }`}
+                          aria-hidden
+                        />
+                        <div className="flex items-center justify-between gap-3 mb-1.5">
+                          <span
+                            className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-black whitespace-nowrap ${
+                              isAdmin
+                                ? 'bg-blue-100 text-blue-700'
+                                : 'bg-slate-100 text-slate-600'
+                            }`}
+                          >
+                            [{roleTag}] {turn.name}
+                          </span>
+                          {turn.date && (
+                            <span className="text-[10px] font-bold text-slate-400 tabular-nums shrink-0">
+                              {turn.date}
+                            </span>
+                          )}
+                        </div>
+                        <div
+                          className={`rounded-md border p-3.5 text-[11px] font-semibold whitespace-pre-wrap leading-relaxed ${
+                            isAdmin
+                              ? 'bg-blue-50/40 border-blue-200 text-slate-800'
+                              : 'bg-white border-slate-200 text-slate-800'
+                          }`}
+                        >
+                          {turn.text}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
 
                 {canAdminReply && (
-                  <div>
-                    <p className="text-[10px] font-black text-rose-600 uppercase tracking-wider mb-2">답변 내용</p>
-                    <textarea
-                      value={editOpinion}
-                      onChange={(e) => setEditOpinion(e.target.value)}
-                      placeholder="사용자에게 전달할 답변·조치 내용을 작성하세요."
-                      className="w-full min-h-[8rem] bg-white border border-rose-200 p-4 text-[11px] font-bold text-slate-800 rounded-xl outline-none focus:border-rose-500 focus:ring-1 focus:ring-rose-300 transition-all resize-none shadow-inner"
-                    />
+                  <div className="border-l-2 border-slate-200 ml-2">
+                    <div className="relative pl-5">
+                      <span
+                        className="absolute -left-[5px] top-2 w-2 h-2 rounded-full bg-blue-500 ring-2 ring-white"
+                        aria-hidden
+                      />
+                      <div className="flex items-center justify-between gap-3 mb-1.5">
+                        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-black whitespace-nowrap bg-blue-100 text-blue-700">
+                          [관리자] 관리자
+                        </span>
+                        <span className="text-[10px] font-bold text-slate-400 tabular-nums shrink-0">작성 중</span>
+                      </div>
+                      <div className="rounded-md border border-blue-200 bg-blue-50/40 p-3.5">
+                        <textarea
+                          value={editOpinion}
+                          onChange={(e) => setEditOpinion(e.target.value)}
+                          placeholder="사용자에게 전달할 답변·조치 내용을 작성하세요."
+                          className="w-full min-h-[8rem] bg-transparent text-[11px] font-semibold text-slate-800 outline-none resize-none placeholder:text-slate-400 leading-relaxed"
+                        />
+                      </div>
+                    </div>
                   </div>
                 )}
                 {canEdit && waitingForUser && commEditMode && (
-                  <div>
-                    <p className="text-[10px] font-black text-rose-600 uppercase tracking-wider mb-2">내용 수정</p>
-                    <textarea
-                      value={editOpinion}
-                      onChange={(e) => setEditOpinion(e.target.value)}
-                      placeholder="사용자에게 전달할 내용을 수정하세요."
-                      className="w-full min-h-[8rem] bg-white border border-amber-300 p-4 text-[11px] font-bold text-slate-800 rounded-xl outline-none focus:border-amber-500 focus:ring-1 focus:ring-amber-300 transition-all resize-none shadow-inner"
-                    />
+                  <div className="border-l-2 border-slate-200 ml-2">
+                    <div className="relative pl-5">
+                      <span
+                        className="absolute -left-[5px] top-2 w-2 h-2 rounded-full bg-blue-500 ring-2 ring-white"
+                        aria-hidden
+                      />
+                      <div className="flex items-center justify-between gap-3 mb-1.5">
+                        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-black whitespace-nowrap bg-blue-100 text-blue-700">
+                          [관리자] 관리자
+                        </span>
+                        <span className="text-[10px] font-bold text-slate-400 tabular-nums shrink-0">수정 중</span>
+                      </div>
+                      <div className="rounded-md border border-blue-200 bg-blue-50/40 p-3.5">
+                        <textarea
+                          value={editOpinion}
+                          onChange={(e) => setEditOpinion(e.target.value)}
+                          placeholder="사용자에게 전달할 내용을 수정하세요."
+                          className="w-full min-h-[8rem] bg-transparent text-[11px] font-semibold text-slate-800 outline-none resize-none placeholder:text-slate-400 leading-relaxed"
+                        />
+                      </div>
+                    </div>
                   </div>
                 )}
               </div>
@@ -1602,7 +1592,7 @@ function ITMasterRequestContent() {
                     <button
                       type="button"
                       onClick={handleUpdateAdminOutbound}
-                      className="flex-[2] py-3.5 bg-amber-500 text-white rounded-xl font-black text-[12px] shadow-md hover:bg-amber-600 active:scale-95 transition-all"
+                      className="flex-[2] py-3.5 bg-blue-600 text-white rounded-xl font-black text-[12px] shadow-md hover:bg-blue-700 active:scale-95 transition-all"
                     >
                       내용 저장
                     </button>
@@ -1718,16 +1708,12 @@ function ITMasterRequestContent() {
             </p>
 
             <div className="overflow-y-auto flex-1 pr-2 space-y-4 scrollbar-hide">
-              <div className="rounded-xl bg-slate-50 border border-slate-100 px-4 py-3 space-y-2">
+              <div className="rounded-md bg-slate-50 border border-slate-200 px-4 py-3 space-y-2">
                 <div className="flex justify-between gap-3 text-[11px] font-bold">
                   <span className="text-slate-400 shrink-0">대상자산</span>
                   <span className="text-slate-800 text-right">
                     {adminComposeReq.assetType || adminComposeReq.category || '-'} | {adminComposeReq.assetCode || '-'} / {parseHistoryModel(adminComposeReq)}
                   </span>
-                </div>
-                <div className="flex justify-between gap-3 text-[11px] font-bold">
-                  <span className="text-slate-400 shrink-0">발송일</span>
-                  <span className="text-slate-800 tabular-nums">{getKSTDateString()}</span>
                 </div>
                 <div className="flex justify-between gap-3 text-[11px] font-bold">
                   <span className="text-slate-400 shrink-0">대상 사용자</span>
@@ -1737,14 +1723,31 @@ function ITMasterRequestContent() {
                 </div>
               </div>
 
-              <div>
-                <p className="text-[10px] font-black text-rose-600 uppercase tracking-wider mb-2">의견 내용</p>
-                <textarea
-                  value={editOpinion}
-                  onChange={(e) => setEditOpinion(e.target.value)}
-                  placeholder="실사 안내, 자산 확인 요청, 교체 일정 협의 등 사용자에게 전달할 내용을 작성하세요."
-                  className="w-full min-h-[8rem] bg-white border border-rose-200 p-4 text-[11px] font-bold text-slate-800 rounded-xl outline-none focus:border-rose-500 focus:ring-1 focus:ring-rose-300 transition-all resize-none shadow-inner"
-                />
+              <div className="border-l-2 border-slate-200 ml-2">
+                <div className="relative pl-5">
+                  <span
+                    className="absolute -left-[5px] top-2 w-2 h-2 rounded-full bg-blue-500 ring-2 ring-white"
+                    aria-hidden
+                  />
+                  <div className="flex items-center justify-between gap-3 mb-1.5">
+                    <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-black whitespace-nowrap bg-blue-100 text-blue-700">
+                      [관리자] 관리자
+                    </span>
+                    <span className="text-[10px] font-bold text-slate-400 tabular-nums shrink-0">
+                      {formatKSTDateTime(new Date()) !== '-'
+                        ? formatKSTDateTime(new Date())
+                        : getKSTDateString()}
+                    </span>
+                  </div>
+                  <div className="rounded-md border border-blue-200 bg-blue-50/40 p-3.5">
+                    <textarea
+                      value={editOpinion}
+                      onChange={(e) => setEditOpinion(e.target.value)}
+                      placeholder="실사 안내, 자산 확인 요청, 교체 일정 협의 등 사용자에게 전달할 내용을 작성하세요."
+                      className="w-full min-h-[8rem] bg-transparent text-[11px] font-semibold text-slate-800 outline-none resize-none placeholder:text-slate-400 leading-relaxed"
+                    />
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -1760,7 +1763,7 @@ function ITMasterRequestContent() {
                 <button
                   type="button"
                   onClick={submitAdminOpinionRequest}
-                  className="flex-[2] py-3.5 bg-rose-600 text-white rounded-xl font-black text-[12px] shadow-md hover:bg-rose-700 active:scale-95 transition-all"
+                  className="flex-[2] py-3.5 bg-slate-900 text-white rounded-xl font-black text-[12px] shadow-md hover:bg-black active:scale-95 transition-all"
                 >
                   사용자에게 의견/요청 전송
                 </button>

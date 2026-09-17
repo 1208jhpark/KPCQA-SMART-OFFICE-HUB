@@ -21,7 +21,7 @@ const SuppliesInventoryModule = dynamic(() => import('../asset/supplies/Inventor
 const SuppliesDeptModule = dynamic(() => import('../asset/supplies/DeptModule').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
 const SuppliesMasterDashboardModule = dynamic(() => import('../asset/supplies/MasterDashboardModule').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
 const SuppliesMasterArchiveModule = dynamic(() => import('../asset/supplies/MasterArchiveModule').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
-const SuppliesMasterPurchaseModule = dynamic(() => import('../asset/supplies/MasterPurchaseModule').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
+const SuppliesMasterRestockModule = dynamic(() => import('../asset/supplies/MasterRestockModule').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
 const SuppliesMasterRequestModule = dynamic(() => import('../asset/supplies/MasterRequestModule').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
  
 // --- [명함 관리] ---
@@ -82,7 +82,8 @@ export const ModuleRegistry: Record<string, React.ComponentType<any>> = {
   '/asset/supplies/dept': SuppliesDeptModule,
   '/asset/supplies/master/dashboard': SuppliesMasterDashboardModule,
   '/asset/supplies/master/archive': SuppliesMasterArchiveModule,
-  '/asset/supplies/master/purchase': SuppliesMasterPurchaseModule,
+  '/asset/supplies/master/restock': SuppliesMasterRestockModule,
+  '/asset/supplies/master/purchase': SuppliesMasterRestockModule, // 구 경로 호환
   '/asset/supplies/master/requests': SuppliesMasterRequestModule,
   
   // [명함 관리 모듈]

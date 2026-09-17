@@ -29,7 +29,7 @@ export async function createSupplyStockIn(auth: any, body: any) {
     return { ok: false as const, status: 400, error: '재고 반영 수량은 1 이상이어야 합니다.' };
   }
   if (pQty > 0 && linkQty <= 0) {
-    return { ok: false as const, status: 400, error: '입고단위 연동 수량은 1 이상이어야 합니다.' };
+    return { ok: false as const, status: 400, error: '환산수량(지급/입고)은 1 이상이어야 합니다.' };
   }
   if (unitPrice < 0 || extraCost < 0) {
     return { ok: false as const, status: 400, error: '단가/부대비용은 0 이상이어야 합니다.' };

@@ -229,9 +229,9 @@ export const SUPPLIES_MASTER_TABS: InterfaceStepTabDef[] = [
     activeColor: 'text-emerald-700',
   },
   {
-    id: 'purchase',
-    path: '/asset/supplies/master/purchase',
-    fallbackName: '입고/구매 내역 대장',
+    id: 'restock',
+    path: '/asset/supplies/master/restock',
+    fallbackName: '입고 관리',
     fallbackIcon: '💰',
     activeColor: 'text-amber-700',
   },

@@ -415,6 +415,11 @@ export default function MobilePublicAuditPage() {
         console.warn('실사 응답 기록 실패', err);
       }
 
+      const start = audit?.startDate;
+      const remainingPending = myAssets.filter(
+        (a) => a.id !== assetId && !isDoneInThisAudit(a, start)
+      );
+
       setMyAssets((prev) =>
         prev.map((a) =>
           a.id === assetId
@@ -430,9 +435,14 @@ export default function MobilePublicAuditPage() {
       );
       setQrHint('');
       setInfoEditMode(false);
-      // 완료된 자산을 바로 보여 버튼이 초록(완료)으로 바뀐 것을 확인
-      setListFilter('done');
-      setTimeout(() => jumpToAssetById(assetId, 'done'), 0);
+      // 미완료가 남으면 미완료 탭 유지(다음 미완료로), 전부 끝나면 완료 탭으로
+      if (remainingPending.length > 0) {
+        setListFilter('pending');
+        setCurrentAssetIndex((i) => Math.min(i, remainingPending.length - 1));
+      } else {
+        setListFilter('done');
+        setTimeout(() => jumpToAssetById(assetId, 'done'), 0);
+      }
       alert(`자산 [${currentAsset.code}] 실사 인증이 완료되었습니다.`);
     } catch {
       alert('서버 통신 오류로 인해 실사 확인에 실패했습니다.');

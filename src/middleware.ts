@@ -4,10 +4,9 @@ import type { NextRequest } from 'next/server';
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
-  // 1. 로그인·회원가입·API·정적 자원은 인증 검사 제외
+  // 1. 로그인·API·정적 자원·공개 경로는 인증 검사 제외
   if (
     pathname.startsWith('/login') ||
-    pathname.startsWith('/signup') ||
     pathname.startsWith('/api') ||
     pathname.startsWith('/equipment/verify') ||
     pathname.startsWith('/m/verify') ||
@@ -17,6 +16,11 @@ export function middleware(request: NextRequest) {
     pathname.startsWith('/_next')
   ) {
     return NextResponse.next();
+  }
+
+  // 자체 가입 폐지 → 로그인으로
+  if (pathname.startsWith('/signup')) {
+    return NextResponse.redirect(new URL('/login', request.url));
   }
 
   // 2. 쿠키에서 인증 토큰 확인

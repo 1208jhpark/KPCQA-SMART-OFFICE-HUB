@@ -1,5 +1,6 @@
-import L4PanelRenderer from '@/components/admin/L4PanelRenderer';
-     
+import { redirect } from 'next/navigation';
+
+/** 구 경로 → restock 으로 이전 */
 export default function Page() {
-  return <L4PanelRenderer />;
+  redirect('/asset/supplies/master/restock');
 }

@@ -1,12 +1,17 @@
 // src/app/(service)/layout.tsx
 'use client';
      
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useLayoutEffect, useState, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 // 🚀 통합 권한 엔진 임포트 (경로를 본인 환경에 맞게 확인하세요)
 import { checkMenuPermission } from '@/lib/permission-utils';
 import { resolveEntryHref } from '@/lib/resolve-entry-href';
+import LoadingState from '@/components/common/LoadingState';
+import {
+  readServiceShellCache,
+  writeServiceShellCache,
+} from '@/lib/service-shell-cache';
 
 export default function ServiceLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -15,6 +20,8 @@ export default function ServiceLayout({ children }: { children: React.ReactNode 
   const [menus, setMenus] = useState<any[]>([]);
   const [user, setUser] = useState<any>(null); 
   const [unitsList, setUnitsList] = useState<any[]>([]); 
+  /** 캐시 복원 전 1프레임 — Smart Office Hub 스플래시 대신 빈 화면 */
+  const [bootReady, setBootReady] = useState(false);
   const [loading, setLoading] = useState(true);
   const [accessError, setAccessError] = useState<string | null>(null);
   /** URL 직접 진입 시 중간 화면 깜빡임 방지 */
@@ -58,6 +65,7 @@ export default function ServiceLayout({ children }: { children: React.ReactNode 
         const myUnit = fetchedUnits.find((u: any) => u.id === userData.dept_id);
         userData.unit = myUnit || { unit_name: '소속없음' };
         setUser(userData);
+        writeServiceShellCache({ menus: menuData, user: userData, units: fetchedUnits });
       } else {
         router.push('/login');
       }
@@ -67,8 +75,17 @@ export default function ServiceLayout({ children }: { children: React.ReactNode 
       setLoading(false);
     }
   };
-   
-  useEffect(() => {
+
+  // paint 전 세션 캐시 복원 → F5 시 Smart Office Hub 스플래시 스킵
+  useLayoutEffect(() => {
+    const cached = readServiceShellCache();
+    if (cached?.user) {
+      setMenus(cached.menus);
+      setUser(cached.user);
+      setUnitsList(Array.isArray(cached.units) ? cached.units : []);
+      setLoading(false);
+    }
+    setBootReady(true);
     fetchInitialData();
   }, []);
 
@@ -272,26 +289,19 @@ export default function ServiceLayout({ children }: { children: React.ReactNode 
     .sort((a, b) => a.sort_order - b.sort_order);
   
   const isHomePage = pathname === '/home';
-   
-  if (loading) return (
-    <div className="h-screen w-full flex items-center justify-center bg-white">
-      <div className="text-center space-y-4">
-        <h1 className="text-2xl font-black italic tracking-tighter text-blue-600 animate-pulse uppercase">
-          Smart Office Hub...
-        </h1>
-        <div className="h-1.5 w-48 bg-slate-100 rounded-full mx-auto overflow-hidden">
-          <div className="h-full bg-blue-600 w-1/3 animate-shimmer" />
-        </div>
-      </div>
-    </div>
-  );
+
+  // 캐시 복원 전: 문구 스플래시 없이 대기 (1프레임)
+  if (!bootReady) return null;
+
+  // 콜드 스타트(캐시 없음): 빈 placeholder — 로딩 문구로 대기감 주지 않음
+  if (loading && !user) return <LoadingState />;
   
   return (
     <div className="flex flex-col h-screen bg-slate-50/50 font-sans text-slate-900 overflow-hidden">
       <header className="h-16 bg-slate-900 border-b border-slate-800 flex items-center justify-between px-8 shrink-0 z-50 shadow-lg">
         <div className="flex items-center gap-12">
           <Link href="/home" className="font-black text-[14px] uppercase tracking-widest text-indigo-400 not-italic hover:opacity-80 transition-opacity">
-            SMART OFFICE HUB
+            WISE HOME
           </Link>
           
           <nav className="flex gap-10">
@@ -349,7 +359,15 @@ export default function ServiceLayout({ children }: { children: React.ReactNode 
               <div className="px-3.5 py-3 space-y-1.5 border-b border-slate-800">
                 <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">레벨</p>
                 <p className="text-[12px] font-semibold text-slate-200">
-                  {user?.roles?.[0] || 'LV_1'}
+                  {(() => {
+                    const role = user?.roles?.[0] || 'LV_3';
+                    const roleLabel =
+                      role === 'LV_1' ? '시스템 운영자' :
+                      role === 'LV_2' ? '관리자' :
+                      role === 'LV_3' ? '사용자' :
+                      '';
+                    return roleLabel ? `${role} [${roleLabel}]` : role;
+                  })()}
                 </p>
                 <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider pt-1.5">이메일</p>
                 <p className="text-[12px] font-medium text-slate-300 break-all lowercase">
@@ -365,14 +383,16 @@ export default function ServiceLayout({ children }: { children: React.ReactNode 
                 >
                   비밀번호 변경
                 </Link>
-                <Link
-                  href="/admin"
-                  role="menuitem"
-                  onClick={() => setUserMenuOpen(false)}
-                  className="px-3 py-2.5 rounded-lg text-[11px] font-bold text-indigo-300 hover:bg-slate-800 hover:text-indigo-200 transition-colors"
-                >
-                  Admin
-                </Link>
+                {user?.roles?.[0] === 'LV_1' && (
+                  <Link
+                    href="/admin"
+                    role="menuitem"
+                    onClick={() => setUserMenuOpen(false)}
+                    className="px-3 py-2.5 rounded-lg text-[11px] font-bold text-indigo-300 hover:bg-slate-800 hover:text-indigo-200 transition-colors"
+                  >
+                    Admin
+                  </Link>
+                )}
                 <button
                   type="button"
                   role="menuitem"
@@ -428,9 +448,7 @@ export default function ServiceLayout({ children }: { children: React.ReactNode 
               </div>
             </div>
           ) : entryJumpPending ? (
-            <div className="w-full h-full flex items-center justify-center min-h-[240px]">
-              <p className="text-[11px] font-black text-slate-400 uppercase tracking-widest animate-pulse">Loading...</p>
-            </div>
+            <LoadingState />
           ) : showIndexGrid ? (
             <div className="w-full max-w-[1600px] mx-auto space-y-6 p-8 font-sans text-slate-900 pb-24 animate-fade-in relative z-20 bg-slate-50/20">
               <div className="pb-4 border-b border-slate-200">

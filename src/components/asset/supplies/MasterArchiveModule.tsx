@@ -369,11 +369,11 @@ function MasterArchiveContent() {
                   </th>
                   <th className="h-12 px-2 text-center">NO</th>
                   <th className="h-12 px-2 text-center whitespace-nowrap">폐기 처리일</th>
-                  <th className="h-12 px-2 text-indigo-600">물품명</th>
+                  <th className="h-12 px-2">물품명</th>
                   <th className="h-12 px-2 text-center whitespace-nowrap">최종 재고</th>
                   <th className="h-12 px-2">폐기 사유 (비고)</th>
                   <th className="h-12 px-2 text-center border-l border-slate-200 whitespace-nowrap">부서 / 처리자</th>
-                  <th className="h-12 px-2 text-center whitespace-nowrap border-l border-slate-200">관리 액션</th>
+                  <th className="h-12 px-2 text-center whitespace-nowrap border-l border-slate-200">관리액션(Edit)</th>
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-slate-100 text-[11px] font-bold text-slate-700">
@@ -395,8 +395,8 @@ function MasterArchiveContent() {
                       </td>
                       <td className="px-2 text-center font-mono text-slate-500 tabular-nums">{rowNo}</td>
                       <td className="px-2 text-center whitespace-nowrap tabular-nums text-slate-800">{displayDate}</td>
-                      <td className="px-2 text-indigo-700 truncate" title={item.name}>{item.name}</td>
-                      <td className="px-2 text-center font-mono whitespace-nowrap tabular-nums text-red-500">
+                      <td className="px-2 text-slate-900 truncate" title={item.name}>{item.name}</td>
+                      <td className="px-2 text-center font-mono whitespace-nowrap tabular-nums text-slate-900">
                         {Number(item.current_stock || 0).toLocaleString()}
                         {sUnit && <span className="text-[9px] text-slate-400 font-bold ml-0.5">{sUnit}</span>}
                       </td>

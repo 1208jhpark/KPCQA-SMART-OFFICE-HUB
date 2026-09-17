@@ -2,6 +2,16 @@ import { NextResponse } from 'next/server';
 import prisma from '@/lib/prisma';
 import { authorizeApi, authorizeAnyMenuPaths, authErrorToResponse } from '@/lib/server-auth-guard';
 import { DEFAULT_STATEMENT_COL_MAP, normalizeStatementColMap } from '@/lib/businesscard-statement-match';
+import {
+  resolveBcMailBodyTemplate,
+  resolveBcMailSubjectTemplate,
+} from '@/lib/businesscard-mail-template';
+import {
+  DEFAULT_USER_DUTY_OPTIONS,
+  DEFAULT_USER_GRADE_OPTIONS,
+  resolveUserDutyOptions,
+  resolveUserGradeOptions,
+} from '@/lib/user-job-options';
 
 export const dynamic = 'force-dynamic';
 
@@ -76,6 +86,8 @@ async function writeStatementColMap(colMap: ReturnType<typeof normalizeStatement
   );
 }
 
+const DEFAULT_BC_MAIL_SHORTCUT_URL = 'https://ep.kpcqa.or.kr/mail2/writeMailView.do?';
+
 async function readMailShortcutUrl() {
   try {
     const rows = await prisma.$queryRaw<Array<{ bc_mail_shortcut_url: string | null }>>`
@@ -98,17 +110,84 @@ async function writeMailShortcutUrl(url: string) {
   );
 }
 
+async function readMailTemplates() {
+  try {
+    const rows = await prisma.$queryRaw<
+      Array<{
+        bc_mail_subject_template: string | null;
+        bc_mail_body_template: string | null;
+      }>
+    >`
+      SELECT "bc_mail_subject_template", "bc_mail_body_template"
+      FROM "SystemConfig" WHERE id = 'global'
+    `;
+    return {
+      subjectTemplate: resolveBcMailSubjectTemplate(rows[0]?.bc_mail_subject_template),
+      bodyTemplate: resolveBcMailBodyTemplate(rows[0]?.bc_mail_body_template),
+    };
+  } catch {
+    return {
+      subjectTemplate: resolveBcMailSubjectTemplate(''),
+      bodyTemplate: resolveBcMailBodyTemplate(''),
+    };
+  }
+}
+
+async function writeMailTemplates(subjectTemplate: string, bodyTemplate: string) {
+  await prisma.$executeRawUnsafe(
+    `INSERT INTO "SystemConfig" (id, "bc_mail_subject_template", "bc_mail_body_template", "updatedAt")
+     VALUES ('global', $1, $2, NOW())
+     ON CONFLICT (id) DO UPDATE SET
+       "bc_mail_subject_template" = EXCLUDED."bc_mail_subject_template",
+       "bc_mail_body_template" = EXCLUDED."bc_mail_body_template",
+       "updatedAt" = NOW()`,
+    subjectTemplate,
+    bodyTemplate
+  );
+}
+
+async function readUserJobOptions() {
+  try {
+    const rows = await prisma.$queryRaw<
+      Array<{ user_duty_options: unknown; user_grade_options: unknown }>
+    >`
+      SELECT "user_duty_options", "user_grade_options"
+      FROM "SystemConfig" WHERE id = 'global'
+    `;
+    return {
+      duties: resolveUserDutyOptions(rows[0]?.user_duty_options),
+      grades: resolveUserGradeOptions(rows[0]?.user_grade_options),
+    };
+  } catch {
+    return {
+      duties: [...DEFAULT_USER_DUTY_OPTIONS],
+      grades: [...DEFAULT_USER_GRADE_OPTIONS],
+    };
+  }
+}
+
+async function buildSettingsPayload() {
+  const storedMail = await readMailShortcutUrl();
+  const mailTemplates = await readMailTemplates();
+  const jobOptions = await readUserJobOptions();
+  return {
+    sheetsPerPack: await readSheetsPerPack(),
+    statementColMap: await readStatementColMap(),
+    mailShortcutUrl: storedMail || DEFAULT_BC_MAIL_SHORTCUT_URL,
+    mailSubjectTemplate: mailTemplates.subjectTemplate,
+    mailBodyTemplate: mailTemplates.bodyTemplate,
+    /** /admin/users 직책·직급 옵션 — 명함 신청·마스터 편집 드롭다운 */
+    duties: jobOptions.duties,
+    grades: jobOptions.grades,
+  };
+}
+
 export async function GET() {
   try {
     await authorizeAnyMenuPaths(READ_PATHS);
-    return NextResponse.json(
-      {
-        sheetsPerPack: await readSheetsPerPack(),
-        statementColMap: await readStatementColMap(),
-        mailShortcutUrl: await readMailShortcutUrl(),
-      },
-      { headers: { 'Cache-Control': 'no-store, max-age=0' } }
-    );
+    return NextResponse.json(await buildSettingsPayload(), {
+      headers: { 'Cache-Control': 'no-store, max-age=0' },
+    });
   } catch (error) {
     const authRes = authErrorToResponse(error);
     if (authRes.status !== 500) return authRes;
@@ -130,11 +209,18 @@ export async function PUT(req: Request) {
     if (body.mailShortcutUrl != null) {
       await writeMailShortcutUrl(String(body.mailShortcutUrl || '').trim());
     }
-    return NextResponse.json({
-      sheetsPerPack: await readSheetsPerPack(),
-      statementColMap: await readStatementColMap(),
-      mailShortcutUrl: await readMailShortcutUrl(),
-    });
+    if (body.mailSubjectTemplate != null || body.mailBodyTemplate != null) {
+      const current = await readMailTemplates();
+      await writeMailTemplates(
+        resolveBcMailSubjectTemplate(
+          body.mailSubjectTemplate != null ? body.mailSubjectTemplate : current.subjectTemplate
+        ),
+        resolveBcMailBodyTemplate(
+          body.mailBodyTemplate != null ? body.mailBodyTemplate : current.bodyTemplate
+        )
+      );
+    }
+    return NextResponse.json(await buildSettingsPayload());
   } catch (error) {
     const authRes = authErrorToResponse(error);
     if (authRes.status !== 500) {

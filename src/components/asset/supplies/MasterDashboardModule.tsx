@@ -113,7 +113,17 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
     [currentUser, interfaceConfig]
   );
 
+  const isLv1 = useMemo(() => {
+    if (!currentUser) return false;
+    const roles = Array.isArray(currentUser.roles) ? currentUser.roles : [currentUser.role];
+    return (roles || []).some((r: any) => {
+      const m = String(r || '').match(/\d+/);
+      return m ? `LV_${m[0]}` === 'LV_1' : String(r) === 'LV_1';
+    });
+  }, [currentUser]);
+
   const alertNoEditPermission = () => alert('편집 권한이 없습니다.');
+  const alertNoLv1Permission = () => alert('LV_1(마스터) 권한이 필요합니다.');
   const disabledActionBtn =
     'px-2 py-1 rounded text-[10px] font-black bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed opacity-70 whitespace-nowrap';
      
@@ -121,7 +131,11 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
     const activeItems = items.filter(i => i.is_active !== false); 
     const totalItems = activeItems.length;
     
-    const warningCount = activeItems.filter(item => Number(item.current_stock) <= Number(item.alert_qty || 5) && Number(item.current_stock) > 0).length;
+    const warningCount = activeItems.filter(item => {
+      const stock = Number(item.current_stock) || 0;
+      const safety = Number(item.alert_qty) || 0;
+      return stock > 0 && stock <= safety;
+    }).length;
     const outOfStockCount = activeItems.filter(item => Number(item.current_stock) === 0).length;
     
     return { totalItems, warningCount, outOfStockCount, pendingReqs: pendingCount };
@@ -131,7 +145,11 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
     let list = items.filter(i => i.is_active !== false);
     
     if (statFilter === 'WARNING') {
-      list = list.filter(i => Number(i.current_stock) <= Number(i.alert_qty || 5) && Number(i.current_stock) > 0);
+      list = list.filter((i) => {
+        const stock = Number(i.current_stock) || 0;
+        const safety = Number(i.alert_qty) || 0;
+        return stock > 0 && stock <= safety;
+      });
     } else if (statFilter === 'OUT') {
       list = list.filter(i => Number(i.current_stock) === 0);
     } else if (statFilter === 'PENDING') {
@@ -196,6 +214,32 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
       image_url: ''
     });
   };
+
+  const handleRestoreSeedItems = async () => {
+    if (!isLv1) return alertNoLv1Permission();
+    if (
+      !confirm(
+        '시드 기본 품목 중 없거나 보관(비활성)된 항목만 추가/재활성합니다.\n이미 활성인 품목의 단위·비고·재고는 그대로 둡니다. 계속할까요?'
+      )
+    ) {
+      return;
+    }
+    try {
+      const res = await fetch('/api/asset/supplies/master/dashboard', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'restore-seeds' }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        return alert(data.error || data.message || '시드 항목 복구 실패');
+      }
+      alert(data.message || '시드 항목 복구 완료');
+      fetchDashboardData();
+    } catch {
+      alert('시드 항목 복구 중 오류가 발생했습니다.');
+    }
+  };
      
   const handleEditClick = (item: any) => {
     if (!canEdit) return alertNoEditPermission();
@@ -206,7 +250,10 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
       id: item.id, 
       name: item.name, 
       current_stock: Number(item.current_stock), 
-      alert_qty: Number(item.alert_qty) || 5, 
+      alert_qty: (() => {
+        const aq = Number(item.alert_qty);
+        return Number.isFinite(aq) ? aq : 0;
+      })(), 
       r_unit: ext.s_unit || ext.r_unit || 'EA',
       owner_depts: owners.length ? owners : (topOrgName ? [topOrgName] : []),
       note: ext.note || '',
@@ -238,8 +285,10 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
     const payload = {
       ...(editModal.isNew ? {} : { id: editModal.id.trim() }),
       name: editModal.name,
-      // 수정 시 현재고는 전송하지 않음 — 입고/신청 선차감만 변경 (절대값 덮어쓰기 방지)
-      ...(editModal.isNew ? { current_stock: Number(editModal.current_stock) || 0 } : {}),
+      // 수정 시 현재고는 기본 미전송 — LV_1만 초기재고 강제 보정 허용
+      ...(editModal.isNew || isLv1
+        ? { current_stock: Number(editModal.current_stock) || 0 }
+        : {}),
       alert_qty: Number(editModal.alert_qty) || 0,
       category: '소모품',
       owner_depts: ownerDepts,
@@ -269,23 +318,20 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
     }
   };
      
-  // 입고수량(구매단위) × 연동수량 = 재고 반영(지급단위)
+  // 입고수량 × 환산수량(지급/입고) = 재고 반영(지급단위) — 금액·구입처는 production 정산 영역
   const handleStockInSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!canEdit) return alertNoEditPermission();
     const pQty = Math.floor(Number(stockInModal.qty) || 0);
     const linkQty = Math.floor(Number(stockInModal.link_qty) || 0);
-    const basePrice = Number(stockInModal.base_price) || 0; // 입고단위당 순수 단가
-    const extraCost = Number(stockInModal.extra_cost) || 0;
     const pUnit = String(stockInModal.p_unit || '').trim();
     const sUnit = String(stockInModal.s_unit || '').trim();
      
     if (pQty <= 0) return alert('입고 수량을 1개 이상 입력하세요.');
     if (!pUnit) return alert('입고 단위를 선택하세요.');
-    if (linkQty <= 0) return alert('입고단위 연동 수량을 1 이상 입력하세요.');
+    if (linkQty <= 0) return alert('환산수량 (지급/입고)을 1 이상 입력하세요.');
     
     const stockQty = pQty * linkQty;
-    const calculatedTotal = (pQty * basePrice) + extraCost;
      
     const payload = {
       action: 'stock_in',
@@ -294,14 +340,12 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
       p_unit: pUnit,
       link_qty: linkQty,
       s_unit: sUnit,
-      qty: stockQty, // 재고 반영 수량(지급단위)
-      unit_price: basePrice,
-      total_price: calculatedTotal,
-      extra_cost: extraCost,
+      qty: stockQty,
+      unit_price: 0,
+      total_price: 0,
+      extra_cost: 0,
       purchase_date: stockInModal.stock_in_date,
-      bought_date: stockInModal.purchase_date,
-      vendor: stockInModal.vendor,
-      note: stockInModal.note || '대시보드 직접 입고'
+      note: stockInModal.note || '창고 재고 입고',
     };
      
     try {
@@ -490,9 +534,8 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
             <h2 className="text-[13px] font-black text-slate-800 tracking-tight">
               {statFilter === 'ALL' ? '실시간 창고 재고 현황 보드' : 
                statFilter === 'PENDING' ? '신청 대기중인 물품 리스트' : 
-               statFilter === 'WARNING' ? '재고 경고(부족) 물품 리스트' : '품절된 물품 리스트'}
+               statFilter === 'WARNING' ? '재고부족 물품 리스트' : '품절된 물품 리스트'}
             </h2>
-            <span className="text-[11px] font-bold bg-slate-300/80 text-slate-700 px-2 py-0.5 rounded-md">{filteredItems.length}개 품목</span>
             <div className="flex items-center gap-1 ml-1">
               <button
                 type="button"
@@ -514,7 +557,7 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
                     : 'bg-orange-50 text-orange-600 border border-orange-100 hover:bg-orange-100'
                 }`}
               >
-                재고 경고 {stats.warningCount}
+                재고부족 {stats.warningCount}
               </button>
               <button
                 type="button"
@@ -529,44 +572,73 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
               </button>
             </div>
           </div>
-          <button
-            type="button"
-            onClick={handleAddNewClick}
-            title={canEdit ? '신규 물품 추가' : '편집 권한 필요'}
-            className={
-              canEdit
-                ? 'px-5 py-2 bg-blue-600 text-white rounded-lg text-[11px] font-black hover:bg-blue-700 transition-all shadow-sm flex items-center gap-1.5 shrink-0'
-                : 'px-5 py-2 bg-slate-100 text-slate-400 border border-slate-200 rounded-lg text-[11px] font-black cursor-not-allowed opacity-70 flex items-center gap-1.5 shrink-0'
-            }
-          >
-            + 신규 물품 추가(Edit)
-          </button>
+          <div className="flex items-center gap-2 shrink-0 flex-wrap justify-end">
+            <button
+              type="button"
+              onClick={handleRestoreSeedItems}
+              title={
+                isLv1
+                  ? '시드 기본 품목 중 없거나 비활성인 항목만 추가/재활성 (LV_1)'
+                  : 'LV_1 권한 필요'
+              }
+              className={
+                isLv1
+                  ? 'px-3 py-2 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-lg text-[11px] font-black hover:bg-emerald-100 transition-all shadow-sm'
+                  : 'px-3 py-2 bg-slate-100 text-slate-400 border border-slate-200 rounded-lg text-[11px] font-black cursor-not-allowed opacity-70'
+              }
+            >
+              시드 항목 복구(LV_1)
+            </button>
+            <button
+              type="button"
+              onClick={handleAddNewClick}
+              title={canEdit ? '신규 물품 추가' : '편집 권한 필요'}
+              className={
+                canEdit
+                  ? 'px-5 py-2 bg-blue-600 text-white rounded-lg text-[11px] font-black hover:bg-blue-700 transition-all shadow-sm flex items-center gap-1.5'
+                  : 'px-5 py-2 bg-slate-100 text-slate-400 border border-slate-200 rounded-lg text-[11px] font-black cursor-not-allowed opacity-70 flex items-center gap-1.5'
+              }
+            >
+              + 신규 물품 추가(Edit)
+            </button>
+          </div>
         </div>
      
-        <div className="overflow-x-auto">
+        <div className="overflow-hidden">
           <table className="w-full text-left border-collapse table-fixed">
             <colgroup>
-              <col className="w-12" />
-              <col className="w-[296px]" />
-              <col className="w-[70px]" />
-              <col className="w-[96px]" />
-              <col className="w-[92px]" />
-              <col className="w-[280px]" />
-              <col className="w-[88px]" />
-              <col className="w-[148px]" />
-              <col className="w-[160px]" />
+              <col className="w-[3%]" />
+              <col className="w-[18%]" />
+              <col className="w-[8%]" />
+              <col className="w-[7%]" />
+              <col className="w-[8%]" />
+              <col className="w-[22%]" />
+              <col className="w-[7%]" />
+              <col className="w-[9%]" />
+              <col className="w-[18%]" />
             </colgroup>
             <thead className="bg-slate-100 text-slate-700 text-[10px] font-black uppercase tracking-widest border-b border-slate-200">
               <tr>
                 <th className="h-12 pl-3 text-center">NO</th>
                 <th className="h-12 px-3 text-left">품목명</th>
-                <th className="h-12 px-2 text-center whitespace-nowrap text-blue-700 border-l border-slate-300 bg-blue-50/60">현재고</th>
-                <th className="h-12 px-2 text-center whitespace-nowrap bg-blue-50/60">재고알람기준</th>
-                <th className="h-12 px-2 text-center whitespace-nowrap bg-blue-50/60">재고 상태</th>
+                <th className="h-12 px-1 text-center whitespace-nowrap text-blue-700 border-l border-slate-300 bg-blue-50/60">현재고</th>
+                <th className="h-12 px-1 text-center whitespace-nowrap bg-blue-50/60">안전재고</th>
+                <th className="h-12 px-1 text-center whitespace-nowrap bg-blue-50/60">재고 상태</th>
                 <th className="h-12 px-2 text-left bg-blue-50/60">관리 비고</th>
-                <th className="h-12 px-2 text-center whitespace-nowrap text-amber-700 border-l border-slate-300 bg-amber-50/60">신청단위</th>
-                <th className="h-12 px-2 text-center whitespace-nowrap text-amber-700 bg-amber-50/60">게시 제어</th>
-                <th className="h-12 pr-3 pl-2 text-left whitespace-nowrap border-l border-slate-300">관리 액션</th>
+                <th className="h-12 px-1 text-center whitespace-nowrap text-amber-700 border-l border-slate-300 bg-amber-50/60">신청단위</th>
+                <th className="h-12 px-1 text-center whitespace-nowrap text-amber-700 bg-amber-50/60">게시(Edit)</th>
+                <th className="h-12 pr-3 pl-2 text-center whitespace-nowrap border-l border-slate-300">
+                  <span className="inline-flex items-center justify-center gap-0.5">
+                    관리액션(Edit)
+                    <span
+                      className="normal-case tracking-normal font-bold text-slate-400 cursor-help"
+                      title="신청·입고 이력이 있는 품목은 삭제할 수 없습니다 (보관만 가능)"
+                      aria-label="신청·입고 이력이 있는 품목은 삭제할 수 없습니다 (보관만 가능)"
+                    >
+                      ⓘ
+                    </span>
+                  </span>
+                </th>
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-slate-100 text-[11px] font-bold text-slate-700">
@@ -581,9 +653,9 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
                   const ext = item.description ? JSON.parse(item.description) : {};
                   const rUnit = ext.s_unit || ext.r_unit || 'EA';
                   const note = ext.note || '-';
-                  const safeStock = Number(item.alert_qty || 5);
+                  const safeStock = Number(item.alert_qty) || 0;
                   const currentStock = Number(item.current_stock || 0);
-                  const isDanger = currentStock <= safeStock && currentStock > 0;
+                  const isDanger = currentStock > 0 && currentStock <= safeStock;
                   const isOut = currentStock === 0;
                   const isPublished = item.is_published !== false;
 
@@ -675,19 +747,19 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
                           title={canEdit ? (isPublished ? '게시내리기' : '게시올리기') : '편집 권한 필요'}
                           className={
                             canEdit
-                              ? `w-full py-1 rounded-md text-[10px] font-black shadow-sm transition-all border ${
+                              ? `w-full max-w-[5rem] mx-auto py-1 px-1.5 rounded-md text-[9px] font-black shadow-sm transition-all border ${
                                   isPublished
                                     ? 'bg-slate-100 border-slate-200 text-slate-500 hover:bg-slate-200'
                                     : 'bg-indigo-50 border-indigo-200 text-indigo-700 hover:bg-indigo-100'
                                 }`
-                              : 'w-full py-1 rounded-md text-[10px] font-black border bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed opacity-70'
+                              : 'w-full max-w-[5rem] mx-auto py-1 px-1.5 rounded-md text-[9px] font-black border bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed opacity-70'
                           }
                         >
-                          {isPublished ? '게시내리기' : '게시올리기'}
+                          {isPublished ? '내리기' : '올리기'}
                         </button>
                       </td>
-                      <td className="pr-3 pl-2 border-l border-slate-200 text-left">
-                        <div className="flex items-center justify-start gap-1 whitespace-nowrap">
+                      <td className="px-3 border-l border-slate-200">
+                        <div className="flex w-full items-center justify-center gap-2 whitespace-nowrap">
                           <button
                             type="button"
                             onClick={() => {
@@ -695,21 +767,17 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
                               setStockInModal({
                                 id: item.id,
                                 name: item.name,
-                                vendor: lastPurchase.old_vendor || '',
-                                base_price: item.unit_price || 0,
-                                extra_cost: 0,
                                 qty: '',
                                 p_unit: lastPUnit,
                                 link_qty: lastLinkQty,
                                 s_unit: rUnit,
-                                purchase_date: getKSTDateString(),
                                 stock_in_date: getKSTDateString(),
                               });
                             }}
                             title={canEdit ? '입고' : '편집 권한 필요'}
                             className={
                               canEdit
-                                ? 'px-2 py-1 rounded text-[10px] font-black bg-emerald-600 text-white shadow-sm hover:bg-emerald-700 transition-colors whitespace-nowrap'
+                                ? 'px-2.5 py-1 rounded text-[10px] font-black bg-emerald-600 text-white shadow-sm hover:bg-emerald-700 transition-colors whitespace-nowrap'
                                 : disabledActionBtn
                             }
                           >
@@ -721,11 +789,11 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
                             title={canEdit ? '수정' : '편집 권한 필요'}
                             className={
                               canEdit
-                                ? 'px-2 py-1 rounded text-[10px] font-black bg-white text-blue-600 border border-blue-200 shadow-sm hover:bg-blue-50 transition-colors whitespace-nowrap'
+                                ? 'px-2.5 py-1 rounded text-[10px] font-black bg-white text-blue-600 border border-blue-200 shadow-sm hover:bg-blue-50 transition-colors whitespace-nowrap'
                                 : disabledActionBtn
                             }
                           >
-                            수정(Edit)
+                            수정
                           </button>
                           <button
                             type="button"
@@ -733,30 +801,31 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
                             title={canEdit ? '보관함' : '편집 권한 필요'}
                             className={
                               canEdit
-                                ? 'px-2 py-1 rounded text-[10px] font-black bg-white text-slate-500 border border-slate-200 shadow-sm hover:bg-slate-100 transition-colors whitespace-nowrap'
+                                ? 'px-2.5 py-1 rounded text-[10px] font-black bg-white text-slate-500 border border-slate-200 shadow-sm hover:bg-slate-100 transition-colors whitespace-nowrap'
                                 : disabledActionBtn
                             }
                           >
                             보관함
                           </button>
-                          {(!hasUsageHistory || !canEdit) && (
-                            <button
-                              type="button"
-                              onClick={() => handleDeleteItem(item)}
-                              className={
-                                canEdit
-                                  ? 'px-2 py-1 rounded text-[10px] font-black bg-red-50 border border-red-200 text-red-500 shadow-sm hover:bg-red-500 hover:text-white transition-colors whitespace-nowrap'
-                                  : disabledActionBtn
-                              }
-                              title={
-                                canEdit
-                                  ? '신청·입고 이력이 없는 품목만 삭제 가능'
-                                  : '편집 권한 필요'
-                              }
-                            >
-                              삭제(Edit)
-                            </button>
-                          )}
+                          <button
+                            type="button"
+                            disabled={!canEdit || hasUsageHistory}
+                            onClick={() => handleDeleteItem(item)}
+                            className={
+                              canEdit && !hasUsageHistory
+                                ? 'px-2.5 py-1 rounded text-[10px] font-black bg-red-50 border border-red-200 text-red-500 shadow-sm hover:bg-red-500 hover:text-white transition-colors whitespace-nowrap'
+                                : disabledActionBtn
+                            }
+                            title={
+                              !canEdit
+                                ? '편집 권한 필요'
+                                : hasUsageHistory
+                                  ? '신청·입고 이력이 있어 삭제할 수 없습니다'
+                                  : '신청·입고 이력이 없는 품목만 삭제 가능'
+                            }
+                          >
+                            삭제
+                          </button>
                         </div>
                       </td>
                     </tr>
@@ -883,7 +952,7 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
                 </div>
      
                 <div className="bg-amber-50/60 p-3 rounded-xl border border-amber-100">
-                  <label className="text-[10px] font-black text-amber-700 uppercase tracking-widest block mb-1.5">지급(신청) 단위</label>
+                  <label className="text-[10px] font-black text-amber-700 uppercase tracking-widest block mb-1.5">사용자의 신청(지급) 허용 단위</label>
                   {unitOptions.length > 0 ? (
                     <select required value={editModal.r_unit} onChange={(e) => setEditModal({...editModal, r_unit: e.target.value})} className="w-full p-2.5 bg-white border border-amber-200 rounded-lg text-[11px] font-black text-slate-700 outline-none focus:border-amber-500 shadow-sm">
                       {unitOptions.map((opt:any) => <option key={opt.id} value={opt.label}>{opt.label}</option>)}
@@ -898,12 +967,22 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
                   <div>
                     <label className="text-[10px] font-black text-blue-600 uppercase tracking-widest block mb-1.5">
                       현재고 <span className="text-slate-400 normal-case tracking-normal">({editModal.r_unit || '지급단위'})</span>
+                      {!editModal.isNew && isLv1 && (
+                        <span className="ml-1 text-amber-600 normal-case tracking-normal">(LV_1 강제보정)</span>
+                      )}
                     </label>
-                    {editModal.isNew ? (
-                      <input 
-                        type="number" min="0" required value={editModal.current_stock} onChange={(e) => setEditModal({...editModal, current_stock: e.target.value})}
-                        className="w-full p-2.5 bg-white border border-blue-200 rounded-xl text-xs font-black text-blue-600 outline-none focus:border-blue-500 shadow-sm text-right"
-                      />
+                    {editModal.isNew || isLv1 ? (
+                      <>
+                        <input 
+                          type="number" min="0" required value={editModal.current_stock} onChange={(e) => setEditModal({...editModal, current_stock: e.target.value})}
+                          className="w-full p-2.5 bg-white border border-blue-200 rounded-xl text-xs font-black text-blue-600 outline-none focus:border-blue-500 shadow-sm text-right"
+                        />
+                        {!editModal.isNew && isLv1 && (
+                          <p className="text-[9px] text-amber-700/90 font-bold mt-1.5 leading-tight">
+                            배포 초기재고·보정용 · 평소 재고는 입고 / 신청 선차감으로만 변경하세요.
+                          </p>
+                        )}
+                      </>
                     ) : (
                       <>
                         <div className="w-full p-2.5 bg-slate-100 border border-slate-200 rounded-xl text-xs font-black text-blue-600 text-right tabular-nums">
@@ -917,7 +996,7 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
                   </div>
                   <div>
                     <label className="text-[10px] font-black text-orange-500 uppercase tracking-widest block mb-1.5">
-                      재고 알람 기준 <span className="text-slate-400 normal-case tracking-normal">({editModal.r_unit || '지급단위'})</span>
+                      안전재고 (재고알람 기준) <span className="text-slate-400 normal-case tracking-normal">({editModal.r_unit || '지급단위'})</span>
                     </label>
                     <input 
                       type="number" min="0" required value={editModal.alert_qty} onChange={(e) => setEditModal({...editModal, alert_qty: e.target.value})}
@@ -963,58 +1042,43 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
       {/* 📦 입고 처리 모달 */}
       {stockInModal && canEdit && (
         <div className="fixed inset-0 z-[600] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-white w-[640px] border border-slate-200 shadow-2xl p-5 rounded-2xl">
-            <div className="flex items-center justify-between gap-3 mb-3 border-b border-slate-200 pb-2.5">
-              <h4 className="text-[13px] font-black text-slate-900 tracking-wide">
+          <div className="bg-white w-[760px] max-w-[95vw] border border-slate-200 shadow-2xl p-6 rounded-2xl">
+            <div className="flex items-center justify-between gap-3 mb-4 border-b border-slate-200 pb-3">
+              <h4 className="text-base font-black text-slate-900 tracking-wide">
                 📦 소모품 창고 입고
               </h4>
-              <span className="font-black text-indigo-700 text-[11px] truncate max-w-[55%] text-right">{stockInModal.name}</span>
+              <span className="font-black text-indigo-700 text-sm truncate max-w-[55%] text-right">{stockInModal.name}</span>
             </div>
             
-            <form onSubmit={handleStockInSubmit} className="space-y-2.5">
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="text-[9px] font-black text-slate-500 block mb-0.5">구입 일자</label>
-                  <input 
-                    type="date" required value={stockInModal.purchase_date} onChange={e => setStockInModal({...stockInModal, purchase_date: e.target.value})}
-                    className="w-full py-1.5 px-2 bg-slate-50 border border-slate-200 rounded-md text-[11px] font-bold outline-none focus:border-emerald-500 text-slate-600" 
-                  />
-                </div>
-                <div>
-                  <label className="text-[9px] font-black text-slate-500 block mb-0.5">창고 입고 일자</label>
-                  <input 
-                    type="date" required value={stockInModal.stock_in_date} onChange={e => setStockInModal({...stockInModal, stock_in_date: e.target.value})}
-                    className="w-full py-1.5 px-2 bg-white border border-slate-300 rounded-md text-[11px] font-bold outline-none focus:border-emerald-500 text-slate-800" 
-                  />
-                </div>
-              </div>
-     
+            <form onSubmit={handleStockInSubmit} className="space-y-3.5">
               <div>
-                <label className="text-[9px] font-black text-slate-500 block mb-0.5">구입처 (벤더/업체명)</label>
+                <label className="text-xs font-black text-slate-500 block mb-1">창고 입고 일자</label>
                 <input 
-                  type="text" required value={stockInModal.vendor} onChange={e => setStockInModal({...stockInModal, vendor: e.target.value})}
-                  placeholder="예: 드림디포, 아트로릭, 한생미디어 등"
-                  className="w-full py-1.5 px-2 bg-white border border-slate-300 rounded-md text-[11px] font-bold outline-none focus:border-emerald-500" 
+                  type="date" required value={stockInModal.stock_in_date} onChange={e => setStockInModal({...stockInModal, stock_in_date: e.target.value})}
+                  className="w-full py-2.5 px-3 bg-white border border-slate-300 rounded-lg text-sm font-bold outline-none focus:border-emerald-500 text-slate-800" 
                 />
               </div>
      
-              <div className="bg-emerald-50/50 p-2.5 rounded-lg border border-emerald-100 space-y-2">
-                <div className="grid grid-cols-4 gap-2">
+              <div className="bg-emerald-50/50 p-3.5 rounded-xl border border-emerald-100 space-y-3">
+                <p className="text-xs font-bold text-emerald-700/80 leading-relaxed">
+                  금액·구입처는 제작물 정산에서 관리합니다. 여기서는 창고 재고만 반영합니다.
+                </p>
+                <div className="grid grid-cols-4 gap-3">
                   <div>
-                    <label className="text-[9px] font-black text-emerald-600 block mb-0.5">입고 수량 (+)</label>
+                    <label className="text-xs font-black text-emerald-600 block mb-1">입고 수량 (+)</label>
                     <input 
                       type="number" required min="1" value={stockInModal.qty} onChange={e => setStockInModal({...stockInModal, qty: e.target.value})}
-                      className="w-full py-1.5 px-2 bg-white border-2 border-emerald-400 rounded-md text-[11px] font-black text-emerald-700 outline-none focus:ring-1 focus:ring-emerald-200 text-right" 
+                      className="w-full py-2.5 px-3 bg-white border-2 border-emerald-400 rounded-lg text-sm font-black text-emerald-700 outline-none focus:ring-1 focus:ring-emerald-200 text-right" 
                     />
                   </div>
                   <div>
-                    <label className="text-[9px] font-black text-emerald-600 block mb-0.5">입고 단위</label>
+                    <label className="text-xs font-black text-emerald-600 block mb-1">입고 단위</label>
                     {unitOptions.length > 0 ? (
                       <select
                         required
                         value={stockInModal.p_unit}
                         onChange={e => setStockInModal({...stockInModal, p_unit: e.target.value})}
-                        className="w-full py-1.5 px-2 bg-white border border-emerald-300 rounded-md text-[11px] font-black text-slate-700 outline-none focus:border-emerald-500"
+                        className="w-full py-2.5 px-3 bg-white border border-emerald-300 rounded-lg text-sm font-black text-slate-700 outline-none focus:border-emerald-500"
                       >
                         {unitOptions.map((opt: any) => (
                           <option key={opt.id} value={opt.label}>{opt.label}</option>
@@ -1027,70 +1091,46 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
                         value={stockInModal.p_unit}
                         onChange={e => setStockInModal({...stockInModal, p_unit: e.target.value})}
                         placeholder="예: BOX"
-                        className="w-full py-1.5 px-2 bg-white border border-emerald-300 rounded-md text-[11px] font-black outline-none"
+                        className="w-full py-2.5 px-3 bg-white border border-emerald-300 rounded-lg text-sm font-black outline-none"
                       />
                     )}
                   </div>
                   <div>
-                    <label className="text-[9px] font-black text-emerald-700 block mb-0.5">입고단위 연동 수량</label>
+                    <label className="text-xs font-black text-emerald-700 block mb-1 leading-tight">
+                      환산수량 (지급/입고)
+                    </label>
                     <input 
                       type="number" required min="1" value={stockInModal.link_qty}
                       onChange={e => setStockInModal({...stockInModal, link_qty: e.target.value})}
-                      className="w-full py-1.5 px-2 bg-white border border-emerald-300 rounded-md text-[11px] font-black text-emerald-800 outline-none focus:border-emerald-500 text-right"
-                      placeholder="1단위=몇개"
+                      className="w-full py-2.5 px-3 bg-white border border-emerald-300 rounded-lg text-sm font-black text-emerald-800 outline-none focus:border-emerald-500 text-right"
+                      placeholder="예: 5"
                     />
-                    <p className="text-[8px] text-emerald-600/80 font-bold mt-0.5 leading-tight">
-                      1 {stockInModal.p_unit || '입고단위'} = ? {stockInModal.s_unit || '지급단위'}
+                    <p className="text-[11px] text-emerald-600/70 font-bold mt-1 leading-tight">
+                      예) 입고 1 박스 = 지급 5 번들
                     </p>
                   </div>
                   <div>
-                    <label className="text-[9px] font-black text-amber-600 block mb-0.5">지급단위 (연동)</label>
-                    <div className="w-full py-1.5 px-2 bg-amber-50 border border-amber-200 rounded-md text-[11px] font-black text-amber-700 text-center">
+                    <label className="text-xs font-black text-amber-600 block mb-1">지급단위</label>
+                    <div className="w-full py-2.5 px-3 bg-amber-50 border border-amber-200 rounded-lg text-sm font-black text-amber-700 text-center">
                       {stockInModal.s_unit || 'EA'}
                     </div>
-                    <p className="text-[8px] text-amber-600/80 font-bold mt-0.5 text-center leading-tight">마스터 고정</p>
+                    <p className="text-[11px] text-amber-600/80 font-bold mt-1 text-center leading-tight">마스터 고정</p>
                   </div>
                 </div>
 
-                <div className="flex justify-between items-center bg-white/80 border border-emerald-200 rounded-md px-2.5 py-1.5">
-                  <span className="text-[9px] font-black text-slate-500 uppercase tracking-wider">재고 반영 예정</span>
-                  <span className="text-[12px] font-black text-emerald-700 tabular-nums">
+                <div className="flex justify-between items-center bg-white/80 border border-emerald-200 rounded-lg px-3.5 py-2.5">
+                  <span className="text-xs font-black text-slate-500 tracking-wider">재고 반영 예정</span>
+                  <span className="text-base font-black text-emerald-700 tabular-nums">
                     +{formatNum((Number(stockInModal.qty) || 0) * (Number(stockInModal.link_qty) || 0))}
-                    <span className="text-[10px] ml-0.5">{stockInModal.s_unit || ''}</span>
+                    <span className="text-sm ml-1">{stockInModal.s_unit || ''}</span>
                   </span>
                 </div>
-
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <label className="text-[9px] font-black text-slate-500 block mb-0.5">물품 순수 단가 (입고단위)</label>
-                    <input 
-                      type="number" required min="0" value={stockInModal.base_price} onChange={e => setStockInModal({...stockInModal, base_price: e.target.value})}
-                      className="w-full py-1.5 px-2 bg-white border border-slate-300 rounded-md text-[11px] font-bold outline-none focus:border-emerald-500 text-right" 
-                    />
-                    <p className="text-[8px] text-slate-500/80 font-bold mt-0.5 leading-tight">
-                      1 {stockInModal.p_unit || '입고단위'}당 순수 단가 (부대비용 제외)
-                    </p>
-                  </div>
-                  <div>
-                    <label className="text-[9px] font-black text-orange-600 block mb-0.5">부대비용 (배송·인쇄·세금 등)</label>
-                    <input 
-                      type="number" required min="0" value={stockInModal.extra_cost} onChange={e => setStockInModal({...stockInModal, extra_cost: e.target.value})}
-                      className="w-full py-1.5 px-2 bg-white border border-orange-300 rounded-md text-[11px] font-bold outline-none focus:border-orange-500 text-right" 
-                      placeholder="없으면 0" 
-                    />
-                  </div>
-                </div>
               </div>
      
-              <div className="flex justify-between items-center bg-slate-800 text-white px-3 py-2.5 rounded-lg">
-                <span className="text-[10px] font-black uppercase tracking-wider text-emerald-400">결산 총 입고 비용</span>
-                <span className="text-[15px] font-black tabular-nums">{formatNum((Number(stockInModal.qty) * Number(stockInModal.base_price)) + Number(stockInModal.extra_cost))} <span className="text-[10px] font-medium">원</span></span>
-              </div>
-     
-              <div className="flex gap-2 pt-1">
-                <button type="button" onClick={() => setStockInModal(null)} className="flex-1 py-2 bg-slate-100 text-slate-500 rounded-lg font-bold text-[11px] hover:bg-slate-200">취소</button>
-                <button type="submit" className="flex-[2] py-2 bg-emerald-600 text-white rounded-lg font-black text-[11px] shadow-sm hover:bg-emerald-700 flex justify-center items-center gap-1.5">
-                  <span>📥</span> 서버 DB 입고 승인
+              <div className="flex gap-3 pt-1">
+                <button type="button" onClick={() => setStockInModal(null)} className="flex-1 py-2.5 bg-slate-100 text-slate-500 rounded-lg font-bold text-sm hover:bg-slate-200">취소</button>
+                <button type="submit" className="flex-[2] py-2.5 bg-emerald-600 text-white rounded-lg font-black text-sm shadow-sm hover:bg-emerald-700 flex justify-center items-center gap-1.5">
+                  <span>📥</span> 입고 확인/승인
                 </button>
               </div>
             </form>

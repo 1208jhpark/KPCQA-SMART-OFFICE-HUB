@@ -22,10 +22,23 @@ import {
   BUSINESS_CARD_MASTER_TABS,
   useInterfaceStepTabs,
 } from '@/lib/interface-step-tabs';
+import {
+  formatBusinessCardEnNumber,
+  stripBusinessCardEnPlus,
+} from '@/lib/businesscard-phone';
+import {
+  applyBcMailTemplate,
+  DEFAULT_BC_MAIL_BODY,
+  DEFAULT_BC_MAIL_SUBJECT,
+  resolveBcMailBodyTemplate,
+  resolveBcMailSubjectTemplate,
+} from '@/lib/businesscard-mail-template';
 
 const MENU_PATH = '/asset/businesscard/master/order';
 const DISABLED_ACTION_BTN =
   'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed opacity-70 shadow-none hover:bg-slate-100';
+/** 그룹웨어 메일 작성 기본 URL — DB 미설정·빈 값일 때 사용 (설정에서 변경 가능) */
+const DEFAULT_MAIL_SHORTCUT_URL = 'https://ep.kpcqa.or.kr/mail2/writeMailView.do?';
 const BATCH_PAGE_SIZE = 10;
 
 interface RequestHistory {
@@ -106,7 +119,7 @@ interface OrderBatch {
   orderDate: string;
   totalCount: number;
   deptHeadGroup: string;
-  status: '발주완료' | '견적비교완료' | '지급완료';
+  status: '발주완료' | '수령완료' | '견적비교완료' | '지급완료';
   items: RequestHistory[];
   inspectStatus?: 'idle' | 'match' | 'mismatch';
   inspectFileName?: string | null;
@@ -250,28 +263,7 @@ function isBusinessCardHqUnit(unit: { unit_type?: string | null; unit_name?: str
 }
 
 function formatEnNumber(type: 'mobile' | 'phone', value: string) {
-  const clean = value.replace(/[^0-9]/g, '');
-  if (!clean) return '';
-  if (type === 'mobile') {
-    return clean.startsWith('010') && clean.length === 11
-      ? `+82-10-${clean.substring(3, 7)}-${clean.substring(7)}`
-      : value;
-  }
-  if (clean.startsWith('02')) {
-    const rest = clean.substring(2);
-    if (rest.length === 7 || rest.length === 8) {
-      const mid = rest.length === 8 ? rest.substring(0, 4) : rest.substring(0, 3);
-      return `+82-2-${mid}-${rest.substring(rest.length - 4)}`;
-    }
-  } else if (clean.startsWith('0')) {
-    const areaCode = clean.substring(1, 3);
-    const rest = clean.substring(3);
-    if (rest.length === 7 || rest.length === 8) {
-      const mid = rest.length === 8 ? rest.substring(0, 4) : rest.substring(0, 3);
-      return `+82-${areaCode}-${mid}-${rest.substring(rest.length - 4)}`;
-    }
-  }
-  return value;
+  return formatBusinessCardEnNumber(type, value) || value;
 }
 
 const HeaderLight = ({ title, count, children }: { title: string, count: number, children?: React.ReactNode }) => (
@@ -342,8 +334,14 @@ const [itemMatchStatus, setItemMatchStatus] = useState<Record<string, 'match' | 
 const [itemMatchPrice, setItemMatchPrice] = useState<Record<string, number>>({});
 const [statementColMap, setStatementColMap] = useState<StatementColMap>(DEFAULT_STATEMENT_COL_MAP);
 const [colMapEditor, setColMapEditor] = useState<{ key: StatementColKey; draft: string } | null>(null);
-const [mailShortcutUrl, setMailShortcutUrl] = useState('');
+const [mailShortcutUrl, setMailShortcutUrl] = useState(DEFAULT_MAIL_SHORTCUT_URL);
 const [mailShortcutEditor, setMailShortcutEditor] = useState<string | null>(null);
+const [mailSubjectTemplate, setMailSubjectTemplate] = useState(DEFAULT_BC_MAIL_SUBJECT);
+const [mailBodyTemplate, setMailBodyTemplate] = useState(DEFAULT_BC_MAIL_BODY);
+const [mailTemplateEditor, setMailTemplateEditor] = useState<{
+  subjectTemplate: string;
+  bodyTemplate: string;
+} | null>(null);
 const [manualDrafts, setManualDrafts] = useState<Record<string, Record<StatementColKey, string>>>({});
 const [manualEditRows, setManualEditRows] = useState<Record<string, boolean>>({});
 const statementFileInputRef = useRef<HTMLInputElement>(null);
@@ -381,24 +379,40 @@ const statementFileInputRef = useRef<HTMLInputElement>(null);
       }
       
       const tsMaster = Date.now();
-      const [unitRes, addrRes, configRes, masterRes] = await Promise.all([
+      const [unitRes, addrRes, settingsRes] = await Promise.all([
         fetch(`/api/admin/units?active=true&t=${tsMaster}`, { cache: 'no-store' }),
         fetch(`/api/asset/businesscard/master/addresses?t=${tsMaster}`, { cache: 'no-store' }),
-        fetch(`/api/admin/config?t=${tsMaster}`, { cache: 'no-store' }),
-        fetch(`/api/admin/master-data?t=${tsMaster}`, { cache: 'no-store' }),
+        fetch(`/api/asset/businesscard/master/settings?t=${tsMaster}`, { cache: 'no-store' }),
       ]);
       if (unitRes.ok) {
         const raw = await unitRes.json();
         setUnits(Array.isArray(raw) ? raw : []);
       } else setUnits([]);
       if (addrRes.ok) setAddresses(await addrRes.json());
-      if (configRes.ok && masterRes.ok) {
-        const config = await configRes.json();
-        const allMaster = await masterRes.json();
-        const dutyGroup = allMaster.find((g: any) => g.id === config.job_duty_group);
-        const gradeGroup = allMaster.find((g: any) => g.id === config.job_grade_group);
-        if (dutyGroup?.codes) setDuties(dutyGroup.codes);
-        if (gradeGroup?.codes) setGrades(gradeGroup.codes);
+      if (settingsRes.ok) {
+        const settings = await settingsRes.json();
+        if (Array.isArray(settings?.duties)) {
+          setDuties(
+            settings.duties
+              .filter((o: any) => o?.label)
+              .map((o: any, i: number) => ({
+                id: `duty-${i}-${o.label}`,
+                label: String(o.label),
+                value: String(o.value ?? ''),
+              }))
+          );
+        }
+        if (Array.isArray(settings?.grades)) {
+          setGrades(
+            settings.grades
+              .filter((o: any) => o?.label)
+              .map((o: any, i: number) => ({
+                id: `grade-${i}-${o.label}`,
+                label: String(o.label),
+                value: String(o.value ?? ''),
+              }))
+          );
+        }
       }
 
       // 외주업체 마스터 로드
@@ -468,7 +482,9 @@ const statementFileInputRef = useRef<HTMLInputElement>(null);
           setStatementColMap(normalizeStatementColMap(data.statementColMap));
         }
         const shortcut = String(data?.mailShortcutUrl || '').trim();
-        setMailShortcutUrl(shortcut);
+        setMailShortcutUrl(shortcut || DEFAULT_MAIL_SHORTCUT_URL);
+        setMailSubjectTemplate(resolveBcMailSubjectTemplate(data?.mailSubjectTemplate));
+        setMailBodyTemplate(resolveBcMailBodyTemplate(data?.mailBodyTemplate));
       })
       .catch(() => {});
   }, []);
@@ -559,6 +575,7 @@ const persistInspectResults = async (
 };
 
 const openCompareModal = () => {
+  if (!canEditMaster) return alertNoEditPermission();
   if (selectedBatchIds.size === 0) return alert('비교할 발주 묶음을 먼저 체크박스로 선택해 주세요.');
   const selected = batches.filter((b) => selectedBatchIds.has(b.id));
   const allInspected = selected.length > 0 && selected.every((b) => b.inspectStatus && b.inspectStatus !== 'idle' && b.inspectResult);
@@ -598,6 +615,7 @@ const openCompareModal = () => {
 };
 
 const handleReuploadClick = () => {
+  if (!canEditMaster) return alertNoEditPermission();
   if (compareResult.status === 'success') {
     if (!confirm('이전 교차 검증 결과를 지우고 새 거래명세표로 다시 비교할까요?')) return;
   }
@@ -608,6 +626,7 @@ const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
   const file = e.target.files?.[0];
   e.target.value = '';
   if (!file) return;
+  if (!canEditMaster) return alertNoEditPermission();
 
   if (selectedBatchIds.size === 0) return alert("비교할 발주 묶음을 먼저 체크박스로 선택해 주세요.");
 
@@ -1028,6 +1047,7 @@ const handleSaveColMap = async () => {
 };
 
 const handleExecuteUpdate = async () => {
+  if (!canEditMaster) return alertNoEditPermission();
   if (!requestEditForm) return;
   if (!adminMemoInput.trim()) return alert('⚠️ 변경 이력 관리를 위해 하단에 [수정 사유]를 반드시 입력해 주세요.');
 
@@ -1144,6 +1164,7 @@ const handleEditSubChange = (unitName: string) => {
 };
 
 const beginRequestEdit = (row: RequestHistory) => {
+  if (!canEditMaster) return alertNoEditPermission();
   const matched =
     addresses.find((a) => a.id === row.addressId) ||
     addresses.find((a) => a.zipCode === row.zipCode && a.addressKo === row.addressKo);
@@ -1178,9 +1199,9 @@ const handleBatchExcelDownload = (batch: OrderBatch) => {
     '영문직책': r.titleEn || '',
     '영문추가': r.additionalEn || '',
     '영문주소': r.addressEn || '',
-    '영문 휴대전화': r.mobileEn || '',
-    '영문전화': r.phoneEn || '',
-    '영문팩스': r.faxEn || '',
+    '영문 휴대전화': stripBusinessCardEnPlus(r.mobileEn || ''),
+    '영문전화': stripBusinessCardEnPlus(r.phoneEn || ''),
+    '영문팩스': stripBusinessCardEnPlus(r.faxEn || ''),
     '이메일(영문)': r.emailEn || r.email
   }));
   const ws = XLSX.utils.json_to_sheet(excelData);
@@ -1195,11 +1216,51 @@ const openEmailModal = (batch: OrderBatch) => {
 };
 
 const activeVendor = vendors.find(v => v.id === selectedVendorId) || vendors[0];
-const getPreviewSubject = () => currentBatch ? `[명함발주] 한국생산성본부인증원 명함 제작 요청 (${formatBatchNo(currentBatch.id)})` : '';
+const getPreviewSubject = () => {
+  if (!currentBatch) return '';
+  return applyBcMailTemplate(mailSubjectTemplate, {
+    batchNo: formatBatchNo(currentBatch.id),
+    count: currentBatch.totalCount,
+    vendorName: activeVendor?.companyName,
+    vendorManager: activeVendor?.managerName,
+  });
+};
 const getPreviewBody = () => {
   if (!currentBatch) return '';
   if (!activeVendor) return '등록된 외주 업체가 없습니다. [업체 관리]에서 협력사를 먼저 등록해 주세요.';
-  return `안녕하세요, ${activeVendor.companyName} ${activeVendor.managerName}님.\n한국생산성본부인증원 명함 신청 담당자입니다.\n\n금일 발주 확정된 명함 리스트 총 ${currentBatch.totalCount}건 송부해 드립니다.\n첨부된 엑셀 데이터로 명함 제작 부탁드립니다.\n\n- 발주 번호: ${formatBatchNo(currentBatch.id)}\n- 총 수량: ${currentBatch.totalCount}건\n\n감사합니다.`;
+  return applyBcMailTemplate(mailBodyTemplate, {
+    batchNo: formatBatchNo(currentBatch.id),
+    count: currentBatch.totalCount,
+    vendorName: activeVendor.companyName,
+    vendorManager: activeVendor.managerName,
+  });
+};
+
+const handleSaveMailTemplates = async () => {
+  if (!canEditMaster) return alertNoEditPermission();
+  if (!mailTemplateEditor) return;
+  const nextSubject = resolveBcMailSubjectTemplate(mailTemplateEditor.subjectTemplate);
+  const nextBody = resolveBcMailBodyTemplate(mailTemplateEditor.bodyTemplate);
+  try {
+    const res = await fetch('/api/asset/businesscard/master/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mailSubjectTemplate: nextSubject,
+        mailBodyTemplate: nextBody,
+      }),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.message || '서버 저장 실패');
+    }
+    const data = await res.json().catch(() => null);
+    setMailSubjectTemplate(resolveBcMailSubjectTemplate(data?.mailSubjectTemplate ?? nextSubject));
+    setMailBodyTemplate(resolveBcMailBodyTemplate(data?.mailBodyTemplate ?? nextBody));
+    setMailTemplateEditor(null);
+  } catch (error: any) {
+    alert(`메일 양식 저장에 실패했습니다.\n${error.message || ''}`);
+  }
 };
 
 const handleCopyToClipboard = async () => {
@@ -1219,7 +1280,7 @@ const handleCopyToClipboard = async () => {
 const handleSaveMailShortcut = async () => {
   if (!canEditMaster) return alertNoEditPermission();
   if (mailShortcutEditor == null) return;
-  const next = mailShortcutEditor.trim();
+  const next = mailShortcutEditor.trim() || DEFAULT_MAIL_SHORTCUT_URL;
   setMailShortcutUrl(next);
   try {
     const res = await fetch('/api/asset/businesscard/master/settings', {
@@ -1239,7 +1300,7 @@ const handleSaveMailShortcut = async () => {
 };
 
 const handleOpenMailShortcut = () => {
-  const url = String(mailShortcutUrl || '').trim();
+  const url = String(mailShortcutUrl || '').trim() || DEFAULT_MAIL_SHORTCUT_URL;
   if (!url) {
     alert('메일 바로가기 경로가 비어 있습니다.\n⚙ 설정에서 그룹웨어 메일 작성 URL을 먼저 저장해 주세요.');
     return;
@@ -1445,40 +1506,100 @@ const handleCancelOrderBatch = async (batch: OrderBatch, e: React.MouseEvent) =>
   }
 };
 
-const handleMarkAsDistributed = async (batchId: string, e: React.MouseEvent) => {
-  e.stopPropagation(); // 행 클릭(아코디언 펼침) 방지
-  
-  if (!confirm(`이 묶음의 명함 현물이 도착하여 임직원에게 지급을 완료하셨습니까?\n(확인 시 사용자 화면에서도 '지급완료'로 변경됩니다.)`)) return;
+const handleConfirmReceiveItem = async (item: RequestHistory, batchId: string) => {
+  if (!canEditMaster) return alertNoEditPermission();
+  if (item.adminStatus !== '발주완료') {
+    return alert('발주완료 상태의 건만 수령확인할 수 있습니다.');
+  }
+  if (!confirm(`[${item.postNumber}] 수령확인 처리할까요?`)) return;
 
   try {
-    // 💡 백엔드 DB 업데이트 요청 (주석 해제 및 활성화)
     const res = await fetch('/api/asset/businesscard/master/order', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ batchId })
+      body: JSON.stringify({ action: 'confirm-receive', requestId: item.id }),
     });
-    
-    if (!res.ok) throw new Error('DB 업데이트 실패');
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      alert(data.message || '수령확인 처리에 실패했습니다.');
+      return;
+    }
 
-    // 화면(UI) 즉각 업데이트
-    setBatches(batches.map(b => 
-      b.id === batchId 
-        ? { 
-            ...b, 
-            status: '지급완료', 
-            items: b.items.map(item => ({ ...item, adminStatus: '지급완료' })) 
-          } 
-        : b
-    ));
-    
+    setBatches((prev) =>
+      prev.map((b) => {
+        if (b.id !== batchId) return b;
+        const items = b.items.map((it) =>
+          it.id === item.id ? { ...it, adminStatus: '수령완료' } : it
+        );
+        const allReceived = items.every(
+          (it) => it.adminStatus === '수령완료' || it.adminStatus === '지급완료'
+        );
+        return {
+          ...b,
+          items,
+          status: allReceived ? '수령완료' : b.status,
+        };
+      })
+    );
+    alert(data.message || '수령확인 처리되었습니다.');
+  } catch {
+    alert('서버와 통신할 수 없습니다.');
+  }
+};
+
+const handleMarkAsDistributed = async (batchId: string, e: React.MouseEvent) => {
+  e.stopPropagation(); // 행 클릭(아코디언 펼침) 방지
+  if (!canEditMaster) return alertNoEditPermission();
+
+  const batch = batches.find((b) => b.id === batchId);
+  if (!batch) return;
+  const pendingReceive = (batch.items || []).filter(
+    (it) => it.adminStatus !== '수령완료' && it.adminStatus !== '지급완료'
+  );
+  if (pendingReceive.length > 0) {
+    return alert(
+      `수령검수가 끝나지 않은 건이 ${pendingReceive.length}건 있습니다.\n상세보기에서 수령확인을 먼저 완료해 주세요.`
+    );
+  }
+
+  if (
+    !confirm(
+      `이 묶음의 명함을 임직원에게 지급 완료 처리할까요?\n(확인 시 사용자 화면에서도 '지급완료'로 변경됩니다.)`
+    )
+  ) {
+    return;
+  }
+
+  try {
+    const res = await fetch('/api/asset/businesscard/master/order', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ batchId }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.message || 'DB 업데이트 실패');
+
+    setBatches((prev) =>
+      prev.map((b) =>
+        b.id === batchId
+          ? {
+              ...b,
+              status: '지급완료',
+              items: b.items.map((item) => ({ ...item, adminStatus: '지급완료' })),
+            }
+          : b
+      )
+    );
+
     alert('🎁 지급완료 처리가 DB에 정상적으로 저장되었습니다.');
-  } catch (error) {
-    alert('❌ 처리 중 오류가 발생했습니다.');
+  } catch (error: any) {
+    alert(`❌ ${error?.message || '처리 중 오류가 발생했습니다.'}`);
   }
 };
 
 const handleMoveBatchToArchive = async (batch: OrderBatch, e: React.MouseEvent) => {
   e.stopPropagation();
+  if (!canEditMaster) return alertNoEditPermission();
   if (batch.status !== '지급완료') {
     return alert('지급완료 처리된 묶음만 보관함으로 이동할 수 있습니다.\n배송 도착 후 [지급완료 처리]를 먼저 해 주세요.');
   }
@@ -1688,7 +1809,7 @@ return (
           <div className="w-2.5 h-2.5 rounded-full bg-indigo-600 mt-1.5 shrink-0" />
           <div>
             <h2 className="text-sm font-black text-slate-800 tracking-tight">외주 발주 묶음 관리 대장</h2>
-            <p className="text-[11px] text-indigo-700/70 font-bold mt-1">엑셀 저장·메일 복사(그룹웨어 첨부) → 배송 도착 후 지급처리 → 선택 거래명세표 검수 또는 명세표 수기 대조 → 보관함 이동</p>
+            <p className="text-[11px] text-indigo-700/70 font-bold mt-1">엑셀 저장·메일 복사(그룹웨어 첨부) → 수령 확인 → 사용자 지급처리 → 선택 거래명세표 검수 또는 명세표 수기 대조 → 보관함 이동</p>
           </div>
         </div>
         
@@ -1789,7 +1910,7 @@ return (
                 신청/기본정보
               </th>
               <th
-                colSpan={3}
+                colSpan={4}
                 className="bg-blue-50 text-blue-700 border-b border-r border-blue-200 font-semibold text-center text-xs py-1.5 normal-case tracking-normal"
               >
                 발주 및 지급
@@ -1811,8 +1932,8 @@ return (
               <th className="h-12 px-4 w-[50px]"><input type="checkbox" onChange={handleSelectAllBatches} checked={allPageBatchesSelected} className="w-3 h-3 accent-indigo-600 cursor-pointer" /></th>
               <th className="h-12 px-2 w-[160px]">묶음 번호</th>
               <th className="h-12 px-4 w-[120px]">발주 일자</th>
-              <th className="h-12 px-4 min-w-[160px]">신청 상세</th>
-              <th className="h-12 px-2 text-center w-[110px] border-r border-slate-300">
+              <th className="h-12 px-2 w-[100px]">신청 상세</th>
+              <th className="h-12 px-2 text-center w-[90px] border-r border-slate-300">
                 <div className="flex flex-col items-center justify-center gap-0.5 leading-tight">
                   <span className="whitespace-nowrap">건 / 통</span>
                   <span className="text-[9px] font-bold text-indigo-700/80 normal-case tracking-normal whitespace-nowrap">
@@ -1825,7 +1946,7 @@ return (
                   <span className="whitespace-nowrap">발주서 엑셀(Edit)</span>
                 </div>
               </th>
-              <th className="h-12 px-2 text-center w-[120px]">
+              <th className="h-12 px-2 text-center w-[100px]">
                 <div className="flex flex-col items-center justify-center gap-0.5 leading-tight">
                   <span className="whitespace-nowrap">메일 양식</span>
                   <span className="text-[10px] font-bold text-indigo-700/80 normal-case tracking-normal whitespace-nowrap">
@@ -1833,8 +1954,16 @@ return (
                   </span>
                 </div>
               </th>
+              <th className="h-12 px-1 text-center w-[100px]">
+                <div className="flex flex-col items-center justify-center gap-0.5 leading-tight">
+                  <span className="whitespace-nowrap">수령 검수</span>
+                  <span className="text-[9px] font-bold text-indigo-700/80 normal-case tracking-normal whitespace-nowrap">
+                    (물품 수령)
+                  </span>
+                </div>
+              </th>
               <th className="h-12 px-2 text-center w-[110px] border-r border-blue-200">
-                <span className="whitespace-nowrap">수령/사용자지급</span>
+                <span className="whitespace-nowrap">사용자 지급</span>
               </th>
               <th className="h-12 px-1 text-center w-[132px]">
                 <div className="flex flex-col items-center justify-center gap-1">
@@ -1842,8 +1971,13 @@ return (
                   <button
                     type="button"
                     onClick={openCompareModal}
-                    disabled={selectedBatchIds.size === 0}
-                    className="px-1.5 py-1 bg-amber-500 hover:bg-amber-600 text-white font-black text-[9px] rounded-lg shadow-sm disabled:opacity-40 whitespace-nowrap normal-case tracking-normal leading-tight"
+                    disabled={!canEditMaster || selectedBatchIds.size === 0}
+                    title={!canEditMaster ? '편집 권한 필요' : undefined}
+                    className={`px-1.5 py-1 font-black text-[9px] rounded-lg shadow-sm whitespace-nowrap normal-case tracking-normal leading-tight ${
+                      canEditMaster
+                        ? 'bg-amber-500 hover:bg-amber-600 text-white disabled:opacity-40'
+                        : DISABLED_ACTION_BTN
+                    }`}
                   >
                     선택 검수({selectedBatchIds.size}건)
                   </button>
@@ -1869,7 +2003,7 @@ return (
           <tbody className="bg-white text-xs font-bold text-slate-700 divide-y divide-slate-100">
             {filteredBatches.length === 0 ? (
               <tr>
-                <td colSpan={12} className="p-16 text-center text-slate-400 text-xs">발주 묶음이 없습니다.</td>
+                <td colSpan={13} className="p-16 text-center text-slate-400 text-xs">발주 묶음이 없습니다.</td>
               </tr>
             ) : paginatedBatches.map((batch) => (
               <React.Fragment key={batch.id}>
@@ -1884,7 +2018,7 @@ return (
                   </td>
                   <td className="px-4 text-slate-600 font-mono">{batch.orderDate}</td>
                   <td
-                    className="px-4 cursor-pointer"
+                    className="px-2 cursor-pointer"
                     onClick={() => toggleBatchExpand(batch.id)}
                   >
                     <span className="text-indigo-600 underline underline-offset-2">상세보기</span>
@@ -1935,20 +2069,60 @@ return (
                       📋텍스트복사
                     </button>
                   </td>
+                  <td
+                    className="px-1 text-center cursor-pointer"
+                    onClick={() => toggleBatchExpand(batch.id)}
+                    title="클릭하면 신청 상세를 펼칩니다"
+                  >
+                    {(() => {
+                      const items = batch.items || [];
+                      const total = items.length;
+                      const received = items.filter(
+                        (it) => it.adminStatus === '수령완료' || it.adminStatus === '지급완료'
+                      ).length;
+                      if (total > 0 && received >= total) {
+                        return (
+                          <span className="text-[10px] font-black text-emerald-600 whitespace-nowrap">
+                            수령완료
+                          </span>
+                        );
+                      }
+                      return (
+                        <span className="text-[10px] font-bold text-slate-500 whitespace-nowrap">
+                          수령 {received}/{total}
+                          {total - received > 0 ? (
+                            <span className="text-rose-600">{` · 대기 ${total - received}`}</span>
+                          ) : null}
+                        </span>
+                      );
+                    })()}
+                  </td>
                   <td className="px-2 text-center border-r border-slate-200">
-                      {batch.status === '발주완료' ? (
-                        <button 
-                          type="button"
-                          onClick={(e) => handleMarkAsDistributed(batch.id, e)} 
-                          className="inline-flex items-center gap-1 px-2 py-1 text-[10px] font-black rounded-lg transition-colors bg-blue-600 hover:bg-blue-700 text-white"
-                        >
-                          <span>→</span>
-                          <span>명함지급완료</span>
-                        </button>
-                      ) : (
-                        <span className="text-[10px] font-bold whitespace-nowrap text-violet-700">지급완료</span>
-                      )}
-                    </td>
+                    {batch.status === '지급완료' ? (
+                      <span className="text-[10px] font-bold whitespace-nowrap text-slate-900">지급완료</span>
+                    ) : batch.status === '수령완료' ||
+                      ((batch.items || []).length > 0 &&
+                        (batch.items || []).every(
+                          (it) => it.adminStatus === '수령완료' || it.adminStatus === '지급완료'
+                        )) ? (
+                      <button
+                        type="button"
+                        disabled={!canEditMaster}
+                        title={!canEditMaster ? '편집 권한 필요' : undefined}
+                        onClick={(e) => handleMarkAsDistributed(batch.id, e)}
+                        className={`inline-flex items-center gap-1 px-2 py-1 text-[10px] font-black rounded-lg transition-colors ${
+                          canEditMaster
+                            ? 'bg-blue-600 hover:bg-blue-700 text-white'
+                            : DISABLED_ACTION_BTN
+                        }`}
+                      >
+                        <span>→</span>
+                        <span>명함지급완료</span>
+                      </button>
+                    ) : (
+                      <span className="text-[10px] font-bold text-slate-300">—</span>
+                    )}
+                  </td>
                   <td className="px-1 text-center w-[132px]">
                     <div className="flex items-center justify-center">
                       {(() => {
@@ -1991,8 +2165,14 @@ return (
                     {batch.status === '지급완료' && getBatchInspectStatus(batch) === 'match' ? (
                       <button
                         type="button"
+                        disabled={!canEditMaster}
+                        title={!canEditMaster ? '편집 권한 필요' : undefined}
                         onClick={(e) => handleMoveBatchToArchive(batch, e)}
-                        className="px-2.5 py-1 text-[10px] font-black rounded-lg w-full whitespace-nowrap transition-colors bg-emerald-600 hover:bg-emerald-700 text-white"
+                        className={`px-2.5 py-1 text-[10px] font-black rounded-lg w-full whitespace-nowrap transition-colors ${
+                          canEditMaster
+                            ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                            : DISABLED_ACTION_BTN
+                        }`}
                       >
                         → 검수 완료 보관함 이동
                       </button>
@@ -2025,7 +2205,7 @@ return (
                   <tr className="bg-transparent">
                     <td className="w-[50px] bg-slate-100/70 border-y border-slate-200" />
                     <td
-                      colSpan={11}
+                      colSpan={12}
                       className="bg-slate-100/70 p-4 border-y border-slate-200 border-l-4 border-l-blue-500"
                     >
                       <div className="overflow-hidden bg-transparent">
@@ -2042,6 +2222,7 @@ return (
                               <th className="h-10 px-2 bg-transparent">직책 / 직급</th>
                               <th className="h-10 px-2 text-center w-[72px] whitespace-nowrap bg-transparent">수량(통)</th>
                               <th className="h-10 px-2 text-center w-[120px] whitespace-nowrap bg-transparent">원문확인 (Edit)</th>
+                              <th className="h-10 px-2 text-center w-[100px] whitespace-nowrap bg-transparent">수령확인 (Edit)</th>
                               <th className="h-10 px-2 text-center w-[80px] whitespace-nowrap bg-transparent">명세서 대조</th>
                               <th className="h-10 px-2 text-center w-[96px] whitespace-nowrap bg-transparent">금액결과</th>
                             </tr>
@@ -2085,6 +2266,29 @@ return (
                                   >
                                     원문확인
                                   </button>
+                                </td>
+                                <td className="px-2 text-center bg-transparent">
+                                  {item.adminStatus === '수령완료' || item.adminStatus === '지급완료' ? (
+                                    <span className="text-[10px] font-black text-emerald-600 whitespace-nowrap">
+                                      수령완료
+                                    </span>
+                                  ) : item.adminStatus === '발주완료' ? (
+                                    <button
+                                      type="button"
+                                      disabled={!canEditMaster}
+                                      title={!canEditMaster ? '편집 권한 필요' : undefined}
+                                      onClick={() => handleConfirmReceiveItem(item, batch.id)}
+                                      className={`px-2.5 py-1.5 text-[11px] font-black rounded-lg transition-colors ${
+                                        canEditMaster
+                                          ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                                          : DISABLED_ACTION_BTN
+                                      }`}
+                                    >
+                                      수령확인
+                                    </button>
+                                  ) : (
+                                    <span className="text-[10px] font-bold text-slate-300">—</span>
+                                  )}
                                 </td>
                                 <td className="px-4 text-center text-base font-black bg-transparent">
                                   {mStatus === 'idle' && <span className="text-slate-300">-</span>}
@@ -2329,7 +2533,7 @@ return (
                 ) : (
                   <p className="text-indigo-900 font-black">{detailTarget.deptNameEn || '-'}</p>
                 )}
-                <label className="block text-[10px] text-slate-400 mt-1">영문 직책/직급 (마스터 연동)🔒</label>
+                <label className="block text-[10px] text-slate-400 mt-1">영문 직책/직급🔒</label>
                 {isRequestEditing ? (
                   <input type="text" readOnly value={preview.titleEn || '-'} className={syncedCls} />
                 ) : (
@@ -2339,15 +2543,15 @@ return (
                 {isRequestEditing ? <input type="text" value={requestEditForm?.additionalEn || ''} onChange={e => setRequestEditForm({...requestEditForm!, additionalEn: e.target.value})} className="w-full p-1.5 border border-blue-300 rounded bg-white text-indigo-950 text-xs font-black" /> : <p className="text-indigo-900 font-black">{detailTarget.additionalEn || '-'}</p>}
                 <label className="block text-[10px] text-slate-400 mt-1">영문 휴대전화 (국문 연동)🔒</label>
                 {isRequestEditing ? (
-                  <input type="text" readOnly value={preview.mobileEn || '-'} className={`${syncedCls} font-mono`} />
+                  <input type="text" readOnly value={stripBusinessCardEnPlus(preview.mobileEn) || '-'} className={`${syncedCls} font-mono`} />
                 ) : (
-                  <p className="text-indigo-900 font-mono font-black">{detailTarget.mobileEn || '-'}</p>
+                  <p className="text-indigo-900 font-mono font-black">{stripBusinessCardEnPlus(detailTarget.mobileEn) || '-'}</p>
                 )}
                 <label className="block text-[10px] text-slate-400 mt-1">영문 내선전화 (국문 연동)🔒</label>
                 {isRequestEditing ? (
-                  <input type="text" readOnly value={preview.phoneEn || '-'} className={`${syncedCls} font-mono`} />
+                  <input type="text" readOnly value={stripBusinessCardEnPlus(preview.phoneEn) || '-'} className={`${syncedCls} font-mono`} />
                 ) : (
-                  <p className="text-indigo-900 font-mono">{detailTarget.phoneEn || '-'}</p>
+                  <p className="text-indigo-900 font-mono">{stripBusinessCardEnPlus(detailTarget.phoneEn) || '-'}</p>
                 )}
                 <label className="block text-[10px] text-slate-400 mt-1">영문 이메일 (국문 연동)🔒</label>
                 {isRequestEditing ? (
@@ -2357,7 +2561,7 @@ return (
                 )}
               </div>
               <div className="mt-4 p-3 bg-white rounded-xl border border-indigo-100">
-                <p className="text-[11px] font-bold text-slate-600 mb-1">영문 팩스: <span className="font-mono text-indigo-900">{preview.faxEn || '-'}</span></p>
+                <p className="text-[11px] font-bold text-slate-600 mb-1">영문 팩스: <span className="font-mono text-indigo-900">{stripBusinessCardEnPlus(preview.faxEn) || '-'}</span></p>
                 <p className="text-[11px] font-bold text-slate-600 leading-relaxed">영문 주소: <span className="text-indigo-900">{preview.addressEn || '-'}</span></p>
               </div>
             </div>
@@ -2397,7 +2601,19 @@ return (
               <>
                 <button onClick={() => { setDetailTarget(null); setDetailReadOnly(false); }} className="px-5 py-2.5 bg-slate-100 text-slate-700 rounded-xl font-black text-xs hover:bg-slate-200 transition-colors">닫기</button>
                 {!detailReadOnly && (
-                  <button onClick={() => beginRequestEdit(detailTarget)} className="px-5 py-2.5 bg-amber-500 text-white rounded-xl font-black text-xs hover:bg-amber-600 transition-colors shadow-sm">✏️ 발주 전 직접 수정하기(Edit)</button>
+                  <button
+                    type="button"
+                    disabled={!canEditMaster}
+                    title={!canEditMaster ? '편집 권한 필요' : undefined}
+                    onClick={() => beginRequestEdit(detailTarget)}
+                    className={`px-5 py-2.5 rounded-xl font-black text-xs transition-colors shadow-sm ${
+                      canEditMaster
+                        ? 'bg-amber-500 text-white hover:bg-amber-600'
+                        : DISABLED_ACTION_BTN
+                    }`}
+                  >
+                    ✏️ 발주 전 직접 수정하기(Edit)
+                  </button>
                 )}
               </>
             )}
@@ -2413,7 +2629,11 @@ return (
           <div className="border-b border-slate-100 pb-5 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
             <div className="flex-1">
               <h2 className="text-lg font-black text-slate-900 flex items-center gap-2">📋 그룹웨어 발송용 메일 양식 미리보기</h2>
-              <p className="text-xs text-slate-500 font-bold mt-2 leading-relaxed">수신 업체를 선택하면 본문이 자동으로 변경됩니다.<br/>복사 후 그룹웨어에 붙여넣으세요.</p>
+              <p className="text-xs text-slate-500 font-bold mt-2 leading-relaxed">
+                수신 업체를 선택하면 본문이 자동으로 변경됩니다.
+                <br />
+                복사 후 그룹웨어에 붙여넣으세요. 제목·본문 양식은 설정에서 수정할 수 있습니다.
+              </p>
             </div>
             <div className="flex items-center gap-2 shrink-0">
               <select value={selectedVendorId} onChange={(e) => setSelectedVendorId(e.target.value)} className="bg-indigo-50 border border-indigo-200 text-indigo-900 text-xs font-black py-2.5 px-3 rounded-xl outline-none focus:ring-2 focus:ring-indigo-300 w-48 cursor-pointer">
@@ -2422,6 +2642,25 @@ return (
                 ))}
                 {vendors.length === 0 && <option value="">등록된 업체 없음</option>}
               </select>
+              <button
+                type="button"
+                disabled={!canEditMaster}
+                title={!canEditMaster ? '편집 권한 필요' : undefined}
+                onClick={() => {
+                  if (!canEditMaster) return alertNoEditPermission();
+                  setMailTemplateEditor({
+                    subjectTemplate: mailSubjectTemplate,
+                    bodyTemplate: mailBodyTemplate,
+                  });
+                }}
+                className={`px-4 py-2.5 font-black text-xs rounded-xl transition-colors whitespace-nowrap shadow-sm ${
+                  canEditMaster
+                    ? 'bg-slate-800 text-white hover:bg-slate-900'
+                    : DISABLED_ACTION_BTN
+                }`}
+              >
+                ⚙️ 양식 설정(Edit)
+              </button>
               <button
                 type="button"
                 disabled={!canEditMaster}
@@ -2473,7 +2712,7 @@ return (
                 title={!canEditMaster ? '편집 권한 필요' : undefined}
                 onClick={() => {
                   if (!canEditMaster) return alertNoEditPermission();
-                  setMailShortcutEditor(mailShortcutUrl);
+                  setMailShortcutEditor(mailShortcutUrl || DEFAULT_MAIL_SHORTCUT_URL);
                 }}
                 className={`px-3 py-2.5 font-black text-xs rounded-r-xl shadow-md border-l border-slate-600 ${
                   canEditMaster
@@ -2489,6 +2728,77 @@ return (
       </div>
     )}
 
+    {mailTemplateEditor && (
+      <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-900/50 p-4">
+        <div className="w-full max-w-2xl rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl space-y-4">
+          <div>
+            <h3 className="text-base font-black text-slate-900">명함 메일 양식 설정</h3>
+            <p className="mt-2 text-[11px] font-bold leading-relaxed text-slate-500">
+              플레이스홀더: {'{{BATCH_NO}}'}(묶음번호), {'{{COUNT}}'}(건수),{' '}
+              {'{{VENDOR_NAME}}'}(업체명), {'{{VENDOR_MANAGER}}'}(담당자)
+            </p>
+          </div>
+          <div>
+            <label className="block text-[10px] font-black text-slate-500 mb-1">제목 양식</label>
+            <input
+              type="text"
+              value={mailTemplateEditor.subjectTemplate}
+              onChange={(e) =>
+                setMailTemplateEditor({
+                  ...mailTemplateEditor,
+                  subjectTemplate: e.target.value,
+                })
+              }
+              className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm font-bold text-slate-800 outline-none focus:border-indigo-400"
+            />
+          </div>
+          <div>
+            <label className="block text-[10px] font-black text-slate-500 mb-1">본문 양식</label>
+            <textarea
+              rows={12}
+              value={mailTemplateEditor.bodyTemplate}
+              onChange={(e) =>
+                setMailTemplateEditor({
+                  ...mailTemplateEditor,
+                  bodyTemplate: e.target.value,
+                })
+              }
+              className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm font-bold text-slate-800 outline-none focus:border-indigo-400 whitespace-pre-wrap"
+            />
+          </div>
+          <div className="flex justify-between gap-2">
+            <button
+              type="button"
+              onClick={() =>
+                setMailTemplateEditor({
+                  subjectTemplate: DEFAULT_BC_MAIL_SUBJECT,
+                  bodyTemplate: DEFAULT_BC_MAIL_BODY,
+                })
+              }
+              className="rounded-xl bg-slate-100 px-4 py-2 text-xs font-black text-slate-600"
+            >
+              기본값 불러오기(Edit)
+            </button>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => setMailTemplateEditor(null)}
+                className="rounded-xl bg-slate-100 px-4 py-2 text-xs font-black text-slate-600"
+              >
+                취소
+              </button>
+              <button
+                type="button"
+                onClick={handleSaveMailTemplates}
+                className="rounded-xl bg-indigo-600 px-4 py-2 text-xs font-black text-white"
+              >
+                저장
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    )}
     {/* 🚀 외주업체 마스터 관리 모달 */}
     {isVendorModalOpen && (
       <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-sm flex items-center justify-center z-[60] p-4 animate-fade-in">
@@ -3112,7 +3422,7 @@ return (
             value={mailShortcutEditor}
             onChange={(e) => setMailShortcutEditor(e.target.value)}
             className="mt-3 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm font-bold text-slate-800 outline-none focus:border-indigo-400"
-            placeholder="https://사내그룹웨어/mail/..."
+            placeholder={DEFAULT_MAIL_SHORTCUT_URL}
           />
           <div className="mt-4 flex justify-end gap-2">
             <button type="button" onClick={() => setMailShortcutEditor(null)} className="rounded-xl bg-slate-100 px-4 py-2 text-xs font-black text-slate-600">취소</button>

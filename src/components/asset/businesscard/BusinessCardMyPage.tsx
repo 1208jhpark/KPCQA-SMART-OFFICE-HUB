@@ -4,9 +4,10 @@ import { useState, useEffect, useMemo } from 'react';
 import * as XLSX from 'xlsx';
 import LoadingState from '@/components/common/LoadingState';
 import { resolveInterfaceEditState } from '@/lib/permission-utils';
-import { formatBusinessCardEnNumber } from '@/lib/businesscard-phone';
-import { formatBusinessCardAdminStatusLabel } from '@/lib/businesscard-status';
-import { getKSTNowYearMonth, formatKSTDateTime } from '@/utils/dateUtils';
+import { formatBusinessCardEnNumber, stripBusinessCardEnPlus } from '@/lib/businesscard-phone';
+import { formatBusinessCardUserStatusLabel } from '@/lib/businesscard-status';
+import { getKSTDateString, getKSTNowYearMonth, formatKSTDateTime } from '@/utils/dateUtils';
+import type { UserJobOption } from '@/lib/user-job-options';
 
 const MENU_PATH = '/asset/businesscard/my-page';
 const DISABLED_ACTION_BTN =
@@ -37,10 +38,18 @@ function isBusinessCardHqUnit(unit: { unit_type?: string | null; unit_name?: str
   return /^hq\b/i.test(n) || /^hq[_-]/i.test(n);
 }
 
-interface MasterCode {
-  id: string;
-  label: string;  
-  value: string | null; 
+/** 직책/직급 옵션 (/admin/users SystemConfig) — UI용 id 포함 */
+type JobOption = UserJobOption & { id: string };
+
+function toJobOptions(list: UserJobOption[] | undefined, prefix: string): JobOption[] {
+  if (!Array.isArray(list)) return [];
+  return list
+    .filter((o) => o && String(o.label || '').trim())
+    .map((o, i) => ({
+      id: `${prefix}-${i}-${String(o.label).trim()}`,
+      label: String(o.label).trim(),
+      value: String(o.value ?? '').trim(),
+    }));
 }
 
 interface RequestHistory {
@@ -126,8 +135,8 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
   const [formMode, setFormMode] = useState<'NEW' | 'VIEW' | 'EDIT'>('NEW');
   const [loading, setLoading] = useState(true);
   const [units, setUnits] = useState<UnitItem[]>([]);
-  const [duties, setDuties] = useState<MasterCode[]>([]);
-  const [grades, setGrades] = useState<MasterCode[]>([]);
+  const [duties, setDuties] = useState<JobOption[]>([]);
+  const [grades, setGrades] = useState<JobOption[]>([]);
   const [history, setHistory] = useState<RequestHistory[]>([]);
   
   const [historyPage, setHistoryPage] = useState(1);
@@ -198,7 +207,7 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
     phone: '',
     phoneEn: '',
     fax: addr?.fax || '',
-    faxEn: addr?.faxEn || '',
+    faxEn: stripBusinessCardEnPlus(addr?.faxEn || ''),
     email: '',
     emailEn: '',
     addressId: addr?.id || '',
@@ -217,8 +226,8 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
   const applyProfileSync = (
     me: any,
     unitList: UnitItem[],
-    dutyList: MasterCode[],
-    gradeList: MasterCode[],
+    dutyList: JobOption[],
+    gradeList: JobOption[],
     addrList: any[]
   ) => {
     const addr = addrList[0];
@@ -273,10 +282,11 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
       gradeList.find((g) => g.label === gradeRaw) ||
       gradeList.find((g) => String(g.value || '') === String(me.grade_en || '').trim());
 
-    const dutyName = dutyMatch?.label || dutyRaw;
-    const dutyEn = dutyMatch?.value || String(me.duty_en || '').trim() || '';
-    const gradeName = gradeMatch?.label || gradeRaw;
-    const gradeEn = gradeMatch?.value || String(me.grade_en || '').trim() || '';
+    // User 인사정보 우선 (옵션은 라벨 정규화·드롭다운용)
+    const dutyName = dutyRaw || dutyMatch?.label || '';
+    const dutyEn = String(me.duty_en || '').trim() || dutyMatch?.value || '';
+    const gradeName = gradeRaw || gradeMatch?.label || '';
+    const gradeEn = String(me.grade_en || '').trim() || gradeMatch?.value || '';
     // 직책 우선, 없으면 직급
     const useDuty = !!dutyName;
 
@@ -303,8 +313,8 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
   const openNewApplication = async (opts?: {
     me?: any;
     unitList?: UnitItem[];
-    dutyList?: MasterCode[];
-    gradeList?: MasterCode[];
+    dutyList?: JobOption[];
+    gradeList?: JobOption[];
     addrList?: any[];
   }) => {
     if (!canEdit) return alertNoEditPermission();
@@ -374,10 +384,8 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
         return;
       }
 
-      const [configRes, unitsRes, masterRes, historyRes, addrMasterRes, qualRes, settingsRes, ifRes] = await Promise.all([
-        fetch(`/api/admin/config?t=${ts}`, { cache: 'no-store' }),
+      const [unitsRes, historyRes, addrMasterRes, qualRes, settingsRes, ifRes] = await Promise.all([
         fetch(`/api/admin/units?active=true&t=${ts}`, { cache: 'no-store' }),
-        fetch(`/api/admin/master-data?t=${ts}`, { cache: 'no-store' }),
         fetch(`/api/asset/businesscard/my-page?t=${ts}`, { cache: 'no-store' }),
         fetch(`/api/asset/businesscard/master/addresses?t=${ts}`, { cache: 'no-store' }),
         fetch(`/api/asset/businesscard/master/qualifications?t=${ts}`, { cache: 'no-store' }),
@@ -395,21 +403,16 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
         setInterfaceConfig(null);
       }
 
-      let nextDuties: MasterCode[] = [];
-      let nextGrades: MasterCode[] = [];
-      if (configRes.ok && masterRes.ok) {
-        const config = await configRes.json();
-        const allMaster = await masterRes.json();
-        const dutyGroup = allMaster.find((g: any) => g.id === config.job_duty_group);
-        const gradeGroup = allMaster.find((g: any) => g.id === config.job_grade_group);
-        if (dutyGroup?.codes) {
-          nextDuties = dutyGroup.codes;
-          setDuties(dutyGroup.codes);
-        }
-        if (gradeGroup?.codes) {
-          nextGrades = gradeGroup.codes;
-          setGrades(gradeGroup.codes);
-        }
+      let nextDuties: JobOption[] = [];
+      let nextGrades: JobOption[] = [];
+      if (settingsRes.ok) {
+        const settings = await settingsRes.json();
+        const n = Number(settings?.sheetsPerPack);
+        if (Number.isFinite(n) && n > 0) setSheetsPerPack(Math.round(n));
+        nextDuties = toJobOptions(settings?.duties, 'duty');
+        nextGrades = toJobOptions(settings?.grades, 'grade');
+        setDuties(nextDuties);
+        setGrades(nextGrades);
       }
 
       let nextUnits: UnitItem[] = [];
@@ -429,12 +432,6 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
       if (qualRes.ok) {
         const qualData = await qualRes.json();
         setQualifications(qualData.filter((q: any) => q.isActive));
-      }
-
-      if (settingsRes.ok) {
-        const settings = await settingsRes.json();
-        const n = Number(settings?.sheetsPerPack);
-        if (Number.isFinite(n) && n > 0) setSheetsPerPack(Math.round(n));
       }
       
     } catch (error) {
@@ -543,11 +540,11 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
       additionalQuals: parsedQuals,
       additionalQualsEn: parsedQualsEn,
       mobile: row.mobile || '',
-      mobileEn: formatBusinessCardEnNumber('mobile', row.mobile || '') || row.mobileEn || '',
+      mobileEn: formatBusinessCardEnNumber('mobile', row.mobile || '') || stripBusinessCardEnPlus(row.mobileEn || ''),
       phone: row.phone || '',
-      phoneEn: formatBusinessCardEnNumber('phone', row.phone || '') || row.phoneEn || '',
+      phoneEn: formatBusinessCardEnNumber('phone', row.phone || '') || stripBusinessCardEnPlus(row.phoneEn || ''),
       fax: row.fax || '',
-      faxEn: row.faxEn || '',
+      faxEn: stripBusinessCardEnPlus(row.faxEn || ''),
       email: row.email || '',
       emailEn: row.emailEn || '',
       addressId: row.addressId || '',
@@ -675,10 +672,10 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
       title: form.title, titleEn: form.titleEn,
       additionalKo: finalKo, additionalEn: finalEn,
       mobile: form.mobile,
-      mobileEn: formatBusinessCardEnNumber('mobile', form.mobile) || form.mobileEn,
+      mobileEn: formatBusinessCardEnNumber('mobile', form.mobile) || stripBusinessCardEnPlus(form.mobileEn),
       phone: form.phone,
-      phoneEn: formatBusinessCardEnNumber('phone', form.phone) || form.phoneEn,
-      fax: form.fax, faxEn: form.faxEn,
+      phoneEn: formatBusinessCardEnNumber('phone', form.phone) || stripBusinessCardEnPlus(form.phoneEn),
+      fax: form.fax, faxEn: stripBusinessCardEnPlus(form.faxEn),
       addressId: form.addressId, zipCode: form.zipCode, addressKo: form.addressKo, addressEn: form.addressEn,
       email: form.email, emailEn: form.emailEn,
       quantity: form.quantity
@@ -753,27 +750,36 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
 
   const handleExportExcel = () => {
     if (filteredHistory.length === 0) return alert('다운로드할 데이터가 없습니다.');
-    const exportData = filteredHistory.map((row, idx) => ({
-      NO: filteredHistory.length - idx,
-      신청일자: row.applyDate || '',
-      관리번호: row.postNumber || '',
-      본부: row.deptHead || '',
-      센터: row.deptName || '',
-      이름: row.userName || '',
-      수량통: row.quantity || 1,
-      관리자의견: row.adminMemo || '',
-      공정상태: formatBusinessCardAdminStatusLabel(row.adminStatus),
-      신청주체: row.applicantType || '본인',
-      처리일자: row.processDate || '',
+
+    const excelData = filteredHistory.map((r) => ({
+      성명: r.userName,
+      신청일자: r.applyDate,
+      본부: r.deptHead,
+      소속: r.deptName || '',
+      '직책/직급': r.title,
+      추가사항: r.additionalKo || '',
+      우편번호: r.zipCode,
+      주소: r.addressKo,
+      휴대전화: r.mobile,
+      전화번호: r.phone || '',
+      팩스: r.fax || '',
+      이메일: r.email,
+      영문이름: r.userNameEn || '',
+      영문본부: r.deptHeadEn || '',
+      영문소속: r.deptNameEn || '',
+      영문직책: r.titleEn || '',
+      영문추가: r.additionalEn || '',
+      영문주소: r.addressEn || '',
+      '영문 휴대전화': stripBusinessCardEnPlus(r.mobileEn || ''),
+      영문전화: stripBusinessCardEnPlus(r.phoneEn || ''),
+      영문팩스: stripBusinessCardEnPlus(r.faxEn || ''),
+      '이메일(영문)': r.emailEn || r.email,
     }));
-    const ws = XLSX.utils.json_to_sheet(exportData);
+
+    const ws = XLSX.utils.json_to_sheet(excelData);
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, '명함신청내역');
-    const monthStr = monthFilter !== 'ALL' ? `_${monthFilter}월` : '';
-    XLSX.writeFile(
-      wb,
-      `명함_나의신청내역_${yearFilter === 'ALL' ? '전체' : yearFilter}년${monthStr}.xlsx`
-    );
+    XLSX.utils.book_append_sheet(wb, ws, '명함신청데이터');
+    XLSX.writeFile(wb, `명함발주데이터_${getKSTDateString()}.xlsx`);
   };
 
   // 🚀 필터 변경 시 페이지 리셋
@@ -787,7 +793,11 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
   }, [availableMonths, monthFilter]);
 
   const totalHistoryPages = Math.ceil(filteredHistory.length / itemsPerPage) || 1;
-  const paginatedHistory = filteredHistory.slice((historyPage - 1) * itemsPerPage, historyPage * itemsPerPage);
+  const safeHistoryPage = Math.min(historyPage, totalHistoryPages);
+  const paginatedHistory = filteredHistory.slice(
+    (safeHistoryPage - 1) * itemsPerPage,
+    safeHistoryPage * itemsPerPage
+  );
   
   const isReadOnly = formMode === 'VIEW';
   const hqUnits = useMemo(() => {
@@ -848,11 +858,11 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
                 onClick={() => openNewApplication()}
                 className={`group inline-flex items-center justify-center gap-1.5 px-5 py-2.5 rounded-xl font-black text-[12px] transition-all duration-200 ${
                   canEdit
-                    ? 'bg-white text-indigo-700 shadow-lg shadow-indigo-950/25 ring-1 ring-white/60 hover:bg-indigo-50 hover:text-indigo-800 hover:shadow-xl hover:-translate-y-0.5 active:translate-y-0'
+                    ? 'bg-amber-200 text-indigo-950 shadow-lg shadow-indigo-950/30 ring-1 ring-amber-100/80 hover:bg-amber-300 hover:text-indigo-950 hover:shadow-xl hover:-translate-y-0.5 active:translate-y-0'
                     : DISABLED_ACTION_BTN
                 }`}
               >
-                <span className="text-indigo-500 group-hover:text-indigo-700 transition-colors">+</span>
+                <span className="text-amber-700 group-hover:text-indigo-900 transition-colors">+</span>
                 명함신청하기
               </button>
             ) : formMode !== 'NEW' ? (
@@ -997,7 +1007,7 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
                     </optgroup>
                   )}
                 </select>
-                <p className="text-[9px] text-slate-400 font-bold mt-1">직책 우선 · 없으면 직급 연동</p>
+                <p className="text-[9px] text-slate-400 font-bold mt-1">Hub 사용자 직책·직급 기준 (직책 우선)</p>
               </div>
             </div>
 
@@ -1180,6 +1190,7 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
               <div>
                 <label className="block text-[10px] font-black text-slate-400 mb-1">영문 직책/직급🔒</label>
                 <input type="text" readOnly value={form.titleEn || form.dutyEn || form.gradeEn} className="w-full p-2 bg-slate-50 text-slate-500 border border-slate-100 rounded-lg text-xs font-bold cursor-not-allowed" />
+                <p className="text-[9px] text-slate-400 font-bold mt-1">사용자 인사정보 영문값</p>
               </div>
             </div>
 
@@ -1241,7 +1252,7 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
                 <input
                   type="text"
                   readOnly
-                  value={formatBusinessCardEnNumber('mobile', form.mobile) || form.mobileEn || ''}
+                  value={formatBusinessCardEnNumber('mobile', form.mobile) || stripBusinessCardEnPlus(form.mobileEn) || ''}
                   className="w-full p-2 bg-slate-50 text-slate-500 border border-slate-100 rounded-lg text-xs font-mono cursor-not-allowed"
                 />
               </div>
@@ -1250,13 +1261,13 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
                 <input
                   type="text"
                   readOnly
-                  value={formatBusinessCardEnNumber('phone', form.phone) || form.phoneEn || ''}
+                  value={formatBusinessCardEnNumber('phone', form.phone) || stripBusinessCardEnPlus(form.phoneEn) || ''}
                   className="w-full p-2 bg-slate-50 text-slate-500 border border-slate-100 rounded-lg text-xs font-mono cursor-not-allowed"
                 />
               </div>
               <div>
                 <label className="block text-[10px] font-black text-slate-400 mb-1">영문 팩스🔒</label>
-                <input type="text" readOnly value={form.faxEn} className="w-full p-2 bg-slate-50 text-slate-500 border border-slate-100 rounded-lg text-xs font-mono cursor-not-allowed" />
+                <input type="text" readOnly value={stripBusinessCardEnPlus(form.faxEn)} className="w-full p-2 bg-slate-50 text-slate-500 border border-slate-100 rounded-lg text-xs font-mono cursor-not-allowed" />
               </div>
               <div>
                 <label className="block text-[10px] font-black text-slate-400 mb-1">영문 이메일🔒</label>
@@ -1424,7 +1435,7 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
               onClick={handleExportExcel}
               className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-[10px] font-black shadow-sm hover:bg-emerald-700 transition-all whitespace-nowrap"
             >
-              화면 목록 EXCEL 다운로드
+              EXCEL 다운로드
             </button>
             <button
               type="button"
@@ -1477,12 +1488,12 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
                     </tr>
                   ) : (
                     paginatedHistory.map((row, index) => {
-                      const rowNo = filteredHistory.length - ((historyPage - 1) * itemsPerPage + index);
+                      const rowNo = filteredHistory.length - ((safeHistoryPage - 1) * itemsPerPage + index);
                       const isModifiable = row.adminStatus === '대기중' || row.adminStatus === '반려';
                       const statusClass =
                         row.adminStatus === '지급완료'
-                          ? 'text-violet-700'
-                          : row.adminStatus === '발주완료'
+                          ? 'text-slate-900'
+                          : row.adminStatus === '수령완료' || row.adminStatus === '발주완료'
                             ? 'text-emerald-600'
                             : row.adminStatus === '접수완료'
                               ? 'text-blue-600'
@@ -1510,7 +1521,7 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
                               상세보기
                             </button>
                           </td>
-                          <td className="px-2 text-center font-mono tabular-nums text-indigo-600">{row.quantity || 1}</td>
+                          <td className="px-2 text-center font-mono tabular-nums text-slate-900">{row.quantity || 1}</td>
                           <td className="px-2 text-center">
                             {row.adminMemo ? (
                               <button
@@ -1526,10 +1537,10 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
                           </td>
                           <td className="px-2 text-center">
                             <span className={`text-[10px] font-bold whitespace-nowrap ${statusClass}`}>
-                              {formatBusinessCardAdminStatusLabel(row.adminStatus)}
+                              {formatBusinessCardUserStatusLabel(row.adminStatus)}
                             </span>
                             {row.applicantType === '관리자대행' && (
-                              <span className="ml-1 text-[10px] font-bold whitespace-nowrap text-indigo-700">
+                              <span className="ml-1 text-[10px] font-bold whitespace-nowrap text-slate-900">
                                 관리자대행
                               </span>
                             )}
@@ -1568,8 +1579,8 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
               <div className="flex justify-center items-center gap-1.5 py-3 border-t border-slate-100 bg-white">
                 <button
                   type="button"
-                  disabled={historyPage === 1}
-                  onClick={() => setHistoryPage((p) => p - 1)}
+                  disabled={safeHistoryPage === 1}
+                  onClick={() => setHistoryPage((p) => Math.max(1, p - 1))}
                   className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors"
                 >
                   이전
@@ -1580,7 +1591,7 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
                     type="button"
                     onClick={() => setHistoryPage(i + 1)}
                     className={`w-8 h-8 rounded-xl font-black text-xs transition-all ${
-                      historyPage === i + 1
+                      safeHistoryPage === i + 1
                         ? 'bg-slate-800 text-white shadow-sm scale-105'
                         : 'bg-white border border-slate-200 text-slate-500 hover:bg-slate-50'
                     }`}
@@ -1590,8 +1601,8 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
                 ))}
                 <button
                   type="button"
-                  disabled={historyPage === totalHistoryPages}
-                  onClick={() => setHistoryPage((p) => p + 1)}
+                  disabled={safeHistoryPage === totalHistoryPages}
+                  onClick={() => setHistoryPage((p) => Math.min(totalHistoryPages, p + 1))}
                   className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors"
                 >
                   다음

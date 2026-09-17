@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import prisma from '@/lib/prisma';
 import { getKSTDateString } from '@/utils/dateUtils';
 import { nextBusinessCardPostNumber } from '@/lib/businesscard-post-number';
+import { stripBusinessCardEnPlus } from '@/lib/businesscard-phone';
 import { authorizeApi, authorizeAnyMenuPaths, authErrorToResponse } from '@/lib/server-auth-guard';
 
 export const dynamic = 'force-dynamic';
@@ -76,7 +77,15 @@ function pickFormFields(body: Record<string, unknown>) {
       continue;
     }
     const v = body[key];
-    data[key] = v == null ? null : String(v);
+    if (v == null) {
+      data[key] = null;
+      continue;
+    }
+    const s = String(v);
+    data[key] =
+      key === 'mobileEn' || key === 'phoneEn' || key === 'faxEn'
+        ? stripBusinessCardEnPlus(s)
+        : s;
   }
   return data;
 }
@@ -158,11 +167,11 @@ export async function POST(req: Request) {
         additionalKo: body.additionalKo || null,
         additionalEn: body.additionalEn || null,
         mobile: String(body.mobile || '').trim(),
-        mobileEn: String(body.mobileEn || '').trim(),
+        mobileEn: stripBusinessCardEnPlus(String(body.mobileEn || '').trim()),
         phone: String(body.phone || '').trim(),
-        phoneEn: String(body.phoneEn || '').trim(),
+        phoneEn: stripBusinessCardEnPlus(String(body.phoneEn || '').trim()),
         fax: String(body.fax || '').trim(),
-        faxEn: String(body.faxEn || '').trim(),
+        faxEn: stripBusinessCardEnPlus(String(body.faxEn || '').trim()),
         email: String(body.email || '').trim(),
         emailEn: String(body.emailEn || '').trim(),
         addressId: body.addressId || null,
@@ -240,21 +249,82 @@ export async function PUT(req: Request) {
   }
 }
 
-/** 관리자 대행 신청 취소(삭제) */
+/** 관리자 대행 신청 취소(삭제) / purge=1 → LV_1 접수·발주대기 영구 삭제 */
 export async function DELETE(req: Request) {
   try {
-    await authorizeApi(MENU_PATH, { requireEditor: true });
     const { searchParams } = new URL(req.url);
     const id = searchParams.get('id');
+    const purge = searchParams.get('purge') === '1';
+
     if (!id) {
       return NextResponse.json({ message: 'ID가 누락되었습니다.' }, { status: 400 });
     }
+
+    if (purge) {
+      const auth = await authorizeApi(MENU_PATH, { requireEditor: true });
+      if (auth.permission.myRole !== 'LV_1') {
+        return NextResponse.json(
+          { message: '영구 삭제는 LV_1만 가능합니다.' },
+          { status: 403 }
+        );
+      }
+
+      const existing = await prisma.businessCardRequest.findUnique({ where: { id } });
+      if (!existing) {
+        return NextResponse.json({ message: '신청 내역을 찾을 수 없습니다.' }, { status: 404 });
+      }
+
+      const status = String(existing.adminStatus || '').trim();
+      const inBatch = !!existing.orderGroupId;
+      const isPendingFolder = status === '대기중';
+      const isOrderWaitFolder =
+        (status === '접수완료' || status === '발주완료') && !inBatch;
+
+      if (!isPendingFolder && !isOrderWaitFolder) {
+        return NextResponse.json(
+          {
+            message:
+              '접수대기(대기중) 또는 발주대기(미묶음) 건만 영구 삭제할 수 있습니다. 발주 묶음·보관함 건은 해당 화면에서 처리하세요.',
+          },
+          { status: 400 }
+        );
+      }
+
+      await prisma.businessCardRequest.delete({ where: { id } });
+      return NextResponse.json({ success: true });
+    }
+
+    await authorizeApi(MENU_PATH, { requireEditor: true });
+
+    const existing = await prisma.businessCardRequest.findUnique({ where: { id } });
+    if (!existing) {
+      return NextResponse.json({ message: '신청 내역을 찾을 수 없습니다.' }, { status: 404 });
+    }
+    if (String(existing.applicantType || '').trim() !== '관리자대행') {
+      return NextResponse.json(
+        { message: '일반 삭제 API는 관리자 대행 신청만 취소할 수 있습니다.' },
+        { status: 403 }
+      );
+    }
+    if (String(existing.adminStatus || '').trim() !== '대기중') {
+      return NextResponse.json(
+        { message: '대기중(접수대기) 대행 신청만 취소할 수 있습니다.' },
+        { status: 400 }
+      );
+    }
+    if (existing.orderGroupId || existing.isArchived) {
+      return NextResponse.json(
+        { message: '발주·보관된 건은 이 경로로 삭제할 수 없습니다.' },
+        { status: 400 }
+      );
+    }
+
     await prisma.businessCardRequest.delete({ where: { id } });
     return NextResponse.json({ success: true });
   } catch (error: any) {
     const authRes = authErrorToResponse(error);
     if (authRes.status !== 500) return authRes;
     console.error('[businesscard/master/requests DELETE]', error);
-    return NextResponse.json({ message: '취소 처리 실패', error: error.message }, { status: 500 });
+    return NextResponse.json({ message: '취소 처리 실패' }, { status: 500 });
   }
 }

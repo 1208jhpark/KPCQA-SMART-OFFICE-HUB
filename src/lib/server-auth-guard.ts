@@ -375,7 +375,7 @@ export async function authorizeAnyMenuPaths(
 
     if (p.isEditor) {
       merged.isEditor = true;
-      // edit_scopes 비어 있으면 TOTAL로 올리지 않음 (UI '제한'과 일치). Task Editor 개별 scope는 permission.editScope 사용
+      // edit_scopes 비어 있으면 TOTAL로 올리지 않음 (UI '제한'과 일치). Task Editor도 동일 Edit Scope 사용
       const rawEditScopes = safeArray(menu.edit_scopes);
       const effectiveEdit =
         rawEditScopes.length === 0
@@ -655,8 +655,8 @@ export async function requireSessionUser() {
     throw new Error('UNAUTHORIZED_EXPIRED');
   }
 
-  const user = await prisma.user.findUnique({
-    where: { email: decoded.email },
+  const user = await prisma.user.findFirst({
+    where: { email: { equals: String(decoded.email || ''), mode: 'insensitive' } },
     include: { unit: { include: { parent: true } } },
   });
   if (!user) throw new Error('USER_NOT_FOUND');

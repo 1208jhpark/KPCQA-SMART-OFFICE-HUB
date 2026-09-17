@@ -15,8 +15,8 @@ export async function GET() {
     const decoded: any = jwt.verify(token, JWT_SECRET);
     const userEmail = decoded.email;
 
-    const user = await prisma.user.findUnique({
-      where: { email: userEmail },
+    const user = await prisma.user.findFirst({
+      where: { email: { equals: String(userEmail || ''), mode: 'insensitive' } },
       include: {
         unit: {
           include: {

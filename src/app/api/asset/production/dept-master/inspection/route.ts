@@ -10,6 +10,11 @@ import {
   isCustomerDirectShip,
   withVendorDispatched,
 } from '@/lib/production-shipping';
+import {
+  getOfficeQuoteLinesFromOptions,
+  applyOfficeQuoteLinesToOptions,
+  normalizeOfficeQuoteLines,
+} from '@/lib/production-office-statement-match';
 
 export const dynamic = 'force-dynamic';
 
@@ -290,14 +295,14 @@ export async function POST(req: Request) {
       const row = await prisma.productionRequest.findUnique({ where: { id: requestId } });
       if (!row || row.isArchived || row.status !== 'ORDERED') {
         return NextResponse.json(
-          { message: '발주진행 상태의 건만 수령완료할 수 있습니다.' },
+          { message: '수령대기(발주확정 후) 상태의 건만 수령완료할 수 있습니다.' },
           { status: 400 }
         );
       }
       const opts = asOptionsRecord(row.options);
       if (opts.vendorDispatched !== true) {
         return NextResponse.json(
-          { message: '묶음 「발주완료」 처리 후 수령완료할 수 있습니다.' },
+          { message: '묶음 「발주확정」 처리 후 수령확인할 수 있습니다.' },
           { status: 400 }
         );
       }
@@ -307,11 +312,185 @@ export async function POST(req: Request) {
           { status: 400 }
         );
       }
+
+      const quoteLines =
+        String(row.category || '').toUpperCase() === 'OFFICE_SUPPLIES'
+          ? getOfficeQuoteLinesFromOptions(opts)
+          : [];
+      const nextOpts =
+        quoteLines.length > 0
+          ? {
+              ...opts,
+              suppliesReceivedLineNos: quoteLines.map((l) => l.lineNo),
+            }
+          : opts;
+
       await prisma.productionRequest.update({
         where: { id: requestId },
-        data: { status: 'VERIFIED' },
+        data: {
+          status: 'VERIFIED',
+          ...(quoteLines.length > 0 ? { options: asInputJson(nextOpts) } : {}),
+        },
       });
       return NextResponse.json({ message: '수령완료 처리되었습니다.', id: requestId });
+    }
+
+    if (action === 'confirm-receive-line') {
+      const requestId = String(body.requestId || '').trim();
+      const lineNo = Number(body.lineNo);
+      const received = body.received !== false;
+      if (!requestId || !Number.isFinite(lineNo) || lineNo <= 0) {
+        return NextResponse.json(
+          { message: '신청 ID와 견적 줄번호가 필요합니다.' },
+          { status: 400 }
+        );
+      }
+
+      const row = await prisma.productionRequest.findUnique({ where: { id: requestId } });
+      if (!row || row.isArchived) {
+        return NextResponse.json({ message: '신청 건을 찾을 수 없습니다.' }, { status: 404 });
+      }
+      if (String(row.category || '').toUpperCase() !== 'OFFICE_SUPPLIES') {
+        return NextResponse.json(
+          { message: '줄 단위 수령은 사무문구류만 지원합니다.' },
+          { status: 400 }
+        );
+      }
+      if (row.status !== 'ORDERED' && row.status !== 'VERIFIED') {
+        return NextResponse.json(
+          { message: '발주진행/수령완료 상태에서만 줄 수령을 변경할 수 있습니다.' },
+          { status: 400 }
+        );
+      }
+
+      const opts = asOptionsRecord(row.options);
+      if (opts.vendorDispatched !== true && row.status !== 'VERIFIED') {
+        return NextResponse.json(
+          { message: '묶음 「발주완료」 처리 후 수령할 수 있습니다.' },
+          { status: 400 }
+        );
+      }
+      if (isCustomerDirectShip({ category: row.category, options: opts })) {
+        return NextResponse.json(
+          { message: '고객사 직발송 건은 수령검수가 필요하지 않습니다.' },
+          { status: 400 }
+        );
+      }
+
+      const quoteLines = getOfficeQuoteLinesFromOptions(opts);
+      if (quoteLines.length === 0) {
+        return NextResponse.json(
+          { message: '견적 붙여넣기에서 제품 리스트를 파싱하지 못했습니다.' },
+          { status: 400 }
+        );
+      }
+      if (!quoteLines.some((l) => l.lineNo === lineNo)) {
+        return NextResponse.json(
+          { message: `견적 ${lineNo}번 줄을 찾을 수 없습니다.` },
+          { status: 400 }
+        );
+      }
+
+      const set = new Set(
+        (Array.isArray(opts.suppliesReceivedLineNos) ? opts.suppliesReceivedLineNos : [])
+          .map((n) => Number(n))
+          .filter((n) => Number.isFinite(n) && n > 0)
+      );
+      // 이미 신청건 VERIFIED면 전체 줄 수령으로 간주한 뒤 부분 해제 허용
+      if (row.status === 'VERIFIED' && set.size === 0) {
+        quoteLines.forEach((l) => set.add(l.lineNo));
+      }
+      if (received) set.add(lineNo);
+      else set.delete(lineNo);
+
+      const allReceived = quoteLines.every((l) => set.has(l.lineNo));
+      const nextOpts = {
+        ...opts,
+        suppliesReceivedLineNos: Array.from(set).sort((a, b) => a - b),
+      };
+
+      await prisma.productionRequest.update({
+        where: { id: requestId },
+        data: {
+          status: allReceived ? 'VERIFIED' : 'ORDERED',
+          options: asInputJson(nextOpts),
+        },
+      });
+
+      return NextResponse.json({
+        message: allReceived
+          ? '모든 품목 수령 · 신청건 수령확정되었습니다.'
+          : received
+            ? `${lineNo}번 품목 수령 체크했습니다.`
+            : `${lineNo}번 품목 수령을 해제했습니다.`,
+        id: requestId,
+        allReceived,
+        receivedCount: set.size,
+        totalLines: quoteLines.length,
+      });
+    }
+
+    if (action === 'save-office-quote-lines') {
+      const requestId = String(body.requestId || '').trim();
+      if (!requestId) {
+        return NextResponse.json({ message: '신청 ID가 필요합니다.' }, { status: 400 });
+      }
+      const lines = normalizeOfficeQuoteLines(body.lines);
+      if (lines.length === 0) {
+        return NextResponse.json(
+          { message: '저장할 제품 항목이 없습니다. 최소 1개 이상 입력해 주세요.' },
+          { status: 400 }
+        );
+      }
+
+      const row = await prisma.productionRequest.findUnique({ where: { id: requestId } });
+      if (!row || row.isArchived) {
+        return NextResponse.json(
+          { message: '검수 중인 신청 건만 수정할 수 있습니다. (정산 이동 후에는 부서에서 수정 불가)' },
+          { status: 400 }
+        );
+      }
+      if (String(row.category || '').toUpperCase() !== 'OFFICE_SUPPLIES') {
+        return NextResponse.json(
+          { message: '사무문구류 견적 리스트만 수정할 수 있습니다.' },
+          { status: 400 }
+        );
+      }
+      if (row.status !== 'ORDERED' && row.status !== 'VERIFIED') {
+        return NextResponse.json(
+          { message: '발주진행/수령완료 상태에서만 수정할 수 있습니다.' },
+          { status: 400 }
+        );
+      }
+
+      const opts = asOptionsRecord(row.options);
+      const nextOpts = applyOfficeQuoteLinesToOptions(opts, lines);
+      const receivedNos = Array.isArray(nextOpts.suppliesReceivedLineNos)
+        ? (nextOpts.suppliesReceivedLineNos as number[])
+        : [];
+      const allReceived =
+        lines.length > 0 && lines.every((l) => receivedNos.includes(l.lineNo));
+
+      await prisma.productionRequest.update({
+        where: { id: requestId },
+        data: {
+          options: asInputJson(nextOpts),
+          // 줄 수정으로 수령 체크가 깨지면 ORDERED로 되돌림
+          status:
+            row.status === 'VERIFIED' && !allReceived
+              ? 'ORDERED'
+              : row.status === 'ORDERED' && allReceived
+                ? 'VERIFIED'
+                : row.status,
+        },
+      });
+
+      return NextResponse.json({
+        message: `견적 리스트 ${lines.length}품목을 저장했습니다.`,
+        id: requestId,
+        lineCount: lines.length,
+        updatedBy: String(auth.user?.name || '').trim() || undefined,
+      });
     }
 
     if (action === 'cancel-batch') {

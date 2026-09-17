@@ -1,6 +1,7 @@
 'use client';
   
 import { useState, useEffect } from 'react';
+import LoadingState from '@/components/common/LoadingState';
   
 export default function AdminSettingsPage() {
   const [config, setConfig] = useState<any>(null);
@@ -59,23 +60,9 @@ export default function AdminSettingsPage() {
     }
   };
   
-  if (loading) return (
-    <div className="p-10 text-center font-black animate-pulse text-indigo-500 tracking-widest uppercase">
-      System Configuration Syncing...
-    </div>
-  );
+  if (loading) return <LoadingState />;
 
   const MAPPING_CONFIG = [
-    { 
-      groupName: "💼 인사 관리 및 명함 연동 (직책 / 직급)",
-      theme: "indigo",
-      // 해당 뭉치 제어를 위한 타겟 필드 정의
-      fields: ["job_duty_group", "job_grade_group"],
-      items: [
-        { label: "사용자 마스터 관리 > 기본 직책(보직)", path: "/admin/users", field: "job_duty_group", tag: "job_duty_group" },
-        { label: "사용자 마스터 관리 > 기본 직급(자격)", path: "/admin/users", field: "job_grade_group", tag: "job_grade_group" }
-      ]
-    },
     { 
       groupName: "📦 일반 관리 (고객사 / 소모품 / 단위)",
       theme: "emerald",
@@ -94,17 +81,6 @@ export default function AdminSettingsPage() {
         { label: "IT·업무자산 > 대범주 (HW/SW 등)", path: "/asset/it/master/dashboard", field: "it_category_group", tag: "it_category_group" },
         { label: "IT·업무자산 > 품목", path: "/asset/it/master/dashboard", field: "it_master_group", tag: "it_master_group" },
         { label: "IT·업무자산 > 조달 유형 (구매/렌탈)", path: "/asset/it/master/dashboard", field: "it_rental_group", tag: "it_rental_group" }
-      ]
-    },
-    {
-      groupName: "🤝 외주 업무 서비스",
-      theme: "purple",
-      fields: ["outsourcing_vendor_group", "outsourcing_item_group", "outsourcing_detail1_group", "outsourcing_detail2_group"],
-      items: [
-        { label: "외주업무 > 업체 마스터", path: "/asset/outsourcing", field: "outsourcing_vendor_group", tag: "outsourcing_vendor_group" },
-        { label: "외주업무 > 품목 리스트", path: "/asset/outsourcing", field: "outsourcing_item_group", tag: "outsourcing_item_group" },
-        { label: "외주업무 > 품목 상세 1", path: "/asset/outsourcing", field: "outsourcing_detail1_group", tag: "outsourcing_detail1_group" },
-        { label: "외주업무 > 품목 상세 2", path: "/asset/outsourcing", field: "outsourcing_detail2_group", tag: "outsourcing_detail2_group" }
       ]
     }
   ];
