@@ -16,7 +16,8 @@ import {
 } from '@/utils/equipmentCalib';
 import EquipmentQrImage from '@/components/equipment/EquipmentQrImage';
 import { generateEquipmentQrDataUrls } from '@/utils/equipmentQr';
-import { getChildUnitNames, resolveTopOrgName, canEditTopOrgMarketingAsset } from '@/utils/orgUnits';
+import { getChildUnitNames, getChildUnitIds, resolveTopOrgName, canEditTopOrgMarketingAsset } from '@/utils/orgUnits';
+import { rowMatchesOrgUnit } from '@/lib/org-unit-match';
 import { parseEquipmentArchiveMemo, unwrapEquipmentEtcMemo } from '@/utils/equipmentMemo';
 
 /** 검교정 결과상태 — 레거시 합격/불합격 → 적합/부적합 */
@@ -104,21 +105,31 @@ export default function EquipmentClient({
   const [archiveDeptFilter, setArchiveDeptFilter] = useState('ALL');
 
   // 🚀 어드민 거버넌스 룰에 맞춘 아이템 레벨 정밀 편집 권한 체커
-  const canAssignDepartment = (deptRaw: string | null | undefined) => {
+  const canAssignDepartment = (
+    deptRaw: string | null | undefined,
+    unitIdRaw?: string | null
+  ) => {
     if (!permission?.isEditor) return false;
     if (permission.isMaster || permission.myRole === 'LV_1') return true;
 
     const myName = currentUser?.unit?.unit_name;
     const myHq = currentUser?.unit?.parent?.unit_name;
-    const myId = currentUser?.unit?.id || currentUser?.dept_id;
+    const myId = String(currentUser?.unit?.id || currentUser?.unit_id || currentUser?.dept_id || '').trim();
     const dept = String(deptRaw || '').trim();
+    const unitId = String(unitIdRaw || '').trim();
     const topOrg = resolveTopOrgName(units);
+    const topOrgId = topOrg
+      ? String(units?.find((u: any) => String(u.unit_name || '').trim() === topOrg)?.id || '').trim()
+      : '';
     const globalMgmtDept = systemConfig?.global_mgmt_dept;
 
+    const isTopOrg =
+      (!!unitId && !!topOrgId && unitId === topOrgId) || (!!topOrg && !!dept && dept === topOrg);
+
     // Organization(최상위) → GLOBAL_MGMT(+직속 하위)만 (TOTAL이어도 동일)
-    if (topOrg && dept === topOrg) {
+    if (isTopOrg) {
       return canEditTopOrgMarketingAsset({
-        ownerDept: dept,
+        ownerDept: dept || topOrg,
         topOrgName: topOrg,
         myUnitName: myName,
         myHqName: myHq,
@@ -128,14 +139,18 @@ export default function EquipmentClient({
       });
     }
 
-    // 레거시 미지정(빈 department) — TOTAL/마스터만
-    if (!dept) {
+    // 레거시 미지정(빈 department·unit_id) — TOTAL/마스터만
+    if (!unitId && !dept) {
       return permission.editScope === 'TOTAL';
     }
 
     if (permission.editScope === 'TOTAL') return true;
 
     if (permission.editScope === 'DEPT') {
+      if (unitId) {
+        if (myId && unitId === myId) return true;
+        return getChildUnitIds(myId || null, units).includes(unitId);
+      }
       if (!myName || !dept) return false;
       if (dept === myName) return true;
       const childNames = getChildUnitNames(myName, myId, units);
@@ -148,7 +163,7 @@ export default function EquipmentClient({
     if (!permission?.isEditor) return false;
     if (eq?.id?.startsWith('NEW-')) return true;
     if (permission.isMaster || permission.myRole === 'LV_1') return true;
-    return canAssignDepartment(eq?.department);
+    return canAssignDepartment(eq?.department, eq?.unit_id);
   };
 
   const canEditGeneral = permission?.isEditor; // 상단 '+ 신규 등록' 단추 통제용
@@ -531,6 +546,7 @@ export default function EquipmentClient({
       qty: 1,
       spec_summary: '',
       department: currentUser?.unit?.unit_name || '',
+      unit_id: currentUser?.unit?.id || currentUser?.unit_id || null,
       purchase_date: today,
       replace_cycle_mo: 0,
       last_replace_date: today,
@@ -1027,11 +1043,22 @@ export default function EquipmentClient({
   };
   
   const availableInventoryDepts = useMemo(() => {
-    const names = equipments
-      .map((e) => String(e.department || '').trim())
-      .filter(Boolean);
-    return Array.from(new Set(names)).sort((a, b) => a.localeCompare(b, 'ko-KR'));
-  }, [equipments]);
+    const byKey = new Map<string, string>();
+    for (const e of equipments) {
+      const uid = String(e.unit_id || '').trim();
+      const name = String(e.department || '').trim();
+      if (uid) {
+        const live =
+          String(units?.find((u: any) => u.id === uid)?.unit_name || '').trim() || name || uid;
+        byKey.set(uid, live);
+      } else if (name) {
+        byKey.set(`legacy:${name}`, name);
+      }
+    }
+    return Array.from(byKey.entries())
+      .map(([value, label]) => ({ value, label }))
+      .sort((a, b) => a.label.localeCompare(b.label, 'ko-KR'));
+  }, [equipments, units]);
 
   /** 신규/수정 시 장비 종류 범주 — Access(hasAccess) 있는 범주만 */
   const assignableCategoryOptions = useMemo(() => {
@@ -1071,25 +1098,41 @@ export default function EquipmentClient({
   /** 신규/수정 시 장비관리소속 — 편집 가능한 조직만 */
   const assignableUnits = useMemo(() => {
     const all = Array.isArray(units) ? units : [];
-    const allowed = all.filter((u: any) => canAssignDepartment(u?.unit_name));
-    const current = String(editFormData?.department || selectedEq?.department || '').trim();
-    if (current && !allowed.some((u: any) => u.unit_name === current)) {
-      const orphan = all.find((u: any) => u.unit_name === current);
+    const allowed = all.filter((u: any) => canAssignDepartment(u?.unit_name, u?.id));
+    const currentId = String(editFormData?.unit_id || selectedEq?.unit_id || '').trim();
+    const currentName = String(editFormData?.department || selectedEq?.department || '').trim();
+    if (currentId && !allowed.some((u: any) => u.id === currentId)) {
+      const orphan = all.find((u: any) => u.id === currentId);
       if (orphan) allowed.push(orphan);
-      else allowed.push({ id: `current-${current}`, unit_name: current });
+      else allowed.push({ id: currentId, unit_name: currentName || currentId });
+    } else if (!currentId && currentName && !allowed.some((u: any) => u.unit_name === currentName)) {
+      const orphan = all.find((u: any) => u.unit_name === currentName);
+      if (orphan) allowed.push(orphan);
+      else allowed.push({ id: `legacy-${currentName}`, unit_name: currentName });
     }
     return [...allowed].sort((a: any, b: any) =>
       String(a.unit_name || '').localeCompare(String(b.unit_name || ''), 'ko-KR')
     );
   // eslint-disable-next-line react-hooks/exhaustive-deps -- canAssignDepartment closes over permission/units/user
-  }, [units, permission, currentUser, systemConfig, editFormData?.department, selectedEq?.department]);
+  }, [units, permission, currentUser, systemConfig, editFormData?.department, editFormData?.unit_id, selectedEq?.department, selectedEq?.unit_id]);
 
   const filteredEquipments = useMemo(() => {
     if (inventoryDeptFilter === 'ALL') return equipments;
-    return equipments.filter(
-      (e) => String(e.department || '').trim() === inventoryDeptFilter
+    if (inventoryDeptFilter.startsWith('legacy:')) {
+      const name = inventoryDeptFilter.slice('legacy:'.length);
+      return equipments.filter(
+        (e) => !e.unit_id && String(e.department || '').trim() === name
+      );
+    }
+    return equipments.filter((e) =>
+      rowMatchesOrgUnit({
+        selectedOrgId: inventoryDeptFilter,
+        units,
+        unitId: e.unit_id,
+        legacyNames: [e.department],
+      })
     );
-  }, [equipments, inventoryDeptFilter]);
+  }, [equipments, inventoryDeptFilter, units]);
 
   useEffect(() => {
     setCurrentPage(1);
@@ -1108,11 +1151,22 @@ export default function EquipmentClient({
   }, [archives]);
 
   const availableArchiveDepts = useMemo(() => {
-    const names = archives
-      .map((e) => String(e.department || '').trim())
-      .filter(Boolean);
-    return Array.from(new Set(names)).sort((a, b) => a.localeCompare(b, 'ko-KR'));
-  }, [archives]);
+    const byKey = new Map<string, string>();
+    for (const e of archives) {
+      const uid = String(e.unit_id || '').trim();
+      const name = String(e.department || '').trim();
+      if (uid) {
+        const live =
+          String(units?.find((u: any) => u.id === uid)?.unit_name || '').trim() || name || uid;
+        byKey.set(uid, live);
+      } else if (name) {
+        byKey.set(`legacy:${name}`, name);
+      }
+    }
+    return Array.from(byKey.entries())
+      .map(([value, label]) => ({ value, label }))
+      .sort((a, b) => a.label.localeCompare(b.label, 'ko-KR'));
+  }, [archives, units]);
   
   const filteredArchives = useMemo(() => {
     return archives.filter((h) => {
@@ -1121,11 +1175,23 @@ export default function EquipmentClient({
         if (!d?.startsWith(archiveYear)) return false;
       }
       if (archiveDeptFilter !== 'ALL') {
-        if (String(h.department || '').trim() !== archiveDeptFilter) return false;
+        if (archiveDeptFilter.startsWith('legacy:')) {
+          const name = archiveDeptFilter.slice('legacy:'.length);
+          if (h.unit_id || String(h.department || '').trim() !== name) return false;
+        } else if (
+          !rowMatchesOrgUnit({
+            selectedOrgId: archiveDeptFilter,
+            units,
+            unitId: h.unit_id,
+            legacyNames: [h.department],
+          })
+        ) {
+          return false;
+        }
       }
       return true;
     });
-  }, [archives, archiveYear, archiveDeptFilter]);
+  }, [archives, archiveYear, archiveDeptFilter, units]);
   
   const totalArchivePages = Math.max(1, Math.ceil(filteredArchives.length / itemsPerPage));
   const paginatedArchives = filteredArchives.slice((archivePage - 1) * itemsPerPage, archivePage * itemsPerPage);
@@ -1291,7 +1357,7 @@ export default function EquipmentClient({
                 >
                   <option value="ALL">전체</option>
                   {availableInventoryDepts.map((dept) => (
-                    <option key={dept} value={dept}>{dept}</option>
+                    <option key={dept.value} value={dept.value}>{dept.label}</option>
                   ))}
                 </select>
               </div>
@@ -1456,7 +1522,7 @@ export default function EquipmentClient({
                 >
                   <option value="ALL">전체</option>
                   {availableArchiveDepts.map((dept) => (
-                    <option key={dept} value={dept}>{dept}</option>
+                    <option key={dept.value} value={dept.value}>{dept.label}</option>
                   ))}
                 </select>
               </div>
@@ -1804,15 +1870,28 @@ export default function EquipmentClient({
                     {isEditingDetail ? (
                       <select
                         required
-                        value={editFormData.department || ''}
-                        onChange={(e) => setEditFormData({ ...editFormData, department: e.target.value })}
+                        value={
+                          editFormData.unit_id ||
+                          (editFormData.department
+                            ? assignableUnits.find((u: any) => u.unit_name === editFormData.department)?.id || ''
+                            : '')
+                        }
+                        onChange={(e) => {
+                          const id = e.target.value;
+                          const u = assignableUnits.find((x: any) => String(x.id) === id);
+                          setEditFormData({
+                            ...editFormData,
+                            unit_id: id.startsWith('legacy-') ? null : id,
+                            department: u?.unit_name || '',
+                          });
+                        }}
                         className="w-full p-2.5 border border-slate-200 rounded-lg font-bold bg-white outline-none focus:border-indigo-500 focus:bg-indigo-50/30 transition-all"
                       >
                         <option value="" disabled>
                           소속 선택
                         </option>
                         {assignableUnits.map((u: any) => (
-                          <option key={u.id} value={u.unit_name}>
+                          <option key={u.id} value={u.id}>
                             {u.unit_name}
                           </option>
                         ))}

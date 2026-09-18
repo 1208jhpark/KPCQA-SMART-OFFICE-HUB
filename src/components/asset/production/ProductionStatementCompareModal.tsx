@@ -189,6 +189,10 @@ export default function ProductionStatementCompareModal({
   const [rulesActiveTab, setRulesActiveTab] = useState<'headers' | 'certs' | 'plates'>('headers');
   const [rulesDraft, setRulesDraft] = useState<RulesDraftForm>(() => rulesToDraftForm(rules));
   const [savingRules, setSavingRules] = useState(false);
+  /** 사무문구·기타제작: 매칭 품목 그룹 수동 추가 */
+  const [newPlateGroupLabel, setNewPlateGroupLabel] = useState('');
+  /** 품목 매칭 탭 키워드 필터 */
+  const [plateRulesSearch, setPlateRulesSearch] = useState('');
 
   // 마스터 드롭다운 옵션 (1. 인증의 종류, 3. 현판/제본/제작물 품목)
   const [certMasterList, setCertMasterList] = useState<CertMasterOption[]>([]);
@@ -224,6 +228,19 @@ export default function ProductionStatementCompareModal({
     String(categoryKey || '').toUpperCase() === 'PRINT' || isOfficeCategory;
   const priceColumnLabel = isJebonCategory || isPrintLikeCategory ? '최종금액' : '확정단가';
   const priceInputLabel = isJebonCategory ? '최종 금액(원)' : '확정 단가(개당, 원)';
+
+  const plateKeywordEntries = useMemo(
+    () => Object.entries(rulesDraft.plateItemKeywords || {}),
+    [rulesDraft.plateItemKeywords]
+  );
+  const filteredPlateKeywordEntries = useMemo(() => {
+    const q = plateRulesSearch.trim().toLowerCase().replace(/\s+/g, '');
+    if (!q) return plateKeywordEntries;
+    return plateKeywordEntries.filter(([key, aliases]) => {
+      const hay = `${key} ${aliases || ''}`.toLowerCase().replace(/\s+/g, '');
+      return hay.includes(q);
+    });
+  }, [plateKeywordEntries, plateRulesSearch]);
 
   const sumMatchedBatchPrice = useCallback(
     (rows: ItemMatchResult[]) =>
@@ -1016,6 +1033,8 @@ export default function ProductionStatementCompareModal({
 
     setRules(next);
     setRulesDraft(rulesToDraftForm(next));
+    setNewPlateGroupLabel('');
+    setPlateRulesSearch('');
     if ((categoryKey === 'PRINT' || categoryKey === 'OFFICE_SUPPLIES') && rulesActiveTab === 'certs') {
       setRulesActiveTab('plates');
     }
@@ -2102,21 +2121,53 @@ export default function ProductionStatementCompareModal({
 
                   {/* 등록된 품목/판형별 키워드 리스트 (마스터 순서) */}
                   <div className="space-y-2.5">
-                    {Object.keys(rulesDraft.plateItemKeywords || {}).map((plateKey) => {
+                    <div className="sticky top-0 z-10 -mx-0.5 px-0.5 pb-1 bg-white/95 backdrop-blur-sm">
+                      <div className="flex items-center gap-2">
+                        <div className="relative flex-1 min-w-0">
+                          <input
+                            type="search"
+                            value={plateRulesSearch}
+                            onChange={(e) => setPlateRulesSearch(e.target.value)}
+                            placeholder="품목명·매칭 키워드 검색 (예: 포스트잇, 테이프)"
+                            className="w-full rounded-xl border border-slate-200 pl-3 pr-9 py-2 text-xs font-bold text-slate-800 outline-none focus:border-indigo-500 bg-white"
+                            aria-label="품목 키워드 검색"
+                          />
+                          {plateRulesSearch.trim() && (
+                            <button
+                              type="button"
+                              onClick={() => setPlateRulesSearch('')}
+                              className="absolute right-2 top-1/2 -translate-y-1/2 text-[11px] font-black text-slate-400 hover:text-slate-600 px-1"
+                              title="검색어 지우기"
+                            >
+                              ✕
+                            </button>
+                          )}
+                        </div>
+                        <span className="shrink-0 text-[10px] font-black text-slate-500 tabular-nums">
+                          {plateRulesSearch.trim()
+                            ? `${filteredPlateKeywordEntries.length} / ${plateKeywordEntries.length}`
+                            : `${plateKeywordEntries.length}개`}
+                        </span>
+                      </div>
+                    </div>
+
+                    {filteredPlateKeywordEntries.map(([plateKey]) => {
                       const masterInfo = plateMasterList.find((p) => p.label === plateKey);
+                      const canDeleteGroup =
+                        categoryKey === 'OFFICE_SUPPLIES' || categoryKey === 'PRINT';
                       return (
                         <div
                           key={plateKey}
                           className="p-3.5 rounded-2xl border border-slate-200 bg-white hover:border-indigo-200 transition-colors space-y-1.5"
                         >
-                          <div className="flex items-center justify-between">
-                            <div className="flex items-center gap-2">
-                              <span className="text-xs font-black text-slate-900 flex items-center gap-1.5">
-                                <span className="w-2 h-2 rounded-full bg-emerald-600"></span>
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="flex items-center gap-2 min-w-0">
+                              <span className="text-xs font-black text-slate-900 flex items-center gap-1.5 truncate">
+                                <span className="w-2 h-2 rounded-full bg-emerald-600 shrink-0"></span>
                                 {plateKey}
                               </span>
-                              {masterInfo && (
-                                <span className="text-[10px] text-slate-400 font-bold">
+                              {masterInfo && (masterInfo.size || masterInfo.price > 0) && (
+                                <span className="text-[10px] text-slate-400 font-bold shrink-0">
                                   ({masterInfo.size || '규격 없음'}
                                   {masterInfo.price > 0
                                     ? ` · ₩${masterInfo.price.toLocaleString()}원`
@@ -2125,22 +2176,47 @@ export default function ProductionStatementCompareModal({
                                 </span>
                               )}
                             </div>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setRulesDraft((p) => ({
-                                  ...p,
-                                  plateItemKeywords: {
-                                    ...p.plateItemKeywords,
-                                    [plateKey]: '',
-                                  },
-                                }));
-                              }}
-                              className="text-[11px] font-bold text-slate-400 hover:text-slate-600 px-2 py-0.5"
-                              title="매칭 문구만 비웁니다 (목록은 마스터에 남아 유지)"
-                            >
-                              문구 비우기
-                            </button>
+                            <div className="flex items-center gap-1 shrink-0">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setRulesDraft((p) => ({
+                                    ...p,
+                                    plateItemKeywords: {
+                                      ...p.plateItemKeywords,
+                                      [plateKey]: '',
+                                    },
+                                  }));
+                                }}
+                                className="text-[11px] font-bold text-slate-400 hover:text-slate-600 px-2 py-0.5"
+                                title="매칭 문구만 비웁니다 (목록은 유지)"
+                              >
+                                문구 비우기
+                              </button>
+                              {canDeleteGroup && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    if (
+                                      !confirm(
+                                        `[${plateKey}] 품목 그룹을 목록에서 삭제할까요?\n저장해야 반영됩니다.`
+                                      )
+                                    ) {
+                                      return;
+                                    }
+                                    setRulesDraft((p) => {
+                                      const next = { ...p.plateItemKeywords };
+                                      delete next[plateKey];
+                                      return { ...p, plateItemKeywords: next };
+                                    });
+                                  }}
+                                  className="text-[11px] font-bold text-rose-400 hover:text-rose-600 px-2 py-0.5"
+                                  title="이 품목 그룹을 목록에서 제거"
+                                >
+                                  그룹 삭제
+                                </button>
+                              )}
+                            </div>
                           </div>
                           <input
                             type="text"
@@ -2169,10 +2245,93 @@ export default function ProductionStatementCompareModal({
                         </div>
                       );
                     })}
-                    {Object.keys(rulesDraft.plateItemKeywords || {}).length === 0 && (
+                    {plateKeywordEntries.length === 0 && (
                       <p className="text-xs text-slate-400 font-bold text-center py-6">
                         신청 서식에 등록된 품목/판형이 없습니다.
                       </p>
+                    )}
+                    {plateKeywordEntries.length > 0 &&
+                      filteredPlateKeywordEntries.length === 0 && (
+                        <p className="text-xs text-slate-400 font-bold text-center py-6">
+                          “{plateRulesSearch.trim()}”에 해당하는 품목이 없습니다.
+                        </p>
+                      )}
+
+                    {(categoryKey === 'OFFICE_SUPPLIES' || categoryKey === 'PRINT') && (
+                      <div className="p-3.5 rounded-2xl border border-dashed border-indigo-200 bg-indigo-50/40 space-y-2">
+                        <p className="text-[11px] font-black text-indigo-900">
+                          + 품목 그룹 추가
+                        </p>
+                        <p className="text-[10px] font-bold text-indigo-700/80 leading-relaxed">
+                          기본 목록에 없는 축약 품명을 직접 만듭니다. 저장 후 자동대조·부분매칭에
+                          함께 쓰입니다.
+                        </p>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <input
+                            type="text"
+                            value={newPlateGroupLabel}
+                            onChange={(e) => setNewPlateGroupLabel(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key !== 'Enter') return;
+                              e.preventDefault();
+                              const label = newPlateGroupLabel.trim();
+                              if (!label) return;
+                              if (rulesDraft.plateItemKeywords[label] !== undefined) {
+                                return alert('이미 목록에 있는 품목명입니다.');
+                              }
+                              if (
+                                categoryKey === 'OFFICE_SUPPLIES' &&
+                                /현판|주물현판|스텐현판|신주현판|텅스텐|명판/.test(label)
+                              ) {
+                                return alert('사무문구 목록에 현판류 품목명은 추가할 수 없습니다.');
+                              }
+                              setRulesDraft((p) => ({
+                                ...p,
+                                plateItemKeywords: {
+                                  ...p.plateItemKeywords,
+                                  [label]: '',
+                                },
+                              }));
+                              setNewPlateGroupLabel('');
+                            }}
+                            placeholder="예: 저소음포장테이프"
+                            className="flex-1 min-w-[160px] rounded-xl border border-indigo-200 px-3 py-2 text-xs font-bold text-slate-800 outline-none focus:border-indigo-500 bg-white"
+                          />
+                          <button
+                            type="button"
+                            disabled={!canEdit}
+                            onClick={() => {
+                              if (!canEdit) return alert('편집 권한이 필요합니다.');
+                              const label = newPlateGroupLabel.trim();
+                              if (!label) return alert('추가할 품목명을 입력해 주세요.');
+                              if (rulesDraft.plateItemKeywords[label] !== undefined) {
+                                return alert('이미 목록에 있는 품목명입니다.');
+                              }
+                              if (
+                                categoryKey === 'OFFICE_SUPPLIES' &&
+                                /현판|주물현판|스텐현판|신주현판|텅스텐|명판/.test(label)
+                              ) {
+                                return alert('사무문구 목록에 현판류 품목명은 추가할 수 없습니다.');
+                              }
+                              setRulesDraft((p) => ({
+                                ...p,
+                                plateItemKeywords: {
+                                  ...p.plateItemKeywords,
+                                  [label]: '',
+                                },
+                              }));
+                              setNewPlateGroupLabel('');
+                            }}
+                            className={`shrink-0 px-3.5 py-2 rounded-xl text-[11px] font-black transition-colors ${
+                              canEdit
+                                ? 'bg-indigo-600 hover:bg-indigo-700 text-white'
+                                : DISABLED_ACTION_BTN
+                            }`}
+                          >
+                            그룹 추가
+                          </button>
+                        </div>
+                      </div>
                     )}
                   </div>
                 </div>
@@ -2183,69 +2342,80 @@ export default function ProductionStatementCompareModal({
             <div className="flex justify-between items-center pt-3 border-t border-slate-100 shrink-0">
               <button
                 type="button"
+                disabled={!canEdit}
                 onClick={() => {
-                  if (!canEdit) return alert('편집 권한이 필요합니다.');
-                  if (confirm('모든 설정값을 시스템 기본값으로 되돌리시겠습니까?')) {
-                    const currentCat = categoryKey || 'SIGN';
-                    const defaults = getDefaultRulesForCategory(currentCat);
-                    const isOffice = currentCat === 'OFFICE_SUPPLIES';
-                    const certLabels = certMasterList.map((c) => c.label);
-                    let itemLabels: string[] = [];
-                    if (isOffice) {
-                      const quoteNames = officeDbItems.flatMap((di) =>
-                        parseOfficeSuppliesQuoteText(String(di.quoteRawText || '')).map(
-                          (l) => l.productName
-                        )
-                      );
-                      itemLabels = buildOfficeKeywordMasterLabels(
-                        quoteNames,
-                        defaults.plateItemKeywords
-                      );
-                      setPlateMasterList(
-                        itemLabels.map((label) => ({
-                          id: label,
-                          code: '',
-                          label,
-                          size: '',
-                          price: 0,
-                        }))
-                      );
-                    } else {
-                      const seenItem = new Set<string>();
-                      for (const p of plateMasterList) {
-                        const label = String(p.label || '').trim();
-                        if (!label || seenItem.has(label)) continue;
-                        seenItem.add(label);
-                        itemLabels.push(label);
-                      }
-                    }
-                    let reset = defaults;
-                    if (currentCat === 'SIGN' || currentCat === 'JEBON') {
-                      reset = {
-                        ...reset,
-                        certTypeKeywords: syncAliasMapToMasterLabels(
-                          certLabels,
-                          defaults.certTypeKeywords,
-                          defaults.certTypeKeywords
-                        ),
-                      };
-                    }
-                    if (itemLabels.length > 0) {
-                      reset = {
-                        ...reset,
-                        plateItemKeywords: syncAliasMapToMasterLabels(
-                          itemLabels,
-                          defaults.plateItemKeywords,
-                          defaults.plateItemKeywords
-                        ),
-                      };
-                    }
-                    setRulesDraft(rulesToDraftForm(reset));
+                  if (!canEdit) return alert('편집 권한(Edit)이 필요합니다.');
+                  if (
+                    !confirm(
+                      '시드 기본 매칭 규칙으로 복구할까요?\n현재 화면의 키워드·칼럼 설정은 시드 기본값으로 덮어씁니다. (저장해야 반영됩니다)'
+                    )
+                  ) {
+                    return;
                   }
+                  const currentCat = categoryKey || 'SIGN';
+                  const defaults = getDefaultRulesForCategory(currentCat);
+                  const isOffice = currentCat === 'OFFICE_SUPPLIES';
+                  const certLabels = certMasterList.map((c) => c.label);
+                  let itemLabels: string[] = [];
+                  if (isOffice) {
+                    const quoteNames = officeDbItems.flatMap((di) =>
+                      parseOfficeSuppliesQuoteText(String(di.quoteRawText || '')).map(
+                        (l) => l.productName
+                      )
+                    );
+                    itemLabels = buildOfficeKeywordMasterLabels(
+                      quoteNames,
+                      defaults.plateItemKeywords,
+                      { includeDefaults: true }
+                    );
+                    setPlateMasterList(
+                      itemLabels.map((label) => ({
+                        id: label,
+                        code: '',
+                        label,
+                        size: '',
+                        price: 0,
+                      }))
+                    );
+                  } else {
+                    const seenItem = new Set<string>();
+                    for (const p of plateMasterList) {
+                      const label = String(p.label || '').trim();
+                      if (!label || seenItem.has(label)) continue;
+                      seenItem.add(label);
+                      itemLabels.push(label);
+                    }
+                  }
+                  let reset = defaults;
+                  if (currentCat === 'SIGN' || currentCat === 'JEBON') {
+                    reset = {
+                      ...reset,
+                      certTypeKeywords: syncAliasMapToMasterLabels(
+                        certLabels,
+                        defaults.certTypeKeywords,
+                        defaults.certTypeKeywords
+                      ),
+                    };
+                  }
+                  if (itemLabels.length > 0) {
+                    reset = {
+                      ...reset,
+                      plateItemKeywords: syncAliasMapToMasterLabels(
+                        itemLabels,
+                        defaults.plateItemKeywords,
+                        defaults.plateItemKeywords
+                      ),
+                    };
+                  }
+                  setRulesDraft(rulesToDraftForm(reset));
                 }}
-                className="rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2 text-xs font-black text-slate-600 hover:bg-slate-100 transition-colors"
+                className={`rounded-xl border px-3.5 py-2 text-xs font-black transition-colors ${
+                  canEdit
+                    ? 'border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100'
+                    : 'border-slate-100 bg-slate-100 text-slate-400 cursor-not-allowed opacity-60'
+                }`}
               >
-                🔄 기본값으로 초기화(Edit)
+                시드 항목 복구(Edit)
               </button>
 
               <div className="flex items-center gap-2">

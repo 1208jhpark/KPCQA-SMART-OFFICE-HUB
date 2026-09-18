@@ -5,6 +5,7 @@ import {
   authorizeAnyMenuPaths,
   authErrorToResponse,
 } from '@/lib/server-auth-guard';
+import { withProductionDeptDisplayNames } from '@/lib/production-dept-scope';
 
 export const dynamic = 'force-dynamic';
 
@@ -25,7 +26,7 @@ export async function GET(req: Request) {
     if (scope === 'OWN') {
       whereClause.userEmail = auth.user.email;
     } else if (scope === 'DEPT') {
-      // unit_id 기준 동료 매칭 + 신청 시점 deptName 스냅샷(조직 개명·이동 보완)
+      // unitId 우선 + 레거시(null)만 이름/동료 이메일 폴백 — 조직명 변경에 안전
       const unitId = auth.user.unit_id;
       const unitName = String(auth.user.unit?.unit_name || '').trim();
       if (unitId) {
@@ -34,13 +35,14 @@ export async function GET(req: Request) {
           select: { email: true },
         });
         const emails = peers.map((p) => p.email).filter(Boolean);
-        const or: Prisma.ProductionRequestWhereInput[] = [];
-        if (emails.length > 0) or.push({ userEmail: { in: emails } });
-        if (unitName) or.push({ deptName: unitName });
-        whereClause =
-          or.length > 0
-            ? { isArchived: false, OR: or }
-            : { isArchived: false, userEmail: auth.user.email };
+        const or: Prisma.ProductionRequestWhereInput[] = [{ unitId }];
+        if (unitName) {
+          or.push({ AND: [{ unitId: null }, { deptName: unitName }] });
+        }
+        if (emails.length > 0) {
+          or.push({ AND: [{ unitId: null }, { userEmail: { in: emails } }] });
+        }
+        whereClause = { isArchived: false, OR: or };
       } else if (unitName) {
         whereClause.deptName = unitName;
       } else {
@@ -55,7 +57,7 @@ export async function GET(req: Request) {
       orderBy: { createdAt: 'desc' },
     });
 
-    return NextResponse.json(histories);
+    return NextResponse.json(await withProductionDeptDisplayNames(histories));
   } catch (error) {
     const authRes = authErrorToResponse(error);
     if (authRes.status !== 500) return authRes;

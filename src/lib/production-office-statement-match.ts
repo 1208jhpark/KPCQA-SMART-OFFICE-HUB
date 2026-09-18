@@ -177,18 +177,26 @@ export function sanitizeOfficeProductAliases(
   return out;
 }
 
-/** 기본 별칭 + UI 저장 규칙 병합 (규칙만 보지 않고 기본 퍼지 매칭과 함께 사용) */
+/** 저장된 규칙 키를 우선. 삭제한 그룹은 씨드 기본값으로 되살리지 않음 */
 export function mergeOfficeProductAliases(
   rulesAliases?: Record<string, string[]> | null
 ): Record<string, string[]> {
+  const rules = sanitizeOfficeProductAliases(rulesAliases);
+  const ruleKeys = Object.keys(rules);
+  const defaults = sanitizeOfficeProductAliases(DEFAULT_OFFICE_PRODUCT_ALIASES);
+
+  // 저장본이 없으면(최초) 씨드 전체 사용
+  if (ruleKeys.length === 0) {
+    return { ...defaults };
+  }
+
+  // 저장본에 있는 키만 유지 — 삭제한 키는 매칭에서도 제외
   const merged: Record<string, string[]> = {};
-  const add = (src: Record<string, string[]> | null | undefined) => {
-    for (const [k, v] of Object.entries(sanitizeOfficeProductAliases(src))) {
-      merged[k] = Array.from(new Set([...(merged[k] || []), ...v]));
-    }
-  };
-  add(DEFAULT_OFFICE_PRODUCT_ALIASES);
-  add(rulesAliases);
+  for (const k of ruleKeys) {
+    merged[k] = Array.from(
+      new Set([...(defaults[k] || []), ...(rules[k] || [])])
+    );
+  }
   return merged;
 }
 
@@ -208,10 +216,11 @@ export function shortenOfficeProductLabel(productName: string): string {
   return (tokens.join(' ') || cleaned).slice(0, 48);
 }
 
-/** 규칙 UI 목록: 기본 축약키 + 선택 묶음 견적 품명 (+ 저장키) */
+/** 규칙 UI 목록: 저장 키(+견적 품명). includeDefaults 시에만 씨드 전체를 다시 채움 */
 export function buildOfficeKeywordMasterLabels(
   quoteProductNames: string[] = [],
-  savedKeywords?: Record<string, string[]> | null
+  savedKeywords?: Record<string, string[]> | null,
+  options?: { includeDefaults?: boolean }
 ): string[] {
   const labels: string[] = [];
   const seen = new Set<string>();
@@ -222,9 +231,17 @@ export function buildOfficeKeywordMasterLabels(
     seen.add(label);
     labels.push(label);
   };
-  for (const k of Object.keys(DEFAULT_OFFICE_PRODUCT_ALIASES)) push(k);
+
+  const saved = sanitizeOfficeProductAliases(savedKeywords);
+  const savedKeys = Object.keys(saved);
+  const includeDefaults = options?.includeDefaults === true || savedKeys.length === 0;
+
+  if (includeDefaults) {
+    for (const k of Object.keys(DEFAULT_OFFICE_PRODUCT_ALIASES)) push(k);
+  } else {
+    for (const k of savedKeys) push(k);
+  }
   for (const name of quoteProductNames) push(shortenOfficeProductLabel(name));
-  for (const k of Object.keys(sanitizeOfficeProductAliases(savedKeywords))) push(k);
   return labels;
 }
 

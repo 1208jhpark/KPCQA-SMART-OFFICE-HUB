@@ -6,6 +6,12 @@ import {
   authorizeAnyMenuPaths,
   authErrorToResponse,
 } from '@/lib/server-auth-guard';
+import {
+  assertProductionRowInDeptScope,
+  buildProductionDeptScopeWhere,
+  isProductionScopeEmpty,
+  withProductionDeptDisplayNames,
+} from '@/lib/production-dept-scope';
 
 export const dynamic = 'force-dynamic';
 
@@ -151,10 +157,9 @@ function buildSettlementScope(auth: {
 
 function assertRowInDeptScope(
   scope: ReturnType<typeof resolveScopeFromUnits> | null,
-  deptName: string | null | undefined
+  row: { unitId?: string | null; deptName?: string | null }
 ) {
-  if (!scope || scope.viewScope === 'NONE' || scope.scopeNames.length === 0) return false;
-  return scope.scopeNames.includes(String(deptName || '').trim());
+  return assertProductionRowInDeptScope(scope, row);
 }
 
 /** [GET] 정산 대기·확정 묶음 (마스터 보관함 이관 전) */
@@ -182,7 +187,7 @@ export async function GET() {
       auth.permission.viewScope
     );
 
-    if (scope.viewScope === 'NONE' || scope.scopeNames.length === 0) {
+    if (scope.viewScope === 'NONE' || isProductionScopeEmpty(scope)) {
       return NextResponse.json({
         batches: [],
         scopeUnits: scope.scopeUnits,
@@ -191,15 +196,20 @@ export async function GET() {
       });
     }
 
-    const requests = await prisma.productionRequest.findMany({
-      where: {
-        isArchived: true,
-        deptName: { in: scope.scopeNames },
-        status: 'VERIFIED',
-        batchId: { not: null },
-      },
-      orderBy: { updatedAt: 'desc' },
-    });
+    const scopeWhere = buildProductionDeptScopeWhere(scope);
+    const requests = await withProductionDeptDisplayNames(
+      await prisma.productionRequest.findMany({
+        where: {
+          AND: [
+            { isArchived: true },
+            { status: 'VERIFIED' },
+            { batchId: { not: null } },
+            ...(scopeWhere ? [scopeWhere] : []),
+          ],
+        },
+        orderBy: { updatedAt: 'desc' },
+      })
+    );
 
     const byBatch = new Map<string, typeof requests>();
     for (const row of requests) {
@@ -304,13 +314,13 @@ export async function PUT(req: Request) {
   try {
     const auth = await authorizeApi(MENU_PATH, { requireEditor: true });
     const scope = buildSettlementScope(auth);
-    if (!scope || scope.scopeNames.length === 0) {
+    if (!scope || isProductionScopeEmpty(scope)) {
       return NextResponse.json(
         { message: '부서 스코프가 없어 처리할 수 없습니다.' },
         { status: 403 }
       );
     }
-    const scopeDeptFilter = { deptName: { in: scope.scopeNames } };
+    const scopeWhere = buildProductionDeptScopeWhere(scope);
 
     const body = await req.json().catch(() => ({}));
     const rows: Array<{
@@ -340,10 +350,14 @@ export async function PUT(req: Request) {
 
       const items = await prisma.productionRequest.findMany({
         where: {
-          batchId,
-          isArchived: true,
-          status: 'VERIFIED',
-          ...scopeDeptFilter,
+          AND: [
+            {
+              batchId,
+              isArchived: true,
+              status: 'VERIFIED',
+            },
+            ...(scopeWhere ? [scopeWhere] : []),
+          ],
         },
       });
       if (items.length === 0) continue;
@@ -403,13 +417,13 @@ export async function POST(req: Request) {
       // body는 이미 파싱됨 — PUT(req) 재호출 시 본문 소실되므로 직접 처리
       const auth = await authorizeApi(MENU_PATH, { requireEditor: true });
       const scope = buildSettlementScope(auth);
-      if (!scope || scope.scopeNames.length === 0) {
+      if (!scope || isProductionScopeEmpty(scope)) {
         return NextResponse.json(
           { message: '부서 스코프가 없어 처리할 수 없습니다.' },
           { status: 403 }
         );
       }
-      const scopeDeptFilter = { deptName: { in: scope.scopeNames } };
+      const scopeWhere = buildProductionDeptScopeWhere(scope);
       const rows: Array<{
         batchId: string;
         inspectStatus: 'idle' | 'match' | 'mismatch';
@@ -437,10 +451,14 @@ export async function POST(req: Request) {
 
         const items = await prisma.productionRequest.findMany({
           where: {
-            batchId,
-            isArchived: true,
-            status: 'VERIFIED',
-            ...scopeDeptFilter,
+            AND: [
+              {
+                batchId,
+                isArchived: true,
+                status: 'VERIFIED',
+              },
+              ...(scopeWhere ? [scopeWhere] : []),
+            ],
           },
         });
         if (items.length === 0) continue;
@@ -481,13 +499,13 @@ export async function POST(req: Request) {
     if (action === 'statement-match') {
       const auth = await authorizeApi(MENU_PATH, { requireEditor: true });
       const scope = buildSettlementScope(auth);
-      if (!scope || scope.scopeNames.length === 0) {
+      if (!scope || isProductionScopeEmpty(scope)) {
         return NextResponse.json(
           { message: '부서 스코프가 없어 처리할 수 없습니다.' },
           { status: 403 }
         );
       }
-      const scopeDeptFilter = { deptName: { in: scope.scopeNames } };
+      const scopeWhere = buildProductionDeptScopeWhere(scope);
 
       const batchId = String(body.batchId || '').trim();
       const prices = Array.isArray(body.prices) ? body.prices : [];
@@ -519,15 +537,19 @@ export async function POST(req: Request) {
 
         const item = await prisma.productionRequest.findFirst({
           where: {
-            id: requestId,
-            batchId,
-            isArchived: true,
-            status: 'VERIFIED',
-            ...scopeDeptFilter,
+            AND: [
+              {
+                id: requestId,
+                batchId,
+                isArchived: true,
+                status: 'VERIFIED',
+              },
+              ...(scopeWhere ? [scopeWhere] : []),
+            ],
           },
-          select: { options: true, deptName: true },
+          select: { options: true, unitId: true, deptName: true },
         });
-        if (!item || !assertRowInDeptScope(scope, item.deptName)) continue;
+        if (!item || !assertRowInDeptScope(scope, item)) continue;
 
         const prevOpts = asOptionsRecord(item.options);
         if (prevOpts.masterSettledArchived === true) {
@@ -552,11 +574,15 @@ export async function POST(req: Request) {
 
         const result = await prisma.productionRequest.updateMany({
           where: {
-            id: requestId,
-            batchId,
-            isArchived: true,
-            status: 'VERIFIED',
-            ...scopeDeptFilter,
+            AND: [
+              {
+                id: requestId,
+                batchId,
+                isArchived: true,
+                status: 'VERIFIED',
+              },
+              ...(scopeWhere ? [scopeWhere] : []),
+            ],
           },
           data: {
             finalPrice,
@@ -575,7 +601,7 @@ export async function POST(req: Request) {
 
     const auth = await authorizeApi(MENU_PATH, { requireEditor: true });
     const scope = buildSettlementScope(auth);
-    if (!scope || scope.scopeNames.length === 0) {
+    if (!scope || isProductionScopeEmpty(scope)) {
       return NextResponse.json(
         { message: '부서 스코프가 없어 처리할 수 없습니다.' },
         { status: 403 }
@@ -588,12 +614,17 @@ export async function POST(req: Request) {
       return NextResponse.json({ message: '묶음 번호가 필요합니다.' }, { status: 400 });
     }
 
+    const scopeWhere = buildProductionDeptScopeWhere(scope);
     const result = await prisma.productionRequest.updateMany({
       where: {
-        batchId,
-        status: 'VERIFIED',
-        isArchived: false,
-        deptName: { in: scope.scopeNames },
+        AND: [
+          {
+            batchId,
+            status: 'VERIFIED',
+            isArchived: false,
+          },
+          ...(scopeWhere ? [scopeWhere] : []),
+        ],
       },
       data: { isArchived: true },
     });

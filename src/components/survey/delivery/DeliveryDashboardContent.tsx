@@ -6,6 +6,7 @@ import { saveAs } from 'file-saver';
 import { getKSTDateString, getKSTTimeString, isPastKSTDeadline, getKSTDaysUntil, formatKSTCalendarLabel } from '@/utils/dateUtils';
 import { getVisibleQuestionsByBranch } from '@/utils/surveyBranching';
 import LoadingState from '@/components/common/LoadingState';
+import { userInSurveyTarget } from '@/lib/survey-target-match';
 
 export default function DeliveryDashboardContent() {
   const [surveys, setSurveys] = useState<any[]>([]);
@@ -132,22 +133,16 @@ export default function DeliveryDashboardContent() {
     fetchData();
   }, []);
      
-  const checkHierarchyTarget = (targetString: string, userDeptName: string) => {
-    if (!targetString || targetString === '전사') return true;
-    const targetDepts = targetString.split(',').map(t => t.trim());
-    if (!userDeptName) return false;
-    if (targetDepts.includes(userDeptName)) return true;
-     
-    let currentId = unitsList.find(u => u.unit_name === userDeptName)?.id;
-    while (currentId) {
-      const unit = unitsList.find(u => u.id === currentId);
-      if (unit && unit.parent_id) {
-        const parentUnit = unitsList.find(u => u.id === unit.parent_id);
-        if (parentUnit && targetDepts.includes(parentUnit.unit_name)) return true; 
-        currentId = unit.parent_id;
-      } else break;
-    }
-    return false;
+  const checkHierarchyTarget = (survey: { target?: string; target_unit_ids?: unknown } | string, userDeptName: string) => {
+    const target = typeof survey === 'string' ? survey : survey?.target;
+    const targetUnitIds = typeof survey === 'string' ? [] : survey?.target_unit_ids;
+    return userInSurveyTarget({
+      userUnitId: currentUser?.unit_id || currentUser?.unit?.id,
+      userDeptName,
+      target,
+      targetUnitIds,
+      units: unitsList,
+    });
   };
      
  // 💡 [수정] 전역 공통 KST 함수 적용 (오전 9시 이전 오차 완벽 방지)
@@ -162,7 +157,7 @@ export default function DeliveryDashboardContent() {
     return surveys.filter(s => {
       if (s.status !== '진행중') return false; 
       if (currentUser?.roles?.includes('LV_1')) return true; 
-      return checkHierarchyTarget(s.target, currentUser?.unit?.unit_name);
+      return checkHierarchyTarget(s, currentUser?.unit?.unit_name);
     });
   }, [surveys, currentUser, unitsList]);
      
@@ -194,7 +189,7 @@ export default function DeliveryDashboardContent() {
     // 기간종료(마감 시각 경과)는 진행 중·미참여·독촉 카운트에서 제외
     const openVisible = visibleSurveys.filter((s) => isSurveyOpen(s));
     const pendingSurveys = openVisible.filter(s => {
-      const isTargeted = checkHierarchyTarget(s.target, currentUser?.unit?.unit_name);
+      const isTargeted = checkHierarchyTarget(s, currentUser?.unit?.unit_name);
       return isTargeted && !myResponses[s.id];
     });
     
@@ -526,7 +521,7 @@ const handleSaveDraft = () => {
      
                 const isSubmitted = Boolean(myResponses[s.id]);
                 // 🚀 관리자(LV_1)는 묻지도 따지지도 않고 접근 가능하게 우회
-                const isTargeted = currentUser?.roles?.includes('LV_1') || checkHierarchyTarget(s.target, currentUser?.unit?.unit_name);                
+                const isTargeted = currentUser?.roles?.includes('LV_1') || checkHierarchyTarget(s, currentUser?.unit?.unit_name);                
                 const isNudged = isTargeted && !isSubmitted && nudgedSurveys.includes(s.id);
                 
                 // 💡 [KST 마감·D-day 계산]

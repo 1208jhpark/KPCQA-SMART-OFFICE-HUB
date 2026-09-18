@@ -86,11 +86,15 @@ export async function DELETE(req: Request) {
 
     const log = await prisma.supplyPurchase.findUnique({
       where: { id },
-      include: { item: { select: { id: true, owner_dept: true } } },
+      include: { item: { select: { id: true, owner_dept: true, owner_unit_ids: true } } },
     });
     if (!log) return NextResponse.json({ error: '존재하지 않는 입고 내역입니다.' }, { status: 404 });
 
-    assertSupplyOwnerDeptsEditable(auth, parseSupplyOwnerDepts(log.item?.owner_dept));
+    assertSupplyOwnerDeptsEditable(
+      auth,
+      parseSupplyOwnerDepts(log.item?.owner_dept),
+      (log.item as { owner_unit_ids?: unknown } | null | undefined)?.owner_unit_ids
+    );
 
     try {
       await prisma.$transaction(async (tx) => {

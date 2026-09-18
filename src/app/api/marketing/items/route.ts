@@ -7,10 +7,23 @@ import {
   authErrorToResponse,
 } from '@/lib/server-auth-guard';
 import { isGlobalMgmtOrgMember, canDistributeMarketingOwnerDept, resolveTopOrgName, canApplyViaViewRoles, resolveGlobalMgmtDeptName } from '@/utils/orgUnits';
+import { buildUnitIdOrLegacyNameWhere } from '@/lib/org-unit-match';
 
 export const dynamic = 'force-dynamic';
 
 type MarketingAuth = Awaited<ReturnType<typeof authorizeMarketingItemsRead>>;
+
+function resolveOwnerUnitId(
+  body: { owner_unit_id?: unknown; owner_dept?: unknown },
+  unitsList: Array<{ id?: string | null; unit_name?: string | null }> | null | undefined
+): string | null {
+  const fromBody = String(body.owner_unit_id || '').trim();
+  if (fromBody) return fromBody;
+  const dept = String(body.owner_dept || '').trim();
+  if (!dept || !Array.isArray(unitsList)) return null;
+  const u = unitsList.find((x) => String(x.unit_name || '').trim() === dept);
+  return u?.id ? String(u.id).trim() : null;
+}
 
 /** Prisma 클라이언트 미갱신 시에도 view 필드 접근 (schema에는 존재) */
 type ItemViewFields = {
@@ -69,7 +82,7 @@ function canSetItemViewRoles(auth: MarketingAuth) {
  * - 그외 부서 소유: 예전처럼 타부서도 열람 가능(신청은 view_allow_apply·소속 범위로 제어)
  */
 function canViewMarketingItem(
-  item: { owner_dept?: string | null; view_role_ids?: unknown },
+  item: { owner_dept?: string | null; owner_unit_id?: string | null; view_role_ids?: unknown },
   auth: MarketingAuth
 ) {
   if (auth.permission.myRole === 'LV_1' || auth.permission.isMaster) return true;
@@ -81,6 +94,21 @@ function canViewMarketingItem(
     (auth.systemConfig as { global_mgmt_dept?: string } | null)?.global_mgmt_dept || ''
   ).trim();
   const mgmtDeptName = resolveGlobalMgmtDeptName(mgmtDept, auth.unitsList);
+  const ownerUnitId = String((item as { owner_unit_id?: string | null }).owner_unit_id || '').trim();
+  const topOrgId = topOrgName
+    ? String(
+        auth.unitsList?.find((u: any) => String(u.unit_name || '').trim() === topOrgName)?.id || ''
+      ).trim()
+    : '';
+  const mgmtUnitId = mgmtDept
+    ? String(
+        auth.unitsList?.find(
+          (u: any) =>
+            String(u.id || '').trim() === mgmtDept ||
+            String(u.unit_name || '').trim() === mgmtDeptName
+        )?.id || ''
+      ).trim()
+    : '';
 
   // 신청 가능 범위(본인 소속·상위본부·전사 풀 등) → 항상 노출
   if (
@@ -91,11 +119,13 @@ function canViewMarketingItem(
       topOrgName,
       units: auth.unitsList,
       isPower: false,
+      ownerUnitId: ownerUnitId || null,
     })
   ) {
     return true;
   }
 
+  if (ownerUnitId && auth.user.unit_id && ownerUnitId === auth.user.unit_id) return true;
   if (item.owner_dept && item.owner_dept === myDept) return true;
   if (
     isGlobalMgmtOrgMember({
@@ -110,7 +140,10 @@ function canViewMarketingItem(
 
   const owner = String(item.owner_dept || '').trim();
   const isGlobalMgmtAsset =
-    (!!topOrgName && owner === topOrgName) || (!!mgmtDeptName && owner === mgmtDeptName);
+    (!!ownerUnitId &&
+      ((!!topOrgId && ownerUnitId === topOrgId) || (!!mgmtUnitId && ownerUnitId === mgmtUnitId))) ||
+    (!!topOrgName && owner === topOrgName) ||
+    (!!mgmtDeptName && owner === mgmtDeptName);
 
   const required = parseViewRoleIds(item.view_role_ids);
   const myRoles = userRoleIds(auth.user);
@@ -135,12 +168,35 @@ export async function GET(req: Request) {
 
   const { searchParams } = new URL(req.url);
   const dept = searchParams.get('dept');
+  const ownerUnitIdParam = searchParams.get('ownerUnitId') || searchParams.get('owner_unit_id');
   /** 부서대장 등: 열람 LV 무시하고 전체 (이력 연결용) */
   const raw = searchParams.get('raw') === '1' || searchParams.get('raw') === 'true';
 
   try {
+    let where: Record<string, unknown> = {};
+    if (ownerUnitIdParam || (dept && dept !== '전체')) {
+      const scopeIds = ownerUnitIdParam
+        ? [String(ownerUnitIdParam).trim()].filter(Boolean)
+        : dept
+          ? [
+              String(
+                auth.unitsList?.find((u: any) => String(u.unit_name || '').trim() === dept)?.id || ''
+              ).trim(),
+            ].filter(Boolean)
+          : [];
+      const scopeNames = dept && dept !== '전체' ? [dept] : [];
+      const built = buildUnitIdOrLegacyNameWhere({
+        unitIdField: 'owner_unit_id',
+        nameField: 'owner_dept',
+        scopeIds,
+        scopeNames,
+      });
+      if (built) where = built;
+      else if (dept && dept !== '전체') where = { owner_dept: dept };
+    }
+
     const items = await prisma.marketingItem.findMany({
-      where: dept && dept !== '전체' ? { owner_dept: dept } : {},
+      where,
       orderBy: { createdAt: 'desc' },
     });
     const visible = raw
@@ -164,8 +220,9 @@ export async function POST(req: Request) {
 
   try {
     const body = await req.json();
+    const owner_unit_id = resolveOwnerUnitId(body, auth.unitsList);
     try {
-      assertCanEditOwnerDept(auth, body.owner_dept);
+      assertCanEditOwnerDept(auth, { unitId: owner_unit_id, deptName: body.owner_dept });
     } catch (e) {
       return authErrorToResponse(e);
     }
@@ -210,6 +267,7 @@ export async function POST(req: Request) {
         data: {
           owner_type: body.owner_type || 'CENTER',
           owner_dept: body.owner_dept,
+          owner_unit_id,
           name: body.name,
           unit_price: unitPrice,
           current_stock: initialStock,
@@ -286,8 +344,17 @@ export async function PATCH(req: Request) {
     if (!existing) return NextResponse.json({ error: '물품을 찾을 수 없습니다.' }, { status: 404 });
 
     try {
-      assertCanEditOwnerDept(auth, existing.owner_dept);
-      if (owner_dept !== undefined) assertCanEditOwnerDept(auth, owner_dept);
+      assertCanEditOwnerDept(auth, {
+        unitId: (existing as { owner_unit_id?: string | null }).owner_unit_id,
+        deptName: existing.owner_dept,
+      });
+      if (owner_dept !== undefined) {
+        const nextOwnerUnitId = resolveOwnerUnitId(
+          { owner_unit_id: body.owner_unit_id, owner_dept },
+          auth.unitsList
+        );
+        assertCanEditOwnerDept(auth, { unitId: nextOwnerUnitId, deptName: owner_dept });
+      }
     } catch (e) {
       return authErrorToResponse(e);
     }
@@ -306,7 +373,15 @@ export async function PATCH(req: Request) {
 
     const data: Record<string, unknown> = {};
     if (name !== undefined) data.name = name;
-    if (owner_dept !== undefined) data.owner_dept = owner_dept;
+    if (owner_dept !== undefined) {
+      data.owner_dept = owner_dept;
+      data.owner_unit_id = resolveOwnerUnitId(
+        { owner_unit_id: body.owner_unit_id, owner_dept },
+        auth.unitsList
+      );
+    } else if (body.owner_unit_id !== undefined) {
+      data.owner_unit_id = resolveOwnerUnitId(body, auth.unitsList);
+    }
     if (description !== undefined) data.description = description;
     if (image_url !== undefined) data.image_url = image_url;
     if (alert_qty !== undefined) data.alert_qty = Number(alert_qty) || 0;
@@ -428,7 +503,10 @@ export async function DELETE(req: Request) {
     }
 
     try {
-      assertCanEditOwnerDept(auth, existing.owner_dept);
+      assertCanEditOwnerDept(auth, {
+        unitId: (existing as { owner_unit_id?: string | null }).owner_unit_id,
+        deptName: existing.owner_dept,
+      });
     } catch (e) {
       return authErrorToResponse(e);
     }

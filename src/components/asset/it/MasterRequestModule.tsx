@@ -5,6 +5,7 @@ import { getKSTDateString, getKSTNowYearMonth, getKSTYearMonthParts, toSortableT
 import { resolveInterfaceEditState } from '@/lib/permission-utils';
 import LoadingState from '@/components/common/LoadingState';
 import ItMasterPageBanner from '@/components/asset/it/ItMasterPageBanner';
+import { rowMatchesOrgUnit } from '@/lib/org-unit-match';
 
 const MENU_PATH = '/asset/it/master/requests';
 
@@ -802,9 +803,18 @@ function ITMasterRequestContent() {
     };
   }, [orgMenuOpen]);
 
-  const matchesDeptFilter = (deptName: string | null | undefined) => {
+  const matchesDeptFilter = (row: { dept?: string | null; unit_id?: string | null }) => {
     if (isOrgWideFilter) return true;
-    const name = String(deptName || '').trim();
+    const selectedId = String(selectedOrgUnit?.id || '').trim();
+    if (selectedId) {
+      return rowMatchesOrgUnit({
+        selectedOrgId: selectedId,
+        units: orgUnits,
+        unitId: row.unit_id,
+        legacyNames: [row.dept],
+      });
+    }
+    const name = String(row.dept || '').trim();
     if (!name || name === '-') return false;
     if (name === filterDept) return true;
     return selectedDeptNames ? selectedDeptNames.has(name) : false;
@@ -857,8 +867,10 @@ function ITMasterRequestContent() {
       const ym = getKSTYearMonthParts(r.requestDate || r.createdAt);
       const matchYear = selectedYear === 'ALL' || ym?.year === selectedYear;
       const matchMonth = selectedMonth === 'ALL' || ym?.month === selectedMonth;
-      const rDept = String(r.dept || r.department || '').trim() || '-';
-      const matchDept = matchesDeptFilter(rDept);
+      const matchDept = matchesDeptFilter({
+        dept: r.dept || r.department,
+        unit_id: r.unit_id,
+      });
       const rType = r.assetType || r.category || '일반';
       const matchType = filterType === 'ALL' || rType === filterType;
       const model = parseHistoryModel(r);

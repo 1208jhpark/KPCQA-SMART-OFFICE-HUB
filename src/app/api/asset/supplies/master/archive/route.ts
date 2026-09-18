@@ -81,7 +81,11 @@ export async function PATCH(req: Request) {
       return NextResponse.json({ success: true, message: '이미 운영 중 품목입니다.' });
     }
 
-    assertSupplyOwnerDeptsEditable(auth, parseSupplyOwnerDepts(existing.owner_dept));
+    assertSupplyOwnerDeptsEditable(
+      auth,
+      parseSupplyOwnerDepts(existing.owner_dept),
+      (existing as { owner_unit_ids?: unknown }).owner_unit_ids
+    );
 
     const updated = await prisma.supplyItem.update({
       where: { id },

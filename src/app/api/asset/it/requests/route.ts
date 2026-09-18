@@ -68,13 +68,52 @@ async function findUserByEmail(email: string) {
   return (
     (await prisma.user.findUnique({
       where: { email: normalized },
-      select: { id: true, name: true, email: true, unit: { select: { unit_name: true } } },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        unit_id: true,
+        unit: { select: { id: true, unit_name: true } },
+      },
     })) ||
     (await prisma.user.findFirst({
       where: { email: { equals: raw, mode: 'insensitive' } },
-      select: { id: true, name: true, email: true, unit: { select: { unit_name: true } } },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        unit_id: true,
+        unit: { select: { id: true, unit_name: true } },
+      },
     }))
   );
+}
+
+async function resolveRequestUnitId(opts: {
+  unitId?: string | null;
+  dept?: string | null;
+  session?: any;
+  publicUser?: { unit_id?: string | null; unit?: { id?: string | null } | null } | null;
+}): Promise<string | null> {
+  const fromBody = String(opts.unitId || '').trim();
+  if (fromBody) {
+    const found = await prisma.orgUnit.findFirst({
+      where: { id: fromBody, is_deleted: false },
+      select: { id: true },
+    });
+    if (found) return found.id;
+  }
+  const fromSession = String(opts.session?.unit_id || opts.session?.unit?.id || '').trim();
+  if (fromSession) return fromSession;
+  const fromPublic = String(opts.publicUser?.unit_id || opts.publicUser?.unit?.id || '').trim();
+  if (fromPublic) return fromPublic;
+  const dept = String(opts.dept || '').trim();
+  if (!dept) return null;
+  const byName = await prisma.orgUnit.findFirst({
+    where: { unit_name: dept, is_deleted: false },
+    select: { id: true },
+  });
+  return byName?.id || null;
 }
 
 async function requestsVisibleToUser(userLike: { id?: string; name?: string; email?: string }) {
@@ -181,6 +220,7 @@ export async function POST(request: Request) {
       requesterIdentity = toItIdentity(u);
       body.requester = u.name;
       body.dept = u.unit?.unit_name || dept;
+      body._publicUser = u;
     } else {
       await authorizeAnyMenuPaths(['/asset/it/personal', ...IT_MASTER_REQ_PATHS]);
     }
@@ -201,6 +241,12 @@ export async function POST(request: Request) {
       !isAdminOutbound && session
         ? session.unit?.unit_name || dept
         : dept;
+    const resolvedUnitId = await resolveRequestUnitId({
+      unitId: body.unit_id,
+      dept: resolvedDept,
+      session: !isAdminOutbound ? session : null,
+      publicUser: body._publicUser || null,
+    });
 
     const newRequest = await model.create({
       data: {
@@ -211,6 +257,7 @@ export async function POST(request: Request) {
         requester_email: requesterIdentity?.email || normalizeEmail(body.requester_email) || null,
         requester_id: requesterIdentity?.id || String(body.requester_id || '').trim() || null,
         dept: resolvedDept,
+        unit_id: resolvedUnitId,
         status: finalStatus,
         requestDate: requestDate || getKSTDateString(),
         assetInfo: assetInfo || `${assetCode} / 정보 미상`,

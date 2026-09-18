@@ -200,6 +200,7 @@ function RegisterContent() {
    */
   const checkDistributePermission = (item: {
     owner_dept?: string | null;
+    owner_unit_id?: string | null;
     view_role_ids?: unknown;
     view_allow_apply?: boolean | null;
   }) => {
@@ -212,6 +213,7 @@ function RegisterContent() {
         topOrgName,
         units,
         isPower: isLv1,
+        ownerUnitId: item.owner_unit_id,
       })
     ) {
       return true;
@@ -222,6 +224,7 @@ function RegisterContent() {
   /** Catalog와 동일: Organization 풀 · 열람LV 신청허용(타부서만) → 승인 요청 */
   const itemNeedsApprovalRequest = (item: {
     owner_dept?: string | null;
+    owner_unit_id?: string | null;
     view_role_ids?: unknown;
     view_allow_apply?: boolean | null;
   } | null | undefined) => {
@@ -234,6 +237,7 @@ function RegisterContent() {
       topOrgName,
       units,
       isPower: isLv1,
+      ownerUnitId: item.owner_unit_id,
     });
     const viaViewApply = canApplyViaViewRoles(item, currentUser.roles);
     return isTopOrgItem || (viaViewApply && !viaOwner);

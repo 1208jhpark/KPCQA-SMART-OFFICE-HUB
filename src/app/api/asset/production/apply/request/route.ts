@@ -21,9 +21,10 @@ export async function POST(req: Request) {
       ? await prisma.orgUnit.findUnique({
           where: { id: user.unit_id },
           select: {
+            id: true,
             unit_code: true,
             unit_name: true,
-            parent: { select: { unit_name: true } },
+            parent: { select: { id: true, unit_name: true } },
           },
         })
       : null;
@@ -60,6 +61,7 @@ export async function POST(req: Request) {
             category: category,
             userEmail: user.email,
             userName: user.name,
+            unitId: unitRow?.id || user.unit_id || null,
             deptHead: unitRow?.parent?.unit_name || user.unit?.parent?.unit_name || '본부 미지정',
             deptName: unitRow?.unit_name || user.unit?.unit_name || '조직 미지정',
             title: projectName,

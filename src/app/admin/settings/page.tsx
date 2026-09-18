@@ -2,7 +2,6 @@
 
 import { useState, useEffect, useMemo } from 'react';
 import LoadingState from '@/components/common/LoadingState';
-import { TEST_DATA_PURGE_CONFIRM } from '@/lib/test-data-purge';
 
 type PurgeDomainPreview = {
   id: string;
@@ -27,6 +26,9 @@ export default function AdminSettingsPage() {
   const [purgeExcludedNote, setPurgeExcludedNote] = useState('');
   const [purgeSelected, setPurgeSelected] = useState<Set<string>>(new Set());
   const [purgeConfirm, setPurgeConfirm] = useState('');
+  const [purgeChallengeId, setPurgeChallengeId] = useState('');
+  const [purgeChallengeCode, setPurgeChallengeCode] = useState('');
+  const [purgeEnabled, setPurgeEnabled] = useState(false);
   const [purgeLoading, setPurgeLoading] = useState(false);
   const [purgeBusy, setPurgeBusy] = useState(false);
 
@@ -114,14 +116,32 @@ export default function AdminSettingsPage() {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
+        setPurgeEnabled(false);
         setPurgeDomains([]);
+        setPurgeChallengeId('');
+        setPurgeChallengeCode('');
         setPurgeExcludedNote(data.message || '미리보기를 불러오지 못했습니다.');
         return;
       }
+      if (data.enabled === false) {
+        setPurgeEnabled(false);
+        setPurgeDomains([]);
+        setPurgeChallengeId('');
+        setPurgeChallengeCode('');
+        setPurgeExcludedNote('');
+        return;
+      }
+      setPurgeEnabled(true);
       setPurgeDomains(Array.isArray(data.domains) ? data.domains : []);
       setPurgeExcludedNote(String(data.excludedNote || ''));
+      setPurgeChallengeId(String(data.challengeId || ''));
+      setPurgeChallengeCode(String(data.challengeCode || ''));
+      setPurgeConfirm('');
     } catch {
+      setPurgeEnabled(false);
       setPurgeDomains([]);
+      setPurgeChallengeId('');
+      setPurgeChallengeCode('');
       setPurgeExcludedNote('미리보기 통신 오류');
     } finally {
       setPurgeLoading(false);
@@ -152,8 +172,11 @@ export default function AdminSettingsPage() {
     if (purgeSelected.size === 0) {
       return alert('삭제할 페이지(도메인)를 하나 이상 선택해 주세요.');
     }
-    if (purgeConfirm.trim() !== TEST_DATA_PURGE_CONFIRM) {
-      return alert(`확인 문구로 ${TEST_DATA_PURGE_CONFIRM} 를 정확히 입력해 주세요.`);
+    if (!purgeChallengeId || !purgeChallengeCode) {
+      return alert('확인 키가 없습니다. 건수 새로고침 후 다시 시도해 주세요.');
+    }
+    if (purgeConfirm.trim() !== purgeChallengeCode) {
+      return alert('화면에 표시된 확인 키를 정확히 입력해 주세요.');
     }
     const labels = purgeDomains
       .filter((d) => purgeSelected.has(d.id))
@@ -175,12 +198,14 @@ export default function AdminSettingsPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           domainIds: Array.from(purgeSelected),
-          confirm: TEST_DATA_PURGE_CONFIRM,
+          challengeId: purgeChallengeId,
+          confirm: purgeConfirm.trim(),
         }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         alert(data.message || '삭제에 실패했습니다.');
+        await fetchPurgePreview();
         return;
       }
       alert(data.message || '삭제되었습니다.');
@@ -509,6 +534,7 @@ export default function AdminSettingsPage() {
         })}
       </div>
 
+      {purgeEnabled ? (
       <div className="bg-white border border-rose-200 rounded-[2.5rem] shadow-sm overflow-hidden">
         <div className="px-8 py-5 bg-rose-50/70 border-b border-rose-100 flex flex-wrap justify-between items-center gap-3">
           <div className="flex items-center gap-3 min-w-0">
@@ -645,39 +671,52 @@ export default function AdminSettingsPage() {
         <div className="px-8 py-5 bg-white border-t border-slate-100 flex flex-wrap items-end justify-between gap-4">
           <div className="space-y-2 min-w-[240px]">
             <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest">
-              확인 문구 ({TEST_DATA_PURGE_CONFIRM})
+              확인 키 입력
             </label>
-            <input
-              type="text"
-              value={purgeConfirm}
-              onChange={(e) => setPurgeConfirm(e.target.value)}
-              disabled={purgeBusy}
-              placeholder={TEST_DATA_PURGE_CONFIRM}
-              className="w-full max-w-xs px-3 py-2 border border-slate-200 rounded-xl text-xs font-black tracking-widest outline-none focus:ring-2 ring-rose-400"
-              autoComplete="off"
-            />
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="inline-flex items-center px-3 py-2 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 font-black tracking-[0.2em] text-sm tabular-nums">
+                {purgeChallengeCode || '------'}
+              </span>
+              <input
+                type="text"
+                inputMode="numeric"
+                value={purgeConfirm}
+                onChange={(e) => setPurgeConfirm(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                disabled={purgeBusy || !purgeChallengeCode}
+                placeholder="왼쪽 키 입력"
+                className="w-36 px-3 py-2 border border-slate-200 rounded-xl text-xs font-black tracking-widest outline-none focus:ring-2 ring-rose-400"
+                autoComplete="off"
+              />
+            </div>
             <p className="text-[10px] text-slate-500 font-medium">
               선택 {purgeSelected.size}개 · 삭제 예정 약{' '}
               <span className="text-rose-700 font-black">
                 {selectedPurgeTotal.toLocaleString()}
               </span>
-              건 · 한 번에 전체 선택은 없습니다.
+              건 · 키는 새로고침마다 바뀌며 1회만 사용됩니다.
             </p>
           </div>
-          <button
-            type="button"
-            onClick={handlePurgeSelected}
-            disabled={
-              purgeBusy ||
-              purgeSelected.size === 0 ||
-              purgeConfirm.trim() !== TEST_DATA_PURGE_CONFIRM
-            }
-            className="px-5 py-2.5 bg-rose-600 text-white font-black text-[11px] rounded-xl hover:bg-rose-700 shadow-sm disabled:opacity-40 disabled:cursor-not-allowed transition-all"
-          >
-            {purgeBusy ? '삭제 중…' : `선택 영역 영구삭제 (${purgeSelected.size})`}
-          </button>
+          <div className="flex flex-col items-end gap-2">
+            <p className="text-[11px] text-rose-600 font-black text-right leading-snug max-w-xs">
+              테스트 거래 데이터 삭제는 복구되지 않으므로 주의 바랍니다.
+            </p>
+            <button
+              type="button"
+              onClick={handlePurgeSelected}
+              disabled={
+                purgeBusy ||
+                purgeSelected.size === 0 ||
+                !purgeChallengeCode ||
+                purgeConfirm.trim() !== purgeChallengeCode
+              }
+              className="px-5 py-2.5 bg-rose-600 text-white font-black text-[11px] rounded-xl hover:bg-rose-700 shadow-sm disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+            >
+              {purgeBusy ? '삭제 중…' : `선택 영역 영구삭제 (${purgeSelected.size})`}
+            </button>
+          </div>
         </div>
       </div>
+      ) : null}
 
       <div className="pt-4">
         <div className="bg-slate-800 border border-slate-700 rounded-[2rem] p-8 shadow-md text-white flex items-center gap-6 relative overflow-hidden">
@@ -691,8 +730,6 @@ export default function AdminSettingsPage() {
               위의 설정값들은 <b>[현재 그룹 저장]</b> 버튼을 누르는 순간 시스템에 정식 동기화됩니다.
               <br />
               마스터 그룹 매핑 변경 시, 연동된 서비스 화면의 드롭다운 데이터 공급처가 함께 전환됩니다.
-              <br />
-              테스트 거래 데이터 삭제는 복구되지 않습니다. 페이지별로만 선택하세요.
             </p>
           </div>
         </div>

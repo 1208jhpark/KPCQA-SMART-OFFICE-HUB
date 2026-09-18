@@ -11,6 +11,7 @@ import {
   useInterfaceStepTabs,
 } from '@/lib/interface-step-tabs';
 import { stripBusinessCardEnPlus } from '@/lib/businesscard-phone';
+import { collectDescendantUnitNames, rowMatchesOrgUnit } from '@/lib/org-unit-match';
 
 const MENU_PATH = '/asset/businesscard/master/archive';
 const DISABLED_ACTION_BTN =
@@ -23,6 +24,7 @@ interface RequestItem {
   applyDate?: string;
   deptHead: string;
   deptName: string;
+  unitId?: string | null;
   title: string;
   quantity: number;
   adminStatus: string;
@@ -129,26 +131,25 @@ function flattenUnitsInSortOrder(units: UnitItem[]) {
     .map((unit) => ({ ...unit, depth: depthOf(unit) }));
 }
 
-function descendantNames(unitId: string, units: UnitItem[]) {
-  const names = new Set<string>();
-  const selected = units.find((u) => u.id === unitId);
-  if (selected?.unit_name) names.add(selected.unit_name.trim());
-  const walk = (parentId: string) => {
-    for (const child of units.filter((u) => u.parent_id === parentId)) {
-      if (child.unit_name) names.add(child.unit_name.trim());
-      walk(child.id);
-    }
-  };
-  walk(unitId);
-  return names;
+function displayDeptName(
+  item: { unitId?: string | null; deptName?: string | null },
+  units: UnitItem[]
+) {
+  const uid = String(item.unitId || '').trim();
+  if (uid && units.length) {
+    const u = units.find((x) => x.id === uid);
+    if (u?.unit_name) return u.unit_name;
+  }
+  return String(item.deptName || '').trim();
 }
 
 function itemMatchesOrg(item: RequestItem, orgId: string, units: UnitItem[]) {
-  if (orgId === 'ALL') return true;
-  const names = descendantNames(orgId, units);
-  const head = String(item.deptHead || '').trim();
-  const center = String(item.deptName || '').trim();
-  return names.has(head) || names.has(center);
+  return rowMatchesOrgUnit({
+    selectedOrgId: orgId,
+    units,
+    unitId: item.unitId,
+    legacyNames: [item.deptName, item.deptHead],
+  });
 }
 
 function breakdownGroupKey(item: RequestItem, selected: UnitItem | null, units: UnitItem[]) {
@@ -160,7 +161,7 @@ function breakdownGroupKey(item: RequestItem, selected: UnitItem | null, units: 
   const head = String(item.deptHead || '').trim();
   const center = String(item.deptName || '').trim();
   for (const child of children) {
-    const names = descendantNames(child.id, units);
+    const names = collectDescendantUnitNames(child.id, units);
     if (names.has(head) || names.has(center)) return child.unit_name;
   }
   return selected.unit_name;
@@ -915,7 +916,7 @@ export default function BusinessCardArchivePanel() {
                                         )}
                                       </td>
                                       <td className="px-2 truncate bg-transparent" title={item.deptHead || ''}>{item.deptHead || '-'}</td>
-                                      <td className="px-2 truncate bg-transparent" title={item.deptName || ''}>{item.deptName || <span className="text-slate-300">-</span>}</td>
+                                      <td className="px-2 truncate bg-transparent" title={displayDeptName(item, units) || ''}>{displayDeptName(item, units) || <span className="text-slate-300">-</span>}</td>
                                       <td className="px-2 text-slate-800 truncate bg-transparent">{item.userName || '-'}</td>
                                       <td className="px-2 text-slate-800 truncate bg-transparent" title={item.title || ''}>{item.title || '-'}</td>
                                       <td className="px-1 text-center font-mono tabular-nums text-slate-900 bg-transparent">{item.quantity || 1}</td>

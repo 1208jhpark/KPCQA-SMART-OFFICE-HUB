@@ -7,6 +7,7 @@ import { resolveTopOrgName } from '@/utils/orgUnits';
 import { resolveInterfaceEditState } from '@/lib/permission-utils';
 import LoadingState from '@/components/common/LoadingState';
 import ItMasterPageBanner from '@/components/asset/it/ItMasterPageBanner';
+import { auditTargetsOverlap } from '@/utils/itAuditTarget';
 
 const MENU_PATH = '/asset/it/master/audit';
 
@@ -211,19 +212,6 @@ export default function AuditModule() {
       .map((t) => t.trim())
       .filter(Boolean);
 
-  /** A가 B의 상위(또는 동일) 조직인지 */
-  const unitCovers = (ancestorName: string, descendantName: string) => {
-    if (ancestorName === descendantName) return true;
-    let current = units.find((u) => u.unit_name === descendantName);
-    while (current?.parent_id) {
-      const parent = units.find((u) => u.id === current.parent_id);
-      if (!parent) break;
-      if (parent.unit_name === ancestorName) return true;
-      current = parent;
-    }
-    return false;
-  };
-
   const defaultTargetUnit = useMemo(() => {
     return resolveTopOrgName(units) || units.find((u) => u.unit_name)?.unit_name || '';
   }, [units]);
@@ -244,33 +232,37 @@ export default function AuditModule() {
     return parts.join(', ');
   };
 
-  /** 대상범위 겹침: 동일/상·하위 조직 (레거시 '전사'는 전체 충돌로 간주) */
-  const targetsOverlap = (aTarget: string, bTarget: string) => {
-    const ta = parseTargets(aTarget);
-    const tb = parseTargets(bTarget);
-    if (ta.length === 0 || tb.length === 0) return false;
-    if (ta.includes('전사') || tb.includes('전사')) return true;
-    for (const x of ta) {
-      for (const y of tb) {
-        if (unitCovers(x, y) || unitCovers(y, x)) return true;
-      }
-    }
-    return false;
-  };
+  /** 대상범위 겹침: id 우선, 없으면 명칭 (레거시 '전사'는 전체 충돌) */
+  const targetsOverlap = (
+    a: { target?: string | null; target_unit_ids?: unknown },
+    bTarget: string,
+    bUnitIds?: unknown
+  ) => auditTargetsOverlap(a.target, bTarget, units, a.target_unit_ids, bUnitIds);
 
   /** 운영 충돌: 작성중·게시중단·진행중 (마감·보관됨은 후속 실사 허용) */
-  const findOverlappingActive = (target: string, excludeId?: string) =>
+  const findOverlappingActive = (
+    target: string,
+    excludeId?: string,
+    targetUnitIds?: unknown
+  ) =>
     audits.filter(
       (a) =>
         a.id !== excludeId &&
         (a.status === '작성중' || a.status === '게시중단' || a.status === '진행중') &&
-        targetsOverlap(a.target, target)
+        targetsOverlap(a, target, targetUnitIds)
     );
 
   /** 동시 운영 충돌: 진행중만 */
-  const findOverlappingRunning = (target: string, excludeId?: string) =>
+  const findOverlappingRunning = (
+    target: string,
+    excludeId?: string,
+    targetUnitIds?: unknown
+  ) =>
     audits.filter(
-      (a) => a.status === '진행중' && a.id !== excludeId && targetsOverlap(a.target, target)
+      (a) =>
+        a.status === '진행중' &&
+        a.id !== excludeId &&
+        targetsOverlap(a, target, targetUnitIds)
     );
 
   const copyDeployLink = async (publicLink: string) => {
@@ -340,7 +332,11 @@ export default function AuditModule() {
       }
 
       const excludeId = String(id || '').startsWith('NEW_') ? undefined : id;
-      const overlaps = findOverlappingActive(submitData.target || '', excludeId);
+      const overlaps = findOverlappingActive(
+        submitData.target || '',
+        excludeId,
+        submitData.target_unit_ids
+      );
       if (overlaps.length > 0) {
         const names = overlaps.map((a) => `· ${a.title} (${formatTargetLabel(a.target)}) [${a.status}]`).join('\n');
         return alert(`대상범위가 겹치는 운영 중 실사가 있어 저장할 수 없습니다.\n\n${names}`);
@@ -386,7 +382,7 @@ export default function AuditModule() {
     const row = audits.find((a) => a.id === id);
 
     if (action === 'PUBLISH' || action === 'REOPEN') {
-      const overlaps = findOverlappingRunning(row?.target || '', id);
+      const overlaps = findOverlappingRunning(row?.target || '', id, row?.target_unit_ids);
       if (overlaps.length > 0) {
         const names = overlaps.map((a) => `· ${a.title} (${formatTargetLabel(a.target)})`).join('\n');
         return alert(`대상범위가 겹치는 진행 중 실사가 있어 ${action === 'PUBLISH' ? '배포' : '마감취소'}할 수 없습니다.\n\n${names}`);
@@ -432,7 +428,11 @@ export default function AuditModule() {
     if (action === 'ARCHIVE') patchData = { id, status: '보관됨', archivedAt: todayStr };
     if (action === 'RESTORE') {
       const targetAudit = historyAuditsRaw.find((h) => h.id === id);
-      const overlaps = findOverlappingRunning(targetAudit?.target || '', id);
+      const overlaps = findOverlappingRunning(
+        targetAudit?.target || '',
+        id,
+        targetAudit?.target_unit_ids
+      );
       if (overlaps.length > 0) {
         const names = overlaps.map((a) => `· ${a.title} (${a.target})`).join('\n');
         return alert(`대상범위가 겹치는 진행 중 실사가 있어 복구할 수 없습니다.\n\n${names}`);
@@ -535,7 +535,7 @@ export default function AuditModule() {
             title={!canEdit ? '편집 권한 필요' : undefined}
             onClick={() => {
               if (!canEdit) return;
-              setEditModal({ id: `NEW_${Date.now()}`, title: '', description: '', target: defaultTargetUnit, startDate: todayStr, endDate: todayStr, endTime: '23:59', status: '작성중' });
+              setEditModal({ id: `NEW_${Date.now()}`, title: '', description: '', target: defaultTargetUnit, target_unit_ids: sortedUnits.find((u) => u.unit_name === defaultTargetUnit)?.id ? [sortedUnits.find((u) => u.unit_name === defaultTargetUnit)!.id] : [], startDate: todayStr, endDate: todayStr, endTime: '23:59', status: '작성중' });
             }}
             className={`px-4 py-2 rounded-xl font-black text-xs whitespace-nowrap transition-all ${
               canEdit
@@ -723,7 +723,11 @@ export default function AuditModule() {
                   ) : paginatedHistory.map((h, idx) => {
                     const publicLink = publicAuditLink(h.id);
                     const no = filteredHistory.length - ((historyPage - 1) * itemsPerPage + idx);
-                    const restoreBlocked = findOverlappingRunning(h.target, h.id).length > 0;
+                    const restoreBlocked = findOverlappingRunning(
+                      h.target,
+                      h.id,
+                      h.target_unit_ids
+                    ).length > 0;
                     return (
                       <tr key={h.id} className="h-14 hover:bg-slate-50/50 transition-colors">
                         <td className="pl-4 text-center text-slate-400">{no}</td>
@@ -829,7 +833,15 @@ export default function AuditModule() {
                 <select
                   required
                   value={editModal.target || ''}
-                  onChange={e => setEditModal({ ...editModal, target: e.target.value })}
+                  onChange={(e) => {
+                    const name = e.target.value;
+                    const unit = sortedUnits.find((u) => u.unit_name === name);
+                    setEditModal({
+                      ...editModal,
+                      target: name,
+                      target_unit_ids: unit?.id ? [unit.id] : [],
+                    });
+                  }}
                   className="w-full p-3 bg-white border border-slate-200 rounded-xl text-xs font-bold outline-none focus:border-indigo-500 shadow-sm"
                 >
                   <option value="" disabled>조직 선택</option>

@@ -21,6 +21,7 @@ import {
   requestMatchesIdentity,
   toItIdentity,
 } from '@/utils/itUserIdentity';
+import { userMatchesAuditTarget, assetInAuditTarget as assetMatchesAuditTarget } from '@/utils/itAuditTarget';
 
 const MENU_PATH = '/asset/it/personal';
 
@@ -614,29 +615,15 @@ export default function PersonalModule() {
 
   useEffect(() => { fetchAllData(); }, []);
 
-  const unitCovers = (ancestorName: string, descendantName: string) => {
-    if (ancestorName === descendantName) return true;
-    let current = units.find((u) => u.unit_name === descendantName);
-    while (current?.parent_id) {
-      const parent = units.find((u) => u.id === current.parent_id);
-      if (!parent) break;
-      if (parent.unit_name === ancestorName) return true;
-      current = parent;
-    }
-    return false;
-  };
-
   /** 로그인 사용자 소속(unit)이 실사 대상범위에 포함되는지 */
-  const userInAuditTarget = (target: string) => {
-    const dept = String(currentUser?.dept || '').trim();
-    if (!dept) return false;
-    const targets = String(target || '')
-      .split(',')
-      .map((t) => t.trim())
-      .filter(Boolean);
-    if (targets.length === 0) return false;
-    if (targets.includes('전사')) return true;
-    return targets.some((t) => unitCovers(t, dept));
+  const userInAuditTarget = (audit: { target?: string | null; target_unit_ids?: unknown }) => {
+    return userMatchesAuditTarget({
+      userUnitId: currentUser?.unit_id || currentUser?.unitId,
+      userDeptName: currentUser?.dept,
+      target: audit.target,
+      targetUnitIds: audit.target_unit_ids,
+      units,
+    });
   };
 
   const formatAuditTargetLabel = (target: string) => {
@@ -653,7 +640,7 @@ export default function PersonalModule() {
   const myRunningAudits = useMemo(
     () =>
       audits
-        .filter((a) => a.status === '진행중' && userInAuditTarget(a.target))
+        .filter((a) => a.status === '진행중' && userInAuditTarget(a))
         .sort((a, b) => String(a.endDate || '').localeCompare(String(b.endDate || ''))),
     [audits, currentUser, units]
   );
@@ -680,16 +667,14 @@ export default function PersonalModule() {
   const activeAudit = focusedAudit;
 
   const getCoveringAudit = (asset: any) => {
-    const dept = String(asset?.dept || currentUser?.dept || '').trim();
-    const covered = myRunningAudits.filter((a) => {
-      const targets = String(a.target || '')
-        .split(',')
-        .map((t) => t.trim())
-        .filter(Boolean);
-      if (targets.includes('전사')) return true;
-      if (!dept) return userInAuditTarget(a.target);
-      return targets.some((t) => unitCovers(t, dept));
-    });
+    const covered = myRunningAudits.filter((a) =>
+      assetMatchesAuditTarget(
+        { dept: asset?.dept || currentUser?.dept, unit_id: asset?.unit_id },
+        a.target,
+        units,
+        a.target_unit_ids
+      )
+    );
     if (covered.length === 0) return null;
     return covered.find((a) => a.id === focusedAuditId) || covered[0];
   };

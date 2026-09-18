@@ -30,6 +30,20 @@ type OrgUnitLike = {
   parent?: { unit_name?: string | null } | null;
 };
 
+/** 직속 하위 조직 id 목록 */
+export function getChildUnitIds(
+  parentId: string | null | undefined,
+  units: OrgUnitLike[] | null | undefined
+): string[] {
+  if (!Array.isArray(units) || !parentId) return [];
+  const pId = String(parentId).trim();
+  if (!pId) return [];
+  return units
+    .filter((u) => String(u.parent_id || '').trim() === pId && u.id)
+    .map((u) => String(u.id).trim())
+    .filter(Boolean);
+}
+
 /** 직속 하위 조직 명칭 목록 */
 export function getChildUnitNames(
   parentName: string | null | undefined,
@@ -100,6 +114,48 @@ export function serializeSupplyOwnerDepts(names: string[] | null | undefined): s
   return JSON.stringify(uniq);
 }
 
+/** SupplyItem.owner_unit_ids JSON 파싱 */
+export function parseSupplyOwnerUnitIds(raw: unknown): string[] {
+  if (raw == null || raw === '') return [];
+  if (Array.isArray(raw)) {
+    return Array.from(
+      new Set(raw.map((x) => String(x ?? '').trim()).filter(Boolean))
+    );
+  }
+  const s = String(raw).trim();
+  if (!s) return [];
+  if (s.startsWith('[')) {
+    try {
+      const parsed = JSON.parse(s);
+      if (Array.isArray(parsed)) {
+        return Array.from(
+          new Set(parsed.map((x) => String(x ?? '').trim()).filter(Boolean))
+        );
+      }
+    } catch {
+      /* fall through */
+    }
+  }
+  return [];
+}
+
+/** 명칭 배열 → OrgUnit id 배열 (매칭되는 것만) */
+export function resolveOwnerUnitIdsFromNames(
+  names: string[] | null | undefined,
+  units: OrgUnitLike[] | null | undefined
+): string[] {
+  if (!Array.isArray(names) || !Array.isArray(units)) return [];
+  const ids: string[] = [];
+  for (const n of names) {
+    const name = String(n || '').trim();
+    if (!name || name === '전사') continue;
+    const u = units.find((x) => String(x.unit_name || '').trim() === name);
+    const id = String(u?.id || '').trim();
+    if (id) ids.push(id);
+  }
+  return Array.from(new Set(ids));
+}
+
 /**
  * 소모품 inventory 신청 가능 여부 (물품 owner_dept 단건)
  * - 레거시 '전사': 전 조직 신청 가능 (구 데이터)
@@ -114,21 +170,32 @@ export function canRequestSupplyOwnerDept(
     topOrgName?: string | null;
     units?: OrgUnitLike[] | null;
     isPower?: boolean;
+    ownerUnitId?: string | null;
   }
 ): boolean {
   if (opts.isPower) return true;
   const owner = String(ownerDept || '').trim();
-  if (!owner) return false;
   if (owner === '전사') return true;
-  return canDistributeMarketingOwnerDept(owner, opts);
+  return canDistributeMarketingOwnerDept(owner, {
+    ...opts,
+    ownerUnitId: opts.ownerUnitId,
+  });
 }
 
-/** 다중 물품소속 — 하나라도 신청 가능하면 true */
+/** 다중 물품소속 — owner_unit_ids 우선, 없으면 명칭 로직 */
 export function canRequestSupplyOwnerDepts(
   ownerDeptRaw: unknown,
-  opts: Parameters<typeof canRequestSupplyOwnerDept>[1]
+  opts: Parameters<typeof canRequestSupplyOwnerDept>[1] & {
+    ownerUnitIds?: unknown;
+  }
 ): boolean {
   if (opts.isPower) return true;
+  const unitIds = parseSupplyOwnerUnitIds(opts.ownerUnitIds);
+  if (unitIds.length > 0) {
+    return unitIds.some((id) =>
+      canRequestSupplyOwnerDept(null, { ...opts, ownerUnitId: id })
+    );
+  }
   const owners = parseSupplyOwnerDepts(ownerDeptRaw);
   if (owners.length === 0) return false;
   return owners.some((o) => canRequestSupplyOwnerDept(o, opts));
@@ -142,6 +209,8 @@ export function canRequestSupplyOwnerDepts(
  * 3) Organization 소속: Organization 물품만
  * 4) isPower(LV_1만): 전체
  *
+ * ownerUnitId 있으면 id 우선, 없으면 owner_dept 명칭 폴백.
+ *
  * ※ Organization 물품 CRUD는 canEditMarketingOwnerDept / assertCanEditOwnerDept (global_mgmt) 별도
  */
 export function canDistributeMarketingOwnerDept(
@@ -153,28 +222,63 @@ export function canDistributeMarketingOwnerDept(
     topOrgName?: string | null;
     units?: OrgUnitLike[] | null;
     isPower?: boolean;
+    ownerUnitId?: string | null;
   }
 ): boolean {
   if (opts.isPower) return true;
-  if (!ownerDept || !opts.myUnitName) return false;
 
+  const ownerId = String(opts.ownerUnitId || '').trim();
+  const myId = String(opts.myUnitId || '').trim();
   const top = (opts.topOrgName || '').trim();
-  const me = opts.myUnitName.trim();
+  const me = String(opts.myUnitName || '').trim();
+  const units = opts.units;
+
+  // id 경로: owner_unit_id 있는 행
+  if (ownerId) {
+    if (!myId && !me) return false;
+    const topId = top
+      ? String(units?.find((u) => String(u.unit_name || '').trim() === top)?.id || '').trim()
+      : '';
+    const isTopOrgUser =
+      (!!topId && !!myId && myId === topId) || (!!top && !!me && me === top);
+
+    if (isTopOrgUser) {
+      return !!topId && ownerId === topId;
+    }
+
+    if (myId && ownerId === myId) return true;
+
+    // Center → 상위 HQ id
+    if (myId && units?.length) {
+      const myRow = units.find((u) => String(u.id || '').trim() === myId);
+      const parentId = String(myRow?.parent_id || '').trim();
+      if (parentId && ownerId === parentId) return true;
+    } else if (opts.myHqName && units?.length) {
+      const hqId = String(
+        units.find((u) => String(u.unit_name || '').trim() === String(opts.myHqName).trim())?.id ||
+          ''
+      ).trim();
+      if (hqId && ownerId === hqId) return true;
+    }
+
+    if (topId && ownerId === topId) return true;
+
+    const childIds = getChildUnitIds(myId || null, units);
+    return childIds.includes(ownerId);
+  }
+
+  // 레거시 명칭 폴백
+  if (!ownerDept || !me) return false;
   const owner = ownerDept.trim();
   const isTopOrgUser = !!top && me === top;
 
-  // 3) Organization 계정 → 전사 풀만 신청
   if (isTopOrgUser) {
     return owner === top;
   }
 
-  // 본인 소속
   if (owner === me) return true;
-  // 1) Center → 상위 HQ
   if (opts.myHqName && owner === opts.myHqName.trim()) return true;
-  // 1·2) Organization 풀 신청
   if (top && owner === top) return true;
-  // 2) HQ → 하위 Center만 (직속 자식). Organization 사용자는 위에서 return 됨
   const children = getChildUnitNames(opts.myUnitName, opts.myUnitId, opts.units);
   return children.includes(owner);
 }

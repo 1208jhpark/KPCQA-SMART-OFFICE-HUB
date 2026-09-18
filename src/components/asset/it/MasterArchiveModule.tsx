@@ -6,6 +6,7 @@ import { getKSTDateString, getKSTNowYearMonth, getKSTYearMonthParts } from '@/ut
 import { resolveInterfaceEditState } from '@/lib/permission-utils';
 import LoadingState from '@/components/common/LoadingState';
 import ItMasterPageBanner from '@/components/asset/it/ItMasterPageBanner';
+import { rowMatchesOrgUnit } from '@/lib/org-unit-match';
 
 const MENU_PATH = '/asset/it/master/archive';
 
@@ -231,9 +232,18 @@ function MasterArchiveContent() {
     };
   }, [orgMenuOpen]);
 
-  const matchesDeptFilter = (deptName: string | null | undefined) => {
+  const matchesDeptFilter = (row: { dept?: string | null; unit_id?: string | null }) => {
     if (isOrgWideFilter) return true;
-    const name = String(deptName || '').trim();
+    const selectedId = String(selectedOrgUnit?.id || '').trim();
+    if (selectedId) {
+      return rowMatchesOrgUnit({
+        selectedOrgId: selectedId,
+        units: orgUnits,
+        unitId: row.unit_id,
+        legacyNames: [row.dept],
+      });
+    }
+    const name = String(row.dept || '').trim();
     if (!name || name === '-') return false;
     if (name === filterDept) return true;
     return selectedDeptNames ? selectedDeptNames.has(name) : false;
@@ -247,14 +257,14 @@ function MasterArchiveContent() {
       const matchYear = selectedYear === 'ALL' || ym?.year === selectedYear;
       const matchMonth = selectedMonth === 'ALL' || ym?.month === selectedMonth;
       const matchStatus = filterStatus === 'ALL' || h.status === filterStatus;
-      const matchDept = matchesDeptFilter(h.dept);
+      const matchDept = matchesDeptFilter(h);
       const rType = h.it_type || '일반';
       const matchType = filterType === 'ALL' || rType === filterType;
       const matchCode = !codeQ || String(h.code || '').toLowerCase().includes(codeQ);
       const matchModel = !modelQ || String(h.model || '').toLowerCase().includes(modelQ);
       return matchYear && matchMonth && matchStatus && matchDept && matchType && matchCode && matchModel;
     });
-  }, [history, selectedYear, selectedMonth, filterStatus, filterDept, filterType, codeQuery, modelQuery, selectedDeptNames, isOrgWideFilter]);
+  }, [history, selectedYear, selectedMonth, filterStatus, filterDept, filterType, codeQuery, modelQuery, selectedDeptNames, isOrgWideFilter, selectedOrgUnit, orgUnits]);
 
   const totalPages = Math.max(1, Math.ceil(filteredHistory.length / itemsPerPage));
   const currentData = filteredHistory.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);

@@ -7,6 +7,7 @@ import { getKSTDateString, getKSTTimeString, formatKSTDateTime, isPastKSTDeadlin
 import { getVisibleQuestionsByBranch } from '@/utils/surveyBranching';
 import { normalizeGeneralResponsesPayload } from '@/utils/surveyGeneralResponses';
 import LoadingState from '@/components/common/LoadingState';
+import { userInSurveyTarget } from '@/lib/survey-target-match';
 
 export default function SurveyDashboardContent() {
   const [stockUsage, setStockUsage] = useState<Record<string, Record<string, number>>>({}); // 🚀 재고 상태
@@ -156,22 +157,16 @@ export default function SurveyDashboardContent() {
     } else alert('주소 검색 엔진이 아직 로드 중입니다.');
   };
      
-  const checkHierarchyTarget = (targetString: string, userDeptName: string) => {
-    if (!targetString || targetString === '전사') return true;
-    const targetDepts = targetString.split(',').map(t => t.trim());
-    if (!userDeptName) return false;
-    if (targetDepts.includes(userDeptName)) return true;
-     
-    let currentId = unitsList.find(u => u.unit_name === userDeptName)?.id;
-    while (currentId) {
-      const unit = unitsList.find(u => u.id === currentId);
-      if (unit && unit.parent_id) {
-        const parentUnit = unitsList.find(u => u.id === unit.parent_id);
-        if (parentUnit && targetDepts.includes(parentUnit.unit_name)) return true; 
-        currentId = unit.parent_id;
-      } else break;
-    }
-    return false;
+  const checkHierarchyTarget = (survey: { target?: string; target_unit_ids?: unknown } | string, userDeptName: string) => {
+    const target = typeof survey === 'string' ? survey : survey?.target;
+    const targetUnitIds = typeof survey === 'string' ? [] : survey?.target_unit_ids;
+    return userInSurveyTarget({
+      userUnitId: currentUser?.unit_id || currentUser?.unit?.id,
+      userDeptName,
+      target,
+      targetUnitIds,
+      units: unitsList,
+    });
   };
      
   // 💡 [원인 해결] 전역 공통 KST 함수 적용
@@ -189,13 +184,13 @@ export default function SurveyDashboardContent() {
     }
     if (filterNudged) {
       return visibleSurveys.filter(s => { 
-        const isTargeted = currentUser?.roles?.includes('LV_1') || checkHierarchyTarget(s.target, currentUser?.unit?.unit_name); 
+        const isTargeted = currentUser?.roles?.includes('LV_1') || checkHierarchyTarget(s, currentUser?.unit?.unit_name); 
         return isSurveyOpen(s) && isTargeted && !myResponses[s.id] && nudgedSurveys.includes(s.id); 
       });
     }
     if (filterPending) {
       return visibleSurveys.filter(s => { 
-        const isTargeted = currentUser?.roles?.includes('LV_1') || checkHierarchyTarget(s.target, currentUser?.unit?.unit_name); 
+        const isTargeted = currentUser?.roles?.includes('LV_1') || checkHierarchyTarget(s, currentUser?.unit?.unit_name); 
         return isSurveyOpen(s) && isTargeted && !myResponses[s.id]; 
       });
     }
@@ -206,7 +201,7 @@ export default function SurveyDashboardContent() {
     if (!currentUser) return { ongoingCount: 0, closingTodayCount: 0, myPendingCount: 0, nudgeCount: 0 };
     // 기간종료(마감 시각 경과)는 진행 중·미참여·독촉 카운트에서 제외
     const allOngoing = surveys.filter((s) => isSurveyOpen(s));
-    const pendingSurveys = allOngoing.filter(s => { const isTargeted = currentUser?.roles?.includes('LV_1') || checkHierarchyTarget(s.target, currentUser?.unit?.unit_name); return isTargeted && !myResponses[s.id]; });
+    const pendingSurveys = allOngoing.filter(s => { const isTargeted = currentUser?.roles?.includes('LV_1') || checkHierarchyTarget(s, currentUser?.unit?.unit_name); return isTargeted && !myResponses[s.id]; });
     return { ongoingCount: allOngoing.length, closingTodayCount: allOngoing.filter(s => s.endDate === todayStr).length, myPendingCount: pendingSurveys.length, nudgeCount: pendingSurveys.filter(s => nudgedSurveys.includes(s.id)).length };
   }, [surveys, myResponses, todayStr, currentUser, unitsList, nudgedSurveys]);
      
@@ -459,7 +454,7 @@ export default function SurveyDashboardContent() {
                const notDone = Math.max(0, total - done);
 
                 const isSubmitted = Boolean(myResponses[s.id]);
-                const isTargeted = currentUser?.roles?.includes('LV_1') || checkHierarchyTarget(s.target, currentUser?.unit?.unit_name);
+                const isTargeted = currentUser?.roles?.includes('LV_1') || checkHierarchyTarget(s, currentUser?.unit?.unit_name);
                 const nudgedSurveysList = nudgedSurveys || [];
                 const isNudged = isTargeted && !isSubmitted && nudgedSurveysList.includes(s.id);
   

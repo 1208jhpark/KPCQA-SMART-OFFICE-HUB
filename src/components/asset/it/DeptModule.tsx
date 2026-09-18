@@ -12,6 +12,8 @@ import {
   hasInfoCorrectionPending,
   parseInfoCorrectionPending,
 } from '@/utils/itInfoCorrection';
+import { rowMatchesOrgUnit } from '@/lib/org-unit-match';
+import { userMatchesAuditTarget, assetInAuditTarget as assetMatchesAuditTarget } from '@/utils/itAuditTarget';
 
 const MENU_PATH = '/asset/it/dept';
 
@@ -29,10 +31,13 @@ function buildDeptViewScope(opts: {
   userUnitId?: string | null;
   units: Array<{ id?: string; unit_name?: string | null; parent_id?: string | null; unit_type?: string | null }>;
   globalMgmtDept: string;
-}): string[] {
-  const depts = new Set<string>();
+}): { scopeIds: string[]; scopeNames: string[] } {
+  const scopeNames = new Set<string>();
+  const scopeIds = new Set<string>();
   const own = String(opts.userDept || '').trim();
-  if (own) depts.add(own);
+  const ownId = String(opts.userUnitId || '').trim();
+  if (own) scopeNames.add(own);
+  if (ownId) scopeIds.add(ownId);
 
   const topOrg = resolveTopOrgName(opts.units);
   if (
@@ -44,9 +49,20 @@ function buildDeptViewScope(opts: {
       units: opts.units,
     })
   ) {
-    depts.add(topOrg);
+    scopeNames.add(topOrg);
+    const topUnit = opts.units.find((u) => String(u.unit_name || '').trim() === topOrg);
+    if (topUnit?.id) scopeIds.add(String(topUnit.id));
   }
-  return Array.from(depts);
+  return { scopeIds: Array.from(scopeIds), scopeNames: Array.from(scopeNames) };
+}
+
+function assetInDeptScope(
+  asset: { dept?: string | null; unit_id?: string | null },
+  scope: { scopeIds: string[]; scopeNames: string[] }
+) {
+  const uid = String(asset.unit_id || '').trim();
+  if (uid) return scope.scopeIds.includes(uid);
+  return scope.scopeNames.includes(String(asset.dept || '').trim());
 }
 
 export default function DeptModule() {
@@ -195,7 +211,7 @@ export default function DeptModule() {
             units: unitData,
             globalMgmtDept: mgmtDept,
           });
-          setAssets(list.filter((a: any) => allowed.includes(String(a.dept || '').trim())));
+          setAssets(list.filter((a: any) => assetInDeptScope(a, allowed)));
         } else {
           setAssets([]);
         }
@@ -210,7 +226,9 @@ export default function DeptModule() {
   useEffect(() => { fetchAllData(); }, []);
 
   const allowedDepts = useMemo(() => {
-    if (!currentUser?.dept) return [];
+    if (!currentUser?.dept && !(currentUser?.unit_id || currentUser?.unitId)) {
+      return { scopeIds: [] as string[], scopeNames: [] as string[] };
+    }
     return buildDeptViewScope({
       userDept: currentUser.dept,
       userUnitId: currentUser.unit_id || currentUser.unitId || null,
@@ -219,29 +237,15 @@ export default function DeptModule() {
     });
   }, [currentUser, units, globalMgmtDept]);
 
-  const unitCovers = (ancestorName: string, descendantName: string) => {
-    if (ancestorName === descendantName) return true;
-    let current = units.find((u) => u.unit_name === descendantName);
-    while (current?.parent_id) {
-      const parent = units.find((u) => u.id === current.parent_id);
-      if (!parent) break;
-      if (parent.unit_name === ancestorName) return true;
-      current = parent;
-    }
-    return false;
-  };
-
   /** 로그인 사용자 소속(unit)이 실사 대상범위에 포함되는지 */
-  const userInAuditTarget = (target: string) => {
-    const dept = String(currentUser?.dept || '').trim();
-    if (!dept) return false;
-    const targets = String(target || '')
-      .split(',')
-      .map((t) => t.trim())
-      .filter(Boolean);
-    if (targets.length === 0) return false;
-    if (targets.includes('전사')) return true;
-    return targets.some((t) => unitCovers(t, dept));
+  const userInAuditTarget = (audit: { target?: string | null; target_unit_ids?: unknown }) => {
+    return userMatchesAuditTarget({
+      userUnitId: currentUser?.unit_id || currentUser?.unitId,
+      userDeptName: currentUser?.dept,
+      target: audit.target,
+      targetUnitIds: audit.target_unit_ids,
+      units,
+    });
   };
 
   const formatAuditTargetLabel = (target: string) => {
@@ -258,7 +262,7 @@ export default function DeptModule() {
   const myRunningAudits = useMemo(
     () =>
       audits
-        .filter((a) => a.status === '진행중' && userInAuditTarget(a.target))
+        .filter((a) => a.status === '진행중' && userInAuditTarget(a))
         .sort((a, b) => String(a.endDate || '').localeCompare(String(b.endDate || ''))),
     [audits, currentUser, units]
   );
@@ -285,16 +289,14 @@ export default function DeptModule() {
   const activeAudit = focusedAudit;
 
   const getCoveringAudit = (asset: any) => {
-    const dept = String(asset?.dept || currentUser?.dept || '').trim();
-    const covered = myRunningAudits.filter((a) => {
-      const targets = String(a.target || '')
-        .split(',')
-        .map((t) => t.trim())
-        .filter(Boolean);
-      if (targets.includes('전사')) return true;
-      if (!dept) return userInAuditTarget(a.target);
-      return targets.some((t) => unitCovers(t, dept));
-    });
+    const covered = myRunningAudits.filter((a) =>
+      assetMatchesAuditTarget(
+        { dept: asset?.dept || currentUser?.dept, unit_id: asset?.unit_id },
+        a.target,
+        units,
+        a.target_unit_ids
+      )
+    );
     if (covered.length === 0) return null;
     return covered.find((a) => a.id === focusedAuditId) || covered[0];
   };
@@ -464,7 +466,7 @@ export default function DeptModule() {
     return ranked;
   }, [assets, rentalMasterLabels]);
 
-  const uniqueDepts = useMemo(() => allowedDepts, [allowedDepts]);
+  const uniqueDepts = useMemo(() => allowedDepts.scopeNames, [allowedDepts]);
 
   const uniqueUsers = useMemo(() => {
     const users = new Set(assets.map((a) => a.user).filter(Boolean));
@@ -480,7 +482,15 @@ export default function DeptModule() {
         const matchCategory = !colFilters.category || a.category === colFilters.category;
         const matchItType = !colFilters.it_type || a.it_type === colFilters.it_type;
         const matchRental = !colFilters.is_rental || a.is_rental === colFilters.is_rental;
-        const matchDept = !colFilters.dept || a.dept === colFilters.dept;
+        const matchDept =
+          !colFilters.dept ||
+          rowMatchesOrgUnit({
+            selectedOrgId: units.find((u) => u.unit_name === colFilters.dept)?.id || '',
+            units,
+            unitId: a.unit_id,
+            legacyNames: [a.dept],
+          }) ||
+          a.dept === colFilters.dept;
         const matchUser = !colFilters.user || a.user === colFilters.user;
 
         const matchReplace = !showReplaceableOnly || logic.isTargetCount;

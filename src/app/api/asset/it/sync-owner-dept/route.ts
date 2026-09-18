@@ -8,8 +8,8 @@ export const dynamic = 'force-dynamic';
 const IT_MASTER_WRITE_PATH = '/asset/it/master/dashboard';
 
 /**
- * POST: 담당자(User)의 현재 소속(unit)으로 활성 자산 dept를 재동기화
- * - user_id / user_email로 User를 찾고 unit.unit_name이 있으면 dept 갱신
+ * POST: 담당자(User)의 현재 소속(unit)으로 활성 자산 dept·unit_id를 재동기화
+ * - user_id / user_email로 User를 찾고 unit이 있으면 갱신
  * - 공용·담당자 없음·소속 없음·이미 동일 → skip
  */
 export async function POST() {
@@ -26,17 +26,19 @@ export async function POST() {
           id: true,
           code: true,
           dept: true,
+          unit_id: true,
           user: true,
           user_id: true,
           user_email: true,
-        },
+        } as any,
       }),
       prisma.user.findMany({
         where: { status: 'Active' },
         select: {
           id: true,
           email: true,
-          unit: { select: { unit_name: true } },
+          unit_id: true,
+          unit: { select: { id: true, unit_name: true } },
         },
       }),
     ]);
@@ -55,12 +57,16 @@ export async function POST() {
     let skippedShared = 0;
     const samples: Array<{ code: string; from: string; to: string }> = [];
 
-    for (const asset of assets) {
+    for (const asset of assets as any[]) {
       if (isPlaceholderUserLabel(asset.user) && !asset.user_id && !asset.user_email) {
         skippedShared += 1;
         continue;
       }
-      if (isPlaceholderUserLabel(asset.user) && !String(asset.user_id || '').trim() && !normalizeEmail(asset.user_email)) {
+      if (
+        isPlaceholderUserLabel(asset.user) &&
+        !String(asset.user_id || '').trim() &&
+        !normalizeEmail(asset.user_email)
+      ) {
         skippedShared += 1;
         continue;
       }
@@ -74,27 +80,32 @@ export async function POST() {
       }
 
       const nextDept = String(owner.unit?.unit_name || '').trim();
-      if (!nextDept) {
+      const nextUnitId = String(owner.unit_id || owner.unit?.id || '').trim() || null;
+      if (!nextDept && !nextUnitId) {
         skippedNoUnit += 1;
         continue;
       }
 
       const prevDept = String(asset.dept || '').trim();
-      if (prevDept === nextDept) {
+      const prevUnitId = String(asset.unit_id || '').trim() || null;
+      if (prevDept === nextDept && prevUnitId === nextUnitId) {
         skippedSame += 1;
         continue;
       }
 
       await prisma.iTAsset.update({
         where: { id: asset.id },
-        data: { dept: nextDept },
+        data: {
+          ...(nextDept ? { dept: nextDept } : {}),
+          unit_id: nextUnitId,
+        } as any,
       });
       updated += 1;
       if (samples.length < 20) {
         samples.push({
           code: String(asset.code || asset.id),
           from: prevDept || '(빈값)',
-          to: nextDept,
+          to: nextDept || '(빈값)',
         });
       }
     }

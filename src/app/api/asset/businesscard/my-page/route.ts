@@ -58,6 +58,25 @@ function pickWritable(body: Record<string, unknown>) {
   return data;
 }
 
+/** 선택 센터 OrgUnit.id — body.unitId 우선, 없으면 deptName으로 해석 */
+async function resolveUnitId(body: Record<string, unknown>): Promise<string | null> {
+  const fromBody = String(body.unitId || '').trim();
+  if (fromBody) {
+    const found = await prisma.orgUnit.findFirst({
+      where: { id: fromBody, is_deleted: false },
+      select: { id: true },
+    });
+    if (found) return found.id;
+  }
+  const deptName = String(body.deptName || '').trim();
+  if (!deptName) return null;
+  const byName = await prisma.orgUnit.findFirst({
+    where: { unit_name: deptName, is_deleted: false },
+    select: { id: true },
+  });
+  return byName?.id || null;
+}
+
 function sessionEmail(user: { email?: string | null }) {
   return String(user?.email || '').trim().toLowerCase();
 }
@@ -91,6 +110,7 @@ export async function GET() {
         addressId: true,
         deptHead: true,
         deptName: true,
+        unitId: true,
         title: true,
         additionalKo: true,
         quantity: true,
@@ -124,7 +144,7 @@ export async function GET() {
         applicantType: true,
         applicantName: true,
         applicantEmail: true,
-      },
+      } as any,
     });
 
     return NextResponse.json(
@@ -156,6 +176,7 @@ export async function POST(req: Request) {
     const body = await req.json().catch(() => ({}));
     const id = body?.id ? String(body.id) : '';
     const writable = pickWritable(body as Record<string, unknown>);
+    const unitId = await resolveUnitId(body as Record<string, unknown>);
 
     if (id) {
       const existing = await prisma.businessCardRequest.findUnique({ where: { id } });
@@ -173,8 +194,9 @@ export async function POST(req: Request) {
         where: { id },
         data: {
           ...writable,
+          unitId,
           adminStatus: '대기중',
-        },
+        } as any,
       });
       return NextResponse.json(updatedRequest);
     }
@@ -186,6 +208,7 @@ export async function POST(req: Request) {
     const newRequest = await prisma.businessCardRequest.create({
       data: {
         ...writable,
+        unitId,
         postNumber: postNumberStr,
         applyDate: todayStr,
         userEmail: emailRaw,
@@ -263,12 +286,14 @@ export async function PUT(req: Request) {
     }
 
     const writable = pickWritable(body as Record<string, unknown>);
+    const unitId = await resolveUnitId(body as Record<string, unknown>);
     const updatedRequest = await prisma.businessCardRequest.update({
       where: { id },
       data: {
         ...writable,
+        unitId,
         adminStatus: '대기중',
-      },
+      } as any,
     });
 
     return NextResponse.json(updatedRequest);

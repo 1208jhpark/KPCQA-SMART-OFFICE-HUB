@@ -4,8 +4,8 @@ import { Inter } from 'next/font/google';
 const inter = Inter({ subsets: ['latin'] });
 
 export const metadata = {
-  title: 'SMART OFFICE HUB',
-  description: 'KPCQA 통합 자산 관리 시스템',
+  title: 'KPCQA WISE',
+  description: 'KPCQA 통합업무지원시스템',
 };
 
 export default function RootLayout({

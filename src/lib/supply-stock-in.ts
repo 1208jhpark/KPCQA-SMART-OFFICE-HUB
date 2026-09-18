@@ -43,7 +43,11 @@ export async function createSupplyStockIn(auth: any, body: any) {
   // authorizeApi 결과(auth)가 오면 owner_dept 편집 스코프 강제
   if (auth?.permission) {
     try {
-      assertSupplyOwnerDeptsEditable(auth, parseSupplyOwnerDepts(item.owner_dept));
+      assertSupplyOwnerDeptsEditable(
+        auth,
+        parseSupplyOwnerDepts(item.owner_dept),
+        (item as { owner_unit_ids?: unknown }).owner_unit_ids
+      );
     } catch (e: any) {
       if (e?.message === 'FORBIDDEN_EDIT') {
         return { ok: false as const, status: 403, error: '해당 품목의 물품소속에 대한 입고 권한이 없습니다.' };

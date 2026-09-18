@@ -8,6 +8,7 @@ import { getKSTDateString, getKSTDaysUntil } from '@/utils/dateUtils';
 import { resolveCalibSchedule, toCalibYmd } from '@/utils/equipmentCalib';
 import EquipmentQrImage from '@/components/equipment/EquipmentQrImage';
 import { generateEquipmentQrDataUrls } from '@/utils/equipmentQr';
+import { rowMatchesOrgUnit } from '@/lib/org-unit-match';
 
 const LoadingSkeleton = () => (
   <div className="w-full max-w-[1600px] mx-auto py-16 px-8 space-y-6 animate-pulse">
@@ -113,31 +114,54 @@ export default function EquipmentMainDashboard() {
   }, [equipments]);
    
   const deptStats = useMemo(() => {
-    const stats: Record<string, { total: number, urgent: number }> = {};
-    processedEquipments.forEach(eq => {
-      const dept = eq.department || '공용 (미지정)';
-      if (!stats[dept]) stats[dept] = { total: 0, urgent: 0 };
-      stats[dept].total += 1;
-      if (eq.isUrgent) stats[dept].urgent += 1;
+    const stats: Record<string, { total: number; urgent: number; filterKey: string }> = {};
+    processedEquipments.forEach((eq) => {
+      const uid = String(eq.unit_id || '').trim();
+      const name =
+        (uid
+          ? String(units.find((u: any) => u.id === uid)?.unit_name || '').trim()
+          : '') ||
+        eq.department ||
+        '공용 (미지정)';
+      const key = uid || `legacy:${name}`;
+      if (!stats[key]) stats[key] = { total: 0, urgent: 0, filterKey: key };
+      stats[key].total += 1;
+      if (eq.isUrgent) stats[key].urgent += 1;
+      (stats[key] as any).label = name;
     });
     return stats;
-  }, [processedEquipments]);
+  }, [processedEquipments, units]);
   
   const totalUrgentCount = processedEquipments.filter(e => e.isUrgent).length;
   
   const sortedDepts = useMemo(() => {
-    const depts = Object.keys(deptStats);
+    const entries = Object.entries(deptStats).map(([key, v]) => ({
+      key,
+      label: (v as any).label as string,
+      ...v,
+    }));
     const unitOrderMap = new Map();
-    units.forEach((u, idx) => { unitOrderMap.set(u.unit_name, idx); });
+    units.forEach((u, idx) => {
+      unitOrderMap.set(u.id, idx);
+      unitOrderMap.set(u.unit_name, idx);
+    });
   
-    return depts.sort((a, b) => {
-      if (a === 'KPCQA') return -1;
-      if (b === 'KPCQA') return 1;
-      if (a === '공용 (미지정)') return 1;
-      if (b === '공용 (미지정)') return -1;
+    return entries.sort((a, b) => {
+      if (a.label === 'KPCQA') return -1;
+      if (b.label === 'KPCQA') return 1;
+      if (a.label === '공용 (미지정)') return 1;
+      if (b.label === '공용 (미지정)') return -1;
       
-      const orderA = unitOrderMap.has(a) ? unitOrderMap.get(a) : 9999;
-      const orderB = unitOrderMap.has(b) ? unitOrderMap.get(b) : 9999;
+      const orderA = unitOrderMap.has(a.key)
+        ? unitOrderMap.get(a.key)
+        : unitOrderMap.has(a.label)
+          ? unitOrderMap.get(a.label)
+          : 9999;
+      const orderB = unitOrderMap.has(b.key)
+        ? unitOrderMap.get(b.key)
+        : unitOrderMap.has(b.label)
+          ? unitOrderMap.get(b.label)
+          : 9999;
       if (orderA !== orderB) return orderA - orderB;
   
       const getWeight = (name: string) => {
@@ -146,10 +170,10 @@ export default function EquipmentMainDashboard() {
         if (name.endsWith('팀') || name.endsWith('실')) return 3;
         return 4;
       };
-      const weightA = getWeight(a);
-      const weightB = getWeight(b);
+      const weightA = getWeight(a.label);
+      const weightB = getWeight(b.label);
       if (weightA !== weightB) return weightA - weightB;
-      return a.localeCompare(b, 'ko-KR');
+      return a.label.localeCompare(b.label, 'ko-KR');
     });
   }, [deptStats, units]);
    
@@ -162,12 +186,25 @@ export default function EquipmentMainDashboard() {
         (eq.serial_no || '').toLowerCase().includes(s) ||
         (eq.asset_no || '').toLowerCase().includes(s);
         
-      const matchDept = selectedDept === 'ALL' || (eq.department || '공용 (미지정)') === selectedDept;
+      let matchDept = selectedDept === 'ALL';
+      if (!matchDept) {
+        if (selectedDept.startsWith('legacy:')) {
+          const name = selectedDept.slice('legacy:'.length);
+          matchDept = !eq.unit_id && (eq.department || '공용 (미지정)') === name;
+        } else {
+          matchDept = rowMatchesOrgUnit({
+            selectedOrgId: selectedDept,
+            units,
+            unitId: eq.unit_id,
+            legacyNames: [eq.department],
+          });
+        }
+      }
       const matchUrgent = showUrgentOnly ? eq.isUrgent : true;
    
       return matchSearch && matchDept && matchUrgent;
     });
-  }, [processedEquipments, searchQuery, selectedDept, showUrgentOnly]);
+  }, [processedEquipments, searchQuery, selectedDept, showUrgentOnly, units]);
    
   useEffect(() => {
     setCurrentPage(1);
@@ -342,13 +379,13 @@ export default function EquipmentMainDashboard() {
           </button>
 
           {sortedDepts.map((dept) => {
-            const hasUrgent = deptStats[dept].urgent > 0;
-            const isSelected = selectedDept === dept;
+            const hasUrgent = dept.urgent > 0;
+            const isSelected = selectedDept === dept.key;
             return (
               <button
-                key={dept}
+                key={dept.key}
                 type="button"
-                onClick={() => setSelectedDept(dept)}
+                onClick={() => setSelectedDept(dept.key)}
                 className={`flex items-center justify-between px-3 py-2 rounded-lg border text-xs transition-all relative group ${
                   isSelected
                     ? 'bg-sky-500 border-sky-500 text-white font-black shadow-sm'
@@ -358,14 +395,14 @@ export default function EquipmentMainDashboard() {
                 }`}
               >
                 {hasUrgent && !isSelected && (
-                  <span className="absolute -top-1 -right-1 flex h-2.5 w-2.5" title={`검교정 일정 확인: ${deptStats[dept].urgent}건`}>
+                  <span className="absolute -top-1 -right-1 flex h-2.5 w-2.5" title={`검교정 일정 확인: ${dept.urgent}건`}>
                     <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75" />
                     <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-red-500 border border-slate-900" />
                   </span>
                 )}
 
-                <span className={`truncate ${hasUrgent && !isSelected ? 'text-red-400' : ''}`} title={dept}>
-                  {dept}
+                <span className={`truncate ${hasUrgent && !isSelected ? 'text-red-400' : ''}`} title={dept.label}>
+                  {dept.label}
                 </span>
 
                 <span className={`text-[11px] font-black font-mono ml-1.5 px-1.5 py-0.2 rounded shrink-0 ${
@@ -375,7 +412,7 @@ export default function EquipmentMainDashboard() {
                     ? 'bg-red-900/50 text-red-300'
                     : 'bg-slate-900/70 text-slate-300 group-hover:bg-slate-900 group-hover:text-white'
                 }`}>
-                  {deptStats[dept].total}
+                  {dept.total}
                 </span>
               </button>
             );
@@ -390,10 +427,10 @@ export default function EquipmentMainDashboard() {
             <div className={`w-2.5 h-2.5 rounded-full ${showUrgentOnly ? 'bg-red-500' : 'bg-blue-600'}`}></div>
             <h2 className="text-sm font-black text-slate-800 tracking-tight">
               {showUrgentOnly
-                ? `🚨 검교정 일정 확인 D-30/D+ (${selectedDept === 'ALL' ? '전체' : selectedDept})`
+                ? `🚨 검교정 일정 확인 D-30/D+ (${selectedDept === 'ALL' ? '전체' : (sortedDepts.find((d) => d.key === selectedDept)?.label || selectedDept)})`
                 : selectedDept === 'ALL'
                   ? '전체 활성 장비 리스트'
-                  : `[${selectedDept}] 보유 장비`}
+                  : `[${sortedDepts.find((d) => d.key === selectedDept)?.label || selectedDept}] 보유 장비`}
             </h2>
             <span className="text-[11px] font-bold bg-slate-300/80 text-slate-700 px-2 py-0.5 rounded-md">{filteredEquipments.length}건</span>
           </div>

@@ -6,6 +6,7 @@ import {
   authorizeAnyMenuPaths,
   authErrorToResponse,
 } from '@/lib/server-auth-guard';
+import { withProductionDeptDisplayNames } from '@/lib/production-dept-scope';
 import {
   applyOfficeQuoteLinesToOptions,
   normalizeOfficeQuoteLines,
@@ -14,11 +15,10 @@ import {
 export const dynamic = 'force-dynamic';
 
 const MENU_PATH = '/asset/production/master/dashboard';
-const READ_PATHS = [
+/** 마스터 메뉴만 — 부서 settlement/archive Access로 전사 TOTAL 조회·쓰기 불가 */
+const MASTER_PATHS = [
   '/asset/production/master/dashboard',
   '/asset/production/master/archive',
-  '/asset/production/dept-master/settlement',
-  '/asset/production/dept-master/archive',
 ];
 
 function asOptionsRecord(value: unknown): Record<string, unknown> {
@@ -91,12 +91,12 @@ function resolveBatchAppliedAt(
 }
 
 /**
- * [GET] 전사 검수완료 보관함 — 부서 archive와 동일 스키마, 스코프 제한 없음
+ * [GET] 전사 검수완료 보관함 — 마스터 메뉴 Access만 (부서 권한으로 TOTAL 조회 불가)
  * ?view=settled-archive → 마스터 정산완료 아카이브(보관함 이동 완료분)
  */
 export async function GET(req: Request) {
   try {
-    await authorizeAnyMenuPaths(READ_PATHS);
+    await authorizeAnyMenuPaths(MASTER_PATHS);
     const view = new URL(req.url).searchParams.get('view') || '';
     const settledArchiveOnly = view === 'settled-archive';
 
@@ -142,9 +142,15 @@ export async function GET(req: Request) {
         const deptHeads = Array.from(
           new Set(items.map((i) => String(i.deptHead || '').trim()).filter(Boolean))
         );
-        // 대조 저장으로 updatedAt이 바뀌어도 묶음 시각·행순서가 흔들리지 않게 createdAt 기준
+        // 마감(정산완료 이관) 시각 — 연·월 필터·마감일과 동일 기준
         const archivedAt = items.reduce((max, i) => {
-          const t = new Date(i.createdAt).getTime();
+          const opts = asOptionsRecord(i.options);
+          const settledRaw = opts.masterSettledArchivedAt;
+          const settledT = settledRaw ? new Date(String(settledRaw)).getTime() : 0;
+          const t =
+            Number.isFinite(settledT) && settledT > 0
+              ? settledT
+              : new Date(i.createdAt).getTime();
           return t > max ? t : max;
         }, 0);
 
@@ -205,8 +211,25 @@ export async function GET(req: Request) {
         return tb - ta;
       });
 
+    const batchesWithNames = await Promise.all(
+      batches.map(async (b) => {
+        const items = await withProductionDeptDisplayNames(b.items);
+        return {
+          ...b,
+          items,
+          depts: Array.from(
+            new Set(items.map((i) => String(i.deptName || '').trim()).filter(Boolean))
+          ),
+          deptHeads: Array.from(
+            new Set(items.map((i) => String(i.deptHead || '').trim()).filter(Boolean))
+          ),
+        };
+      })
+    );
+
     return NextResponse.json({
-      batches,
+      batches: batchesWithNames,
+      // 마스터 보관함·아카이브는 전사 집계 전용 — interface viewScope(본인/부서) 미적용
       viewScope: 'TOTAL',
       view: settledArchiveOnly ? 'settled-archive' : 'dashboard',
     });
@@ -218,10 +241,10 @@ export async function GET(req: Request) {
   }
 }
 
-/** [PUT] 명세서 검수 결과 저장 */
+/** [PUT] 명세서 검수 결과 저장 — 마스터 대시보드 Edit만 */
 export async function PUT(req: Request) {
   try {
-    await authorizeAnyMenuPaths(READ_PATHS, { requireEditor: true });
+    await authorizeApi(MENU_PATH, { requireEditor: true });
     const body = await req.json().catch(() => ({}));
     const rows: Array<{
       batchId: string;
@@ -357,10 +380,7 @@ export async function POST(req: Request) {
 
     // 정산완료 아카이브 테스트용 영구삭제 — 시스템 LV_1만 (메뉴 Master 제외)
     if (action === 'purge-archived-batches') {
-      const auth = await authorizeAnyMenuPaths(
-        ['/asset/production/master/archive', '/asset/production/master/dashboard'],
-        { requireEditor: true }
-      );
+      const auth = await authorizeAnyMenuPaths(MASTER_PATHS, { requireEditor: true });
       if (auth.permission.myRole !== 'LV_1') {
         return NextResponse.json(
           { message: '영구삭제는 LV_1만 가능합니다.' },

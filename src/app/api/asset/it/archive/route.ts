@@ -46,6 +46,7 @@ export async function POST(req: Request) {
           category: existing.category,
           it_type: existing.it_type,
           dept: existing.dept,
+          unit_id: (existing as any).unit_id ?? null,
           user: existing.user,
           user_email: existing.user_email,
           user_id: existing.user_id,
@@ -75,7 +76,7 @@ export async function POST(req: Request) {
           reseller: body.reseller ?? null,
           resellPrice: body.resellPrice ?? 0,
           terminated_at: body.terminated_at || null,
-        },
+        } as any,
       });
       await tx.iTAsset.delete({ where: { id: assetId } });
       return created;

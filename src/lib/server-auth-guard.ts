@@ -3,7 +3,13 @@ import { cookies } from 'next/headers';
 import jwt from 'jsonwebtoken';
 import prisma from '@/lib/prisma';
 import { checkMenuPermission } from './permission-utils';
-import { resolveTopOrgName, canEditTopOrgMarketingAsset, getChildUnitNames } from '@/utils/orgUnits';
+import {
+  resolveTopOrgName,
+  canEditTopOrgMarketingAsset,
+  getChildUnitNames,
+  getChildUnitIds,
+  parseSupplyOwnerUnitIds,
+} from '@/utils/orgUnits';
 
 import { JWT_SECRET } from '@/lib/jwt';
 
@@ -477,35 +483,61 @@ export async function authorizeEquipmentApi(options?: {
   });
 }
 
+export type OrgUnitRef = {
+  unitId?: string | null;
+  deptName?: string | null;
+};
+
+function normalizeOrgUnitRef(
+  ref: string | null | undefined | OrgUnitRef
+): { unitId: string; deptName: string } {
+  if (ref != null && typeof ref === 'object') {
+    return {
+      unitId: String(ref.unitId || '').trim(),
+      deptName: String(ref.deptName || '').trim(),
+    };
+  }
+  return { unitId: '', deptName: String(ref || '').trim() };
+}
+
 /**
  * 장비 department 기준 편집 스코프 (EquipmentClient FE와 동일)
+ * - unit_id 있으면 editable unit ids에 포함되는지 우선
+ * - unit_id null이면 department 명칭 폴백
  * - Organization(최상위) 자산: LV_1 제외 GLOBAL_MGMT(+직속 하위)만 (TOTAL이어도 동일)
  * - TOTAL / Master / LV_1 → (최상위 제외) 전체
- * - DEPT → 내 unit_name 일치 + (HQ인 경우) 직속 하위 조직 department
+ * - DEPT → 내 unit + (HQ인 경우) 직속 하위
  */
 export function assertCanEditEquipmentDepartment(
   auth: Awaited<ReturnType<typeof authorizeEquipmentApi>>,
-  department: string | null | undefined
+  departmentOrRef: string | null | undefined | OrgUnitRef
 ) {
   const { user, permission, unitsList, systemConfig } = auth;
   if (permission.isMaster || permission.myRole === 'LV_1') return;
   if (!permission.isEditor) throw new Error('FORBIDDEN_EDIT');
 
+  const { unitId, deptName: dept } = normalizeOrgUnitRef(departmentOrRef);
   const myDept = user.unit?.unit_name || '';
+  const myUnitId = String(user.unit_id || '').trim();
   const myHq = (user.unit as any)?.parent?.unit_name as string | undefined;
-  const dept = String(department || '').trim();
   const topOrg = resolveTopOrgName(unitsList);
+  const topOrgId = topOrg
+    ? String(unitsList?.find((u: any) => String(u.unit_name || '').trim() === topOrg)?.id || '').trim()
+    : '';
   const mgmtDept = systemConfig?.global_mgmt_dept;
 
+  const isTopOrgAsset =
+    (!!unitId && !!topOrgId && unitId === topOrgId) || (!!topOrg && !!dept && dept === topOrg);
+
   // Organization 자산 → settings GLOBAL_MGMT(+하위)만
-  if (topOrg && dept === topOrg) {
+  if (isTopOrgAsset) {
     if (
       canEditTopOrgMarketingAsset({
-        ownerDept: dept,
+        ownerDept: dept || topOrg,
         topOrgName: topOrg,
         myUnitName: myDept,
         myHqName: myHq,
-        myUnitId: user.unit_id,
+        myUnitId,
         globalMgmtDept: mgmtDept,
         units: unitsList,
       })
@@ -516,15 +548,21 @@ export function assertCanEditEquipmentDepartment(
   }
 
   const scope = String(permission.editScope || 'NONE').toUpperCase();
-  // 레거시 미지정(빈 department) — TOTAL만 정리 허용
-  if (!dept) {
+  // 레거시 미지정(빈 department·unit_id) — TOTAL만 정리 허용
+  if (!unitId && !dept) {
     if (scope === 'TOTAL') return;
     throw new Error('FORBIDDEN_EDIT');
   }
   if (scope === 'TOTAL') return;
   if (scope === 'DEPT') {
+    if (unitId) {
+      if (myUnitId && unitId === myUnitId) return;
+      const childIds = getChildUnitIds(myUnitId || null, unitsList);
+      if (childIds.includes(unitId)) return;
+      throw new Error('FORBIDDEN_EDIT');
+    }
     if (myDept && dept === myDept) return;
-    const childNames = getChildUnitNames(myDept, user.unit_id, unitsList);
+    const childNames = getChildUnitNames(myDept, myUnitId || null, unitsList);
     if (dept && childNames.includes(dept)) return;
     throw new Error('FORBIDDEN_EDIT');
   }
@@ -533,32 +571,42 @@ export function assertCanEditEquipmentDepartment(
 
 /**
  * 물품 owner_dept 기준 편집 스코프 (Catalog FE와 동일)
+ * - owner_unit_id 우선, 없으면 명칭 폴백
  * - Organization(최상위) 자산: LV_1 제외 global_mgmt_dept만 (TOTAL이어도 동일)
  * - 그 외: TOTAL → 전체 / DEPT → 내 센터·본부
  * - HQ가 하위 센터 자산을 편집하진 않음 (지급 신청만)
  */
 export function assertCanEditOwnerDept(
   auth: Awaited<ReturnType<typeof authorizeAnyMenuPaths>>,
-  ownerDept: string | null | undefined
+  ownerDeptOrRef: string | null | undefined | OrgUnitRef
 ) {
   const { user, permission, unitsList, systemConfig } = auth;
   if (permission.isMaster || permission.myRole === 'LV_1') return;
   if (!permission.isEditor) throw new Error('FORBIDDEN_EDIT');
 
+  const { unitId: ownerUnitId, deptName: ownerDept } = normalizeOrgUnitRef(ownerDeptOrRef);
   const myCenter = user.unit?.unit_name;
+  const myUnitId = String(user.unit_id || '').trim();
   const myHq = (user.unit as any)?.parent?.unit_name as string | undefined;
   const topOrg = resolveTopOrgName(unitsList);
+  const topOrgId = topOrg
+    ? String(unitsList?.find((u: any) => String(u.unit_name || '').trim() === topOrg)?.id || '').trim()
+    : '';
   const mgmtDept = systemConfig?.global_mgmt_dept;
 
+  const isTopOrgAsset =
+    (!!ownerUnitId && !!topOrgId && ownerUnitId === topOrgId) ||
+    (!!topOrg && !!ownerDept && ownerDept === topOrg);
+
   // Organization 자산 CRUD → settings GLOBAL_MGMT만
-  if (topOrg && ownerDept && ownerDept === topOrg) {
+  if (isTopOrgAsset) {
     if (
       canEditTopOrgMarketingAsset({
-        ownerDept,
+        ownerDept: ownerDept || topOrg,
         topOrgName: topOrg,
         myUnitName: myCenter,
         myHqName: myHq,
-        myUnitId: user.unit_id,
+        myUnitId,
         globalMgmtDept: mgmtDept,
         units: unitsList,
       })
@@ -572,14 +620,31 @@ export function assertCanEditOwnerDept(
   if (scope === 'TOTAL') return;
 
   // 본인 소속 조직만 CRUD (센터→HQ, HQ→하위센터 편집 불가 — 지급 신청만)
+  if (ownerUnitId) {
+    if (myUnitId && ownerUnitId === myUnitId) return;
+    throw new Error('FORBIDDEN_EDIT');
+  }
   if (ownerDept && ownerDept === myCenter) return;
 
   throw new Error('FORBIDDEN_EDIT');
 }
 
-/** 소모품 다중 owner_dept — 레거시 '전사'만 예외, 나머지는 assertCanEditOwnerDept */
-export function assertSupplyOwnerDeptsEditable(auth: any, ownerDepts: string[]) {
+/**
+ * 소모품 다중 owner_dept — owner_unit_ids 우선, 레거시 '전사'만 예외
+ */
+export function assertSupplyOwnerDeptsEditable(
+  auth: any,
+  ownerDepts: string[],
+  ownerUnitIds?: unknown
+) {
   if (auth.permission?.isMaster || auth.permission?.myRole === 'LV_1') return;
+  const ids = parseSupplyOwnerUnitIds(ownerUnitIds);
+  if (ids.length > 0) {
+    for (const id of ids) {
+      assertCanEditOwnerDept(auth, { unitId: id, deptName: null });
+    }
+    return;
+  }
   if (!ownerDepts.length) throw new Error('FORBIDDEN_EDIT');
   for (const ownerDept of ownerDepts) {
     if (ownerDept === '전사') continue;

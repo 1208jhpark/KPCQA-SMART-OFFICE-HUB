@@ -12,6 +12,20 @@ import {
 
 const MENU_PATH = '/asset/production/dept-master/order';
 
+const PAGE_HINT_BY_PATH: Record<string, React.ReactNode> = {
+  '/asset/production/dept-master/order': (
+    <>
+      부서원의 <b>[접수대기]</b> 신청 건(원문 검수)을 검토하여 접수를 확정하고, <b>[발주대기]</b> 상태의 건들을 개별 또는 묶음으로 외주 발주합니다. (배송지 일괄 지정 가능)
+    </>
+  ),
+  '/asset/production/dept-master/inspection':
+    '진행 중인 외주 발주 묶음의 상태를 추적하고, 물품 수령 및 검수 작업을 처리하는 관리 대장입니다.',
+  '/asset/production/dept-master/settlement':
+    '수령 및 검수 완료 건에 대한 명세서 대조 작업을 진행합니다. (입력된 대조 상태는 중앙 관리자와 실시간으로 공유됩니다.)',
+  '/asset/production/dept-master/archive':
+    '명세서 대조 및 중앙 관리자의 최종 마감이 완료된 과거 발주 이력을 보관합니다.',
+};
+
 type PermissionSummary = {
   masterName: string;
   accessDesignate: string;
@@ -23,6 +37,7 @@ type PermissionSummary = {
 
 type ProductionDeptShellProps = {
   children: React.ReactNode;
+  /** 미지정 시 pathname 기준 기본 안내문 사용 */
   pageHint?: React.ReactNode;
 };
 
@@ -32,11 +47,14 @@ export default function ProductionDeptShell({ children, pageHint }: ProductionDe
   const [permissionSummary, setPermissionSummary] = useState<PermissionSummary | null>(null);
   const [interfaces, setInterfaces] = useState<InterfaceMenuRow[]>([]);
   const [menusReady, setMenusReady] = useState(false);
+  const [userReady, setUserReady] = useState(false);
 
-  const myDeptName =
-    currentUser?.unit?.unit_name ||
-    currentUser?.dept_name ||
-    '소속 부서';
+  const myDeptName = useMemo(() => {
+    const name = String(
+      currentUser?.unit?.unit_name || currentUser?.dept_name || ''
+    ).trim();
+    return name;
+  }, [currentUser]);
 
   useEffect(() => {
     const ts = Date.now();
@@ -57,6 +75,7 @@ export default function ProductionDeptShell({ children, pageHint }: ProductionDe
       setPermissionSummary(summary);
       setInterfaces(Array.isArray(menus) ? menus : []);
       setMenusReady(true);
+      setUserReady(true);
     });
   }, []);
 
@@ -87,6 +106,11 @@ export default function ProductionDeptShell({ children, pageHint }: ProductionDe
     return String(current.page_title || current.name || '부서 신청 대장').trim();
   }, [interfaces, pathname, menusReady]);
 
+  const resolvedHint =
+    pageHint ??
+    PAGE_HINT_BY_PATH[pathname] ??
+    '연계 조직(본인·하위) 임직원의 제작 신청을 검토하고 묶음 발주합니다. master에서는 부서 발주 건을 중앙 대조합니다.';
+
   return (
     <div className="w-full max-w-[1600px] mx-auto space-y-6 p-8 font-sans text-slate-900 pb-24 animate-fade-in">
       <div className="w-full bg-gradient-to-r from-slate-950 via-slate-900 to-slate-800 rounded-3xl text-white shadow-lg relative overflow-hidden px-6 md:px-8 py-6">
@@ -97,14 +121,17 @@ export default function ProductionDeptShell({ children, pageHint }: ProductionDe
             PRODUCTION DEPT ORDER CONTROL
           </h3>
           <h1 className="text-2xl tracking-tight leading-none">
-            <span className="text-indigo-400 font-normal">{String(myDeptName)}</span>
+            <span className="text-indigo-400 font-normal inline-block min-w-[4.5rem]">
+              {!userReady ? (
+                <span className="inline-block h-6 w-28 rounded bg-white/15 animate-pulse align-middle" />
+              ) : (
+                myDeptName || '소속 부서'
+              )}
+            </span>
             <span className="text-white/30 font-normal mx-2.5">|</span>
             <span className="text-white font-extrabold">{bannerTitle}</span>
           </h1>
-          <p className="text-slate-400 text-xs mt-3 leading-relaxed">
-            {pageHint ||
-              '연계 조직(본인·하위) 임직원의 제작 신청을 검토하고 묶음 발주합니다. master에서는 부서 발주 건을 중앙 대조합니다.'}
-          </p>
+          <p className="text-slate-400 text-xs mt-3 leading-relaxed">{resolvedHint}</p>
           {permissionSummary && isSystemLv1User(currentUser) && (
             <div className="flex flex-wrap items-center gap-2 mt-4 pt-3 border-t border-white/15">
               <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-white/10 border-white/25 text-slate-50 shadow-sm">

@@ -7,7 +7,6 @@ import { getKSTDateString, getKSTNowYearMonth, getKSTYearMonthParts } from '@/ut
 import LoadingState from '@/components/common/LoadingState';
 import { resolveInterfaceEditState, isSystemLv1User } from '@/lib/permission-utils';
 import { isSeedVendor } from '@/lib/production-seed-vendors';
-import ProductionDeptShell from '@/components/asset/production/ProductionDeptShell';
 import ProductionRequestDetailModal from '@/components/asset/production/ProductionRequestDetailModal';
 import { getProductionCategoryBadgeClass, getProductionCategoryFolderTabClasses } from '@/lib/production-category-theme';
 import { PRODUCTION_STATUS, productionStatusLabel, productionStatusTextClass } from '@/lib/production-status';
@@ -1113,7 +1112,7 @@ export default function DeptInspectionPanel() {
   };
 
   return (
-    <ProductionDeptShell pageHint="외주 발주 묶음 관리 대장입니다. 묶음 발주 및 수령검수까지 담당합니다.">
+    <>
       <div className="w-full">
         <div
           className="flex flex-wrap items-end gap-1 border-b border-slate-200"
@@ -2768,6 +2767,6 @@ export default function DeptInspectionPanel() {
           allowEdit={false}
         />
       )}
-    </ProductionDeptShell>
+    </>
   );
 }

@@ -82,6 +82,7 @@ const emptyForm = (addr?: any) => ({
   deptHeadEn: '',
   deptName: '',
   deptNameEn: '',
+  unitId: '',
   dutyName: '',
   dutyEn: '',
   gradeName: '',
@@ -182,14 +183,17 @@ export default function BusinessCardAdminApplyModal({
     let deptHeadEn = form.deptHeadEn;
     let deptName = form.deptName;
     let deptNameEn = form.deptNameEn;
+    let unitId = form.unitId || '';
     if (unit && isBusinessCardHqUnit(unit)) {
       deptHead = unitName;
       deptHeadEn = unitNameEn;
       deptName = '';
       deptNameEn = '';
+      unitId = '';
     } else if (unit) {
       deptName = unitName;
       deptNameEn = unitNameEn;
+      unitId = String(unit.id || user.unit_id || '').trim();
       deptHead = String(parent?.unit_name || form.deptHead).trim();
       deptHeadEn = String(parent?.unit_name_en || form.deptHeadEn).trim();
     }
@@ -209,6 +213,7 @@ export default function BusinessCardAdminApplyModal({
       deptHeadEn,
       deptName,
       deptNameEn,
+      unitId,
       dutyName: useDuty ? dutyName : '',
       dutyEn: useDuty ? dutyEn : '',
       gradeName: useDuty ? '' : gradeName,
@@ -240,6 +245,7 @@ export default function BusinessCardAdminApplyModal({
       deptHeadEn: selected?.unit_name_en || '',
       deptName: '',
       deptNameEn: '',
+      unitId: '',
     }));
   };
 
@@ -260,6 +266,7 @@ export default function BusinessCardAdminApplyModal({
       gradeEn: '',
       deptName: selected?.unit_name || '',
       deptNameEn: selected?.unit_name_en || '',
+      unitId: selected?.id || '',
     }));
   };
 
@@ -370,6 +377,7 @@ export default function BusinessCardAdminApplyModal({
           userNameEn: form.userNameEn,
           deptName: form.deptName,
           deptNameEn: form.deptNameEn,
+          unitId: form.unitId || undefined,
           deptHead: form.deptHead,
           deptHeadEn: form.deptHeadEn,
           title: form.title,

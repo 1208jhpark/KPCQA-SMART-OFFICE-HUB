@@ -61,13 +61,28 @@ function emailsEqual(a?: string | null, b?: string | null) {
   return !!(a && b && a.trim().toLowerCase() === b.trim().toLowerCase());
 }
 
-/** 본인 지급 — 이메일 우선, 레거시(이메일 없음)는 이름+부서 */
+/** 본인 지급 — 이메일 우선, sender_unit_id, 레거시(이메일 없음)는 이름+부서 */
 function isOwnDistribution(
-  d: { sender_email?: string | null; sender_name?: string | null; sender_dept?: string | null },
-  user: { email?: string | null; name?: string | null; unit?: { unit_name?: string | null } | null } | null
+  d: {
+    sender_email?: string | null;
+    sender_name?: string | null;
+    sender_dept?: string | null;
+    sender_unit_id?: string | null;
+  },
+  user: {
+    email?: string | null;
+    name?: string | null;
+    unit_id?: string | null;
+    unit?: { id?: string | null; unit_name?: string | null } | null;
+  } | null
 ) {
   if (!user) return false;
   if (d.sender_email) return emailsEqual(d.sender_email, user.email);
+  const myUnitId = String(user.unit_id || user.unit?.id || '').trim();
+  const distUnitId = String(d.sender_unit_id || '').trim();
+  if (myUnitId && distUnitId && myUnitId === distUnitId && d.sender_name === user.name) {
+    return true;
+  }
   const myDept = user.unit?.unit_name || '';
   return !!d.sender_name && d.sender_name === user.name && !!d.sender_dept && d.sender_dept === myDept;
 }
@@ -432,23 +447,34 @@ function DeptDistributionContent() {
   const canEdit = editState.isEditor;
 
   /** assertCanEditOwnerDept / Catalog checkEditPermission 과 동일 — 행별 입고취소·복원 */
-  const checkEditPermission = (itemOwnerDept?: string | null) => {
-    if (!currentUser || !itemOwnerDept) return false;
+  const checkEditPermission = (
+    itemOwnerDept?: string | null,
+    itemOwnerUnitId?: string | null
+  ) => {
+    if (!currentUser) return false;
     if (isLv1) return true;
     if (!systemConfig || !editState.isEditor) return false;
+    if (!itemOwnerDept && !itemOwnerUnitId) return false;
 
     const myCenter = currentUser.unit?.unit_name;
+    const myUnitId = String(currentUser.unit_id || currentUser.unit?.id || '').trim();
     const myHq = currentUser.unit?.parent?.unit_name;
     const globalMgmtDept = systemConfig.global_mgmt_dept;
     const top = resolveTopOrgName(units);
+    const topId = top
+      ? String(units.find((u: any) => String(u.unit_name || '').trim() === top)?.id || '').trim()
+      : '';
+    const ownerId = String(itemOwnerUnitId || '').trim();
+    const isTop =
+      (!!ownerId && !!topId && ownerId === topId) || (!!top && itemOwnerDept === top);
 
-    if (top && itemOwnerDept === top) {
+    if (isTop) {
       return canEditTopOrgMarketingAsset({
-        ownerDept: itemOwnerDept,
+        ownerDept: itemOwnerDept || top,
         topOrgName: top,
         myUnitName: myCenter,
         myHqName: myHq,
-        myUnitId: currentUser.unit_id || currentUser.unit?.id,
+        myUnitId,
         globalMgmtDept,
         units,
       });
@@ -456,7 +482,10 @@ function DeptDistributionContent() {
 
     const scope = editState.editScope;
     if (scope === 'TOTAL') return true;
-    if ((scope === 'DEPT' || scope === 'OWN') && itemOwnerDept === myCenter) return true;
+    if (scope === 'DEPT' || scope === 'OWN') {
+      if (ownerId && myUnitId && ownerId === myUnitId) return true;
+      if (!ownerId && itemOwnerDept === myCenter) return true;
+    }
     return false;
   };
 
@@ -506,8 +535,13 @@ function DeptDistributionContent() {
     }
   };
 
-  const handleCancelPurchase = async (id: string, ownerDept?: string | null) => {
-    if (!checkEditPermission(ownerDept)) return alert('❌ 해당 물품 소속에 대한 입고 취소 권한이 없습니다.');
+  const handleCancelPurchase = async (
+    id: string,
+    ownerDept?: string | null,
+    ownerUnitId?: string | null
+  ) => {
+    if (!checkEditPermission(ownerDept, ownerUnitId))
+      return alert('❌ 해당 물품 소속에 대한 입고 취소 권한이 없습니다.');
     if (!confirm('이 입고 내역을 취소하시겠습니까?\n(취소 시 카탈로그의 부서 재고도 함께 차감됩니다.)')) return;
     const res = await fetch(`/api/marketing/purchases?id=${id}`, { method: 'DELETE' });
     if (res.ok) {
@@ -518,8 +552,13 @@ function DeptDistributionContent() {
     }
   };
 
-  const handleRestoreItem = async (id: string, ownerDept?: string | null) => {
-    if (!checkEditPermission(ownerDept)) return alert('❌ 해당 물품 소속에 대한 복원 권한이 없습니다.');
+  const handleRestoreItem = async (
+    id: string,
+    ownerDept?: string | null,
+    ownerUnitId?: string | null
+  ) => {
+    if (!checkEditPermission(ownerDept, ownerUnitId))
+      return alert('❌ 해당 물품 소속에 대한 복원 권한이 없습니다.');
     if (!confirm('종료된 상품을 다시 활성 물품 리스트로 복구하시겠습니까?')) return;
     const res = await fetch('/api/marketing/items', {
       method: 'PATCH',
@@ -2027,8 +2066,8 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
                       </td>
                       <td className="px-2 text-center text-slate-700 truncate max-w-[120px]" title={p.purchaser_email || ''}>{p.purchaser_email || '-'}</td>
                       <td className="pr-4 text-center" onClick={(e)=>e.stopPropagation()}>
-                        {checkEditPermission(p.item?.owner_dept) ? (
-                          <button onClick={() => handleCancelPurchase(p.id, p.item?.owner_dept)} className="w-full py-1.5 bg-red-50 text-red-500 border border-red-100 rounded-md text-[10px] font-black hover:bg-red-500 hover:text-white transition-colors shadow-sm whitespace-nowrap">
+                        {checkEditPermission(p.item?.owner_dept, p.item?.owner_unit_id) ? (
+                          <button onClick={() => handleCancelPurchase(p.id, p.item?.owner_dept, p.item?.owner_unit_id)} className="w-full py-1.5 bg-red-50 text-red-500 border border-red-100 rounded-md text-[10px] font-black hover:bg-red-500 hover:text-white transition-colors shadow-sm whitespace-nowrap">
                             입고 취소
                           </button>
                         ) : (
@@ -2206,8 +2245,8 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
                         </td>
                         <td className="pr-4 text-center">
                            <div className="flex flex-row gap-1.5 justify-center">
-                              {checkEditPermission(item.owner_dept) ? (
-                                <button onClick={() => handleRestoreItem(item.id, item.owner_dept)} className="flex-1 py-1.5 bg-white border border-slate-300 text-slate-600 rounded-md text-[10px] font-black hover:bg-slate-800 hover:text-white transition-colors shadow-sm whitespace-nowrap">
+                              {checkEditPermission(item.owner_dept, item.owner_unit_id) ? (
+                                <button onClick={() => handleRestoreItem(item.id, item.owner_dept, item.owner_unit_id)} className="flex-1 py-1.5 bg-white border border-slate-300 text-slate-600 rounded-md text-[10px] font-black hover:bg-slate-800 hover:text-white transition-colors shadow-sm whitespace-nowrap">
                                   ↺ 복구(Edit)
                                 </button>
                               ) : (

@@ -16,6 +16,11 @@ import {
 } from '@/utils/itUserIdentity';
 import { withItAssetScheduleFields } from '@/utils/itAssetSchedule';
 import { assetInAuditTarget } from '@/utils/itAuditTarget';
+import {
+  buildUnitIdOrLegacyNameWhere,
+  collectDescendantUnitIds,
+  collectDescendantUnitNames,
+} from '@/lib/org-unit-match';
 
 export const dynamic = 'force-dynamic';
 
@@ -74,6 +79,7 @@ function sanitizeAndParsePayload(rawData: any) {
     'category',
     'it_type',
     'dept',
+    'unit_id',
     'user',
     'user_email',
     'user_id',
@@ -188,36 +194,76 @@ function sanitizePersonalSelfPatch(rawData: any) {
   return sanitizeAndParsePayload(allowed);
 }
 
-function resolveDeptScopeNames(auth: any, globalMgmtDept?: string): string[] | null {
+function resolveDeptScope(
+  auth: any,
+  globalMgmtDept?: string
+): { scopeIds: string[]; scopeNames: string[] } | null {
   const myUnit = auth.user?.unit;
-  if (!myUnit?.unit_name) return [];
+  const myUnitId = String(auth.user?.unit_id || myUnit?.id || '').trim();
+  if (!myUnitId && !myUnit?.unit_name) return { scopeIds: [], scopeNames: [] };
   const editScope = String(auth.permission?.editScope || auth.permission?.viewScope || 'OWN').toUpperCase();
   const units = auth.unitsList || [];
   if (editScope === 'TOTAL' || auth.permission?.isMaster || isLv1(auth.user)) {
     return null; // null = no dept filter (all)
   }
 
-  const names = new Set<string>([myUnit.unit_name]);
-  if (editScope === 'DEPT') {
-    const children = getChildUnitNames(myUnit.unit_name, myUnit.id, units) || [];
-    children.forEach((n: string) => names.add(n));
+  const scopeIds = new Set<string>();
+  const scopeNames = new Set<string>();
+
+  if (myUnitId) {
+    if (editScope === 'DEPT') {
+      collectDescendantUnitIds(myUnitId, units).forEach((id) => scopeIds.add(id));
+      collectDescendantUnitNames(myUnitId, units).forEach((n) => scopeNames.add(n));
+    } else {
+      scopeIds.add(myUnitId);
+      const n = String(myUnit?.unit_name || '').trim();
+      if (n) scopeNames.add(n);
+    }
+  } else if (myUnit?.unit_name) {
+    scopeNames.add(myUnit.unit_name);
+    if (editScope === 'DEPT') {
+      const children = getChildUnitNames(myUnit.unit_name, myUnit.id, units) || [];
+      children.forEach((n: string) => scopeNames.add(n));
+    }
   }
 
-  // FE DeptModule.buildDeptViewScope 와 동일: 총괄 부서(및 하위)면 최상위 Organization 자산 포함
   const topOrg = resolveTopOrgName(units);
   if (
     topOrg &&
     isGlobalMgmtOrgMember({
-      myUnitName: myUnit.unit_name,
-      myUnitId: myUnit.id,
+      myUnitName: myUnit?.unit_name,
+      myUnitId: myUnitId || myUnit?.id,
       globalMgmtDept: globalMgmtDept,
       units,
     })
   ) {
-    names.add(topOrg);
+    scopeNames.add(topOrg);
+    const topUnit = units.find((u: any) => String(u.unit_name || '').trim() === topOrg);
+    if (topUnit?.id) scopeIds.add(String(topUnit.id));
   }
 
-  return Array.from(names);
+  return { scopeIds: Array.from(scopeIds), scopeNames: Array.from(scopeNames) };
+}
+
+/** body.unit_id / dept 명칭 / 세션 소속으로 unit_id 확정 */
+async function resolveAssetUnitId(cleanData: any, authUser?: any): Promise<string | null> {
+  const fromBody = String(cleanData.unit_id || '').trim();
+  if (fromBody) {
+    const found = await prisma.orgUnit.findFirst({
+      where: { id: fromBody, is_deleted: false },
+      select: { id: true },
+    });
+    if (found) return found.id;
+  }
+  const dept = String(cleanData.dept || '').trim();
+  if (dept) {
+    const byName = await prisma.orgUnit.findFirst({
+      where: { unit_name: dept, is_deleted: false },
+      select: { id: true },
+    });
+    if (byName) return byName.id;
+  }
+  return String(authUser?.unit_id || authUser?.unit?.id || '').trim() || null;
 }
 
 async function assetsForEmail(email: string) {
@@ -298,7 +344,7 @@ export async function GET(req: Request) {
       }
       const audit = await prisma.iTAudit.findUnique({
         where: { id: auditId },
-        select: { target: true },
+        select: { target: true, target_unit_ids: true } as any,
       });
       if (!audit) {
         return NextResponse.json({ message: '실사를 찾을 수 없습니다.' }, { status: 404 });
@@ -307,7 +353,14 @@ export async function GET(req: Request) {
         where: { is_deleted: false },
         select: { id: true, unit_name: true, parent_id: true },
       });
-      const scoped = assets.filter((a) => assetInAuditTarget(a.dept, audit.target, units));
+      const scoped = assets.filter((a) =>
+        assetInAuditTarget(
+          { dept: a.dept, unit_id: (a as any).unit_id },
+          (audit as any).target,
+          units,
+          (audit as any).target_unit_ids
+        )
+      );
       return NextResponse.json(scoped);
     }
 
@@ -330,13 +383,19 @@ export async function GET(req: Request) {
         where: { id: 'global' },
         select: { global_mgmt_dept: true },
       });
-      const depts = resolveDeptScopeNames(auth, config?.global_mgmt_dept || '');
-      if (depts === null) {
+      const scope = resolveDeptScope(auth, config?.global_mgmt_dept || '');
+      if (scope === null) {
         // TOTAL
-      } else if (depts.length === 0) {
+      } else if (scope.scopeIds.length === 0 && scope.scopeNames.length === 0) {
         return NextResponse.json([]);
       } else {
-        where = { ...where, dept: { in: depts } };
+        const orgWhere = buildUnitIdOrLegacyNameWhere({
+          unitIdField: 'unit_id',
+          nameField: 'dept',
+          scopeIds: scope.scopeIds,
+          scopeNames: scope.scopeNames,
+        });
+        where = orgWhere ? { ...where, ...(orgWhere as Prisma.ITAssetWhereInput) } : where;
       }
     } else {
       // personal — email/userId 우선, 레거시 이름 폴백
@@ -362,16 +421,16 @@ export async function GET(req: Request) {
 export async function POST(req: Request) {
   try {
     const auth = await authorizeAnyMenuPaths([...IT_MASTER_WRITE_PATHS], { requireEditor: true });
-    void auth;
 
     const body = await req.json();
     const cleanData = await enrichOwnerIdentity(sanitizeAndParsePayload(body));
+    cleanData.unit_id = await resolveAssetUnitId(cleanData, auth.user);
 
     const asset = await prisma.iTAsset.create({
       data: {
         ...cleanData,
         is_active: true,
-      },
+      } as any,
     });
     return NextResponse.json(withItAssetScheduleFields(asset));
   } catch (error) {
@@ -426,16 +485,23 @@ export async function PATCH(req: Request) {
       }
       const audit = await prisma.iTAudit.findUnique({
         where: { id: auditId },
-        select: { target: true, status: true },
+        select: { target: true, target_unit_ids: true, status: true } as any,
       });
-      if (!audit || audit.status !== '진행중') {
+      if (!audit || (audit as any).status !== '진행중') {
         return NextResponse.json({ message: '진행 중 실사만 처리할 수 있습니다.' }, { status: 403 });
       }
       const units = await prisma.orgUnit.findMany({
         where: { is_deleted: false },
         select: { id: true, unit_name: true, parent_id: true },
       });
-      if (!assetInAuditTarget(target.dept, audit.target, units)) {
+      if (
+        !assetInAuditTarget(
+          { dept: target.dept, unit_id: (target as any).unit_id },
+          (audit as any).target,
+          units,
+          (audit as any).target_unit_ids
+        )
+      ) {
         return NextResponse.json(
           { message: '이번 실사 대상 범위에 포함되지 않은 자산입니다.' },
           { status: 403 }
@@ -448,7 +514,7 @@ export async function PATCH(req: Request) {
 
     // 마스터 Edit → 전 필드
     try {
-      await authorizeAnyMenuPaths([...IT_MASTER_WRITE_PATHS], { requireEditor: true });
+      const masterAuth = await authorizeAnyMenuPaths([...IT_MASTER_WRITE_PATHS], { requireEditor: true });
       let cleanData = sanitizeAndParsePayload(body);
       if (
         cleanData.user !== undefined ||
@@ -457,7 +523,10 @@ export async function PATCH(req: Request) {
       ) {
         cleanData = await enrichOwnerIdentity(cleanData);
       }
-      const updated = await prisma.iTAsset.update({ where: { id }, data: cleanData });
+      if (cleanData.dept !== undefined || cleanData.unit_id !== undefined) {
+        cleanData.unit_id = await resolveAssetUnitId(cleanData, masterAuth.user);
+      }
+      const updated = await prisma.iTAsset.update({ where: { id }, data: cleanData as any });
       return NextResponse.json(withItAssetScheduleFields(updated));
     } catch (masterErr) {
       const msg = masterErr instanceof Error ? masterErr.message : '';

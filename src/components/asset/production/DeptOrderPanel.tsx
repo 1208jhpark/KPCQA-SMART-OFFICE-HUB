@@ -6,7 +6,6 @@ import * as XLSX from 'xlsx';
 import { getKSTDateString, getKSTNowYearMonth, getKSTYearMonthParts } from '@/utils/dateUtils';
 import LoadingState from '@/components/common/LoadingState';
 import { resolveInterfaceEditState } from '@/lib/permission-utils';
-import ProductionDeptShell from '@/components/asset/production/ProductionDeptShell';
 import ProductionRequestDetailModal from '@/components/asset/production/ProductionRequestDetailModal';
 import {
   getProductionCategoryBadgeClass,
@@ -56,6 +55,7 @@ type ProductionRequestRow = {
   status: string;
   userName: string;
   userEmail: string;
+  unitId?: string | null;
   deptName: string;
   deptHead: string;
   batchId?: string | null;
@@ -177,13 +177,19 @@ export default function DeptOrderPanel() {
   }, [afterYearList]);
 
   const deptOptions = useMemo(() => {
-    const names = new Set<string>();
-    for (const u of scopeUnits) names.add(u.unit_name);
-    for (const r of afterYearList) {
-      if (r.deptName) names.add(r.deptName);
-    }
-    return Array.from(names).sort((a, b) => a.localeCompare(b, 'ko'));
-  }, [scopeUnits, afterYearList]);
+    return [...scopeUnits].sort((a, b) => a.unit_name.localeCompare(b.unit_name, 'ko'));
+  }, [scopeUnits]);
+
+  const matchSelectedUnit = useCallback(
+    (r: ProductionRequestRow) => {
+      if (selectedUnitId === 'ALL') return true;
+      const uid = String(r.unitId || '').trim();
+      if (uid) return uid === selectedUnitId;
+      const selected = scopeUnits.find((u) => u.id === selectedUnitId);
+      return Boolean(selected?.unit_name && r.deptName === selected.unit_name);
+    },
+    [selectedUnitId, scopeUnits]
+  );
 
   const pendingScopeBase = useMemo(() => {
     return afterYearList.filter((r) => {
@@ -191,13 +197,13 @@ export default function DeptOrderPanel() {
       const ym = getKSTYearMonthParts(r.createdAt);
       const matchYear = selectedYear === 'ALL' || ym?.year === selectedYear;
       const matchMonth = selectedMonth === 'ALL' || ym?.month === selectedMonth;
-      const matchUnit = selectedUnitId === 'ALL' || r.deptName === selectedUnitId;
+      const matchUnit = matchSelectedUnit(r);
       const matchUser =
         !searchUserQuery ||
         (r.userName || '').toLowerCase().includes(searchUserQuery.toLowerCase());
       return matchYear && matchMonth && matchUnit && matchUser;
     });
-  }, [afterYearList, selectedYear, selectedMonth, selectedUnitId, searchUserQuery]);
+  }, [afterYearList, selectedYear, selectedMonth, matchSelectedUnit, searchUserQuery]);
 
   const pendingTabCounts = useMemo(
     () => ({
@@ -212,13 +218,13 @@ export default function DeptOrderPanel() {
       const ym = getKSTYearMonthParts(r.createdAt);
       const matchYear = selectedYear === 'ALL' || ym?.year === selectedYear;
       const matchMonth = selectedMonth === 'ALL' || ym?.month === selectedMonth;
-      const matchUnit = selectedUnitId === 'ALL' || r.deptName === selectedUnitId;
+      const matchUnit = matchSelectedUnit(r);
       const matchUser =
         !searchUserQuery ||
         (r.userName || '').toLowerCase().includes(searchUserQuery.toLowerCase());
       return matchYear && matchMonth && matchUnit && matchUser;
     });
-  }, [afterYearList, selectedYear, selectedMonth, selectedUnitId, searchUserQuery]);
+  }, [afterYearList, selectedYear, selectedMonth, matchSelectedUnit, searchUserQuery]);
 
   const acceptedTabCounts = useMemo(
     () => ({
@@ -240,7 +246,7 @@ export default function DeptOrderPanel() {
         const matchCategory = activeCategory === 'ALL' || r.category === activeCategory;
         const matchYear = selectedYear === 'ALL' || ym?.year === selectedYear;
         const matchMonth = selectedMonth === 'ALL' || ym?.month === selectedMonth;
-        const matchUnit = selectedUnitId === 'ALL' || r.deptName === selectedUnitId;
+        const matchUnit = matchSelectedUnit(r);
         const matchUser =
           !searchUserQuery ||
           (r.userName || '').toLowerCase().includes(searchUserQuery.toLowerCase());
@@ -259,7 +265,7 @@ export default function DeptOrderPanel() {
     activeCategory,
     selectedYear,
     selectedMonth,
-    selectedUnitId,
+    matchSelectedUnit,
     searchUserQuery,
   ]);
 
@@ -620,14 +626,8 @@ export default function DeptOrderPanel() {
   };
 
   return (
-    <ProductionDeptShell
-      pageHint={
-        <>
-          [접수대기] 부서원의 외주 발주 접수건 (원문검수) 검토 후 접수확정 → [발주대기] 개별 또는 묶음 발주 합니다. (배송지 일괄 지정 가능)
-        </>
-      }
-    >
-      {/* 카테고리 서류철 탭 + 테이블 */}
+    <>
+      {/* 카테고리 서류철 탭 + 테이블 — 배너는 dept-master/layout ProductionDeptShell */}
       <div className="w-full">
         <div
           className="flex flex-wrap items-end gap-1 border-b border-slate-200"
@@ -714,9 +714,9 @@ export default function DeptOrderPanel() {
               className="px-2 py-1.5 bg-white border border-slate-200 rounded-lg text-[11px] font-black text-slate-800 outline-none"
             >
               <option value="ALL">전체 조직</option>
-              {deptOptions.map((name) => (
-                <option key={name} value={name}>
-                  {name}
+              {deptOptions.map((u) => (
+                <option key={u.id} value={u.id}>
+                  {u.unit_name}
                 </option>
               ))}
             </select>
@@ -1101,6 +1101,6 @@ export default function DeptOrderPanel() {
           }}
         />
       )}
-    </ProductionDeptShell>
+    </>
   );
 }

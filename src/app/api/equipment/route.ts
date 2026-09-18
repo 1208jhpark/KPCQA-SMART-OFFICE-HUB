@@ -51,6 +51,7 @@ const EQUIPMENT_UPDATE_WHITELIST = [
   'thumbnail_url',
   'gallery_urls',
   'department',
+  'unit_id',
   'qty',
   'purchase_date',
   'replace_cycle_mo',
@@ -217,6 +218,18 @@ function slimEquipmentRow(eq: any) {
   return row;
 }
 
+function resolveEquipmentUnitId(
+  body: { unit_id?: unknown; department?: unknown },
+  unitsList: Array<{ id?: string | null; unit_name?: string | null }> | null | undefined
+): string | null {
+  const fromBody = String(body.unit_id || '').trim();
+  if (fromBody) return fromBody;
+  const dept = String(body.department || '').trim();
+  if (!dept || !Array.isArray(unitsList)) return null;
+  const u = unitsList.find((x) => String(x.unit_name || '').trim() === dept);
+  return u?.id ? String(u.id).trim() : null;
+}
+
 function pickEquipmentUpdate(body: Record<string, unknown>) {
   const data: Record<string, unknown> = {};
   for (const key of EQUIPMENT_UPDATE_WHITELIST) {
@@ -234,6 +247,10 @@ function pickEquipmentUpdate(body: Record<string, unknown>) {
     }
     if (key === 'qty' || key === 'replace_cycle_mo' || key === 'calib_cycle_mo') {
       data[key] = val == null || val === '' ? null : Number(val);
+      continue;
+    }
+    if (key === 'unit_id') {
+      data[key] = val == null || val === '' ? null : String(val);
       continue;
     }
     data[key] = val;
@@ -458,7 +475,8 @@ export async function POST(req: Request) {
     }
 
     const department = body.department || '';
-    assertCanEditEquipmentDepartment(auth, department);
+    const unit_id = resolveEquipmentUnitId(body, auth.unitsList);
+    assertCanEditEquipmentDepartment(auth, { unitId: unit_id, deptName: department });
 
     for (const f of EQUIPMENT_FILE_FIELDS) {
       const err = assertFileFieldWithinLimit(f, body[f]);
@@ -493,6 +511,7 @@ export async function POST(req: Request) {
         purpose: body.purpose || null,
         full_spec: body.full_spec || null,
         department,
+        unit_id,
         purchase_date: parseOptionalDate(body.purchase_date) ?? null,
         replace_cycle_mo:
           body.replace_cycle_mo != null && body.replace_cycle_mo !== ''
@@ -544,7 +563,10 @@ export async function PATCH(req: Request) {
       return authErrorToResponse(e);
     }
 
-    assertCanEditEquipmentDepartment(auth, existing.department);
+    assertCanEditEquipmentDepartment(auth, {
+      unitId: (existing as { unit_id?: string | null }).unit_id,
+      deptName: existing.department,
+    });
 
     // 범주·관리소속 이관은 원본 편집 권한으로 허용. 목적지 권한은 FE 확인 안내.
 
@@ -733,7 +755,10 @@ export async function PATCH(req: Request) {
           if (original && original.id === id) original = null;
 
           if (original) {
-            assertCanEditEquipmentDepartment(auth, original.department);
+            assertCanEditEquipmentDepartment(auth, {
+              unitId: (original as { unit_id?: string | null }).unit_id,
+              deptName: original.department,
+            });
             const updated = await tx.equipment.update({
               where: { id: original.id },
               data: {
@@ -966,8 +991,29 @@ export async function PATCH(req: Request) {
     }
 
     // DEPT 스코프에서 부서 변경 시도 차단 (TOTAL만 가능 — assert on new dept)
-    if ('department' in updateData) {
-      assertCanEditEquipmentDepartment(auth, updateData.department as string | null);
+    if ('department' in updateData || 'unit_id' in updateData) {
+      const nextDept =
+        'department' in updateData
+          ? (updateData.department as string | null)
+          : existing.department;
+      const nextUnitId =
+        'unit_id' in updateData
+          ? (updateData.unit_id as string | null)
+          : resolveEquipmentUnitId(
+              { unit_id: (existing as { unit_id?: string | null }).unit_id, department: nextDept },
+              auth.unitsList
+            );
+      // department만 바뀌면 unit_id 동기화
+      if ('department' in updateData && !('unit_id' in updateData)) {
+        updateData.unit_id = resolveEquipmentUnitId(
+          { department: nextDept },
+          auth.unitsList
+        );
+      }
+      assertCanEditEquipmentDepartment(auth, {
+        unitId: (updateData.unit_id as string | null | undefined) ?? nextUnitId,
+        deptName: nextDept,
+      });
     }
 
     for (const f of EQUIPMENT_FILE_FIELDS) {

@@ -20,6 +20,7 @@ import {
   useInterfaceStepTabs,
   SURVEY_GENERAL_ADMIN_TABS,
 } from '@/lib/interface-step-tabs';
+import { userInSurveyTarget } from '@/lib/survey-target-match';
      
 export default function ActiveSurveysAdminPage() {
   const pathname = usePathname();
@@ -231,17 +232,24 @@ const formatAnswerForExport = (ans: any) => {
     setMatrixUserFilter({ surveyId: '', type: 'ALL' }); 
   };
      
-  const isOrgAllowed = (targetDepts: string[], userDeptName: string) => {
-    if (targetDepts.includes('전사')) return true;
-    if (targetDepts.includes(userDeptName)) return true;
-    
-    let currentUnit = unitsList.find(u => u.unit_name === userDeptName);
-    while (currentUnit && currentUnit.parent_id) {
-      const parentUnit = unitsList.find(u => u.id === currentUnit.parent_id);
-      if (parentUnit && targetDepts.includes(parentUnit.unit_name)) return true;
-      currentUnit = parentUnit;
-    }
-    return false;
+  const isOrgAllowed = (
+    targetDepts: string[],
+    userOrDept: string | { dept?: string; unit_id?: string | null },
+    opts?: { targetUnitIds?: unknown }
+  ) => {
+    const userDeptName =
+      typeof userOrDept === 'string' ? userOrDept : String(userOrDept?.dept || '');
+    const userUnitId =
+      typeof userOrDept === 'string'
+        ? String(unitsList.find((u: any) => u.unit_name === userOrDept)?.id || '').trim() || null
+        : userOrDept?.unit_id;
+    return userInSurveyTarget({
+      userUnitId,
+      userDeptName,
+      target: targetDepts.join(', '),
+      targetUnitIds: opts?.targetUnitIds,
+      units: unitsList,
+    });
   };
   
   const handleCopyUnsubmittedEmails = (survey: any) => {
@@ -250,7 +258,9 @@ const formatAnswerForExport = (ans: any) => {
     }
     
     const targetDepts = survey.target.split(',').map((t: string) => t.trim());
-    const targetUsers = users.filter(u => isOrgAllowed(targetDepts, u.dept));
+    const targetUsers = users.filter((u) =>
+      isOrgAllowed(targetDepts, u, { targetUnitIds: survey.target_unit_ids })
+    );
     const unsubmitted = targetUsers.filter(u => !responses[`${survey.id}_${u.email}`]?.isDone);
     
     if (unsubmitted.length === 0) return alert('현재 미참여자가 없습니다.');
@@ -268,7 +278,17 @@ const formatAnswerForExport = (ans: any) => {
       nextTargets.has(dept) ? nextTargets.delete(dept) : nextTargets.add(dept);
       if (nextTargets.size === 0) nextTargets.add('전사'); 
     }
-    setEditModal({...editModal, target: Array.from(nextTargets).join(', ')});
+    const nextArr = Array.from(nextTargets);
+    const target_unit_ids = nextArr.includes('전사')
+      ? []
+      : nextArr
+          .map((n) => String(unitsList.find((u: any) => u.unit_name === n)?.id || '').trim())
+          .filter(Boolean);
+    setEditModal({
+      ...editModal,
+      target: nextArr.join(', '),
+      target_unit_ids,
+    });
   };
      
   const handleAddSurvey = () => {
@@ -282,7 +302,8 @@ const formatAnswerForExport = (ans: any) => {
       description: '', 
       type: '선택형', 
       isAnonymous: false,
-      target: '전사', 
+      target: '전사',
+      target_unit_ids: [],
       postDate: todayStr, 
       startDate: todayStr, 
       endDate: todayStr, 
@@ -349,7 +370,7 @@ const formatAnswerForExport = (ans: any) => {
     const survey = surveys.find(s => s.id === surveyId);
     if (!survey) return;
     const targetDepts = survey.target.split(',').map((t:string) => t.trim());
-    const targetUsers = users.filter(u => isOrgAllowed(targetDepts, u.dept));
+    const targetUsers = users.filter(u => isOrgAllowed(targetDepts, u, { targetUnitIds: survey.target_unit_ids }));
     const total = targetUsers.length;
 
     if (survey.isAnonymous) {
@@ -475,7 +496,7 @@ const formatAnswerForExport = (ans: any) => {
       }
       
       const targetDepts = survey.target.split(',').map((t:string) => t.trim());
-      const targetUsers = users.filter(u => isOrgAllowed(targetDepts, u.dept));
+      const targetUsers = users.filter(u => isOrgAllowed(targetDepts, u, { targetUnitIds: survey.target_unit_ids }));
       const submittedUsers = targetUsers.filter(u => responses[`${survey.id}_${u.email}`]?.isDone);
       
       if (submittedUsers.length > 0) {
@@ -576,7 +597,7 @@ const formatAnswerForExport = (ans: any) => {
       } catch (e) {}
 
       const targetDepts = survey.target.split(',').map((t: string) => t.trim());
-      const targetUsers = users.filter((u) => isOrgAllowed(targetDepts, u.dept));
+      const targetUsers = users.filter((u) => isOrgAllowed(targetDepts, u, { targetUnitIds: survey.target_unit_ids }));
       const submittedUsers = targetUsers.filter((u) => responses[`${survey.id}_${u.email}`]?.isDone);
 
       const answerSources = survey.isAnonymous
@@ -752,7 +773,7 @@ const formatAnswerForExport = (ans: any) => {
       }
 
       const targetDepts = survey.target.split(',').map((t:string) => t.trim());
-      const targetUsers = users.filter(u => isOrgAllowed(targetDepts, u.dept));
+      const targetUsers = users.filter(u => isOrgAllowed(targetDepts, u, { targetUnitIds: survey.target_unit_ids }));
       
       targetUsers.forEach((user) => {
         const resp = responses[`${survey.id}_${user.email}`];
@@ -903,7 +924,7 @@ const formatAnswerForExport = (ans: any) => {
             <tbody className="divide-y divide-slate-100 text-[11px]">
               {filteredSurveys.map((s, idx) => {
                 const targetDepts = s.target.split(',').map((t:string) => t.trim());
-                const targetUsers = users.filter(u => isOrgAllowed(targetDepts, u.dept));
+                const targetUsers = users.filter(u => isOrgAllowed(targetDepts, u, { targetUnitIds: s.target_unit_ids }));
                 const total = targetUsers.length;
                 const done = s.isAnonymous
                   ? getAnonymousDoneCount(s.id, anonymousParticipationCounts, responses)
@@ -1073,7 +1094,7 @@ const formatAnswerForExport = (ans: any) => {
                     <td className="py-2 pl-6 font-black text-indigo-700 flex items-center gap-2 text-[11px]"><span className="text-[8px] opacity-60">{collapsedDepts.has(dept) ? '▶' : '▼'}</span>{dept} <span className="text-[9px] text-slate-400 ml-1">{deptUsers.length}명</span></td>
                     {sortedSurveys.filter(s => s.status !== '보관됨').map(s => {
                        const targetDepts = s.target.split(',').map((t:string) => t.trim());
-                       if (!isOrgAllowed(targetDepts, dept)) return <td key={`ds-${s.id}`} className="py-2 border-l border-slate-200 text-center bg-slate-100/30 text-[10px] font-black text-slate-300">-</td>;
+                       if (!isOrgAllowed(targetDepts, dept, { targetUnitIds: s.target_unit_ids })) return <td key={`ds-${s.id}`} className="py-2 border-l border-slate-200 text-center bg-slate-100/30 text-[10px] font-black text-slate-300">-</td>;
                        if (s.isAnonymous) return <td key={`ds-${s.id}`} className="py-2 border-l border-slate-200 text-center bg-slate-100/30"><span className="text-[9px] font-black text-slate-400">🔒 블랭크</span></td>;
                        
                        const dDone = deptUsers.filter(u => responses[`${s.id}_${u.email}`]?.isDone).length;
@@ -1090,7 +1111,7 @@ const formatAnswerForExport = (ans: any) => {
                         <td className="py-1.5 pl-12 font-bold text-slate-700 flex items-center gap-2 border-r border-slate-50 text-[10px]"><div className="w-1 h-1 rounded-full bg-slate-300"></div>{user.name} <span className="text-[8px] text-slate-400 font-mono">{user.email.split('@')[0]}</span></td>
                         {sortedSurveys.filter(s => s.status !== '보관됨').map(s => {
                           const targetDepts = s.target.split(',').map((t:string) => t.trim());
-                          if (!isOrgAllowed(targetDepts, user.dept)) return <td key={`${s.id}-${user.id}`} className="py-1.5 border-l border-slate-100 text-center text-[10px] font-black text-slate-300">-</td>;
+                          if (!isOrgAllowed(targetDepts, user, { targetUnitIds: s.target_unit_ids })) return <td key={`${s.id}-${user.id}`} className="py-1.5 border-l border-slate-100 text-center text-[10px] font-black text-slate-300">-</td>;
                           if (s.isAnonymous) return <td key={`${s.id}-${user.id}`} className="py-1.5 border-l border-slate-100 text-center bg-slate-50/50"><span className="text-[8px] font-black text-slate-300">🔒 블랭크</span></td>;
                           
                           const resp = responses[`${s.id}_${user.email}`];
@@ -1283,8 +1304,17 @@ const formatAnswerForExport = (ans: any) => {
                   <select 
                     value={editModal.target === '전사' ? '전사' : '특정'} 
                     onChange={(e) => { 
-                      if(e.target.value === '전사') setEditModal({...editModal, target: '전사'}); 
-                      else setEditModal({...editModal, target: deptList.filter(d => d !== 'kpcqa')[0] || deptList[0] || ''}); 
+                      if (e.target.value === '전사') {
+                        setEditModal({ ...editModal, target: '전사', target_unit_ids: [] });
+                      } else {
+                        const first = deptList.filter((d) => d !== 'kpcqa')[0] || deptList[0] || '';
+                        const id = String(unitsList.find((u: any) => u.unit_name === first)?.id || '').trim();
+                        setEditModal({
+                          ...editModal,
+                          target: first,
+                          target_unit_ids: id ? [id] : [],
+                        });
+                      }
                     }} 
                     className="w-full p-2 rounded-lg border text-[11px] font-bold outline-none focus:border-indigo-500 bg-white"
                   >

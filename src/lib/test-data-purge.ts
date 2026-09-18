@@ -33,7 +33,93 @@ export type TestDataPurgeDomainDef = {
   tables: string[];
 };
 
-export const TEST_DATA_PURGE_CONFIRM = 'DELETE';
+/**
+ * .env ALLOW_TEST_DELETE=true 일 때만 일괄삭제 UI/API 활성.
+ * 미설정·그 외 값 → 비활성(안전 기본값). 서버 재시작 후 반영.
+ */
+export function isTestDataPurgeAllowed(): boolean {
+  return String(process.env.ALLOW_TEST_DELETE || '')
+    .trim()
+    .toLowerCase() === 'true';
+}
+
+/** 일회용 확인 키 — 코드에 고정 문자열이 없어 실수·재전송 오작동을 줄임 */
+type PurgeChallenge = {
+  code: string;
+  userId: string;
+  expiresAt: number;
+};
+
+const PURGE_CHALLENGE_TTL_MS = 15 * 60 * 1000;
+const purgeChallenges = new Map<string, PurgeChallenge>();
+
+function prunePurgeChallenges(now = Date.now()) {
+  for (const [id, row] of purgeChallenges) {
+    if (row.expiresAt <= now) purgeChallenges.delete(id);
+  }
+}
+
+/** 6자리 숫자 키 발급 (화면 표시용). challengeId는 서버 검증용 */
+export function issuePurgeChallenge(userId: string): {
+  challengeId: string;
+  challengeCode: string;
+  expiresInSec: number;
+} {
+  prunePurgeChallenges();
+  const challengeId =
+    typeof crypto !== 'undefined' && 'randomUUID' in crypto
+      ? crypto.randomUUID()
+      : `pg-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  const challengeCode = String(Math.floor(100000 + Math.random() * 900000));
+  const uid = String(userId || '').trim();
+  purgeChallenges.set(challengeId, {
+    code: challengeCode,
+    userId: uid,
+    expiresAt: Date.now() + PURGE_CHALLENGE_TTL_MS,
+  });
+  return {
+    challengeId,
+    challengeCode,
+    expiresInSec: Math.floor(PURGE_CHALLENGE_TTL_MS / 1000),
+  };
+}
+
+/** 확인 키 검증 후 일회용 소비. 성공 시 true */
+export function consumePurgeChallenge(
+  challengeId: string,
+  typedCode: string,
+  userId: string
+): { ok: true } | { ok: false; message: string } {
+  prunePurgeChallenges();
+  const id = String(challengeId || '').trim();
+  const code = String(typedCode || '').trim();
+  const uid = String(userId || '').trim();
+  if (!id || !code) {
+    return { ok: false, message: '확인 키를 입력해 주세요.' };
+  }
+  const row = purgeChallenges.get(id);
+  if (!row) {
+    return {
+      ok: false,
+      message: '확인 키가 만료되었거나 이미 사용되었습니다. 건수 새로고침 후 다시 입력해 주세요.',
+    };
+  }
+  if (row.userId && uid && row.userId !== uid) {
+    return { ok: false, message: '확인 키 발급 사용자와 일치하지 않습니다.' };
+  }
+  if (row.expiresAt <= Date.now()) {
+    purgeChallenges.delete(id);
+    return {
+      ok: false,
+      message: '확인 키가 만료되었습니다. 건수 새로고침 후 다시 입력해 주세요.',
+    };
+  }
+  if (row.code !== code) {
+    return { ok: false, message: '확인 키가 일치하지 않습니다.' };
+  }
+  purgeChallenges.delete(id);
+  return { ok: true };
+}
 
 export const TEST_DATA_PURGE_DOMAINS: TestDataPurgeDomainDef[] = [
   // ── Step1 /asset · Step2 supplies (1) ──

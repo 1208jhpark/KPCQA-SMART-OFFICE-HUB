@@ -9,6 +9,10 @@ import { authorizeAnyMenuPaths, authorizeApi } from '@/lib/server-auth-guard';
 import { JWT_SECRET } from '@/lib/jwt';
 import { buildInterfacePermissionSummary } from '@/lib/interface-permission-summary';
 import { hubTokenCookieOptions } from '@/lib/auth-cookie';
+import {
+  userInSurveyTarget,
+  parseSurveyTargetUnitIds,
+} from '@/lib/survey-target-match';
 
 const SURVEY_GENERAL_ADMIN_PATHS = [
   '/survey/general/admin/active-surveys',
@@ -372,7 +376,7 @@ if (action === 'GET_STATS') {
       select: { surveyId: true, answers: true },
     }),
     prisma.generalSurvey.findMany({
-      select: { id: true, target: true },
+      select: { id: true, target: true, target_unit_ids: true },
     }),
     prisma.user.findMany({
       where: { status: 'Active' },
@@ -411,26 +415,15 @@ if (action === 'GET_STATS') {
     }
   });
 
-  const isDeptInTarget = (targetString: string, userDeptName: string | null | undefined) => {
-    if (!targetString || targetString === '전사') return true;
-    if (!userDeptName) return false;
-    const targetDepts = targetString.split(',').map((t) => t.trim()).filter(Boolean);
-    if (targetDepts.includes(userDeptName)) return true;
-    let currentId = units.find((u) => u.unit_name === userDeptName)?.id as string | undefined;
-    while (currentId) {
-      const unit = units.find((u) => u.id === currentId);
-      if (unit?.parent_id) {
-        const parent = units.find((u) => u.id === unit.parent_id);
-        if (parent && targetDepts.includes(parent.unit_name)) return true;
-        currentId = unit.parent_id;
-      } else break;
-    }
-    return false;
-  };
-
   surveyRows.forEach((s) => {
     targetCounts[s.id] = activeUsers.filter((u) =>
-      isDeptInTarget(s.target || '', u.unit?.unit_name)
+      userInSurveyTarget({
+        userUnitId: u.unit_id || u.unit?.id,
+        userDeptName: u.unit?.unit_name,
+        target: s.target,
+        targetUnitIds: (s as { target_unit_ids?: unknown }).target_unit_ids,
+        units,
+      })
     ).length;
   });
 
@@ -505,7 +498,8 @@ if (action === 'GET_STATS') {
             where: { status: 'Active' },
             select: {
               email: true,
-              unit: { select: { unit_name: true, parent_id: true } },
+              unit_id: true,
+              unit: { select: { id: true, unit_name: true, parent_id: true } },
             },
           }),
           prisma.generalResponse.findMany({
@@ -515,25 +509,17 @@ if (action === 'GET_STATS') {
         ]);
 
         const submittedSet = new Set(submitted.map((r) => r.userEmail));
-        const isDeptInTarget = (targetString: string, userDeptName: string | null | undefined) => {
-          if (!targetString || targetString === '전사') return true;
-          if (!userDeptName) return false;
-          const targetDepts = targetString.split(',').map((t) => t.trim()).filter(Boolean);
-          if (targetDepts.includes(userDeptName)) return true;
-          let currentId = units.find((u) => u.unit_name === userDeptName)?.id as string | undefined;
-          while (currentId) {
-            const unit = units.find((u) => u.id === currentId);
-            if (unit?.parent_id) {
-              const parent = units.find((u) => u.id === unit.parent_id);
-              if (parent && targetDepts.includes(parent.unit_name)) return true;
-              currentId = unit.parent_id;
-            } else break;
-          }
-          return false;
-        };
 
         emails = users
-          .filter((u) => isDeptInTarget(survey.target || '', u.unit?.unit_name))
+          .filter((u) =>
+            userInSurveyTarget({
+              userUnitId: u.unit_id || u.unit?.id,
+              userDeptName: u.unit?.unit_name,
+              target: survey.target,
+              targetUnitIds: (survey as { target_unit_ids?: unknown }).target_unit_ids,
+              units,
+            })
+          )
           .map((u) => u.email)
           .filter((email) => email && !submittedSet.has(email));
       }
@@ -558,12 +544,29 @@ if (action === 'GET_STATS') {
       : undefined; 
 
     let resultSurvey;
+    const targetStr = String(rest.target || '').trim();
+    let targetUnitIds = parseSurveyTargetUnitIds(rest.target_unit_ids);
+    if (targetStr === '전사' || !targetStr) {
+      targetUnitIds = [];
+    } else if (targetUnitIds.length === 0 && targetStr) {
+      // FE가 명칭만 보낸 경우 id 해석
+      const names = targetStr.split(',').map((t: string) => t.trim()).filter(Boolean);
+      const allUnits = await prisma.orgUnit.findMany({
+        where: { is_deleted: false },
+        select: { id: true, unit_name: true },
+      });
+      targetUnitIds = names
+        .map((n: string) => String(allUnits.find((u) => u.unit_name === n)?.id || '').trim())
+        .filter(Boolean);
+    }
+
     if (isNew) {
       resultSurvey = await prisma.generalSurvey.create({
         data: {
           code: rest.code, postNumber: Number(rest.postNumber) || 0, title: rest.title,
           description: rest.description || '', type: rest.type, isAnonymous: Boolean(rest.isAnonymous),
-          target: rest.target, postDate: rest.postDate, startDate: rest.startDate,
+          target: rest.target, target_unit_ids: targetUnitIds,
+          postDate: rest.postDate, startDate: rest.startDate,
           endDate: rest.endDate, endTime: rest.endTime || '23:59', status: rest.status,
           hasBeenPublished: Boolean(rest.hasBeenPublished), questions: sanitizedQuestions || [] 
         },
@@ -573,7 +576,8 @@ if (action === 'GET_STATS') {
         code: rest.code, postNumber: rest.postNumber !== undefined ? Number(rest.postNumber) : undefined,
         title: rest.title, description: rest.description, type: rest.type,
         isAnonymous: rest.isAnonymous !== undefined ? Boolean(rest.isAnonymous) : undefined,
-        target: rest.target, postDate: rest.postDate, startDate: rest.startDate,
+        target: rest.target, target_unit_ids: targetUnitIds,
+        postDate: rest.postDate, startDate: rest.startDate,
         endDate: rest.endDate, endTime: rest.endTime, status: rest.status,
         hasBeenPublished: rest.hasBeenPublished !== undefined ? Boolean(rest.hasBeenPublished) : undefined,
       };

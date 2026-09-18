@@ -49,13 +49,19 @@ export async function GET() {
         is_active: true,
         is_published: true,
         owner_dept: true,
+        owner_unit_ids: true,
       },
       orderBy: { name: 'asc' },
     });
 
     const visible = scope.isPower
       ? items
-      : items.filter((item) => canRequestSupplyOwnerDepts(item.owner_dept, scope));
+      : items.filter((item) =>
+          canRequestSupplyOwnerDepts(item.owner_dept, {
+            ...scope,
+            ownerUnitIds: item.owner_unit_ids,
+          })
+        );
     return NextResponse.json({ items: visible });
   } catch (error) {
     const authRes = authErrorToResponse(error);
@@ -99,7 +105,12 @@ export async function POST(req: Request) {
         { status: 400 }
       );
     }
-    if (!canRequestSupplyOwnerDepts(existingItem.owner_dept, scope)) {
+    if (
+      !canRequestSupplyOwnerDepts(existingItem.owner_dept, {
+        ...scope,
+        ownerUnitIds: (existingItem as { owner_unit_ids?: unknown }).owner_unit_ids,
+      })
+    ) {
       return NextResponse.json(
         { error: '해당 품목은 소속 조직에서 신청할 수 없습니다.' },
         { status: 403 }

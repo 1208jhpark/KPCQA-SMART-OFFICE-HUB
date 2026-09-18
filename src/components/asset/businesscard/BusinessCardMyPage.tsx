@@ -163,6 +163,7 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
     userName: '', userNameEn: '',
     deptHead: '', deptHeadEn: '',
     deptName: '', deptNameEn: '',
+    unitId: '' as string,
     dutyName: '', dutyEn: '',
     gradeName: '', gradeEn: '',
     title: '', titleEn: '',
@@ -194,6 +195,7 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
     deptHeadEn: '',
     deptName: '',
     deptNameEn: '',
+    unitId: '',
     dutyName: '',
     dutyEn: '',
     gradeName: '',
@@ -531,6 +533,7 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
       deptHeadEn: row.deptHeadEn || '',
       deptName: row.deptName,
       deptNameEn: row.deptNameEn || '',
+      unitId: String((row as any).unitId || '').trim(),
       dutyName: useDuty ? matchedDuty : '',
       dutyEn: useDuty ? (duties.find(d => d.label === matchedDuty)?.value || '') : '',
       gradeName: useDuty ? '' : matchedGrade,
@@ -589,6 +592,7 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
         deptHeadEn: selected?.unit_name_en || '',
         deptName: keepCenter ? p.deptName : '',
         deptNameEn: keepCenter ? p.deptNameEn : '',
+        unitId: keepCenter ? p.unitId : '',
       };
     });
   };
@@ -596,7 +600,7 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
   const handleSubChange = (unitName: string) => {
     const selected = units.find(u => u.unit_name === unitName);
     if (!selected) {
-      setForm(p => ({ ...p, deptName: '', deptNameEn: '' }));
+      setForm(p => ({ ...p, deptName: '', deptNameEn: '', unitId: '' }));
       return;
     }
     let headKo = form.deptHead;
@@ -608,7 +612,14 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
         headEn = parent.unit_name_en || '';
       }
     }
-    setForm(p => ({ ...p, deptName: selected.unit_name, deptNameEn: selected.unit_name_en || '', deptHead: headKo, deptHeadEn: headEn }));
+    setForm(p => ({
+      ...p,
+      deptName: selected.unit_name,
+      deptNameEn: selected.unit_name_en || '',
+      unitId: selected.id,
+      deptHead: headKo,
+      deptHeadEn: headEn,
+    }));
   };
 
   const handleAddressChange = (addrId: string) => {
@@ -668,6 +679,7 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
       id: isEdit ? form.id : undefined,
       userName: form.userName, userNameEn: form.userNameEn,
       deptName: form.deptName, deptNameEn: form.deptNameEn,
+      unitId: form.unitId || undefined,
       deptHead: form.deptHead, deptHeadEn: form.deptHeadEn,
       title: form.title, titleEn: form.titleEn,
       additionalKo: finalKo, additionalEn: finalEn,

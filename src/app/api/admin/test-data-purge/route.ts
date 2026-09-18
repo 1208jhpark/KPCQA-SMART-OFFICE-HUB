@@ -2,7 +2,9 @@ import { NextResponse } from 'next/server';
 import prisma from '@/lib/prisma';
 import { authorizeAdminApi, authErrorToResponse } from '@/lib/server-auth-guard';
 import {
-  TEST_DATA_PURGE_CONFIRM,
+  issuePurgeChallenge,
+  consumePurgeChallenge,
+  isTestDataPurgeAllowed,
   TEST_DATA_PURGE_DOMAINS,
   resolvePurgeDomains,
   type TestDataPurgeDomainId,
@@ -183,10 +185,21 @@ async function purgeDomain(id: TestDataPurgeDomainId): Promise<CountMap> {
   return deleted;
 }
 
-/** [GET] 도메인별 건수 미리보기 — LV_1 */
+/** [GET] 도메인별 건수 미리보기 + 일회용 확인 키 발급 — LV_1 */
 export async function GET() {
   try {
-    await authorizeAdminApi();
+    const user = await authorizeAdminApi();
+
+    if (!isTestDataPurgeAllowed()) {
+      return NextResponse.json(
+        {
+          enabled: false,
+          message:
+            '테스트 일괄삭제가 비활성입니다. .env 의 ALLOW_TEST_DELETE=true 후 서버를 재시작하세요.',
+        },
+        { status: 200, headers: { 'Cache-Control': 'no-store' } }
+      );
+    }
 
     const domains = [];
     for (const def of TEST_DATA_PURGE_DOMAINS) {
@@ -195,9 +208,14 @@ export async function GET() {
       domains.push({ ...def, counts, total });
     }
 
+    const challenge = issuePurgeChallenge(String(user.id));
+
     return NextResponse.json(
       {
-        confirmWord: TEST_DATA_PURGE_CONFIRM,
+        enabled: true,
+        challengeId: challenge.challengeId,
+        challengeCode: challenge.challengeCode,
+        challengeExpiresInSec: challenge.expiresInSec,
         excludedNote:
           '마스터·시드·메뉴권한·설문정의·품목/자산/장비 본체·고객사·외주업체는 삭제하지 않습니다.',
         domains,
@@ -214,18 +232,30 @@ export async function GET() {
 
 /**
  * [POST] 선택한 도메인만 삭제 — LV_1
- * body: { domainIds: string[], confirm: "DELETE" }
+ * body: { domainIds: string[], challengeId: string, confirm: string }
  */
 export async function POST(req: Request) {
   try {
-    await authorizeAdminApi();
-    const body = await req.json().catch(() => ({}));
-    const confirm = String(body.confirm || '').trim();
-    if (confirm !== TEST_DATA_PURGE_CONFIRM) {
+    const user = await authorizeAdminApi();
+
+    if (!isTestDataPurgeAllowed()) {
       return NextResponse.json(
-        { message: `확인 문구로 "${TEST_DATA_PURGE_CONFIRM}" 를 입력해 주세요.` },
-        { status: 400 }
+        {
+          message:
+            '테스트 일괄삭제가 비활성입니다. (.env ALLOW_TEST_DELETE)',
+        },
+        { status: 403 }
       );
+    }
+
+    const body = await req.json().catch(() => ({}));
+    const consumed = consumePurgeChallenge(
+      String(body.challengeId || ''),
+      String(body.confirm || ''),
+      String(user.id)
+    );
+    if (!consumed.ok) {
+      return NextResponse.json({ message: consumed.message }, { status: 400 });
     }
 
     const selected = resolvePurgeDomains(body.domainIds);

@@ -99,6 +99,7 @@ model OrgUnit {
   children     OrgUnit[] @relation("UnitHierarchy")
   users           User[]
   supplyRequests  SupplyRequest[]
+  productionRequests ProductionRequest[]
   is_active       Boolean   @default(true)
   is_deleted      Boolean   @default(false)
   /// 부서 소모품 보관 위치 안내 (부서 대장 페이지에서 편집)
@@ -184,6 +185,8 @@ model ITAsset {
   category        String   // <--- 여기에 범주(HW/SW 등) 저장
   it_type         String   // <--- 여기에 분류(노트북 등) 저장
   dept            String   
+  /// 소속 조직 FK — 명칭 변경에도 스코프 유지 (dept는 표시 스냅샷)
+  unit_id         String?
   user            String?  @default("공용")
   /// 자산 담당자 안정 식별자 (동명이인 방지) — 표시명은 user 유지
   user_email      String?
@@ -218,6 +221,7 @@ model ITAsset {
 
   @@index([user_email])
   @@index([user_id])
+  @@index([unit_id])
 }
      
 // -----------------------------------------------------------------
@@ -237,6 +241,8 @@ model Equipment {
   thumbnail_url     String?  
   gallery_urls      Json?    @default("[]") 
   department        String?  
+  /// 소속 조직 FK — 명칭 변경에도 권한·필터 유지
+  unit_id           String?  
   qty               Int      @default(1) 
   purchase_date     DateTime? 
   replace_cycle_mo  Int?     
@@ -267,7 +273,9 @@ model Equipment {
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
   histories         CalibrationHistory[]
-  maintenance_histories MaintenanceHistory[] // 🚀 추가: 구매/유지보수 이력 관계
+  maintenance_histories MaintenanceHistory[]
+
+  @@index([unit_id])
 }
 
 
@@ -325,6 +333,8 @@ model MarketingItem {
 id            String   @id @default(cuid())
   owner_type    String   @default("CENTER") 
   owner_dept    String?  
+  /// 소유 조직 FK (owner_dept는 표시 스냅샷/레거시)
+  owner_unit_id String?
   name          String   
   unit_price    Float    @default(0) 
   current_stock Int      @default(0) 
@@ -353,6 +363,8 @@ id            String   @id @default(cuid())
   updatedAt     DateTime @updatedAt
   distributions MarketingDistribution[]
   purchases     MarketingPurchase[]
+
+  @@index([owner_unit_id])
 }
      
 model MarketingDistribution {
@@ -367,6 +379,8 @@ model MarketingDistribution {
   purpose         String?
   sender_name     String
   sender_dept     String
+  /// 지급자 소속 조직 FK
+  sender_unit_id  String?
   sender_email    String?  // 동명이인 방지 — 본인 매칭 키
   /** PENDING=승인요청 / CONFIRMED=지급확정 / REJECTED=반려(이력만, 수량집계 제외) */
   status          String   @default("CONFIRMED")
@@ -436,6 +450,8 @@ model SupplyItem {
   current_stock   Int      @default(0)
   alert_qty       Int      @default(0)
   owner_dept      String
+  /// 소유 조직 id 목록 JSON (owner_dept 명칭 배열과 대응)
+  owner_unit_ids  Json?    @default("[]")
   category        String
   description     String?  @db.Text
   image_url       String?  @db.Text
@@ -522,6 +538,8 @@ model DeliverySurvey {
   type             String
   deliveryType     String
   target           String
+  /// 대상 조직 id 목록 JSON
+  target_unit_ids  Json?    @default("[]")
   isAnonymous      Boolean  @default(false)
   postDate         String
   startDate        String
@@ -589,7 +607,9 @@ model GeneralSurvey {
   description      String?  @db.Text
   type             String   // 선택형, 자유응답형 등
   isAnonymous      Boolean  @default(false) // 익명 여부
-  target           String   // 전사, 특정부서 지정 등
+  target           String   // 전사, 특정부서 지정 등 (표시 스냅샷)
+  /// 대상 조직 id 목록 JSON — 명칭 변경에도 대상 유지
+  target_unit_ids  Json?    @default("[]")
   postDate         String
   startDate        String
   endDate          String
@@ -629,7 +649,9 @@ model ITAudit {
   id          String   @id @default(uuid())
   title       String
   description String?
-  target      String   // 대상 부서 (예: "전사", "KPCQA")
+  target      String   // 대상 부서 표시 (예: "전사", 명칭 CSV)
+  /// 대상 조직 id 목록 JSON — 명칭 변경에도 대상 유지
+  target_unit_ids Json? @default("[]")
   startDate   String
   endDate     String
   endTime     String?  @default("23:59") // 종료 시각 (KST HH:mm, 도래 시 자동 마감)
@@ -663,7 +685,8 @@ model ITRequest {
   /// 요청자 안정 식별자 (동명이인 방지)
   requester_email String?
   requester_id    String?
-  dept         String   // 요청자 부서
+  dept         String   // 요청자 부서 (표시 스냅샷)
+  unit_id      String?  // 요청자 소속 조직 FK
   assetInfo    String   // 대상 자산 요약 (자산코드 / 모델명)
   assetCode    String   // 자산 식별 코드
   assetType    String   // 자산 분류 (노트북, 모니터 등)
@@ -676,6 +699,7 @@ model ITRequest {
 
   @@index([requester_email])
   @@index([requester_id])
+  @@index([unit_id])
 }
 
 // -----------------------------------------------------------------
@@ -686,6 +710,7 @@ model ITAssetArchive {
   category        String   
   it_type         String   
   dept            String   
+  unit_id         String?
   user            String?  
   user_email      String?
   user_id         String?
@@ -718,9 +743,11 @@ model ITAssetArchive {
   terminated_at   String?  // 종료일자
   
   createdAt       DateTime @default(now())
+
+  @@index([unit_id])
 }
 
-// 📇 [교정 완료] 명함 신청 및 제작 상태 이력 관리 테이블 스키마
+// 📦 [교정 완료] 명함 신청 및 제작 상태 관리 테이블 스키마
 model BusinessCardRequest {
   id                String                  @id @default(cuid())
   postNumber        String                  // 관리 번호 (예: BC-2026-0001)
@@ -733,8 +760,10 @@ model BusinessCardRequest {
   applyDate         String                  // 신청일자 (YYYY-MM-DD)
   processDate       String?                 // 관리자 처리일자 매핑용
   addressId         String?                 // 주소지 마스터 ID 매핑용
-  deptHead          String                  // 본부 (드롭다운 선택 값)
-  deptName          String                  // 소속 (드롭다운 선택 값)
+  deptHead          String                  // 본부 (표시 스냅샷)
+  deptName          String                  // 소속 (표시 스냅샷)
+  /// 소속 조직 FK — admin/units 명칭 변경에도 필터 유지
+  unitId            String?
   title             String                  // 직책/직급 (마스터 데이터 연동 값)
   additionalKo      String?                 // 추가사항 (자격 등)
   quantity          Int                     @default(1) // 명함 발주 신청 수량(통)
@@ -788,6 +817,7 @@ model BusinessCardRequest {
   @@index([userEmail])
   @@index([orderGroupId])
   @@index([adminStatus])
+  @@index([unitId])
 }
 
 // 📦 [교정 완료] 명함 외주 발주 묶음(Batch) 마스터 통제 테이블
@@ -852,11 +882,13 @@ model ProductionRequest {
   postNumber      String   @unique // 예: P-SUP-PMD-260825-001
   category        String   // 품목 분류: SIGN | JEBON | PRINT | OFFICE_SUPPLIES
   
-  // 🏢 부서 족보 데이터 (부서별 대조 및 조회 성능 최적화를 위한 인덱스 필드)
+  // 🏢 부서 족보 — unitId가 스코프·필터 기준(조직명 변경에도 유지). dept*는 표시용 스냅샷
   userEmail       String   // 신청자 이메일
   userName        String   // 신청자 성명
-  deptHead        String   // 소속 본부명
-  deptName        String   // 세부 부서/센터명
+  unitId          String?  // OrgUnit.id (신청 시점 소속 — 개명·인사이동과 무관하게 정산 귀속)
+  unit            OrgUnit? @relation(fields: [unitId], references: [id], onDelete: SetNull)
+  deptHead        String   // 소속 본부명(신청 시점 스냅샷)
+  deptName        String   // 세부 부서/센터명(신청 시점 스냅샷)
   
   // 📝 맞춤 제작 공통 핵심 명세 (거래명세서 엑셀 대조 시 키값으로 매핑될 데이터)
   title           String   // 제작물 메인 타이틀 (예: "경영기획센터 현판", "인증기준 해설서 제본")
@@ -887,6 +919,7 @@ model ProductionRequest {
   updatedAt       DateTime @updatedAt
 
   @@index([deptName])
+  @@index([unitId])
   @@index([status])
   @@index([batchId])
 }

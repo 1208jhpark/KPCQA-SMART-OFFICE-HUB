@@ -33,6 +33,7 @@ import {
   resolveBcMailBodyTemplate,
   resolveBcMailSubjectTemplate,
 } from '@/lib/businesscard-mail-template';
+import { rowMatchesOrgUnit } from '@/lib/org-unit-match';
 
 const MENU_PATH = '/asset/businesscard/master/order';
 const DISABLED_ACTION_BTN =
@@ -52,6 +53,7 @@ interface RequestHistory {
   deptHeadEn: string;
   deptName: string;
   deptNameEn: string;
+  unitId?: string | null;
   title: string;
   titleEn: string;
   mobile: string;
@@ -233,26 +235,29 @@ function flattenUnitsInSortOrder(units: UnitItem[]) {
     .map((unit) => ({ ...unit, depth: depthOf(unit) }));
 }
 
-function descendantNames(unitId: string, units: UnitItem[]) {
-  const names = new Set<string>();
-  const selected = units.find((u) => u.id === unitId);
-  if (selected?.unit_name) names.add(selected.unit_name.trim());
-  const walk = (parentId: string) => {
-    for (const child of units.filter((u) => u.parent_id === parentId)) {
-      if (child.unit_name) names.add(child.unit_name.trim());
-      walk(child.id);
-    }
-  };
-  walk(unitId);
-  return names;
+function displayDeptName(
+  item: { unitId?: string | null; deptName?: string | null },
+  units: UnitItem[]
+) {
+  const uid = String(item.unitId || '').trim();
+  if (uid && units.length) {
+    const u = units.find((x) => x.id === uid);
+    if (u?.unit_name) return u.unit_name;
+  }
+  return String(item.deptName || '').trim();
 }
 
-function itemMatchesOrg(item: { deptHead?: string | null; deptName?: string | null }, orgId: string, units: UnitItem[]) {
-  if (orgId === 'ALL') return true;
-  const names = descendantNames(orgId, units);
-  const head = String(item.deptHead || '').trim();
-  const center = String(item.deptName || '').trim();
-  return names.has(head) || names.has(center);
+function itemMatchesOrg(
+  item: { unitId?: string | null; deptHead?: string | null; deptName?: string | null },
+  orgId: string,
+  units: UnitItem[]
+) {
+  return rowMatchesOrgUnit({
+    selectedOrgId: orgId,
+    units,
+    unitId: item.unitId,
+    legacyNames: [item.deptName, item.deptHead],
+  });
 }
 
 function isBusinessCardHqUnit(unit: { unit_type?: string | null; unit_name?: string | null } | null | undefined) {
@@ -1135,6 +1140,7 @@ const handleEditHeadChange = (unitName: string) => {
       deptHeadEn: selected?.unit_name_en || '',
       deptName: keepCenter ? prev.deptName : '',
       deptNameEn: keepCenter ? prev.deptNameEn : '',
+      unitId: keepCenter ? prev.unitId : null,
     };
   });
 };
@@ -1143,7 +1149,7 @@ const handleEditSubChange = (unitName: string) => {
   const selected = units.find((u) => u.unit_name === unitName);
   setRequestEditForm((prev) => {
     if (!prev) return prev;
-    if (!selected) return { ...prev, deptName: '', deptNameEn: '' };
+    if (!selected) return { ...prev, deptName: '', deptNameEn: '', unitId: null };
     let headKo = prev.deptHead;
     let headEn = prev.deptHeadEn;
     if (selected.parent_id) {
@@ -1157,6 +1163,7 @@ const handleEditSubChange = (unitName: string) => {
       ...prev,
       deptName: selected.unit_name,
       deptNameEn: selected.unit_name_en || '',
+      unitId: selected.id,
       deptHead: headKo,
       deptHeadEn: headEn,
     };
@@ -2238,7 +2245,7 @@ return (
                                   )}
                                 </td>
                                 <td className="px-2 truncate bg-transparent" title={item.deptHead || ''}>{item.deptHead || '-'}</td>
-                                <td className="px-2 truncate bg-transparent" title={item.deptName || ''}>{item.deptName || <span className="text-slate-300">-</span>}</td>
+                                <td className="px-2 truncate bg-transparent" title={displayDeptName(item, units) || ''}>{displayDeptName(item, units) || <span className="text-slate-300">-</span>}</td>
                                 <td className="px-2 text-slate-800 truncate bg-transparent">{item.userName || '-'}</td>
                                 <td className="px-2 text-slate-800 truncate bg-transparent" title={item.title || ''}>{item.title || '-'}</td>
                                 <td className="px-2 text-center font-mono tabular-nums text-slate-900 bg-transparent">{item.quantity || 1}</td>

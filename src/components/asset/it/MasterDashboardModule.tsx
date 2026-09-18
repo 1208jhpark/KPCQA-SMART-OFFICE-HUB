@@ -23,6 +23,8 @@ import {
   computeItAssetReplaceSchedule,
   computeItAssetTurnDisplay,
 } from '@/utils/itAssetSchedule';
+import { assetInAuditTarget as assetMatchesAuditTarget } from '@/utils/itAuditTarget';
+import { rowMatchesOrgUnit } from '@/lib/org-unit-match';
 
 const MENU_PATH = '/asset/it/master/dashboard';
 const DEPT_FILTER_ALL = '조직 (전체)';
@@ -477,6 +479,8 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
       const updated = { ...a, [field]: value };
 
       if (field === 'dept') {
+        const matchedUnit = orgs.find((o: any) => o.unit_name === value);
+        updated.unit_id = matchedUnit?.id || null;
         const inDept = usersOfDept(String(value || ''));
         const stillInDept =
           (updated.user_id && inDept.some((u) => u.id === updated.user_id)) ||
@@ -510,7 +514,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
     const today = getKSTDateString();
     const newId = `AST_TEMP_${Date.now()}`; 
     const newObj = { 
-      id: newId, category: masterFilters.categories[0] || 'HW', it_type: masterFilters.types[0] || '기기', dept: topOrgName || sortedOrgs[0]?.unit_name || '', user: '', code: `AST-${Date.now()}`, 
+      id: newId, category: masterFilters.categories[0] || 'HW', it_type: masterFilters.types[0] || '기기', dept: topOrgName || sortedOrgs[0]?.unit_name || '', unit_id: sortedOrgs.find((o) => o.unit_name === (topOrgName || sortedOrgs[0]?.unit_name))?.id || sortedOrgs[0]?.id || null, user: '', code: `AST-${Date.now()}`, 
       model: '', sn: '', spec: '', brand: '', is_rental: masterFilters.rentals[0] || '', rental_months: 0, 
       in_date: today, start_date: null, end_date: null, purchase_price: 0, monthly_fee: 0, 
       first_bill: null, cycle: 48, memo: '-', reg_date: today, entry_source: 'manual',
@@ -872,20 +876,19 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
     return false;
   };
 
-  const assetInAuditTarget = (assetDept: string, target: string) => {
-    const dept = String(assetDept || '').trim();
-    if (!dept) return false;
-    const targets = String(target || '')
-      .split(',')
-      .map((t) => t.trim())
-      .filter(Boolean);
-    if (targets.length === 0) return false;
-    if (targets.includes('전사')) return true;
-    return targets.some((t) => unitCovers(t, dept));
+  const assetInAuditTarget = (asset: any, target: string, targetUnitIds?: unknown) => {
+    return assetMatchesAuditTarget(
+      { dept: asset?.dept, unit_id: asset?.unit_id },
+      target,
+      orgs,
+      targetUnitIds
+    );
   };
 
   const getCoveringAudit = (asset: any) => {
-    const covered = runningAudits.filter((a) => assetInAuditTarget(asset?.dept, a.target));
+    const covered = runningAudits.filter((a) =>
+      assetInAuditTarget(asset, a.target, a.target_unit_ids)
+    );
     if (covered.length === 0) return null;
     return covered.find((a) => a.id === focusedAuditId) || covered[0];
   };
@@ -1140,7 +1143,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
 
     /** 실사 카드 집계: 포커스된 진행 실사의 대상범위만 (칩 클릭과 연동) */
     const auditScopeAssets = focusedAudit
-      ? assets.filter((a) => assetInAuditTarget(a.dept, focusedAudit.target))
+      ? assets.filter((a) => assetInAuditTarget(a, focusedAudit.target, focusedAudit.target_unit_ids))
       : assets;
     
     assets.forEach(a => {
@@ -1212,14 +1215,24 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
       })();
       
       const allowedDepts = getDescendantNames(colFilters.dept, orgs);
-      const matchDept = colFilters.dept === DEPT_FILTER_ALL ? true : allowedDepts.includes(a.dept);
+      const matchDept =
+        colFilters.dept === DEPT_FILTER_ALL
+          ? true
+          : selectedOrgUnit
+            ? rowMatchesOrgUnit({
+                selectedOrgId: selectedOrgUnit.id,
+                units: orgs,
+                unitId: a.unit_id,
+                legacyNames: [a.dept],
+              })
+            : allowedDepts.includes(a.dept);
       const matchCategory = colFilters.category === '범주 (전체)' ? true : a.category === colFilters.category;
       const matchItType = colFilters.it_type === '자산 분류 (전체)' ? true : a.it_type === colFilters.it_type;
       const matchRental = colFilters.is_rental === '조달유형 (전체)' ? true : a.is_rental === colFilters.is_rental;
       
       let matchStatus = true;
       const inFocusedAuditScope =
-        !focusedAudit || assetInAuditTarget(a.dept, focusedAudit.target);
+        !focusedAudit || assetInAuditTarget(a, focusedAudit.target, focusedAudit.target_unit_ids);
       if (showStatusFilter === 'done') {
         matchStatus = focusedAudit
           ? inFocusedAuditScope &&

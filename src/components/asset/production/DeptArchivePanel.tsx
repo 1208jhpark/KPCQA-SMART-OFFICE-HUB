@@ -7,7 +7,6 @@ import * as XLSX from 'xlsx';
 import { getKSTDateString, getKSTNowYearMonth, getKSTYearMonthParts } from '@/utils/dateUtils';
 import LoadingState from '@/components/common/LoadingState';
 import { resolveInterfaceEditState, isSystemLv1User } from '@/lib/permission-utils';
-import ProductionDeptShell from '@/components/asset/production/ProductionDeptShell';
 import ProductionRequestDetailModal from '@/components/asset/production/ProductionRequestDetailModal';
 import ProductionStatementCompareModal from '@/components/asset/production/ProductionStatementCompareModal';
 import {
@@ -64,6 +63,7 @@ type BatchItem = {
   quantity: number;
   status: string;
   userName: string;
+  unitId?: string | null;
   deptName: string;
   deptHead?: string;
   createdAt: string;
@@ -313,6 +313,21 @@ function flattenUnitsInSortOrder(units: OrgUnitItem[]) {
     .map((unit) => ({ ...unit, depth: depthOf(unit) }));
 }
 
+function descendantOrgIds(unitId: string, units: OrgUnitItem[]) {
+  const ids = new Set<string>();
+  if (!unitId || unitId === 'ALL') return ids;
+  const selected = units.find((u) => u.id === unitId);
+  if (selected?.id) ids.add(selected.id);
+  const walk = (parentId: string) => {
+    for (const child of units.filter((u) => u.parent_id === parentId)) {
+      ids.add(child.id);
+      walk(child.id);
+    }
+  };
+  walk(unitId);
+  return ids;
+}
+
 function descendantOrgNames(unitId: string, units: OrgUnitItem[]) {
   const names = new Set<string>();
   const selected = units.find((u) => u.id === unitId);
@@ -328,11 +343,16 @@ function descendantOrgNames(unitId: string, units: OrgUnitItem[]) {
 }
 
 function itemMatchesOrg(
-  item: { deptHead?: string | null; deptName?: string | null },
+  item: { unitId?: string | null; deptHead?: string | null; deptName?: string | null },
   orgId: string,
   units: OrgUnitItem[]
 ) {
   if (orgId === 'ALL') return true;
+  const unitId = String(item.unitId || '').trim();
+  if (unitId) {
+    return descendantOrgIds(orgId, units).has(unitId);
+  }
+  // 레거시(unitId 없음): 신청 시점 명칭 폴백
   const names = descendantOrgNames(orgId, units);
   const head = String(item.deptHead || '').trim();
   const center = String(item.deptName || '').trim();
@@ -1595,7 +1615,7 @@ export default function DeptArchivePanel({ variant = 'dept' }: DeptArchivePanelP
   };
 
   return (
-    <ArchivePanelShell isMaster={isMaster}>
+    <>
       <div className="w-full space-y-3">
         {/* 거래명세표 등록·목록 — 정산 화면만 (정산완료 보관함/아카이브 제외) */}
         {!isSettledArchiveView && (
@@ -1663,17 +1683,29 @@ export default function DeptArchivePanel({ variant = 'dept' }: DeptArchivePanelP
                   type="button"
                   disabled={!canEdit}
                   onClick={handleOpenConfirmModal}
-                  className="px-3.5 py-1.5 bg-amber-500 hover:bg-amber-600 disabled:opacity-50 text-white rounded-xl text-xs font-black shadow-sm transition-colors flex items-center gap-1.5"
+                  title={!canEdit ? '편집 권한(Edit) 필요' : undefined}
+                  className={`px-3.5 py-1.5 rounded-xl text-xs font-black shadow-sm transition-colors flex items-center gap-1.5 ${
+                    canEdit
+                      ? 'bg-amber-500 hover:bg-amber-600 text-white'
+                      : DISABLED_ACTION_BTN
+                  }`}
                 >
-                  <span>➕ 확인 완료 기한 등록</span>
+                  <span>➕ 확인 완료 기한 등록(Edit)</span>
                 </button>
                 <button
                   type="button"
                   disabled={!canEdit}
                   onClick={handleOpenUploadModal}
-                  className="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white rounded-xl text-xs font-black shadow-sm transition-colors flex items-center gap-1.5"
+                  title={!canEdit ? '편집 권한(Edit) 필요' : undefined}
+                  className={`px-3.5 py-1.5 rounded-xl text-xs font-black shadow-sm transition-colors flex items-center gap-1.5 ${
+                    canEdit
+                      ? 'bg-indigo-600 hover:bg-indigo-700 text-white'
+                      : DISABLED_ACTION_BTN
+                  }`}
                 >
-                  <span>➕ {CATEGORY_LABEL[activeCategory] || activeCategory} 명세표 등록</span>
+                  <span>
+                    ➕ {CATEGORY_LABEL[activeCategory] || activeCategory} 명세표 등록(Edit)
+                  </span>
                 </button>
                 <div className="inline-flex items-center gap-1.5 shrink-0">
                   <span
@@ -1699,22 +1731,26 @@ export default function DeptArchivePanel({ variant = 'dept' }: DeptArchivePanelP
                     type="button"
                     disabled={!canEdit || publishBusy}
                     onClick={() => handleSetStatementPublish(!statementPublished)}
-                    className={`px-3.5 py-1.5 rounded-xl text-xs font-black shadow-sm transition-colors disabled:opacity-50 ${
-                      statementPublished
-                        ? 'bg-white text-slate-700 border border-slate-300 hover:bg-slate-50'
-                        : 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                    className={`px-3.5 py-1.5 rounded-xl text-xs font-black shadow-sm transition-colors ${
+                      !canEdit || publishBusy
+                        ? DISABLED_ACTION_BTN
+                        : statementPublished
+                          ? 'bg-white text-slate-700 border border-slate-300 hover:bg-slate-50'
+                          : 'bg-emerald-600 hover:bg-emerald-700 text-white'
                     }`}
                     title={
-                      statementPublished
-                        ? '부서 화면에서 명세표 숨기기 · 검수/대조 비활성'
-                        : '부서 화면에 명세표 게시하기 · 검수/대조 활성'
+                      !canEdit
+                        ? '편집 권한(Edit) 필요'
+                        : statementPublished
+                          ? '부서 화면에서 명세표 숨기기 · 검수/대조 비활성'
+                          : '부서 화면에 명세표 게시하기 · 검수/대조 활성'
                     }
                   >
                     {publishBusy
                       ? '처리 중…'
                       : statementPublished
-                        ? '숨기기'
-                        : '게시하기'}
+                        ? '숨기기(Edit)'
+                        : '게시하기(Edit)'}
                   </button>
                 </div>
               </div>
@@ -1961,7 +1997,11 @@ export default function DeptArchivePanel({ variant = 'dept' }: DeptArchivePanelP
                         ? '삭제할 묶음을 체크박스로 선택해 주세요'
                         : '선택한 정산완료 아카이브 묶음을 DB에서 영구삭제합니다 (테스트용)'
                   }
-                  className="h-7 px-2.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-[10px] font-black shadow-sm disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
+                  className={
+                    !canPurgeLv1
+                      ? `h-7 px-2.5 rounded-lg text-[10px] font-black whitespace-nowrap ${DISABLED_ACTION_BTN}`
+                      : 'h-7 px-2.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-[10px] font-black shadow-sm disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap'
+                  }
                 >
                   {purgingBatches
                     ? '삭제 중…'
@@ -2295,13 +2335,9 @@ export default function DeptArchivePanel({ variant = 'dept' }: DeptArchivePanelP
                       </>
                     )}
                     {!isSettledArchiveView && (
-                      <th
-                        className={`h-12 text-center ${
-                          showGroupedSettlementTable ? 'px-1' : 'px-2 min-w-[130px]'
-                        }`}
-                      >
-                        <div className="flex flex-col items-center justify-center gap-1">
-                          <span className="whitespace-nowrap">명세서 검수</span>
+                      <th className="h-12 w-[96px] min-w-[96px] max-w-[96px] px-0.5 text-center">
+                        <div className="flex flex-col items-center justify-center gap-0.5 px-0.5">
+                          <span className="whitespace-nowrap text-[10px]">명세서 검수</span>
                           <button
                             type="button"
                             onClick={openCompareModal}
@@ -2313,31 +2349,38 @@ export default function DeptArchivePanel({ variant = 'dept' }: DeptArchivePanelP
                                   ? '편집 권한 필요'
                                   : selectedBatchIds.size === 0
                                     ? '비교할 발주 묶음을 체크박스로 선택해 주세요'
-                                    : undefined
+                                    : `상단 등록 명세표와 선택 ${selectedBatchIds.size}건을 대조 검수합니다`
                             }
-                            className="px-2 py-1 bg-amber-500 hover:bg-amber-600 text-white font-black text-[10px] rounded-lg shadow-sm disabled:opacity-40 whitespace-nowrap normal-case tracking-normal"
+                            className={`w-full max-w-[92px] px-1 py-1 font-black text-[9px] leading-tight rounded-md shadow-sm normal-case tracking-normal ${
+                              canEdit && settlementActionsEnabled
+                                ? 'bg-amber-500 hover:bg-amber-600 text-white'
+                                : DISABLED_ACTION_BTN
+                            }`}
                           >
-                            선택 명세서 검수({selectedBatchIds.size}건)
+                            <span className="block">명세서 검수(Edit)</span>
+                            <span className="block tabular-nums opacity-90">
+                              선택 {selectedBatchIds.size}건
+                            </span>
                           </button>
                         </div>
                       </th>
                     )}
                     {showStatementCompareColumn && (
-                      <th className="h-12 px-1 text-center">
+                      <th className="h-12 w-[92px] min-w-[92px] px-0.5 text-center">
                         <div className="flex flex-col items-center justify-center gap-0.5 leading-tight">
-                          <span className="whitespace-nowrap">명세표 대조 (Edit)</span>
+                          <span className="whitespace-nowrap text-[10px]">명세표 대조</span>
                           <span className="text-[9px] font-bold text-indigo-700/80 normal-case tracking-normal whitespace-nowrap">
-                            (수기 단가 확정)
+                            (Edit·수기)
                           </span>
                         </div>
                       </th>
                     )}
                     {isMasterDashboard && (
-                      <th className="h-12 px-1 text-center">
+                      <th className="h-12 w-[88px] min-w-[88px] px-0.5 text-center">
                         <div className="flex flex-col items-center justify-center gap-0.5 leading-tight">
-                          <span className="whitespace-nowrap">관리 액션</span>
+                          <span className="whitespace-nowrap text-[10px]">관리 액션</span>
                           <span className="text-[9px] font-bold text-indigo-700/80 normal-case tracking-normal whitespace-nowrap">
-                            (보관함 이동)
+                            (보관함)
                           </span>
                         </div>
                       </th>
@@ -2604,7 +2647,7 @@ export default function DeptArchivePanel({ variant = 'dept' }: DeptArchivePanelP
                                         : DISABLED_ACTION_BTN
                                     }`}
                                   >
-                                    →보관함 이동
+                                    →보관함 이동(Edit)
                                   </button>
                                 ) : (
                                   <span className="text-[10px] font-bold text-slate-300">—</span>
@@ -3307,7 +3350,7 @@ export default function DeptArchivePanel({ variant = 'dept' }: DeptArchivePanelP
                 onClick={handleClearConfirmRequest}
                 className="px-3 py-2 rounded-xl text-xs font-black text-rose-600 bg-rose-50 hover:bg-rose-100 border border-rose-200 disabled:opacity-40"
               >
-                기한 삭제
+                기한 삭제(Edit)
               </button>
               <div className="flex items-center gap-2">
                 <button
@@ -3498,24 +3541,6 @@ export default function DeptArchivePanel({ variant = 'dept' }: DeptArchivePanelP
         categoryName={CATEGORY_LABEL[activeCategory] || activeCategory}
         onSaved={fetchData}
       />
-    </ArchivePanelShell>
-  );
-}
-
-function ArchivePanelShell({
-  isMaster,
-  children,
-}: {
-  isMaster: boolean;
-  children: React.ReactNode;
-}) {
-  if (isMaster) {
-    return <>{children}</>;
-  }
-
-  return (
-    <ProductionDeptShell pageHint="수령·검수 완료 건의 명세서 정산과 정산완료 보관함을 관리합니다. 관리자 등록 명세표와 대조할 수 있습니다.">
-      {children}
-    </ProductionDeptShell>
+    </>
   );
 }

@@ -12,6 +12,7 @@ import {
   parseSupplyOwnerDepts,
   resolveTopOrgName,
   serializeSupplyOwnerDepts,
+  resolveOwnerUnitIdsFromNames,
 } from '@/utils/orgUnits';
 import { SEED_SUPPLY_ITEM_DEFAULTS } from '@/lib/supply-seed-items';
 
@@ -24,6 +25,15 @@ function resolveOwnerDepts(body: any, unitsList: any[] | undefined): string[] {
   }
   const top = resolveTopOrgName(unitsList);
   return top ? [top] : [];
+}
+
+function resolveOwnerUnitIds(body: any, ownerDepts: string[], unitsList: any[] | undefined): string[] {
+  if (Array.isArray(body?.owner_unit_ids)) {
+    return Array.from(
+      new Set(body.owner_unit_ids.map((x: unknown) => String(x ?? '').trim()).filter(Boolean))
+    );
+  }
+  return resolveOwnerUnitIdsFromNames(ownerDepts, unitsList);
 }
 
 export const dynamic = 'force-dynamic';
@@ -209,8 +219,9 @@ export async function POST(req: Request) {
     if (!ownerDepts.length) {
       return NextResponse.json({ error: '물품소속(조직)을 1개 이상 선택해주세요.' }, { status: 400 });
     }
-    assertSupplyOwnerDeptsEditable(auth, ownerDepts);
+    assertSupplyOwnerDeptsEditable(auth, ownerDepts, resolveOwnerUnitIds(body, ownerDepts, auth.unitsList));
     const owner_dept = serializeSupplyOwnerDepts(ownerDepts);
+    const owner_unit_ids = resolveOwnerUnitIds(body, ownerDepts, auth.unitsList);
 
     const p_qty = cleanNum(body.p_qty) || 1;
     const sub_qty = cleanNum(body.sub_qty) || 1;
@@ -234,6 +245,7 @@ export async function POST(req: Request) {
         current_stock,
         alert_qty: cleanNum(body.alert_qty),
         owner_dept,
+        owner_unit_ids,
         category: String(body.category || '일반'),
         description,
         image_url: body.image_url || null,
@@ -263,7 +275,11 @@ export async function PATCH(req: Request) {
 
     // [A-1] 폐기(보관함 이동)
     if (body.is_active === false) {
-      assertSupplyOwnerDeptsEditable(auth, parseSupplyOwnerDepts(existing.owner_dept));
+      assertSupplyOwnerDeptsEditable(
+        auth,
+        parseSupplyOwnerDepts(existing.owner_dept),
+        (existing as { owner_unit_ids?: unknown }).owner_unit_ids
+      );
       let ext: any = {};
       try {
         ext = JSON.parse(existing.description || '{}');
@@ -286,7 +302,11 @@ export async function PATCH(req: Request) {
 
     // [A-2] 아카이브 복구
     if (body.is_active === true && body.name === undefined && body.is_published === undefined) {
-      assertSupplyOwnerDeptsEditable(auth, parseSupplyOwnerDepts(existing.owner_dept));
+      assertSupplyOwnerDeptsEditable(
+        auth,
+        parseSupplyOwnerDepts(existing.owner_dept),
+        (existing as { owner_unit_ids?: unknown }).owner_unit_ids
+      );
       const updated = await prisma.supplyItem.update({
         where: { id },
         data: {
@@ -299,7 +319,11 @@ export async function PATCH(req: Request) {
 
     // [B] 게시 토글만 — create/update와 동일하게 물품소속 편집 스코프 검증
     if (typeof body.is_published === 'boolean' && body.name === undefined) {
-      assertSupplyOwnerDeptsEditable(auth, parseSupplyOwnerDepts(existing.owner_dept));
+      assertSupplyOwnerDeptsEditable(
+        auth,
+        parseSupplyOwnerDepts(existing.owner_dept),
+        (existing as { owner_unit_ids?: unknown }).owner_unit_ids
+      );
       await prisma.supplyItem.update({
         where: { id },
         data: { is_published: body.is_published },
@@ -327,8 +351,9 @@ export async function PATCH(req: Request) {
     if (!ownerDepts.length) {
       return NextResponse.json({ error: '물품소속(조직)을 1개 이상 선택해주세요.' }, { status: 400 });
     }
-    assertSupplyOwnerDeptsEditable(auth, ownerDepts);
+    assertSupplyOwnerDeptsEditable(auth, ownerDepts, resolveOwnerUnitIds(body, ownerDepts, auth.unitsList));
     const owner_dept = serializeSupplyOwnerDepts(ownerDepts);
+    const owner_unit_ids = resolveOwnerUnitIds(body, ownerDepts, auth.unitsList);
 
     const description = JSON.stringify({
       ...prevExt,
@@ -357,6 +382,7 @@ export async function PATCH(req: Request) {
           : {}),
         alert_qty: cleanNum(body.alert_qty) || 0,
         owner_dept,
+        owner_unit_ids,
         description,
         image_url: body.image_url ?? existing.image_url,
       },

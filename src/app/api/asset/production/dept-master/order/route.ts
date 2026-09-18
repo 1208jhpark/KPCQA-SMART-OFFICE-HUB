@@ -14,6 +14,12 @@ import {
   type BatchShippingApplyScope,
   type BatchShippingInput,
 } from '@/lib/production-shipping';
+import {
+  assertProductionRowInDeptScope,
+  buildProductionDeptScopeWhere,
+  isProductionScopeEmpty,
+  withProductionDeptDisplayNames,
+} from '@/lib/production-dept-scope';
 
 export const dynamic = 'force-dynamic';
 
@@ -183,12 +189,9 @@ function buildOrderScope(auth: {
 
 function assertRowInDeptScope(
   scope: ReturnType<typeof resolveScopeFromUnits> | null,
-  deptName: string | null | undefined
+  row: { unitId?: string | null; deptName?: string | null }
 ) {
-  if (!scope || scope.viewScope === 'NONE' || scope.scopeNames.length === 0) {
-    return false;
-  }
-  return scope.scopeNames.includes(String(deptName || '').trim());
+  return assertProductionRowInDeptScope(scope, row);
 }
 
 /** [GET] 연계 조직 제작 신청 내역 — apply/history DEPT 스코프와 동일 데이터 */
@@ -216,7 +219,7 @@ export async function GET() {
       auth.permission.viewScope
     );
 
-    if (scope.viewScope === 'NONE' || scope.scopeNames.length === 0) {
+    if (scope.viewScope === 'NONE' || isProductionScopeEmpty(scope)) {
       return NextResponse.json({
         requests: [],
         scopeUnits: scope.scopeUnits,
@@ -226,16 +229,16 @@ export async function GET() {
       });
     }
 
+    const scopeWhere = buildProductionDeptScopeWhere(scope);
     const requests = await prisma.productionRequest.findMany({
       where: {
-        isArchived: false,
-        deptName: { in: scope.scopeNames },
+        AND: [{ isArchived: false }, ...(scopeWhere ? [scopeWhere] : [])],
       },
       orderBy: { createdAt: 'desc' },
     });
 
     return NextResponse.json({
-      requests,
+      requests: await withProductionDeptDisplayNames(requests),
       scopeUnits: scope.scopeUnits,
       myDeptName: scope.myUnit.unit_name,
       myUnitId: scope.myUnit.id,
@@ -264,7 +267,7 @@ export async function POST(req: Request) {
     }
 
     const scope = buildOrderScope(auth);
-    if (!scope || scope.scopeNames.length === 0) {
+    if (!scope || isProductionScopeEmpty(scope)) {
       return NextResponse.json(
         { message: '부서 스코프가 없어 발주할 수 없습니다.' },
         { status: 403 }
@@ -296,11 +299,14 @@ export async function POST(req: Request) {
     const myUnit = auth.user.unit;
     const deptName = myUnit?.unit_name || '부서';
 
+    const scopeWhere = buildProductionDeptScopeWhere(scope);
     const acceptedRows = await prisma.productionRequest.findMany({
       where: {
-        id: { in: requestIds },
-        status: 'ACCEPTED',
-        deptName: { in: scope.scopeNames },
+        AND: [
+          { id: { in: requestIds } },
+          { status: 'ACCEPTED' },
+          ...(scopeWhere ? [scopeWhere] : []),
+        ],
       },
     });
 
@@ -366,7 +372,7 @@ export async function PATCH(req: Request) {
     }
 
     const scope = buildOrderScope(auth);
-    if (!scope || scope.scopeNames.length === 0) {
+    if (!scope || isProductionScopeEmpty(scope)) {
       return NextResponse.json(
         { message: '부서 스코프가 없어 처리할 수 없습니다.' },
         { status: 403 }
@@ -377,7 +383,7 @@ export async function PATCH(req: Request) {
     if (!row) {
       return NextResponse.json({ message: '신청 내역을 찾을 수 없습니다.' }, { status: 404 });
     }
-    if (!assertRowInDeptScope(scope, row.deptName)) {
+    if (!assertRowInDeptScope(scope, row)) {
       return NextResponse.json(
         { message: '담당 부서 범위 밖의 신청 건입니다.' },
         { status: 403 }

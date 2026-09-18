@@ -274,7 +274,13 @@ const pendingAlwaysApprovals = useMemo(() => {
       nextTargets.has(dept) ? nextTargets.delete(dept) : nextTargets.add(dept);
       if (nextTargets.size === 0) nextTargets.add('전사');
     }
-    setEditModal({ ...editModal, target: Array.from(nextTargets).join(', ') });
+    const nextArr = Array.from(nextTargets);
+    const target_unit_ids = nextArr.includes('전사')
+      ? []
+      : nextArr
+          .map((n) => String(unitsList.find((u: any) => u.unit_name === n)?.id || '').trim())
+          .filter(Boolean);
+    setEditModal({ ...editModal, target: nextArr.join(', '), target_unit_ids });
   };
      
   const handleDeleteSurvey = async (id: string) => {

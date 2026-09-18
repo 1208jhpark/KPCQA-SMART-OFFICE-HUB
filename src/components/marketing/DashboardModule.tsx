@@ -171,6 +171,7 @@ const [selectedItemYear, setSelectedItemYear] = useState<number>(currentYear);
   /** Catalog 「신청가능보기」와 동일 */
   const checkDistributePermission = (item: {
     owner_dept?: string | null;
+    owner_unit_id?: string | null;
     view_role_ids?: unknown;
     view_allow_apply?: boolean | null;
   }) => {
@@ -183,6 +184,7 @@ const [selectedItemYear, setSelectedItemYear] = useState<number>(currentYear);
         topOrgName,
         units,
         isPower: isLv1,
+        ownerUnitId: item.owner_unit_id,
       })
     ) {
       return true;
@@ -565,7 +567,7 @@ const topClientsData = useMemo(() => {
         <div className="bg-white p-5 rounded-[1.5rem] border border-slate-200 shadow-sm hover:shadow-md transition-shadow flex flex-col h-[248px]">
           <div className="flex items-center justify-between gap-2 flex-wrap shrink-0 h-[40px]">
             <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest">
-              나의 지급 기여도
+              나의 지급
             </p>
             <div className="flex items-center gap-1.5">
               <select

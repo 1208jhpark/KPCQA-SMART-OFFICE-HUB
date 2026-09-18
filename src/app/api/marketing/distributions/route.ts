@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
 import prisma from '@/lib/prisma';
 import { parseKSTDateOnly, getKSTYearMonth, getDistBusinessDate } from '@/utils/dateUtils';
-import { resolveTopOrgName, canDistributeMarketingOwnerDept, canApplyViaViewRoles, getChildUnitNames, isGlobalMgmtOrgMember } from '@/utils/orgUnits';
+import { resolveTopOrgName, canDistributeMarketingOwnerDept, canApplyViaViewRoles, getChildUnitNames, getChildUnitIds, isGlobalMgmtOrgMember } from '@/utils/orgUnits';
+import { buildUnitIdOrLegacyNameWhere } from '@/lib/org-unit-match';
 import {
   authorizeMarketingDistributionsRead,
   authorizeMarketingDistributionsApply,
@@ -18,14 +19,29 @@ function parseDistDate(raw: unknown) {
   return Number.isNaN(d.getTime()) ? new Date() : d;
 }
 
-/** 본인 지급 여부 — 이메일 우선, 레거시(이메일 없음)는 이름+부서 */
+/** 본인 지급 여부 — 이메일 우선, sender_unit_id, 레거시(이메일 없음)는 이름+부서 */
 function isOwnDistribution(
-  dist: { sender_email?: string | null; sender_name?: string | null; sender_dept?: string | null },
-  user: { email?: string | null; name?: string | null; unit?: { unit_name?: string | null } | null }
+  dist: {
+    sender_email?: string | null;
+    sender_name?: string | null;
+    sender_dept?: string | null;
+    sender_unit_id?: string | null;
+  },
+  user: {
+    email?: string | null;
+    name?: string | null;
+    unit_id?: string | null;
+    unit?: { id?: string | null; unit_name?: string | null } | null;
+  }
 ) {
   const email = (user.email || '').trim().toLowerCase();
   if (dist.sender_email) {
     return dist.sender_email.trim().toLowerCase() === email;
+  }
+  const myUnitId = String(user.unit_id || user.unit?.id || '').trim();
+  const distUnitId = String(dist.sender_unit_id || '').trim();
+  if (myUnitId && distUnitId && myUnitId === distUnitId && dist.sender_name === user.name) {
+    return true;
   }
   // 과거 데이터: 이메일 미기록 → 이름+부서로만 보조 매칭
   const myDept = user.unit?.unit_name || '';
@@ -35,6 +51,19 @@ function isOwnDistribution(
     !!dist.sender_dept &&
     dist.sender_dept === myDept
   );
+}
+
+function namesToUnitIds(
+  names: string[],
+  unitsList: Array<{ id?: string | null; unit_name?: string | null }> | null | undefined
+): string[] {
+  if (!Array.isArray(unitsList)) return [];
+  return names
+    .map((n) => {
+      const name = String(n || '').trim();
+      return String(unitsList.find((u) => String(u.unit_name || '').trim() === name)?.id || '').trim();
+    })
+    .filter(Boolean);
 }
 
 export async function GET(req: Request) {
@@ -163,7 +192,14 @@ export async function GET(req: Request) {
       if (safeOwners.length === 0) {
         return NextResponse.json([]);
       }
-      whereClause.item = {
+      const ownerIds = namesToUnitIds(safeOwners, auth.unitsList);
+      const ownerWhere = buildUnitIdOrLegacyNameWhere({
+        unitIdField: 'owner_unit_id',
+        nameField: 'owner_dept',
+        scopeIds: ownerIds,
+        scopeNames: safeOwners,
+      });
+      whereClause.item = ownerWhere || {
         owner_dept: safeOwners.length === 1 ? safeOwners[0] : { in: safeOwners },
       };
     } else if (mine === '1' || mine === 'true' || senderEmail === 'me') {
@@ -198,9 +234,14 @@ export async function GET(req: Request) {
       const myUnitId = auth.user.unit_id || (auth.user.unit as { id?: string } | null)?.id;
       const isLv1 = auth.permission.myRole === 'LV_1' || auth.permission.isMaster;
       const allowedDepts = new Set<string>();
+      const allowedDeptIds = new Set<string>();
       if (myDept) {
         allowedDepts.add(myDept);
         getChildUnitNames(myDept, myUnitId, auth.unitsList).forEach((c) => allowedDepts.add(c));
+      }
+      if (myUnitId) {
+        allowedDeptIds.add(String(myUnitId));
+        getChildUnitIds(myUnitId, auth.unitsList).forEach((c) => allowedDeptIds.add(c));
       }
 
       if (deptList.length > 0) {
@@ -211,15 +252,37 @@ export async function GET(req: Request) {
         if (safeDepts.length === 0) {
           return NextResponse.json([]);
         }
-        whereClause.sender_dept =
-          safeDepts.length === 1 ? safeDepts[0] : { in: safeDepts };
+        const senderIds = namesToUnitIds(safeDepts, auth.unitsList);
+        const senderWhere = buildUnitIdOrLegacyNameWhere({
+          unitIdField: 'sender_unit_id',
+          nameField: 'sender_dept',
+          scopeIds: senderIds,
+          scopeNames: safeDepts,
+        });
+        if (senderWhere) {
+          Object.assign(whereClause, senderWhere);
+        } else {
+          whereClause.sender_dept =
+            safeDepts.length === 1 ? safeDepts[0] : { in: safeDepts };
+        }
       } else if (!isLv1) {
         // 필터 없음 = 전사 조회 → LV_1만 허용, 그 외는 본인·직속 하위로 강제
         const scoped = Array.from(allowedDepts);
-        if (scoped.length === 0) {
+        const scopedIds = Array.from(allowedDeptIds);
+        if (scoped.length === 0 && scopedIds.length === 0) {
           return NextResponse.json([]);
         }
-        whereClause.sender_dept = scoped.length === 1 ? scoped[0] : { in: scoped };
+        const senderWhere = buildUnitIdOrLegacyNameWhere({
+          unitIdField: 'sender_unit_id',
+          nameField: 'sender_dept',
+          scopeIds: scopedIds,
+          scopeNames: scoped,
+        });
+        if (senderWhere) {
+          Object.assign(whereClause, senderWhere);
+        } else {
+          whereClause.sender_dept = scoped.length === 1 ? scoped[0] : { in: scoped };
+        }
       }
       // LV_1 + depts 없음 → 전사(필터 없음)
     }
@@ -293,6 +356,7 @@ export async function POST(req: Request) {
           topOrgName: topOrg,
           units: auth.unitsList,
           isPower,
+          ownerUnitId: (item as { owner_unit_id?: string | null }).owner_unit_id,
         }) ||
         canApplyViaViewRoles(
           item as { view_role_ids?: unknown; view_allow_apply?: boolean | null },
@@ -324,6 +388,7 @@ export async function POST(req: Request) {
           // 신원은 서버 세션 기준으로 고정 (클라이언트 spoof 방지)
           sender_name: auth.user.name,
           sender_dept: auth.user.unit?.unit_name || '미소속',
+          sender_unit_id: auth.user.unit_id || (auth.user.unit as { id?: string } | null)?.id || null,
           sender_email: auth.user.email,
           status:
             body.requires_approval === true || body.status === 'PENDING'
@@ -392,11 +457,14 @@ export async function PATCH(req: Request) {
 
     const existing = await prisma.marketingDistribution.findUnique({
       where: { id },
-      include: { item: { select: { owner_dept: true } } },
+      include: { item: { select: { owner_dept: true, owner_unit_id: true } } },
     });
     if (!existing) return NextResponse.json({ error: '이력을 찾을 수 없습니다.' }, { status: 404 });
 
-    assertCanEditOwnerDept(auth, existing.item?.owner_dept);
+    assertCanEditOwnerDept(auth, {
+      unitId: existing.item?.owner_unit_id,
+      deptName: existing.item?.owner_dept,
+    });
 
     // GLOBAL_MGMT 등: Organization 풀 승인요청 처리
     if (action === 'approve' || action === 'reject') {
@@ -497,7 +565,10 @@ export async function DELETE(req: Request) {
       } else if (own) {
         // 본인 신청 철회: 메뉴 접근만으로 허용
       } else if (canCancelOthers) {
-        assertCanEditOwnerDept(auth, dist.item?.owner_dept);
+        assertCanEditOwnerDept(auth, {
+          unitId: (dist.item as { owner_unit_id?: string | null } | null)?.owner_unit_id,
+          deptName: dist.item?.owner_dept,
+        });
       } else {
         throw new Error('FORBIDDEN_CANCEL');
       }

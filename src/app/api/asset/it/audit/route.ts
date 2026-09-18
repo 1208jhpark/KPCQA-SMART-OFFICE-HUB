@@ -6,7 +6,7 @@ import {
   authErrorToResponse,
   tryGetSessionUser,
 } from '@/lib/server-auth-guard';
-import { assetInAnyAuditTarget, auditTargetsOverlap } from '@/utils/itAuditTarget';
+import { assetInAnyAuditTarget, auditTargetsOverlap, parseAuditTargetUnitIds } from '@/utils/itAuditTarget';
 
 export const dynamic = 'force-dynamic';
 
@@ -19,9 +19,35 @@ const IT_AUDIT_READ_PATHS = [
 
 const IT_AUDIT_WRITE_PATH = '/asset/it/master/audit';
 
+/** target 명칭 CSV → OrgUnit.id 배열 (없으면 빈 배열) */
+async function resolveTargetUnitIds(
+  target: string | null | undefined,
+  explicit?: unknown
+): Promise<string[]> {
+  const fromBody = parseAuditTargetUnitIds(explicit);
+  if (fromBody.length > 0) return fromBody;
+  const names = String(target || '')
+    .split(',')
+    .map((t) => t.trim())
+    .filter(Boolean);
+  if (names.length === 0 || names.includes('전사')) return [];
+  const units = await prisma.orgUnit.findMany({
+    where: { is_deleted: false, unit_name: { in: names } },
+    select: { id: true, unit_name: true },
+  });
+  return units.map((u) => u.id);
+}
+
 /** 마감·중단된 실사(들)의 대상범위에 해당하는 자산만 독촉(audit_request_date) 해제 */
-async function clearNudgeDatesForAuditTargets(targets: string[]) {
-  const scoped = targets.map((t) => String(t || '').trim()).filter(Boolean);
+async function clearNudgeDatesForAuditTargets(
+  audits: Array<{ target: string; target_unit_ids?: unknown }>
+) {
+  const scoped = audits
+    .map((a) => ({
+      target: String(a.target || '').trim(),
+      ids: parseAuditTargetUnitIds(a.target_unit_ids),
+    }))
+    .filter((a) => a.target || a.ids.length > 0);
   if (scoped.length === 0) return;
 
   const [units, nudged] = await Promise.all([
@@ -31,13 +57,22 @@ async function clearNudgeDatesForAuditTargets(targets: string[]) {
     }),
     prisma.iTAsset.findMany({
       where: { is_active: true, audit_request_date: { not: null } },
-      select: { id: true, dept: true },
+      select: { id: true, dept: true, unit_id: true } as any,
     }),
   ]);
 
   const ids = nudged
-    .filter((a) => assetInAnyAuditTarget(a.dept, scoped, units))
-    .map((a) => a.id);
+    .filter((a: any) =>
+      scoped.some((s) =>
+        assetInAnyAuditTarget(
+          { dept: a.dept, unit_id: a.unit_id },
+          [s.target],
+          units,
+          [s.ids]
+        )
+      )
+    )
+    .map((a: any) => a.id);
   if (ids.length === 0) return;
 
   await prisma.iTAsset.updateMany({
@@ -47,7 +82,11 @@ async function clearNudgeDatesForAuditTargets(targets: string[]) {
 }
 
 /** 진행중 실사와 대상범위가 겹치면 에러 메시지 반환, 없으면 null */
-async function overlappingRunningMessage(target: string, excludeId?: string) {
+async function overlappingRunningMessage(
+  target: string,
+  targetUnitIds: unknown,
+  excludeId?: string
+) {
   const units = await prisma.orgUnit.findMany({
     where: { is_deleted: false },
     select: { id: true, unit_name: true, parent_id: true },
@@ -57,9 +96,11 @@ async function overlappingRunningMessage(target: string, excludeId?: string) {
       status: '진행중',
       ...(excludeId ? { id: { not: excludeId } } : {}),
     },
-    select: { id: true, title: true, target: true },
+    select: { id: true, title: true, target: true, target_unit_ids: true } as any,
   });
-  const conflicts = running.filter((a) => auditTargetsOverlap(a.target, target, units));
+  const conflicts = running.filter((a: any) =>
+    auditTargetsOverlap(a.target, target, units, a.target_unit_ids, targetUnitIds)
+  );
   if (conflicts.length === 0) return null;
   const names = conflicts.map((a) => `· ${a.title} (${a.target})`).join('\n');
   return `대상범위가 겹치는 진행 중 실사가 있습니다.\n\n${names}`;
@@ -68,7 +109,7 @@ async function overlappingRunningMessage(target: string, excludeId?: string) {
 async function autoCloseExpiredAudits() {
   const active = await prisma.iTAudit.findMany({
     where: { status: '진행중' },
-    select: { id: true, endDate: true, endTime: true, target: true },
+    select: { id: true, endDate: true, endTime: true, target: true, target_unit_ids: true } as any,
   });
   const expired = active.filter((a) => isPastKSTDeadline(a.endDate, a.endTime || '23:59'));
   if (expired.length === 0) return 0;
@@ -77,7 +118,7 @@ async function autoCloseExpiredAudits() {
     where: { id: { in: expired.map((a) => a.id) }, status: '진행중' },
     data: { status: '마감' },
   });
-  await clearNudgeDatesForAuditTargets(expired.map((a) => a.target));
+  await clearNudgeDatesForAuditTargets(expired as any);
   return expired.length;
 }
 
@@ -103,12 +144,13 @@ export async function GET(req: Request) {
           title: true,
           description: true,
           target: true,
+          target_unit_ids: true,
           startDate: true,
           endDate: true,
           endTime: true,
           status: true,
           postDate: true,
-        },
+        } as any,
       });
       if (!audit) return NextResponse.json({ error: '실사를 찾을 수 없습니다.' }, { status: 404 });
       return NextResponse.json([audit]);
@@ -169,11 +211,21 @@ export async function POST(req: Request) {
         payload.endDate = getKSTDateString();
         payload.endTime = '23:59';
       }
-      const overlapMsg = await overlappingRunningMessage(String(payload.target || ''));
+      const targetUnitIds = await resolveTargetUnitIds(payload.target, payload.target_unit_ids);
+      payload.target_unit_ids = targetUnitIds;
+      const overlapMsg = await overlappingRunningMessage(
+        String(payload.target || ''),
+        targetUnitIds
+      );
       if (overlapMsg) return NextResponse.json({ error: overlapMsg }, { status: 409 });
+    } else {
+      payload.target_unit_ids = await resolveTargetUnitIds(
+        payload.target,
+        payload.target_unit_ids
+      );
     }
 
-    const audit = await prisma.iTAudit.create({ data: payload });
+    const audit = await prisma.iTAudit.create({ data: payload as any });
     return NextResponse.json(audit);
   } catch (error) {
     const authRes = authErrorToResponse(error);
@@ -247,7 +299,14 @@ export async function PATCH(req: Request) {
 
     const current = await prisma.iTAudit.findUnique({
       where: { id },
-      select: { endDate: true, endTime: true, status: true, target: true, startDate: true },
+      select: {
+        endDate: true,
+        endTime: true,
+        status: true,
+        target: true,
+        target_unit_ids: true,
+        startDate: true,
+      } as any,
     });
     if (!current) {
       return NextResponse.json({ error: '실사를 찾을 수 없습니다.' }, { status: 404 });
@@ -277,6 +336,15 @@ export async function PATCH(req: Request) {
       );
     }
 
+    // target / target_unit_ids 동기화
+    if (patchData.target !== undefined || patchData.target_unit_ids !== undefined) {
+      const nextTarget = String(patchData.target ?? current.target ?? '');
+      patchData.target_unit_ids = await resolveTargetUnitIds(
+        nextTarget,
+        patchData.target_unit_ids ?? (current as any).target_unit_ids
+      );
+    }
+
     // 진행중(배포·마감취소·수정): 종료시각이 이미 지났으면 당일 23:59로 연장
     let deadlineExtended = false;
     const becomingRunning = patchData.status === '진행중';
@@ -293,18 +361,22 @@ export async function PATCH(req: Request) {
         deadlineExtended = true;
       }
       const nextTarget = String(patchData.target ?? current.target ?? '');
-      const overlapMsg = await overlappingRunningMessage(nextTarget, id);
+      const nextIds = patchData.target_unit_ids ?? (current as any).target_unit_ids;
+      const overlapMsg = await overlappingRunningMessage(nextTarget, nextIds, id);
       if (overlapMsg) return NextResponse.json({ error: overlapMsg }, { status: 409 });
     }
 
     const audit = await prisma.iTAudit.update({
       where: { id },
-      data: patchData,
+      data: patchData as any,
     });
 
     if (patchData.status === '마감' || patchData.status === '게시중단') {
       await clearNudgeDatesForAuditTargets([
-        String(audit.target || current.target || patchData.target || ''),
+        {
+          target: String(audit.target || current.target || patchData.target || ''),
+          target_unit_ids: (audit as any).target_unit_ids ?? (current as any).target_unit_ids,
+        },
       ]);
     }
 

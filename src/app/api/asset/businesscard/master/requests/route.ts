@@ -90,6 +90,25 @@ function pickFormFields(body: Record<string, unknown>) {
   return data;
 }
 
+/** 선택 센터 OrgUnit.id — body.unitId 우선, 없으면 deptName으로 해석 */
+async function resolveUnitId(body: Record<string, unknown>): Promise<string | null> {
+  const fromBody = String(body.unitId || '').trim();
+  if (fromBody) {
+    const found = await prisma.orgUnit.findFirst({
+      where: { id: fromBody, is_deleted: false },
+      select: { id: true },
+    });
+    if (found) return found.id;
+  }
+  const deptName = String(body.deptName || '').trim();
+  if (!deptName) return null;
+  const byName = await prisma.orgUnit.findFirst({
+    where: { unit_name: deptName, is_deleted: false },
+    select: { id: true },
+  });
+  return byName?.id || null;
+}
+
 function pickStatusFields(body: Record<string, unknown>) {
   const data: Record<string, unknown> = {};
   for (const key of STATUS_FIELDS) {
@@ -154,6 +173,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ message: '로그인 사용자 정보가 없습니다.' }, { status: 400 });
     }
 
+    const unitId = await resolveUnitId(body as Record<string, unknown>);
     const newRequest = await prisma.businessCardRequest.create({
       data: {
         userName: String(body.userName || '').trim(),
@@ -162,6 +182,7 @@ export async function POST(req: Request) {
         deptHeadEn: String(body.deptHeadEn || '').trim(),
         deptName: String(body.deptName || '').trim(),
         deptNameEn: String(body.deptNameEn || '').trim(),
+        unitId,
         title: String(body.title || '').trim(),
         titleEn: String(body.titleEn || '').trim(),
         additionalKo: body.additionalKo || null,
@@ -187,7 +208,7 @@ export async function POST(req: Request) {
         applicantType: '관리자대행',
         applicantName: actorName,
         applicantEmail: auth.user?.email || null,
-      },
+      } as any,
     });
 
     return NextResponse.json(newRequest);
@@ -212,11 +233,18 @@ export async function PUT(req: Request) {
     const hasBatchId = Object.prototype.hasOwnProperty.call(payload, 'batchId');
     const formData = pickFormFields(payload);
     const statusData = pickStatusFields(payload);
+    const touchesDept =
+      payload.unitId !== undefined ||
+      payload.deptName !== undefined ||
+      Object.keys(formData).some((k) => k === 'deptName' || k === 'deptHead');
     const updateData: Record<string, unknown> = {
       ...formData,
       ...statusData,
       ...(hasBatchId ? { orderGroupId: payload.batchId ? String(payload.batchId) : null } : {}),
     };
+    if (touchesDept) {
+      updateData.unitId = await resolveUnitId(payload);
+    }
 
     const touchesAdminAudit =
       Boolean(payload.isModifiedByAdmin) ||

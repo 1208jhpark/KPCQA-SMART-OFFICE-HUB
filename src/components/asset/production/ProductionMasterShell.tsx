@@ -75,7 +75,7 @@ export default function ProductionMasterShell({
           </h1>
           <p className="text-emerald-100/90 text-xs mt-3 leading-relaxed">
             {pageHint ||
-              '각 부서에서 발주·수령검수 완료 후 이관된 제작 묶음을 모아 명세 대조·정산 상태를 관리하는 마스터 컨트롤 허브입니다.'}
+              '각 부서에서 발주·수령검수 완료 후 이관된 제작 묶음을 모아 명세 대조 상태를 관리하는 마스터 컨트롤 허브입니다.'}
           </p>
           {permissionSummary && isSystemLv1User(currentUser) && (
             <div className="flex flex-wrap items-center gap-2 mt-4 pt-3 border-t border-white/15">
@@ -127,7 +127,7 @@ export default function ProductionMasterShell({
           )}
         </div>
         <p className="text-[10px] text-slate-400 font-bold px-3 hidden sm:block">
-          ※ 탭을 클릭하여 보관함·명세정산·아카이브를 전환합니다.
+          ※ 탭을 클릭하여 발주·검수 보관함과 정산완료 아카이브를 전환합니다.
         </p>
       </div>
 

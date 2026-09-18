@@ -209,22 +209,34 @@ function CatalogContent() {
   );
   const canSeeAddForm = editState.isEditor;
 
-  const checkEditPermission = (itemOwnerDept: string) => {
+  const checkEditPermission = (
+    itemOwnerDept: string | null | undefined,
+    itemOwnerUnitId?: string | null
+  ) => {
     if (!currentUser || !systemConfig) return false;
     if (!editState.isEditor) return false;
 
     const myCenter = currentUser.unit?.unit_name;
+    const myUnitId = String(currentUser.unit_id || currentUser.unit?.id || '').trim();
     const myHq = currentUser.unit?.parent?.unit_name;
     const globalMgmtDept = systemConfig.global_mgmt_dept;
+    const ownerId = String(itemOwnerUnitId || '').trim();
+    const topOrgId = topOrgName
+      ? String(units.find((u) => String(u.unit_name || '').trim() === topOrgName)?.id || '').trim()
+      : '';
+
+    const isTop =
+      (!!ownerId && !!topOrgId && ownerId === topOrgId) ||
+      (!!topOrgName && itemOwnerDept === topOrgName);
 
     // Organization 자산 CRUD → GLOBAL_MGMT만 (TOTAL이어도 동일)
-    if (topOrgName && itemOwnerDept === topOrgName) {
+    if (isTop) {
       return canEditTopOrgMarketingAsset({
-        ownerDept: itemOwnerDept,
+        ownerDept: itemOwnerDept || topOrgName,
         topOrgName,
         myUnitName: myCenter,
         myHqName: myHq,
-        myUnitId: currentUser.unit_id || currentUser.unit?.id,
+        myUnitId,
         globalMgmtDept,
         units,
       });
@@ -233,7 +245,10 @@ function CatalogContent() {
     // assertCanEditOwnerDept와 동일: TOTAL 전체 / OWN·DEPT는 본인 센터만
     const scope = editState.editScope;
     if (scope === 'TOTAL') return true;
-    if ((scope === 'DEPT' || scope === 'OWN') && itemOwnerDept === myCenter) return true;
+    if (scope === 'DEPT' || scope === 'OWN') {
+      if (ownerId && myUnitId && ownerId === myUnitId) return true;
+      if (!ownerId && itemOwnerDept === myCenter) return true;
+    }
     return false;
   };
 
@@ -242,7 +257,12 @@ function CatalogContent() {
    * Center → 본인+상위HQ+최상위 / HQ → 본인+하위Center+최상위 / Organization → 최상위만
    * LV_1만 전체. (목록 열람은 아랫줄 타 부서로 LV 무관)
    */
-  const checkDistributePermission = (item: { owner_dept?: string | null; view_role_ids?: unknown; view_allow_apply?: boolean | null }) => {
+  const checkDistributePermission = (item: {
+    owner_dept?: string | null;
+    owner_unit_id?: string | null;
+    view_role_ids?: unknown;
+    view_allow_apply?: boolean | null;
+  }) => {
     if (!currentUser) return false;
     if (
       canDistributeMarketingOwnerDept(item.owner_dept, {
@@ -252,6 +272,7 @@ function CatalogContent() {
         topOrgName,
         units,
         isPower: isLv1,
+        ownerUnitId: item.owner_unit_id,
       })
     ) {
       return true;
@@ -261,7 +282,7 @@ function CatalogContent() {
 
   /** 등록/수정 시 선택 가능한 owner_dept (편집 스코프 내만) */
   const editableOwnerUnits = useMemo(() => {
-    return units.filter((u) => u?.unit_name && checkEditPermission(u.unit_name));
+    return units.filter((u) => u?.unit_name && checkEditPermission(u.unit_name, u.id));
   }, [units, currentUser, systemConfig, topOrgName, editState.isEditor, editState.editScope]);
 
   /** admin/settings GLOBAL_MGMT(+직속 하위)만 열람 LV 설정 */
@@ -347,6 +368,10 @@ function CatalogContent() {
       : { ...rest, creator_name: currentUser?.name || null, creator_dept: currentUser?.unit?.unit_name || null };
     const payload = {
       ...basePayload,
+      owner_unit_id:
+        units.find((u) => u.unit_name === formData.owner_dept)?.id ||
+        formData.owner_unit_id ||
+        null,
       unit_price: Number(formData.unit_price) || 0,
       extra_cost: extraCost,
       current_stock: Number(formData.current_stock) || 0,
@@ -395,6 +420,10 @@ function CatalogContent() {
       let payload: Record<string, unknown> = canSetViewRoles
         ? { ...safeEdit, view_role_ids, view_allow_apply }
         : { ...safeEdit };
+      if (payload.owner_dept && !payload.owner_unit_id) {
+        payload.owner_unit_id =
+          units.find((u) => u.unit_name === payload.owner_dept)?.id || null;
+      }
       // 지급이력 있으면 단가·단위 변경 차단 (단위와 동일 정책)
       if (!lockedByDist) {
         if (unit_price !== undefined) payload.unit_price = unit_price;
@@ -639,7 +668,20 @@ function CatalogContent() {
 
             <div className="flex-1 w-full grid grid-cols-2 lg:grid-cols-8 gap-2.5">
               <input required placeholder="물품명 *" value={formData.name} onChange={e=>setFormData({...formData, name: e.target.value})} className="w-full h-10 px-2.5 text-xs font-bold border border-slate-200 rounded-xl outline-none focus:ring-2 ring-indigo-500 focus:bg-white transition-all" />
-              <select required value={formData.owner_dept} onChange={e=>setFormData({...formData, owner_dept: e.target.value})} className="w-full h-10 px-2.5 text-xs font-bold border border-slate-200 rounded-xl outline-none bg-white focus:ring-2 ring-indigo-500 transition-all">
+              <select
+                required
+                value={formData.owner_dept}
+                onChange={(e) => {
+                  const name = e.target.value;
+                  const u = editableOwnerUnits.find((x) => x.unit_name === name);
+                  setFormData({
+                    ...formData,
+                    owner_dept: name,
+                    owner_unit_id: u?.id || null,
+                  });
+                }}
+                className="w-full h-10 px-2.5 text-xs font-bold border border-slate-200 rounded-xl outline-none bg-white focus:ring-2 ring-indigo-500 transition-all"
+              >
                 <option value="">관리 조직 선택 *</option>
                 {editableOwnerUnits.map(u => <option key={u.id} value={u.unit_name}>{u.unit_name}</option>)}
               </select>
@@ -816,7 +858,7 @@ function CatalogContent() {
           const isEditing = editingId === item.id;
           const currentData = isEditing ? editFormData : item;
           const canDistribute = checkDistributePermission(item);
-          const canEditThisItem = checkEditPermission(item.owner_dept);
+          const canEditThisItem = checkEditPermission(item.owner_dept, item.owner_unit_id);
           
           const currentUnit = currentData.unit || 'EA';
           const hasLedger = itemHasDistLedger(item.id);
@@ -829,6 +871,7 @@ function CatalogContent() {
             topOrgName,
             units,
             isPower: isLv1,
+            ownerUnitId: item.owner_unit_id,
           });
           const viaViewApply = canApplyViaViewRoles(item, currentUser?.roles);
           // Organization 풀 · 열람LV 신청허용(타부서) → 승인 요청(앰버). 승인 단계는 지급대장에서 예정
@@ -989,7 +1032,19 @@ function CatalogContent() {
       
                       <div className="col-span-2 flex flex-col">
                         <span className="text-slate-400 font-bold text-[9px] mb-0.5">부서 변경</span>
-                        <select value={currentData.owner_dept} onChange={e=>setEditFormData({...editFormData, owner_dept: e.target.value})} className="font-black text-slate-700 bg-slate-50 p-1.5 rounded outline-none border border-slate-200 text-[10px]">
+                        <select
+                          value={currentData.owner_dept}
+                          onChange={(e) => {
+                            const name = e.target.value;
+                            const u = editableOwnerUnits.find((x) => x.unit_name === name);
+                            setEditFormData({
+                              ...editFormData,
+                              owner_dept: name,
+                              owner_unit_id: u?.id || null,
+                            });
+                          }}
+                          className="font-black text-slate-700 bg-slate-50 p-1.5 rounded outline-none border border-slate-200 text-[10px]"
+                        >
                           {editableOwnerUnits.map(u => <option key={u.id} value={u.unit_name}>{u.unit_name}</option>)}
                           {currentData.owner_dept && !editableOwnerUnits.some((u) => u.unit_name === currentData.owner_dept) && (
                             <option value={currentData.owner_dept}>{currentData.owner_dept} (권한 외)</option>

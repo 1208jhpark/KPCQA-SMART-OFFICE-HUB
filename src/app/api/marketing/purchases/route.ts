@@ -87,7 +87,10 @@ export async function POST(req: Request) {
       if (!item) throw new Error('ITEM_NOT_FOUND');
       if (item.is_archived) throw new Error('ITEM_ARCHIVED');
 
-      assertCanEditOwnerDept(auth, item.owner_dept);
+      assertCanEditOwnerDept(auth, {
+        unitId: (item as { owner_unit_id?: string | null }).owner_unit_id,
+        deptName: item.owner_dept,
+      });
 
       // 카탈로그 단가와 동일할 때만 입고 — 단가 변경은 신규 물품 등록
       if (unitPrice !== Number(item.unit_price || 0)) {
@@ -170,7 +173,10 @@ export async function DELETE(req: Request) {
       });
       if (!purchase) throw new Error('PURCHASE_NOT_FOUND');
 
-      assertCanEditOwnerDept(auth, purchase.item?.owner_dept);
+      assertCanEditOwnerDept(auth, {
+        unitId: (purchase.item as { owner_unit_id?: string | null } | null)?.owner_unit_id,
+        deptName: purchase.item?.owner_dept,
+      });
 
       const stockResult = await tx.marketingItem.updateMany({
         where: {

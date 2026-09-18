@@ -6,7 +6,7 @@ import { usePathname } from 'next/navigation';
 import Link from 'next/link';
 import { getKSTDateString } from '@/utils/dateUtils';
 import { resolveInterfaceEditState, isSystemLv1User } from '@/lib/permission-utils';
-import { parseSupplyOwnerDepts, resolveTopOrgName } from '@/utils/orgUnits';
+import { parseSupplyOwnerDepts, parseSupplyOwnerUnitIds, resolveTopOrgName } from '@/utils/orgUnits';
 import LoadingState from '@/components/common/LoadingState';
 import {
   SUPPLIES_MASTER_TABS,
@@ -187,20 +187,37 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
   
   const formatNum = (num: any) => Number(num || 0).toLocaleString();
 
-  const toggleOwnerDept = (unitName: string) => {
+  const toggleOwnerDept = (unitName: string, unitId?: string) => {
     const name = String(unitName || '').trim();
     if (!name) return;
     setEditModal((prev: any) => {
       if (!prev) return prev;
       const cur = Array.isArray(prev.owner_depts) ? prev.owner_depts.map(String) : [];
+      const curIds = Array.isArray(prev.owner_unit_ids) ? prev.owner_unit_ids.map(String) : [];
       const next = cur.includes(name) ? cur.filter((n: string) => n !== name) : [...cur, name];
-      return { ...prev, owner_depts: next };
+      const id = String(unitId || '').trim();
+      let nextIds = curIds;
+      if (id) {
+        nextIds = cur.includes(name)
+          ? curIds.filter((x: string) => x !== id)
+          : Array.from(new Set([...curIds, id]));
+      } else {
+        nextIds = next
+          .map((n: string) =>
+            String(ownerDeptUnits.find((u: any) => u.unit_name === n)?.id || '').trim()
+          )
+          .filter(Boolean);
+      }
+      return { ...prev, owner_depts: next, owner_unit_ids: nextIds };
     });
   };
   
   const handleAddNewClick = () => {
     if (!canEdit) return alertNoEditPermission();
     const defaultOwner = topOrgName || ownerDeptUnits[0]?.unit_name || '';
+    const defaultId = defaultOwner
+      ? String(ownerDeptUnits.find((u: any) => u.unit_name === defaultOwner)?.id || '').trim()
+      : '';
     setEditModal({
       isNew: true, 
       id: '', 
@@ -209,6 +226,7 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
       alert_qty: 5, 
       r_unit: unitOptions[0]?.label || 'EA',
       owner_depts: defaultOwner ? [defaultOwner] : [],
+      owner_unit_ids: defaultId ? [defaultId] : [],
       note: '',
       publish_note: '',
       image_url: ''
@@ -245,6 +263,7 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
     if (!canEdit) return alertNoEditPermission();
     const ext = item.description ? JSON.parse(item.description) : {};
     const owners = parseSupplyOwnerDepts(item.owner_dept);
+    const ownerIds = parseSupplyOwnerUnitIds(item.owner_unit_ids);
     setEditModal({
       isNew: false, 
       id: item.id, 
@@ -256,6 +275,13 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
       })(), 
       r_unit: ext.s_unit || ext.r_unit || 'EA',
       owner_depts: owners.length ? owners : (topOrgName ? [topOrgName] : []),
+      owner_unit_ids: ownerIds.length
+        ? ownerIds
+        : (owners.length ? owners : (topOrgName ? [topOrgName] : []))
+            .map((n: string) =>
+              String(ownerDeptUnits.find((u: any) => u.unit_name === n)?.id || '').trim()
+            )
+            .filter(Boolean),
       note: ext.note || '',
       publish_note: ext.publish_note || '',
       image_url: item.image_url || ''
@@ -292,6 +318,13 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
       alert_qty: Number(editModal.alert_qty) || 0,
       category: '소모품',
       owner_depts: ownerDepts,
+      owner_unit_ids: Array.isArray(editModal.owner_unit_ids)
+        ? editModal.owner_unit_ids.map((x: string) => String(x).trim()).filter(Boolean)
+        : ownerDepts
+            .map((n: string) =>
+              String(ownerDeptUnits.find((u: any) => u.unit_name === n)?.id || '').trim()
+            )
+            .filter(Boolean),
       s_unit: editModal.r_unit,
       image_url: editModal.image_url || '',
       note: editModal.note || '',
@@ -906,7 +939,7 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
                             <input
                               type="checkbox"
                               checked={checked}
-                              onChange={() => toggleOwnerDept(name)}
+                              onChange={() => toggleOwnerDept(name, u.id)}
                               className="w-3.5 h-3.5 accent-indigo-600 cursor-pointer"
                             />
                             <span className="text-[11px] font-black text-slate-800 truncate">

@@ -4,6 +4,11 @@ import {
   authorizeAnyMenuPaths,
   authErrorToResponse,
 } from '@/lib/server-auth-guard';
+import {
+  buildProductionDeptScopeWhere,
+  isProductionScopeEmpty,
+  withProductionDeptDisplayNames,
+} from '@/lib/production-dept-scope';
 
 export const dynamic = 'force-dynamic';
 
@@ -142,7 +147,7 @@ export async function GET() {
       auth.permission.viewScope
     );
 
-    if (scope.viewScope === 'NONE' || scope.scopeNames.length === 0) {
+    if (scope.viewScope === 'NONE' || isProductionScopeEmpty(scope)) {
       return NextResponse.json({
         batches: [],
         scopeUnits: scope.scopeUnits,
@@ -151,15 +156,20 @@ export async function GET() {
       });
     }
 
-    const requests = await prisma.productionRequest.findMany({
-      where: {
-        isArchived: true,
-        deptName: { in: scope.scopeNames },
-        status: 'VERIFIED',
-        batchId: { not: null },
-      },
-      orderBy: { updatedAt: 'desc' },
-    });
+    const scopeWhere = buildProductionDeptScopeWhere(scope);
+    const requests = await withProductionDeptDisplayNames(
+      await prisma.productionRequest.findMany({
+        where: {
+          AND: [
+            { isArchived: true },
+            { status: 'VERIFIED' },
+            { batchId: { not: null } },
+            ...(scopeWhere ? [scopeWhere] : []),
+          ],
+        },
+        orderBy: { updatedAt: 'desc' },
+      })
+    );
 
     const byBatch = new Map<string, typeof requests>();
     for (const row of requests) {
