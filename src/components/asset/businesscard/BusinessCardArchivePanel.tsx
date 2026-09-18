@@ -4,7 +4,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { usePathname } from 'next/navigation';
 import * as XLSX from 'xlsx';
 import Link from 'next/link';
-import { resolveInterfaceEditState } from '@/lib/permission-utils';
+import { resolveInterfaceEditState, isSystemLv1User } from '@/lib/permission-utils';
 import { getKSTNowYearMonth } from '@/utils/dateUtils';
 import {
   BUSINESS_CARD_MASTER_TABS,
@@ -504,7 +504,7 @@ export default function BusinessCardArchivePanel() {
           <p className="text-emerald-100/90 text-xs mt-3 leading-relaxed">
             임직원이 신청한 명함의 국/영문 원본 조판 텍스트 데이터를 검수하고 외주 조판 공정으로 이관 제어하는 마스터 컨트롤 허브입니다.
           </p>
-          {permissionSummary && (
+          {permissionSummary && isSystemLv1User(currentUser) && (
             <div className="flex flex-wrap items-center gap-2 mt-4 pt-3 border-t border-white/15">
               <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-white/10 border-white/25 text-emerald-50 shadow-sm">
                 <span>👑 Master 책임자:</span>
@@ -524,11 +524,6 @@ export default function BusinessCardArchivePanel() {
                 <span className="opacity-50">|</span>
                 <span>Level: {permissionSummary.editLevel}</span>
               </div>
-              {!canEditMaster && (
-                <span className="text-[10px] font-black text-amber-200 bg-amber-500/20 border border-amber-300/30 px-2.5 py-1 rounded-md">
-                  편집 권한 없음 — 조회만 가능
-                </span>
-              )}
             </div>
           )}
         </div>

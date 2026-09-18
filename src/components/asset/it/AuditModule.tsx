@@ -2,27 +2,13 @@
      
 import React, { useState, useEffect, useMemo } from 'react';
 import * as XLSX from 'xlsx';
-import { getKSTDateString, getKSTNowYearMonth, getKSTYearMonth, isPastKSTDeadline } from '@/utils/dateUtils';
+import { getKSTDateString, getKSTNowYearMonth, getKSTYearMonthParts, isPastKSTDeadline } from '@/utils/dateUtils';
 import { resolveTopOrgName } from '@/utils/orgUnits';
 import { resolveInterfaceEditState } from '@/lib/permission-utils';
 import LoadingState from '@/components/common/LoadingState';
 import ItMasterPageBanner from '@/components/asset/it/ItMasterPageBanner';
 
 const MENU_PATH = '/asset/it/master/audit';
-
-/** KST 기준 연·월 문자열 (year: '2026', month: '07') */
-function getKSTYearMonthParts(dateInput: Date | string | number | null | undefined) {
-  if (dateInput === null || dateInput === undefined || dateInput === '') return null;
-  const raw = String(dateInput).trim();
-  const ymd = raw.match(/^(\d{4})-(\d{2})/);
-  if (ymd) return { year: ymd[1], month: ymd[2] };
-  const ym = getKSTYearMonth(dateInput);
-  if (!ym) return null;
-  return {
-    year: String(ym.year),
-    month: String(ym.month).padStart(2, '0'),
-  };
-}
 
 function historyDateKey(h: any) {
   return h.archivedAt || h.endDate || h.createdAt || null;

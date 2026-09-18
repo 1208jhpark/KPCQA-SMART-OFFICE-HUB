@@ -24,7 +24,7 @@ const VALID_CATEGORIES = new Set(['SIGN', 'JEBON', 'PRINT', 'OFFICE_SUPPLIES']);
 
 export type ConfirmRequestRecord = {
   category: string;
-  /** datetime-local 값 (YYYY-MM-DDTHH:mm) — KST 기준 입력 */
+  /** datetime-local 값 (YYYY-MM-DDTHH:mm) — 입력·저장·표시 모두 KST 벽시계 */
   requestedAt: string;
   memo: string;
   updatedAt: string;
@@ -96,12 +96,16 @@ export async function POST(req: Request) {
     if (!requestedAt) {
       return NextResponse.json({ message: '확인 완료 기한(날짜·시간)을 입력해 주세요.' }, { status: 400 });
     }
-    // YYYY-MM-DDTHH:mm
+    // YYYY-MM-DDTHH:mm — Asia/Seoul 벽시계로 해석 (브라우저 TZ와 무관)
     if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(requestedAt)) {
       return NextResponse.json(
         { message: '기한 일시 형식이 올바르지 않습니다. (날짜·시간)' },
         { status: 400 }
       );
+    }
+    // 유효한 KST 절대시각인지 검증
+    if (Number.isNaN(new Date(`${requestedAt}+09:00`).getTime())) {
+      return NextResponse.json({ message: '유효하지 않은 기한 일시입니다.' }, { status: 400 });
     }
 
     const store = await readStore();

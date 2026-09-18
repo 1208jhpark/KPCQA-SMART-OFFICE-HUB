@@ -4,7 +4,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import * as XLSX from 'xlsx';
-import { getKSTDateString, getKSTNowYearMonth, getKSTYearMonth } from '@/utils/dateUtils';
+import { getKSTDateString, getKSTNowYearMonth, getKSTYearMonthParts } from '@/utils/dateUtils';
 import LoadingState from '@/components/common/LoadingState';
 import ProductionRequestDetailModal from '@/components/asset/production/ProductionRequestDetailModal';
 import {
@@ -44,16 +44,6 @@ function formatQuantityUnit(item: {
   return 'EA';
 }
 
-function getKSTYearMonthParts(dateInput: Date | string | number | null | undefined) {
-  if (dateInput == null) return null;
-  const ym = getKSTYearMonth(dateInput);
-  if (!ym) return null;
-  return {
-    year: String(ym.year),
-    month: String(ym.month).padStart(2, '0'),
-  };
-}
-
 export default function ProductionApplyHistory() {
   const [histories, setHistories] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -76,15 +66,24 @@ export default function ProductionApplyHistory() {
   const loadHistories = () => {
     setLoading(true);
     fetch('/api/asset/production/apply/history?scope=OWN', { cache: 'no-store' })
-      .then((res) => res.json())
-      .then((data) => {
+      .then(async (res) => {
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          setHistories([]);
+          alert(data.message || data.error || '신청 이력을 불러올 권한이 없거나 실패했습니다.');
+          return;
+        }
         if (Array.isArray(data)) {
           setHistories(data);
         } else {
           setHistories([]);
         }
       })
-      .catch((err) => console.error('히스토리 로드 실패:', err))
+      .catch((err) => {
+        console.error('히스토리 로드 실패:', err);
+        setHistories([]);
+        alert('신청 이력을 불러오는 중 오류가 발생했습니다.');
+      })
       .finally(() => setLoading(false));
   };
 
@@ -420,27 +419,40 @@ export default function ProductionApplyHistory() {
         </div>
       </div>
 
-      {/* 탭 네비게이션 구조화 */}
-      <div className="flex gap-1.5 bg-slate-200/60 p-1.5 rounded-2xl border border-slate-200 shadow-inner w-full max-w-2xl mt-4">
-        {[
-          { name: '✍️ 신규 제작물 신청', path: '/asset/production/apply/request' },
-          { name: '📂 나의 신청 이력 관리', path: '/asset/production/apply/history' },
-        ].map((tab) => {
-          const isActive = pathname === tab.path;
-          return (
-            <Link
-              key={tab.path}
-              href={tab.path}
-              className={`flex-1 py-3 text-center text-[11px] font-black rounded-xl transition-all uppercase tracking-tight ${
-                isActive
-                  ? 'bg-white text-blue-600 shadow-sm border border-blue-200/50 scale-[1.01]'
-                  : 'text-slate-500 hover:text-slate-800 hover:bg-white/40'
-              }`}
-            >
-              {tab.name}
-            </Link>
-          );
-        })}
+      {/* 탭 네비게이션 — dept-master/order 스위처 규격 */}
+      <div className="flex items-center justify-between bg-white p-2 rounded-xl border border-slate-200 shadow-sm">
+        <div className="flex items-center gap-1.5 bg-slate-100/80 p-1 rounded-lg flex-wrap min-h-[40px]">
+          {[
+            {
+              name: '✍️ 신규 제작물 신청',
+              path: '/asset/production/apply/request',
+              activeColor: 'text-blue-600',
+            },
+            {
+              name: '📂 나의 신청 이력 관리',
+              path: '/asset/production/apply/history',
+              activeColor: 'text-indigo-600',
+            },
+          ].map((tab) => {
+            const isActive = pathname === tab.path;
+            return (
+              <Link
+                key={tab.path}
+                href={tab.path}
+                className={`px-5 py-2 rounded-md text-xs font-black transition-all flex items-center gap-2 ${
+                  isActive
+                    ? `bg-white ${tab.activeColor} shadow-sm border border-slate-200/80`
+                    : 'text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                <span>{tab.name}</span>
+              </Link>
+            );
+          })}
+        </div>
+        <p className="text-[10px] text-slate-400 font-bold px-3 hidden sm:block">
+          ※ apply=개인 신청 · dept=부서 묶음 발주 · master=중앙 대조
+        </p>
       </div>
 
       {/* 카테고리 서류철 탭 + 테이블 — dept-master/order와 동일 */}

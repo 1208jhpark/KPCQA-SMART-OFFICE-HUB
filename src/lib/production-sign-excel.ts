@@ -448,7 +448,7 @@ export function buildOfficeSuppliesOrderExcelRow(
     신청일: getKSTDateString(item.createdAt),
     소속부서: str(item.deptName),
     신청자: str(item.userName),
-    신청내역: '견적서 첨부',
+    신청내역: '견적서 PDF 첨부(필수)',
     '수령인 성명': str(opts.receiverName),
     '수령인 연락처': str(opts.receiverPhone),
     배송지: buildShippingCombined(opts),

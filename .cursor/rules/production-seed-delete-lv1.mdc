@@ -16,7 +16,7 @@ Applies under `/asset`, `/marketing`, `/equipment`, `/survey` (and matching comp
 |---|---|
 | Anyone with menu access | `+ 신규 등록` (no suffix) when create is ungated |
 | Edit permission (`isEditor` / interface Edit) | `수정(Edit)`, `삭제(Edit)`, `복구(Edit)`, `복원(Edit)`, `…설정(Edit)`, `…관리(Edit)`, Edit-gated `+ 신규 …(Edit)` |
-| LV_1 / menu Master only | `삭제(LV_1)`, `영구삭제(LV_1)` |
+| LV_1 only (system role) | `삭제(LV_1)`, `영구삭제(LV_1)` |
 
 - Prefer **`Edit`** (title case), not `EDIT`.
 - Prefer **`LV_1`** as the role code.
@@ -27,11 +27,12 @@ Applies under `/asset`, `/marketing`, `/equipment`, `/survey` (and matching comp
 - Leave plain: `닫기` / `취소`, workflow CTAs when header already marks the column, applicant self-edit.
 - Detail modals: open/edit actions Edit-gated; `editPermissionTag="Edit"` only when `allowEdit` is interface Edit.
 
-## Seed delete = LV_1
+## Seed delete = LV_1 only
 
-- Seed rows: `삭제(LV_1)` + LV_1/Master only.
+- Seed rows: `삭제(LV_1)` + **시스템 역할 LV_1만** (메뉴 Master 제외).
 - User-added rows: `삭제(Edit)` + Edit only.
-- Mirror checks on DELETE APIs.
+- Mirror checks on DELETE APIs (`myRole === 'LV_1'`).
+- Non-LV_1: button visible but grayed/`disabled`.
 
 ## Seed restore (missing only)
 

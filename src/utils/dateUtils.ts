@@ -26,6 +26,27 @@ export const getKSTYearMonth = (dateInput: Date | string | number) => {
   return { year, month };
 };
 
+/**
+ * UI 필터용 KST 연·월 문자열 ({ year: '2026', month: '07' }).
+ * - 순수 YYYY-MM-DD 만 달력일 그대로 사용
+ * - ISO 시각 등은 getKSTYearMonth로 변환 (UTC 접두 연·월 오판 방지)
+ */
+export function getKSTYearMonthParts(
+  dateInput: Date | string | number | null | undefined
+): { year: string; month: string } | null {
+  if (dateInput === null || dateInput === undefined || dateInput === '') return null;
+  if (typeof dateInput === 'string') {
+    const pure = dateInput.trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (pure) return { year: pure[1], month: pure[2] };
+  }
+  const ym = getKSTYearMonth(dateInput as Date | string | number);
+  if (!ym) return null;
+  return {
+    year: String(ym.year),
+    month: String(ym.month).padStart(2, '0'),
+  };
+}
+
 /** 지금 시각의 KST 연·월 */
 export const getKSTNowYearMonth = () => {
   return getKSTYearMonth(Date.now()) ?? { year: 1970, month: 1 };
@@ -91,6 +112,22 @@ export const formatKSTDateTime = (dateInput: Date | string | number | null | und
   const t = getKSTTimeString(date);
   return d && t ? `${d} ${t}` : '-';
 };
+
+/**
+ * 스레드/목록 표시용.
+ * 날짜만(YYYY-MM-DD)이면 날짜만, 시각이 있으면 KST DateTime.
+ */
+export function formatKSTDisplayDate(
+  dateInput: Date | string | number | null | undefined
+): string {
+  if (dateInput === null || dateInput === undefined || dateInput === '') return '';
+  if (typeof dateInput === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(dateInput.trim())) {
+    return dateInput.trim();
+  }
+  const full = formatKSTDateTime(dateInput);
+  if (full !== '-') return full;
+  return getKSTDateString(dateInput as Date | string | number) || '';
+}
 
 /**
  * 설문 endDate(YYYY-MM-DD) + endTime(HH:mm)을 KST(+09:00) 절대 시각으로 파싱

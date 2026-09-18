@@ -3,9 +3,9 @@ import React, { useState, useEffect, useMemo, Suspense } from 'react';
 import * as XLSX from 'xlsx';
 import { usePathname } from 'next/navigation';
 import Link from 'next/link';
-import { getKSTDateString, getKSTNowYearMonth, getKSTYearMonth } from '@/utils/dateUtils';
+import { getKSTDateString, getKSTNowYearMonth, getKSTYearMonthParts } from '@/utils/dateUtils';
 import LoadingState from '@/components/common/LoadingState';
-import { resolveInterfaceEditState } from '@/lib/permission-utils';
+import { resolveInterfaceEditState, isSystemLv1User } from '@/lib/permission-utils';
 import {
   SUPPLIES_MASTER_TABS,
   useInterfaceStepTabs,
@@ -13,20 +13,7 @@ import {
 
 const MENU_PATH = '/asset/supplies/master/archive';
 
-/** KST 기준 연·월 문자열 (year: '2026', month: '07') */
-function getKSTYearMonthParts(dateInput: Date | string | number | null | undefined) {
-  if (dateInput === null || dateInput === undefined || dateInput === '') return null;
-  const raw = String(dateInput).trim();
-  // 폐기일 등 YYYY-MM-DD 스냅샷은 파싱 없이 그대로 사용
-  const ymd = raw.match(/^(\d{4})-(\d{2})-(\d{2})/);
-  if (ymd) return { year: ymd[1], month: ymd[2] };
-  const ym = getKSTYearMonth(dateInput);
-  if (!ym) return null;
-  return {
-    year: String(ym.year),
-    month: String(ym.month).padStart(2, '0'),
-  };
-}
+/** KST 연·월 — dateUtils.getKSTYearMonthParts */
      
 function MasterArchiveContent() {
   const pathname = usePathname();
@@ -256,7 +243,7 @@ function MasterArchiveContent() {
     <p className="text-emerald-100/90 text-xs mt-3 leading-relaxed">
       더이상 지급하지 않는 소모품의 폐기 이력을 관리합니다.
     </p>
-    {permissionSummary && (
+    {permissionSummary && isSystemLv1User(currentUser) && (
       <div className="flex flex-wrap items-center gap-2 mt-4 pt-3 border-t border-white/15">
         <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-white/10 border-white/25 text-emerald-50 shadow-sm">
           <span>👑 Master 책임자:</span>
@@ -276,11 +263,6 @@ function MasterArchiveContent() {
           <span className="opacity-50">|</span>
           <span>Level: {permissionSummary.editLevel}</span>
         </div>
-        {!canEdit && (
-          <span className="text-[10px] font-black text-amber-200 bg-amber-500/20 border border-amber-300/30 px-2.5 py-1 rounded-md">
-            편집 권한 없음 — 조회만 가능
-          </span>
-        )}
       </div>
     )}
   </div>
@@ -351,16 +333,16 @@ function MasterArchiveContent() {
           </div>
      
           <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse table-fixed min-w-[1100px]">
+            <table className="w-full text-left border-collapse table-fixed min-w-[1180px]">
               <colgroup>
                 <col className="w-[40px]" />
                 <col className="w-[48px]" />
-                <col className="w-[100px]" />
-                <col className="w-[200px]" />
-                <col className="w-[100px]" />
+                <col className="w-[96px]" />
+                <col className="w-[180px]" />
+                <col className="w-[88px]" />
                 <col />
-                <col className="w-[120px]" />
-                <col className="w-[160px]" />
+                <col className="w-[110px]" />
+                <col className="w-[230px]" />
               </colgroup>
               <thead className="bg-slate-100 text-slate-700 text-[10px] font-black uppercase tracking-widest border-b border-slate-200">
                 <tr>
@@ -409,10 +391,11 @@ function MasterArchiveContent() {
                           <span className="text-slate-800 truncate">{item.ext.disposer_name || '관리자'}</span>
                         </div>
                       </td>
-                      <td className="px-2 text-center border-l border-slate-200">
-                        <div className="flex items-center justify-center gap-0.5 w-full flex-wrap">
+                      <td className="px-1 text-center border-l border-slate-200">
+                        <div className="flex items-center justify-center gap-0.5 w-full flex-nowrap">
                           <button
                             type="button"
+                            disabled={!canEdit}
                             onClick={() => handleRestore(item.id)}
                             title={canEdit ? '대시보드 복구' : '편집 권한 필요'}
                             className={
@@ -421,7 +404,7 @@ function MasterArchiveContent() {
                                 : disabledActionBtn
                             }
                           >
-                            대시보드 복구
+                            대시보드 복구(Edit)
                           </button>
                           {canEdit ? (
                             isLV1 ? (

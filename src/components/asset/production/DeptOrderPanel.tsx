@@ -3,7 +3,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import * as XLSX from 'xlsx';
-import { getKSTDateString, getKSTNowYearMonth, getKSTYearMonth } from '@/utils/dateUtils';
+import { getKSTDateString, getKSTNowYearMonth, getKSTYearMonthParts } from '@/utils/dateUtils';
 import LoadingState from '@/components/common/LoadingState';
 import { resolveInterfaceEditState } from '@/lib/permission-utils';
 import ProductionDeptShell from '@/components/asset/production/ProductionDeptShell';
@@ -63,13 +63,6 @@ type ProductionRequestRow = {
   estimatedPrice?: number;
   options?: Record<string, unknown>;
 };
-
-function getKSTYearMonthParts(dateInput: Date | string | number | null | undefined) {
-  if (dateInput == null) return null;
-  const ym = getKSTYearMonth(dateInput);
-  if (!ym) return null;
-  return { year: String(ym.year), month: String(ym.month).padStart(2, '0') };
-}
 
 function getCategoryLabel(catId: string) {
   return HISTORY_CATEGORIES.find((c) => c.id === catId)?.label || catId;

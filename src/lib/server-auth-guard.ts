@@ -229,8 +229,8 @@ export async function authorizeApi(
     throw new Error('UNAUTHORIZED_EXPIRED');
   }
 
-  const user = await prisma.user.findUnique({
-    where: { email: decoded.email },
+  const user = await prisma.user.findFirst({
+    where: { email: { equals: String(decoded.email || ''), mode: 'insensitive' } },
     include: { unit: { include: { parent: true } } },
   });
   if (!user) throw new Error('USER_NOT_FOUND');
@@ -303,8 +303,8 @@ export async function authorizeAnyMenuPaths(
     throw new Error('UNAUTHORIZED_EXPIRED');
   }
 
-  const user = await prisma.user.findUnique({
-    where: { email: decoded.email },
+  const user = await prisma.user.findFirst({
+    where: { email: { equals: String(decoded.email || ''), mode: 'insensitive' } },
     include: { unit: { include: { parent: true } } },
   });
   if (!user) throw new Error('USER_NOT_FOUND');
@@ -505,6 +505,7 @@ export function assertCanEditEquipmentDepartment(
         topOrgName: topOrg,
         myUnitName: myDept,
         myHqName: myHq,
+        myUnitId: user.unit_id,
         globalMgmtDept: mgmtDept,
         units: unitsList,
       })
@@ -557,6 +558,7 @@ export function assertCanEditOwnerDept(
         topOrgName: topOrg,
         myUnitName: myCenter,
         myHqName: myHq,
+        myUnitId: user.unit_id,
         globalMgmtDept: mgmtDept,
         units: unitsList,
       })

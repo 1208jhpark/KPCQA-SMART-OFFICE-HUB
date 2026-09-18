@@ -4,6 +4,10 @@ import {
   authorizeAnyMenuPaths,
   authErrorToResponse,
 } from '@/lib/server-auth-guard';
+import {
+  isSeedVendor,
+  SEED_VENDOR_DEFAULTS,
+} from '@/lib/production-seed-vendors';
 
 export const dynamic = 'force-dynamic';
 
@@ -63,9 +67,63 @@ export async function GET() {
 
 export async function POST(req: Request) {
   try {
-    // 신규 등록은 메뉴 접근만 필요 (수정·삭제는 Edit 권한)
-    await authorizeAnyMenuPaths(READ_PATHS);
     const body = await req.json();
+
+    // 시드 누락분 복구: 없으면 추가, 비활성만 재활성 (명칭·연락처·품목·우선연결 보존)
+    if (body?.action === 'restore-seeds') {
+      await authorizeAnyMenuPaths(READ_PATHS, { requireEditor: true });
+
+      let created = 0;
+      let reactivated = 0;
+
+      for (const seed of SEED_VENDOR_DEFAULTS) {
+        let existing = await prisma.productionVendorMaster.findUnique({
+          where: { id: seed.id },
+        });
+        if (!existing) {
+          existing = await prisma.productionVendorMaster.findFirst({
+            where: { label: seed.label },
+          });
+        }
+
+        if (!existing) {
+          await prisma.productionVendorMaster.create({
+            data: {
+              id: seed.id,
+              label: seed.label,
+              managerName: seed.managerName,
+              contact: seed.contact,
+              email: seed.email,
+              items: seed.items,
+              priorityCategory: seed.priorityCategory,
+              isActive: true,
+            },
+          });
+          await assignExclusivePriorityCategory(seed.id, seed.priorityCategory);
+          created += 1;
+          continue;
+        }
+
+        if (!existing.isActive) {
+          await prisma.productionVendorMaster.update({
+            where: { id: existing.id },
+            data: { isActive: true },
+          });
+          reactivated += 1;
+        }
+      }
+
+      return NextResponse.json({
+        message:
+          created + reactivated === 0
+            ? '복구할 시드 업체가 없습니다. (이미 모두 활성)'
+            : `시드 업체 복구 완료 (신규 ${created}건, 재활성 ${reactivated}건)`,
+        created,
+        reactivated,
+      });
+    }
+
+    await authorizeAnyMenuPaths(READ_PATHS); // 신규 등록: Access
     const label = String(body.label || '').trim();
     if (!label) return NextResponse.json({ message: '업체명은 필수입니다.' }, { status: 400 });
     const priorityCategory = parsePriorityCategory(body.priorityCategory);
@@ -135,10 +193,24 @@ export async function PUT(req: Request) {
 
 export async function DELETE(req: Request) {
   try {
-    await authorizeAnyMenuPaths(READ_PATHS, { requireEditor: true });
+    const auth = await authorizeAnyMenuPaths(READ_PATHS);
     const { searchParams } = new URL(req.url);
     const id = searchParams.get('id');
     if (!id) return NextResponse.json({ message: '업체 ID가 필요합니다.' }, { status: 400 });
+
+    const row = await prisma.productionVendorMaster.findUnique({ where: { id } });
+    if (!row) return NextResponse.json({ message: '업체를 찾을 수 없습니다.' }, { status: 404 });
+
+    if (isSeedVendor(row)) {
+      if (auth.permission.myRole !== 'LV_1') {
+        return NextResponse.json(
+          { message: '시드 업체 삭제는 LV_1만 가능합니다.' },
+          { status: 403 }
+        );
+      }
+    } else if (!auth.permission.isEditor) {
+      return NextResponse.json({ message: '편집 권한이 없습니다.' }, { status: 403 });
+    }
 
     const activeCount = await prisma.productionVendorMaster.count({ where: { isActive: true } });
     if (activeCount <= 1) {

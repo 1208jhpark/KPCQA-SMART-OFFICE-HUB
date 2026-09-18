@@ -140,7 +140,7 @@ export async function POST(req: Request) {
       });
     }
 
-    await authorizeAnyMenuPaths(READ_PATHS);
+    await authorizeAnyMenuPaths(READ_PATHS); // 신규 등록: Access
     const name = String(body.name || '').trim();
     if (!name) return NextResponse.json({ message: '제품명은 필수입니다.' }, { status: 400 });
 
@@ -245,11 +245,9 @@ export async function DELETE(req: Request) {
     if (!id) return NextResponse.json({ message: '품목 ID가 필요합니다.' }, { status: 400 });
 
     if (isSeedPrintItemId(id)) {
-      const isLv1OrMaster =
-        auth.permission.isMaster || auth.permission.myRole === 'LV_1';
-      if (!isLv1OrMaster) {
+      if (auth.permission.myRole !== 'LV_1') {
         return NextResponse.json(
-          { message: '시드 품목 삭제는 LV_1(마스터) 권한이 필요합니다.' },
+          { message: '시드 품목 삭제는 LV_1만 가능합니다.' },
           { status: 403 }
         );
       }

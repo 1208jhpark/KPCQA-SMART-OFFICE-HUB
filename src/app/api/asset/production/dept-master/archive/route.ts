@@ -184,7 +184,13 @@ export async function GET() {
           )
         );
         const archivedAt = items.reduce((max, i) => {
-          const t = new Date(i.createdAt).getTime();
+          const opts = asOptionsRecord(i.options);
+          const settledRaw = opts.masterSettledArchivedAt;
+          const settledT = settledRaw ? new Date(String(settledRaw)).getTime() : 0;
+          const t =
+            Number.isFinite(settledT) && settledT > 0
+              ? settledT
+              : new Date(i.updatedAt || i.createdAt).getTime();
           return t > max ? t : max;
         }, 0);
 

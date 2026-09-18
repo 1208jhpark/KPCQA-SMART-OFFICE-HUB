@@ -7,7 +7,7 @@ import {
   tryGetSessionUser,
 } from '@/lib/server-auth-guard';
 import { checkMenuPermission } from '@/lib/permission-utils';
-import { getChildUnitNames, resolveTopOrgName } from '@/utils/orgUnits';
+import { getChildUnitNames, resolveTopOrgName, isGlobalMgmtOrgMember } from '@/utils/orgUnits';
 import {
   assetMatchesIdentity,
   normalizeEmail,
@@ -204,22 +204,17 @@ function resolveDeptScopeNames(auth: any, globalMgmtDept?: string): string[] | n
   }
 
   // FE DeptModule.buildDeptViewScope 와 동일: 총괄 부서(및 하위)면 최상위 Organization 자산 포함
-  const mgmt = String(globalMgmtDept || '').trim();
   const topOrg = resolveTopOrgName(units);
-  const own = String(myUnit.unit_name || '').trim();
-  if (mgmt && topOrg && own) {
-    const covers = (ancestorName: string, descendantName: string) => {
-      if (ancestorName === descendantName) return true;
-      let current = units.find((u: any) => u.unit_name === descendantName);
-      while (current?.parent_id) {
-        const parent = units.find((u: any) => u.id === current!.parent_id);
-        if (!parent) break;
-        if (parent.unit_name === ancestorName) return true;
-        current = parent;
-      }
-      return false;
-    };
-    if (own === mgmt || covers(mgmt, own)) names.add(topOrg);
+  if (
+    topOrg &&
+    isGlobalMgmtOrgMember({
+      myUnitName: myUnit.unit_name,
+      myUnitId: myUnit.id,
+      globalMgmtDept: globalMgmtDept,
+      units,
+    })
+  ) {
+    names.add(topOrg);
   }
 
   return Array.from(names);

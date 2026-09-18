@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useMemo, useRef, Suspense } from 'react';
 import * as XLSX from 'xlsx';
-import { getKSTDateString, getKSTNowYearMonth, getKSTYearMonth } from '@/utils/dateUtils';
+import { getKSTDateString, getKSTNowYearMonth, getKSTYearMonthParts } from '@/utils/dateUtils';
 import { resolveInterfaceEditState } from '@/lib/permission-utils';
 import LoadingState from '@/components/common/LoadingState';
 import ItMasterPageBanner from '@/components/asset/it/ItMasterPageBanner';
@@ -54,19 +54,6 @@ function descendantUnitNames(unitName: string, units: Array<{ id: string; unit_n
   };
   walk(selected.id);
   return names;
-}
-
-function getKSTYearMonthParts(dateInput: Date | string | number | null | undefined) {
-  if (dateInput === null || dateInput === undefined || dateInput === '') return null;
-  const raw = String(dateInput).trim();
-  const ymd = raw.match(/^(\d{4})-(\d{2})/);
-  if (ymd) return { year: ymd[1], month: ymd[2] };
-  const ym = getKSTYearMonth(dateInput);
-  if (!ym) return null;
-  return {
-    year: String(ym.year),
-    month: String(ym.month).padStart(2, '0'),
-  };
 }
 
 const HISTORY_MONTHS = ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12'];

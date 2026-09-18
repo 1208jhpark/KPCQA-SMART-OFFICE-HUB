@@ -2,7 +2,7 @@
      
 import React, { useState, useMemo, useEffect, useRef, Suspense } from 'react';
 import * as XLSX from 'xlsx';
-import { getKSTDateString, addMonthsToKSTDateOnly, getKSTDaysUntil, parseExcelCellToKSTDateString, toSortableTime, formatKSTDateTime } from '@/utils/dateUtils';
+import { getKSTDateString, addMonthsToKSTDateOnly, getKSTDaysUntil, parseExcelCellToKSTDateString, toSortableTime, formatKSTDateTime, formatKSTDisplayDate } from '@/utils/dateUtils';
 import { resolveTopOrgName } from '@/utils/orgUnits';
 import ItAssetQrImage from '@/components/asset/it/ItAssetQrImage';
 import { generateItAssetQrDataUrls } from '@/utils/equipmentQr';
@@ -228,14 +228,8 @@ function threadTurns(req: any) {
   const adminText = opinionDisplay(req?.adminOpinion);
   const reqDateRaw = req?.requestDate || req?.createdAt;
   const doneDateRaw = req?.completedAt || req?.updatedAt || req?.createdAt || reqDateRaw;
-  const reqDate =
-    formatKSTDateTime(reqDateRaw) !== '-'
-      ? formatKSTDateTime(reqDateRaw)
-      : getKSTDateString(reqDateRaw) || '';
-  const doneDate =
-    formatKSTDateTime(doneDateRaw) !== '-'
-      ? formatKSTDateTime(doneDateRaw)
-      : reqDate;
+  const reqDate = formatKSTDisplayDate(reqDateRaw);
+  const doneDate = formatKSTDisplayDate(doneDateRaw) || reqDate;
   const userName = String(req?.requester || req?.name || '').trim() || '사용자';
   const adminName = '관리자';
   const turns: { role: 'admin' | 'user'; name: string; text: string; date: string }[] = [];

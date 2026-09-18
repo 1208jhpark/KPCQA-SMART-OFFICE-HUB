@@ -1,9 +1,9 @@
 'use client';
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { resolveInterfaceEditState } from '@/lib/permission-utils';
+import { isSystemLv1User } from '@/lib/permission-utils';
 import {
   PRODUCTION_MASTER_TABS,
   useInterfaceStepTabs,
@@ -36,13 +36,7 @@ export default function ProductionMasterShell({
   const pathname = usePathname();
   const tabs = useInterfaceStepTabs(PRODUCTION_MASTER_TABS, '/asset/production/master');
   const [currentUser, setCurrentUser] = useState<any>(null);
-  const [interfaceConfig, setInterfaceConfig] = useState<any>(null);
   const [permissionSummary, setPermissionSummary] = useState<PermissionSummary | null>(null);
-
-  const canEditMaster = useMemo(
-    () => resolveInterfaceEditState(currentUser, interfaceConfig).isEditor,
-    [currentUser, interfaceConfig]
-  );
 
   useEffect(() => {
     const ts = Date.now();
@@ -54,22 +48,14 @@ export default function ProductionMasterShell({
       fetch(`/api/auth/me?t=${ts}`, { cache: 'no-store' })
         .then((res) => (res.ok ? res.json() : null))
         .catch(() => null),
-      fetch(`/api/admin/interface?t=${ts}`, { cache: 'no-store' })
-        .then((res) => (res.ok ? res.json() : []))
-        .catch(() => []),
       fetch(
         `/api/admin/interface/summary?path=${encodeURIComponent(summaryPath)}&t=${ts}`,
         { cache: 'no-store' }
       )
         .then((res) => (res.ok ? res.json() : null))
         .catch(() => null),
-    ]).then(([user, menus, summary]) => {
+    ]).then(([user, summary]) => {
       setCurrentUser(user);
-      const row = Array.isArray(menus)
-        ? menus.find((m: any) => m.path === summaryPath) ||
-          menus.find((m: any) => m.path === MENU_PATH)
-        : null;
-      setInterfaceConfig(row || null);
       setPermissionSummary(summary);
     });
   }, [pathname]);
@@ -91,7 +77,7 @@ export default function ProductionMasterShell({
             {pageHint ||
               '각 부서에서 발주·수령검수 완료 후 이관된 제작 묶음을 모아 명세 대조·정산 상태를 관리하는 마스터 컨트롤 허브입니다.'}
           </p>
-          {permissionSummary && (
+          {permissionSummary && isSystemLv1User(currentUser) && (
             <div className="flex flex-wrap items-center gap-2 mt-4 pt-3 border-t border-white/15">
               <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-white/10 border-white/25 text-emerald-50 shadow-sm">
                 <span>👑 Master 책임자:</span>
@@ -111,11 +97,6 @@ export default function ProductionMasterShell({
                 <span className="opacity-50">|</span>
                 <span>Level: {permissionSummary.editLevel}</span>
               </div>
-              {!canEditMaster && (
-                <span className="text-[10px] font-black text-amber-200 bg-amber-500/20 border border-amber-300/30 px-2.5 py-1 rounded-md">
-                  편집 권한 없음 — 조회만 가능
-                </span>
-              )}
             </div>
           )}
         </div>

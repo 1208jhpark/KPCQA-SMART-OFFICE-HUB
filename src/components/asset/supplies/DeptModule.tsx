@@ -1,4 +1,6 @@
 'use client';
+
+import { isSystemLv1User } from '@/lib/permission-utils';
      
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import * as XLSX from 'xlsx';
@@ -605,7 +607,7 @@ function DeptContent() {
           <p className="text-slate-400 text-xs mt-3 leading-relaxed">
             연계 조직(본인·하위)의 소모품 신청 내역 및 처리 현황을 조회합니다.
           </p>
-          {permissionSummary && (
+          {permissionSummary && isSystemLv1User(currentUser) && (
             <div className="flex flex-wrap items-center gap-2 mt-4 pt-3 border-t border-white/15">
               <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-white/10 border-white/25 text-slate-50 shadow-sm">
                 <span>👑 Master 책임자:</span>

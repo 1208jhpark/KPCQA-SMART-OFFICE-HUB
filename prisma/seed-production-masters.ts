@@ -87,6 +87,7 @@ export async function seedProductionMasters(
 
   const productionVendors = [
     {
+      id: 'seed_vend_artrolic',
       label: '아트로릭',
       managerName: '',
       contact: '',
@@ -95,6 +96,7 @@ export async function seedProductionMasters(
       priorityCategory: 'SIGN',
     },
     {
+      id: 'seed_vend_hanseng',
       label: '한생미디어',
       managerName: '',
       contact: '',
@@ -103,6 +105,7 @@ export async function seedProductionMasters(
       priorityCategory: 'JEBON',
     },
     {
+      id: 'seed_vend_dreamdepot',
       label: '드림디포',
       managerName: '',
       contact: '',
@@ -113,7 +116,9 @@ export async function seedProductionMasters(
   ];
 
   for (const v of productionVendors) {
-    const exist = await prisma.productionVendorMaster.findFirst({ where: { label: v.label } });
+    const exist =
+      (await prisma.productionVendorMaster.findUnique({ where: { id: v.id } })) ||
+      (await prisma.productionVendorMaster.findFirst({ where: { label: v.label } }));
     if (!exist) {
       await prisma.productionVendorMaster.create({ data: { ...v, isActive: true } });
       continue;

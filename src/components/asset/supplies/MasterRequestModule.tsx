@@ -13,7 +13,7 @@ import {
   type SupplyRequestStatus,
 } from '@/utils/supplyRequestStatus';
 import LoadingState from '@/components/common/LoadingState';
-import { resolveInterfaceEditState } from '@/lib/permission-utils';
+import { resolveInterfaceEditState, isSystemLv1User } from '@/lib/permission-utils';
 import {
   SUPPLIES_MASTER_TABS,
   useInterfaceStepTabs,
@@ -602,7 +602,7 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
     <p className="text-emerald-100/90 text-xs mt-3 leading-relaxed">
       임직원의 소모품 신청내역을 검토하고 승인/반려 등 관리합니다.
     </p>
-    {permissionSummary && (
+    {permissionSummary && isSystemLv1User(currentUser) && (
       <div className="flex flex-wrap items-center gap-2 mt-4 pt-3 border-t border-white/15">
         <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-white/10 border-white/25 text-emerald-50 shadow-sm">
           <span>👑 Master 책임자:</span>
@@ -622,11 +622,6 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
           <span className="opacity-50">|</span>
           <span>Level: {permissionSummary.editLevel}</span>
         </div>
-        {!canEdit && (
-          <span className="text-[10px] font-black text-amber-200 bg-amber-500/20 border border-amber-300/30 px-2.5 py-1 rounded-md">
-            편집 권한 없음 — 조회만 가능
-          </span>
-        )}
       </div>
     )}
   </div>
@@ -914,7 +909,6 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
                       ? '신규 신청 대기건'
                       : '지급 대기건'}
               </h2>
-              <span className="text-[11px] font-bold bg-slate-300/80 text-slate-700 px-2 py-0.5 rounded-md">{filteredRequests.length}건</span>
               {activeFolder === 'ACTIVE' ? (
               <div className="flex items-center gap-1 ml-1">
                 <button

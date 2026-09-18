@@ -131,6 +131,40 @@ function resolveScopeFromUnits(
   };
 }
 
+function buildInspectionScope(auth: {
+  user: { unit?: { id: string; unit_name: string } | null };
+  unitsList?: unknown[];
+  permission: { viewScope?: string; editScope?: string; myRole?: string; isMaster?: boolean };
+}) {
+  const myUnit = auth.user.unit;
+  if (!myUnit?.id || !myUnit.unit_name) return null;
+
+  const allUnits = (auth.unitsList || []).map((u: any) => ({
+    id: u.id as string,
+    unit_name: u.unit_name as string,
+    parent_id: (u.parent_id ?? null) as string | null,
+  }));
+
+  const scopeKey =
+    auth.permission.isMaster || auth.permission.myRole === 'LV_1'
+      ? 'TOTAL'
+      : String(auth.permission.editScope || auth.permission.viewScope || 'DEPT');
+
+  return resolveScopeFromUnits(
+    { id: myUnit.id, unit_name: myUnit.unit_name },
+    allUnits,
+    scopeKey
+  );
+}
+
+function assertRowInDeptScope(
+  scope: ReturnType<typeof resolveScopeFromUnits> | null,
+  deptName: string | null | undefined
+) {
+  if (!scope || scope.viewScope === 'NONE' || scope.scopeNames.length === 0) return false;
+  return scope.scopeNames.includes(String(deptName || '').trim());
+}
+
 /** [GET] 묶음 발주(ORDERED+) 건 → 외주 발주 묶음 관리 대장 */
 export async function GET() {
   try {
@@ -237,6 +271,15 @@ export async function POST(req: Request) {
     const body = await req.json().catch(() => ({}));
     const action = String(body.action || '').trim().toLowerCase();
 
+    const scope = buildInspectionScope(auth);
+    if (!scope || scope.scopeNames.length === 0) {
+      return NextResponse.json(
+        { message: '부서 스코프가 없어 처리할 수 없습니다.' },
+        { status: 403 }
+      );
+    }
+    const scopeDeptFilter = { deptName: { in: scope.scopeNames } };
+
     if (action === 'confirm-dispatch') {
       const batchId = String(body.batchId || '').trim();
       const dispatchedDate =
@@ -247,11 +290,11 @@ export async function POST(req: Request) {
         return NextResponse.json({ message: '묶음 번호가 필요합니다.' }, { status: 400 });
       }
       const rows = await prisma.productionRequest.findMany({
-        where: { batchId, status: 'ORDERED', isArchived: false },
+        where: { batchId, status: 'ORDERED', isArchived: false, ...scopeDeptFilter },
       });
       if (rows.length === 0) {
         return NextResponse.json(
-          { message: '발주진행(ORDERED) 건이 없습니다.' },
+          { message: '담당 부서 범위의 발주진행(ORDERED) 건이 없습니다.' },
           { status: 400 }
         );
       }
@@ -297,6 +340,12 @@ export async function POST(req: Request) {
         return NextResponse.json(
           { message: '수령대기(발주확정 후) 상태의 건만 수령완료할 수 있습니다.' },
           { status: 400 }
+        );
+      }
+      if (!assertRowInDeptScope(scope, row.deptName)) {
+        return NextResponse.json(
+          { message: '담당 부서 범위 밖의 신청 건입니다.' },
+          { status: 403 }
         );
       }
       const opts = asOptionsRecord(row.options);
@@ -349,6 +398,12 @@ export async function POST(req: Request) {
       const row = await prisma.productionRequest.findUnique({ where: { id: requestId } });
       if (!row || row.isArchived) {
         return NextResponse.json({ message: '신청 건을 찾을 수 없습니다.' }, { status: 404 });
+      }
+      if (!assertRowInDeptScope(scope, row.deptName)) {
+        return NextResponse.json(
+          { message: '담당 부서 범위 밖의 신청 건입니다.' },
+          { status: 403 }
+        );
       }
       if (String(row.category || '').toUpperCase() !== 'OFFICE_SUPPLIES') {
         return NextResponse.json(
@@ -450,6 +505,12 @@ export async function POST(req: Request) {
           { status: 400 }
         );
       }
+      if (!assertRowInDeptScope(scope, row.deptName)) {
+        return NextResponse.json(
+          { message: '담당 부서 범위 밖의 신청 건입니다.' },
+          { status: 403 }
+        );
+      }
       if (String(row.category || '').toUpperCase() !== 'OFFICE_SUPPLIES') {
         return NextResponse.json(
           { message: '사무문구류 견적 리스트만 수정할 수 있습니다.' },
@@ -503,11 +564,12 @@ export async function POST(req: Request) {
           batchId,
           status: { in: ['ORDERED', 'VERIFIED'] },
           isArchived: false,
+          ...scopeDeptFilter,
         },
       });
       if (rows.length === 0) {
         return NextResponse.json(
-          { message: '발주진행·수령완료 건만 취소할 수 있습니다.' },
+          { message: '담당 부서 범위의 발주진행·수령완료 건만 취소할 수 있습니다.' },
           { status: 400 }
         );
       }
@@ -552,11 +614,11 @@ export async function POST(req: Request) {
         return NextResponse.json({ message: '묶음 번호가 필요합니다.' }, { status: 400 });
       }
       const rows = await prisma.productionRequest.findMany({
-        where: { batchId, status: 'VERIFIED', isArchived: false },
+        where: { batchId, status: 'VERIFIED', isArchived: false, ...scopeDeptFilter },
       });
       if (rows.length === 0) {
         return NextResponse.json(
-          { message: '수령완료(VERIFIED) 건만 보관함으로 이동할 수 있습니다.' },
+          { message: '담당 부서 범위의 수령완료(VERIFIED) 건만 보관함으로 이동할 수 있습니다.' },
           { status: 400 }
         );
       }
@@ -599,8 +661,16 @@ export async function POST(req: Request) {
       return NextResponse.json({ message: '필수 파라미터가 누락되었습니다.' }, { status: 400 });
     }
 
+    const priceRow = await prisma.productionRequest.findUnique({ where: { id: String(requestId) } });
+    if (!priceRow || !assertRowInDeptScope(scope, priceRow.deptName)) {
+      return NextResponse.json(
+        { message: '담당 부서 범위 밖의 신청 건입니다.' },
+        { status: 403 }
+      );
+    }
+
     const updatedRequest = await prisma.productionRequest.update({
-      where: { id: requestId },
+      where: { id: String(requestId) },
       data: {
         finalPrice: Number(finalPrice),
         status: 'VERIFIED',

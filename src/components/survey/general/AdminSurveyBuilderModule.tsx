@@ -1,4 +1,6 @@
 'use client';
+
+import { isSystemLv1User } from '@/lib/permission-utils';
   
 import React, { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
@@ -57,6 +59,7 @@ export default function SurveyBuilderPage() {
   const [orderApplied, setOrderApplied] = useState(false);
   const [canEdit, setCanEdit] = useState(false);
   const [permReady, setPermReady] = useState(false);
+  const [currentUser, setCurrentUser] = useState<any>(null);
   const [permissionSummary, setPermissionSummary] = useState<{
     masterName: string;
     accessDesignate: string;
@@ -96,25 +99,31 @@ export default function SurveyBuilderPage() {
     setSurveyId(id);
 
     // 빌더 메뉴 path만 사용 (active-surveys 등과 OR 합산·폴백 금지)
-    fetch(`/api/survey/general?t=${Date.now()}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'GET_ADMIN_CONTEXT', menuPath: BUILDER_MENU_PATH }),
-      cache: 'no-store',
-    })
-      .then(async (res) => {
+    const ts = Date.now();
+    Promise.all([
+      fetch(`/api/survey/general?t=${ts}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'GET_ADMIN_CONTEXT', menuPath: BUILDER_MENU_PATH }),
+        cache: 'no-store',
+      }),
+      fetch(`/api/auth/me?t=${ts}`, { cache: 'no-store' }),
+    ])
+      .then(async ([res, meRes]) => {
         if (!res.ok) {
           setCanEdit(false);
           setPermissionSummary(null);
-          return;
+        } else {
+          const ctx = await res.json();
+          setCanEdit(ctx?.canEdit === true);
+          setPermissionSummary(ctx?.permissionSummary || null);
         }
-        const ctx = await res.json();
-        setCanEdit(ctx?.canEdit === true);
-        setPermissionSummary(ctx?.permissionSummary || null);
+        setCurrentUser(meRes.ok ? await meRes.json() : null);
       })
       .catch(() => {
         setCanEdit(false);
         setPermissionSummary(null);
+        setCurrentUser(null);
       })
       .finally(() => setPermReady(true));
   
@@ -125,7 +134,6 @@ export default function SurveyBuilderPage() {
       return;
     }
   
-    const ts = Date.now();
     fetch(`/api/survey/general?t=${ts}`, { cache: 'no-store' })
       .then(res => {
         if (!res.ok) throw new Error('API 로드 실패');
@@ -416,7 +424,7 @@ export default function SurveyBuilderPage() {
             </button>
           </div>
         </div>
-        {permissionSummary && (
+        {permissionSummary && isSystemLv1User(currentUser) && (
           <div className="flex flex-wrap items-center gap-2 mt-3 pt-3 border-t border-slate-100">
             <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-blue-50 border-blue-200 text-blue-700 shadow-sm">
               <span>👑 Master 책임자:</span>
@@ -436,11 +444,6 @@ export default function SurveyBuilderPage() {
               <span className="opacity-50">|</span>
               <span>Level: {permissionSummary.editLevel}</span>
             </div>
-            {!editAllowed && (
-              <span className="text-[10px] font-black text-amber-700 bg-amber-50 border border-amber-200 px-2.5 py-1 rounded-md">
-                현재 계정: 조회만 가능 (편집 권한 없음)
-              </span>
-            )}
           </div>
         )}
       </div>

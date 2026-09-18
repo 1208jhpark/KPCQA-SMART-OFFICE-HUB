@@ -3,9 +3,10 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import * as XLSX from 'xlsx';
-import { getKSTDateString, getKSTNowYearMonth, getKSTYearMonth } from '@/utils/dateUtils';
+import { getKSTDateString, getKSTNowYearMonth, getKSTYearMonthParts } from '@/utils/dateUtils';
 import LoadingState from '@/components/common/LoadingState';
-import { resolveInterfaceEditState } from '@/lib/permission-utils';
+import { resolveInterfaceEditState, isSystemLv1User } from '@/lib/permission-utils';
+import { isSeedVendor } from '@/lib/production-seed-vendors';
 import ProductionDeptShell from '@/components/asset/production/ProductionDeptShell';
 import ProductionRequestDetailModal from '@/components/asset/production/ProductionRequestDetailModal';
 import { getProductionCategoryBadgeClass, getProductionCategoryFolderTabClasses } from '@/lib/production-category-theme';
@@ -192,13 +193,6 @@ function batchLabelOpts(kind: 'sign' | 'jebon' | 'print' | 'office' | 'other') {
   return {};
 }
 
-function getKSTYearMonthParts(dateInput: Date | string | number | null | undefined) {
-  if (dateInput == null) return null;
-  const ym = getKSTYearMonth(dateInput);
-  if (!ym) return null;
-  return { year: String(ym.year), month: String(ym.month).padStart(2, '0') };
-}
-
 export default function DeptInspectionPanel() {
   const router = useRouter();
   const [batches, setBatches] = useState<OrderBatch[]>([]);
@@ -244,6 +238,7 @@ export default function DeptInspectionPanel() {
     () => resolveInterfaceEditState(currentUser, interfaceConfig).isEditor,
     [currentUser, interfaceConfig]
   );
+  const canDeleteLv1 = useMemo(() => isSystemLv1User(currentUser), [currentUser]);
 
   const fetchMailSettings = useCallback(async () => {
     try {
@@ -646,6 +641,57 @@ export default function DeptInspectionPanel() {
     }
   };
 
+  /** 현판·제본·기타제작 — 묶음 내 수령대기 건 일괄 수령확정 (사무문구 전체 수령확정과 동일 UX) */
+  const getBatchReceivableNonOfficeItems = (batch: OrderBatch) =>
+    (batch.items || []).filter(
+      (item) =>
+        item.category !== 'OFFICE_SUPPLIES' &&
+        !isCustomerDirectShip(item) &&
+        item.status === PRODUCTION_STATUS.ORDERED &&
+        isVendorDispatched(item.options || {})
+    );
+
+  const handleConfirmReceiveAllNonOffice = async (batch: OrderBatch) => {
+    if (!canEdit) return alert('수령확정 권한(Edit)이 없습니다.');
+    if (officeEditRequestId) return alert('강제수정모드를 종료한 뒤 수령확정해 주세요.');
+    const targets = getBatchReceivableNonOfficeItems(batch);
+    if (targets.length === 0) {
+      return alert('수령확정할 현판·제본·기타제작 건이 없습니다.');
+    }
+    if (
+      !confirm(
+        `[${formatBatchNo(batch.id)}] 수령대기 ${targets.length}건을 전체 수령확정할까요?`
+      )
+    ) {
+      return;
+    }
+    try {
+      let ok = 0;
+      for (const item of targets) {
+        const res = await fetch('/api/asset/production/dept-master/inspection', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'confirm-receive', requestId: item.id }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          alert(
+            data.message ||
+              `[${item.postNumber}] 수령확정 실패 (${ok}/${targets.length}건만 처리됨)`
+          );
+          await fetchData();
+          return;
+        }
+        ok += 1;
+      }
+      alert(`${ok}건 전체 수령확정 처리되었습니다.`);
+      await fetchData();
+    } catch {
+      alert('서버와 통신할 수 없습니다.');
+      await fetchData();
+    }
+  };
+
   /** 사무문구 견적 줄 단위 수령 체크 */
   const handleConfirmReceiveLine = async (
     item: BatchItem,
@@ -1036,7 +1082,11 @@ export default function DeptInspectionPanel() {
   };
 
   const handleDeleteVendor = async (vendor: ProductionVendor) => {
-    if (!canEdit) return alert('편집 권한(Edit)이 없습니다.');
+    if (isSeedVendor(vendor)) {
+      if (!canDeleteLv1) return alert('시드 업체 삭제는 LV_1만 가능합니다.');
+    } else if (!canEdit) {
+      return alert('편집 권한(Edit)이 없습니다.');
+    }
     if (
       !confirm(
         `[${vendor.label}] 업체를 삭제할까요?\n발주 이력은 그대로 남습니다.`
@@ -1187,17 +1237,17 @@ export default function DeptInspectionPanel() {
               <colgroup>
                 <col style={{ width: '3%' }} />
                 <col style={{ width: '3%' }} />
-                <col style={{ width: '24%' }} />
+                <col style={{ width: '23%' }} />
                 <col style={{ width: '8%' }} />
                 <col style={{ width: '7%' }} />
                 <col style={{ width: '5%' }} />
                 <col style={{ width: '6%' }} />
-                <col style={{ width: '9%' }} />
+                <col style={{ width: '11%' }} />
                 <col style={{ width: '7%' }} />
                 <col style={{ width: '7%' }} />
                 <col style={{ width: '7%' }} />
                 <col style={{ width: '7%' }} />
-                <col style={{ width: '7%' }} />
+                <col style={{ width: '6%' }} />
               </colgroup>
               <thead className="text-indigo-900 text-[10px] font-black uppercase tracking-widest border-b border-indigo-200">
                 <tr>
@@ -1235,14 +1285,7 @@ export default function DeptInspectionPanel() {
                   <th className="h-12 px-2 whitespace-nowrap">외주업체</th>
                   <th className="h-12 px-1 text-center whitespace-nowrap">총 수량</th>
                   <th className="h-12 px-2 whitespace-nowrap border-r border-slate-300">신청 상세</th>
-                  <th className="h-12 px-1 text-center">
-                    <div className="flex flex-col items-center justify-center gap-0.5 leading-tight">
-                      <span className="whitespace-nowrap">발주서</span>
-                      <span className="text-[10px] font-bold text-indigo-700/80 normal-case tracking-normal whitespace-nowrap">
-                        (엑셀 다운)
-                      </span>
-                    </div>
-                  </th>
+                  <th className="h-12 px-1 text-center whitespace-nowrap">발주서</th>
                   <th className="h-12 px-1 text-center">
                     <div className="flex flex-col items-center justify-center gap-0.5 leading-tight">
                       <span className="whitespace-nowrap">메일 양식</span>
@@ -1349,14 +1392,45 @@ export default function DeptInspectionPanel() {
                             상세보기
                           </span>
                         </td>
-                        <td className="px-2 text-center whitespace-nowrap">
-                          <button
-                            type="button"
-                            onClick={() => handleBatchExcel(batch)}
-                            className="px-2.5 py-1 text-[10px] font-black rounded-lg w-full whitespace-nowrap transition-colors bg-white hover:bg-slate-50 text-slate-700 border border-slate-200"
-                          >
-                            📥 발주서 다운로드
-                          </button>
+                        <td className="px-1.5 text-center whitespace-nowrap">
+                          {(() => {
+                            const kind = getBatchLabelKind(batch, activeCategory);
+                            const items = batch.items || [];
+                            const isOffice =
+                              kind === 'office' ||
+                              (items.length > 0 &&
+                                items.every((i) => i.category === 'OFFICE_SUPPLIES'));
+                            const isJebon =
+                              kind === 'jebon' ||
+                              (items.length > 0 &&
+                                items.every((i) => i.category === 'JEBON'));
+                            const attachHint = isOffice
+                              ? { label: '(+견적PDF필수)', title: '견적서 PDF 필수 첨부' }
+                              : isJebon
+                                ? { label: '(+제본PDF필수)', title: '제본 관련 PDF 필수 첨부' }
+                                : null;
+                            return (
+                              <button
+                                type="button"
+                                onClick={() => handleBatchExcel(batch)}
+                                title={
+                                  attachHint
+                                    ? `${attachHint.title} — 엑셀과 함께 메일에 첨부`
+                                    : '발주서 엑셀 다운로드'
+                                }
+                                className="px-3 py-1.5 text-[10px] font-black rounded-lg w-full min-w-0 whitespace-nowrap transition-colors bg-white hover:bg-slate-50 text-slate-700 border border-slate-200"
+                              >
+                                {attachHint ? (
+                                  <>
+                                    발주서↓
+                                    <span className="text-red-600">{attachHint.label}</span>
+                                  </>
+                                ) : (
+                                  '발주서↓'
+                                )}
+                              </button>
+                            );
+                          })()}
                         </td>
                         <td className="px-2 text-center whitespace-nowrap">
                           <button
@@ -2037,6 +2111,41 @@ export default function DeptInspectionPanel() {
                                       </tr>,
                                     ];
                                   })}
+                                  {(() => {
+                                    const receivable = getBatchReceivableNonOfficeItems(batch);
+                                    const hasNonOffice = (batch.items || []).some(
+                                      (i) => i.category !== 'OFFICE_SUPPLIES'
+                                    );
+                                    if (!hasNonOffice || receivable.length === 0) return null;
+                                    return (
+                                      <tr key={`${batch.id}-bulk-receive`} className="bg-slate-50/80">
+                                        <td colSpan={10} className="px-3 py-2">
+                                          <div className="flex flex-wrap items-center justify-end gap-2">
+                                            <span className="text-[10px] font-bold text-emerald-800">
+                                              수령대기 {receivable.length}건
+                                            </span>
+                                            <button
+                                              type="button"
+                                              disabled={!canEdit}
+                                              title={
+                                                !canEdit
+                                                  ? '편집 권한 필요'
+                                                  : '현판·제본·기타제작 수령대기 건 전체 수령확정'
+                                              }
+                                              onClick={() => handleConfirmReceiveAllNonOffice(batch)}
+                                              className={`px-2.5 py-1 text-[10px] font-black rounded-lg whitespace-nowrap transition-colors ${
+                                                canEdit
+                                                  ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                                                  : DISABLED_ACTION_BTN
+                                              }`}
+                                            >
+                                              전체 수령확정
+                                            </button>
+                                          </div>
+                                        </td>
+                                      </tr>
+                                    );
+                                  })()}
                                 </tbody>
                               </table>
                             </div>
@@ -2274,8 +2383,8 @@ export default function DeptInspectionPanel() {
                   ⚙️ 외주업체 마스터 데이터 관리
                 </h2>
                 <p className="text-xs text-slate-500 font-bold mt-1">
-                  제작물 외주 협력사 정보를 관리합니다. 명함 업체와는 별도이며, 사용하지 않는
-                  업체는 삭제할 수 있고 발주 이력은 그대로 남습니다.
+                  제작물 외주 협력사 정보를 관리합니다. 시드 3사(아트로릭·한생미디어·드림디포) 삭제는 LV_1만
+                  가능하며, 발주 이력은 그대로 남습니다.
                 </p>
               </div>
               {vendorForm.id && (
@@ -2420,16 +2529,24 @@ export default function DeptInspectionPanel() {
                           </button>
                           <button
                             type="button"
-                            disabled={!canEdit}
-                            title={!canEdit ? '편집 권한 필요' : undefined}
+                            disabled={!(isSeedVendor(v) ? canDeleteLv1 : canEdit)}
+                            title={
+                              isSeedVendor(v)
+                                ? canDeleteLv1
+                                  ? undefined
+                                  : '시드 업체 삭제는 LV_1 권한 필요'
+                                : !canEdit
+                                  ? '편집 권한 필요'
+                                  : undefined
+                            }
                             onClick={() => handleDeleteVendor(v)}
                             className={`px-2.5 py-1 rounded-md text-[10px] border ${
-                              canEdit
+                              (isSeedVendor(v) ? canDeleteLv1 : canEdit)
                                 ? 'border-rose-200 text-rose-600 hover:bg-rose-50'
                                 : DISABLED_ACTION_BTN
                             }`}
                           >
-                            삭제(Edit)
+                            {isSeedVendor(v) ? '삭제(LV_1)' : '삭제(Edit)'}
                           </button>
                         </div>
                       </td>
@@ -2446,7 +2563,42 @@ export default function DeptInspectionPanel() {
               </table>
             </div>
 
-            <div className="flex justify-end pt-2 border-t border-slate-100">
+            <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                disabled={!canEdit}
+                title={!canEdit ? '편집 권한 필요' : undefined}
+                onClick={async () => {
+                  if (!canEdit) return alert('편집 권한(Edit)이 없습니다.');
+                  if (
+                    !confirm(
+                      '시드 기본 외주업체(아트로릭·한생미디어·드림디포) 중 없거나 삭제된 항목만 다시 채웁니다.\n이미 있는 업체 값은 변경되지 않습니다. 계속할까요?'
+                    )
+                  ) {
+                    return;
+                  }
+                  try {
+                    const res = await fetch('/api/asset/production/master/vendors', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ action: 'restore-seeds' }),
+                    });
+                    const data = await res.json().catch(() => ({}));
+                    if (!res.ok) throw new Error(data.message || '시드 업체 복구 실패');
+                    alert(data.message || '시드 업체 복구 완료');
+                    await fetchVendors();
+                  } catch (error: any) {
+                    alert(error.message || '시드 업체 복구 실패');
+                  }
+                }}
+                className={`px-3 py-2 text-[10px] font-black rounded-xl border ${
+                  canEdit
+                    ? 'bg-amber-50 text-amber-800 border-amber-200 hover:bg-amber-100'
+                    : DISABLED_ACTION_BTN
+                }`}
+              >
+                시드 항목 복구(Edit)
+              </button>
               <button
                 type="button"
                 onClick={() => {

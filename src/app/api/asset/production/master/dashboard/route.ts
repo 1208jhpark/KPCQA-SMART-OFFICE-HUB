@@ -221,7 +221,7 @@ export async function GET(req: Request) {
 /** [PUT] 명세서 검수 결과 저장 */
 export async function PUT(req: Request) {
   try {
-    await authorizeAnyMenuPaths(READ_PATHS);
+    await authorizeAnyMenuPaths(READ_PATHS, { requireEditor: true });
     const body = await req.json().catch(() => ({}));
     const rows: Array<{
       batchId: string;
@@ -355,17 +355,15 @@ export async function POST(req: Request) {
       });
     }
 
-    // 정산완료 아카이브 테스트용 영구삭제 — LV_1 / 메뉴 Master 전용
+    // 정산완료 아카이브 테스트용 영구삭제 — 시스템 LV_1만 (메뉴 Master 제외)
     if (action === 'purge-archived-batches') {
       const auth = await authorizeAnyMenuPaths(
         ['/asset/production/master/archive', '/asset/production/master/dashboard'],
         { requireEditor: true }
       );
-      const isLv1OrMaster =
-        auth.permission.isMaster || auth.permission.myRole === 'LV_1';
-      if (!isLv1OrMaster) {
+      if (auth.permission.myRole !== 'LV_1') {
         return NextResponse.json(
-          { message: '영구삭제는 LV_1(마스터) 권한이 필요합니다.' },
+          { message: '영구삭제는 LV_1만 가능합니다.' },
           { status: 403 }
         );
       }

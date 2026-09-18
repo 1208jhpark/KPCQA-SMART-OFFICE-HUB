@@ -1,5 +1,6 @@
 'use client';
 
+import { isSystemLv1User } from '@/lib/permission-utils';
 import React, { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
@@ -104,7 +105,7 @@ export default function ProductionDeptShell({ children, pageHint }: ProductionDe
             {pageHint ||
               '연계 조직(본인·하위) 임직원의 제작 신청을 검토하고 묶음 발주합니다. master에서는 부서 발주 건을 중앙 대조합니다.'}
           </p>
-          {permissionSummary && (
+          {permissionSummary && isSystemLv1User(currentUser) && (
             <div className="flex flex-wrap items-center gap-2 mt-4 pt-3 border-t border-white/15">
               <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-white/10 border-white/25 text-slate-50 shadow-sm">
                 <span>👑 Master 책임자:</span>

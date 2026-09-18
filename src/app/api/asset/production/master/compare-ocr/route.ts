@@ -541,7 +541,7 @@ function extractPdfProductionStatementRows(
 
 export async function POST(req: Request) {
   try {
-    await authorizeAnyMenuPaths(READ_PATHS);
+    await authorizeAnyMenuPaths(READ_PATHS, { requireEditor: true });
     const formData = await req.formData();
     const file = formData.get('file') as File;
     const dbItemsStr = formData.get('dbItems') as string;

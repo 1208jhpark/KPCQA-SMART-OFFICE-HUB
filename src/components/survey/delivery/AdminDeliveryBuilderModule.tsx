@@ -1,4 +1,6 @@
 'use client';
+
+import { isSystemLv1User } from '@/lib/permission-utils';
   
 import React, { useState, useEffect, useRef } from 'react';
 import Link from 'next/link'; 
@@ -56,6 +58,7 @@ export default function AdminDeliveryBuilderModule() {
   /** false = 편집 제한 → 상단 3버튼(순서일괄부여/초기화/저장)만 비활성 */
   const [canEdit, setCanEdit] = useState(false);
   const [permReady, setPermReady] = useState(false);
+  const [currentUser, setCurrentUser] = useState<any>(null);
   const [permissionSummary, setPermissionSummary] = useState<{
     masterName: string;
     accessDesignate: string;
@@ -94,27 +97,32 @@ export default function AdminDeliveryBuilderModule() {
       setSurveyId(id);
 
       // 편집 권한: 빌더 메뉴 path만 (active Master와 분리)
-      fetch('/api/survey/delivery?t=' + Date.now(), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'GET_ADMIN_CONTEXT', menuPath: BUILDER_MENU_PATH }),
-        cache: 'no-store',
-      })
-        .then(async (r) => {
+      const ts = Date.now();
+      Promise.all([
+        fetch('/api/survey/delivery?t=' + ts, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'GET_ADMIN_CONTEXT', menuPath: BUILDER_MENU_PATH }),
+          cache: 'no-store',
+        }),
+        fetch(`/api/auth/me?t=${ts}`, { cache: 'no-store' }),
+      ])
+        .then(async ([r, meRes]) => {
           if (!r.ok) {
             setCanEdit(false);
             setPermissionSummary(null);
-            setPermReady(true);
-            return;
+          } else {
+            const ctx = await r.json();
+            setCanEdit(ctx?.canEdit === true);
+            setPermissionSummary(ctx?.permissionSummary || null);
           }
-          const ctx = await r.json();
-          setCanEdit(ctx?.canEdit === true);
-          setPermissionSummary(ctx?.permissionSummary || null);
+          setCurrentUser(meRes.ok ? await meRes.json() : null);
           setPermReady(true);
         })
         .catch(() => {
           setCanEdit(false);
           setPermissionSummary(null);
+          setCurrentUser(null);
           setPermReady(true);
         });
   
@@ -425,7 +433,7 @@ export default function AdminDeliveryBuilderModule() {
             </button>
           </div>
         </div>
-        {permissionSummary && (
+        {permissionSummary && isSystemLv1User(currentUser) && (
           <div className="flex flex-wrap items-center gap-2 mt-3 pt-3 border-t border-slate-100">
             <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-blue-50 border-blue-200 text-blue-700 shadow-sm">
               <span>👑 Master 책임자:</span>
@@ -445,11 +453,6 @@ export default function AdminDeliveryBuilderModule() {
               <span className="opacity-50">|</span>
               <span>Level: {permissionSummary.editLevel}</span>
             </div>
-            {!editAllowed && (
-              <span className="text-[10px] font-black text-amber-700 bg-amber-50 border border-amber-200 px-2.5 py-1 rounded-md">
-                현재 계정: 조회만 가능 (편집 권한 없음)
-              </span>
-            )}
           </div>
         )}
       </div>

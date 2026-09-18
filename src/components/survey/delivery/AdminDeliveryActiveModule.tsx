@@ -1,4 +1,6 @@
 'use client';
+
+import { isSystemLv1User } from '@/lib/permission-utils';
      
 import React, { useState, useMemo, useEffect, Fragment } from 'react';
 import Link from 'next/link';
@@ -33,6 +35,7 @@ export default function AdminDeliveryActiveModule() {
   const [unitsList, setUnitsList] = useState<any[]>([]);
   const [responses, setResponses] = useState<Record<string, any>>({});
   const [canEdit, setCanEdit] = useState(false);
+  const [currentUser, setCurrentUser] = useState<any>(null);
   const [permissionSummary, setPermissionSummary] = useState<{
     masterName: string;
     accessDesignate: string;
@@ -71,7 +74,7 @@ export default function AdminDeliveryActiveModule() {
     const fetchOrgData = async () => {
       try {
         const ts = Date.now();
-        const [surveyRes, ctxRes] = await Promise.all([
+        const [surveyRes, ctxRes, meRes] = await Promise.all([
           fetch(`/api/survey/delivery?t=${ts}`, { cache: 'no-store' }),
           fetch(`/api/survey/delivery?t=${ts}`, {
             method: 'POST',
@@ -79,6 +82,7 @@ export default function AdminDeliveryActiveModule() {
             body: JSON.stringify({ action: 'GET_ADMIN_CONTEXT', menuPath: pathname }),
             cache: 'no-store',
           }),
+          fetch(`/api/auth/me?t=${ts}`, { cache: 'no-store' }),
         ]);
 
         if (surveyRes.ok) {
@@ -100,6 +104,7 @@ export default function AdminDeliveryActiveModule() {
           setCanEdit(false);
           setPermissionSummary(null);
         }
+        setCurrentUser(meRes.ok ? await meRes.json() : null);
 
         const responseRes = await fetch(`/api/survey/delivery?t=${ts}`, {
           method: 'POST',
@@ -1006,7 +1011,7 @@ const handleDownloadZipAll = async () => {
           <p className="text-emerald-100/90 text-xs mt-3 leading-relaxed">
             상시/기간제 배송 조사 신정 공고 및 부서별 접수 현황을 통합 모니터링합니다.
           </p>
-          {permissionSummary && (
+          {permissionSummary && isSystemLv1User(currentUser) && (
             <div className="flex flex-wrap items-center gap-2 mt-4 pt-3 border-t border-white/15">
               <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-white/10 border-white/25 text-emerald-50 shadow-sm">
                 <span>👑 Master 책임자:</span>
@@ -1026,11 +1031,6 @@ const handleDownloadZipAll = async () => {
                 <span className="opacity-50">|</span>
                 <span>Level: {permissionSummary.editLevel}</span>
               </div>
-              {!canEdit && (
-                <span className="text-[10px] font-black text-amber-200 bg-amber-500/20 border border-amber-300/30 px-2.5 py-1 rounded-md">
-                  현재 계정: 조회만 가능 (편집 권한 없음)
-                </span>
-              )}
             </div>
           )}
         </div>

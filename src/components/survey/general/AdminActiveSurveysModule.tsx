@@ -1,4 +1,6 @@
 'use client';
+
+import { isSystemLv1User } from '@/lib/permission-utils';
      
 import React, { useState, useMemo, useEffect, Fragment } from 'react';
 import { usePathname } from 'next/navigation'; // 🚀 안 쓰는 useRouter 제거
@@ -29,6 +31,7 @@ export default function ActiveSurveysAdminPage() {
   const [responses, setResponses] = useState<Record<string, any>>({});
   const [anonymousParticipationCounts, setAnonymousParticipationCounts] = useState<Record<string, number>>({});
   const [canEdit, setCanEdit] = useState(false);
+  const [currentUser, setCurrentUser] = useState<any>(null);
   const [permissionSummary, setPermissionSummary] = useState<{
     masterName: string;
     accessDesignate: string;
@@ -104,6 +107,12 @@ const formatAnswerForExport = (ans: any) => {
         setUsers(contextData.users || []);
         setCanEdit(!!contextData.canEdit);
         setPermissionSummary(contextData.permissionSummary || null);
+        try {
+          const meRes = await fetch(`/api/auth/me?t=${ts}`, { cache: 'no-store' });
+          setCurrentUser(meRes.ok ? await meRes.json() : null);
+        } catch {
+          setCurrentUser(null);
+        }
 
         // 🚀 3. 응답 원장 수거
         const responseRes = await fetch(`/api/survey/general?t=${ts}`, {
@@ -789,7 +798,7 @@ const formatAnswerForExport = (ans: any) => {
           <p className="text-emerald-100/90 text-xs mt-3 leading-relaxed">
             일반조사/익명조사 신청 공고 및 부서별 접수 현황을 통합 모니터링합니다.
           </p>
-          {permissionSummary && (
+          {permissionSummary && isSystemLv1User(currentUser) && (
             <div className="flex flex-wrap items-center gap-2 mt-4 pt-3 border-t border-white/15">
               <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-white/10 border-white/25 text-emerald-50 shadow-sm">
                 <span>👑 Master 책임자:</span>
@@ -809,11 +818,6 @@ const formatAnswerForExport = (ans: any) => {
                 <span className="opacity-50">|</span>
                 <span>Level: {permissionSummary.editLevel}</span>
               </div>
-              {!canEdit && (
-                <span className="text-[10px] font-black text-amber-200 bg-amber-500/20 border border-amber-300/30 px-2.5 py-1 rounded-md">
-                  현재 계정: 조회만 가능 (편집 권한 없음)
-                </span>
-              )}
             </div>
           )}
         </div>

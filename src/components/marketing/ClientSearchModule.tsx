@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import * as XLSX from 'xlsx';
 import { getKSTDateString, getKSTYearMonth, getKSTNowYearMonth, getDistBusinessDate } from '@/utils/dateUtils';
-import { resolveInterfaceEditState } from '@/lib/permission-utils';
+import { resolveInterfaceEditState, isSystemLv1User } from '@/lib/permission-utils';
 import LoadingState from '@/components/common/LoadingState';
 
 // 🚀 [UI 표준] 공통 HeaderLight 컴포넌트
@@ -651,7 +651,7 @@ export default function ClientSearchModule() {
           <p className="text-emerald-100/90 text-xs mt-3 leading-relaxed">
             고객사를 (각 부서 관리 가능) 신규 등록할 수 있습니다. 등록된 고객사와 각 부서별 물품 지급 내역을 확인합니다.
           </p>
-          {permissionSummary && (
+          {permissionSummary && isSystemLv1User(currentUser) && (
             <div className="flex flex-wrap items-center gap-2 mt-4 pt-3 border-t border-white/15">
               <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-white/10 border-white/25 text-emerald-50 shadow-sm">
                 <span>👑 Master 책임자:</span>
@@ -671,11 +671,6 @@ export default function ClientSearchModule() {
                 <span className="opacity-50">|</span>
                 <span>Level: {permissionSummary.editLevel}</span>
               </div>
-              {!canEditMaster && (
-                <span className="text-[10px] font-black text-amber-200 bg-amber-500/20 border border-amber-300/30 px-2.5 py-1 rounded-md">
-                  편집 권한 없음 — 신규 등록은 가능 · 엑셀·부서·마스터 관리는 불가
-                </span>
-              )}
             </div>
           )}
         </div>

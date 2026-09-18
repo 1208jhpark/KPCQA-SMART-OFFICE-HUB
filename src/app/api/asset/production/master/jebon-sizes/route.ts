@@ -107,8 +107,12 @@ export async function POST(req: Request) {
       return NextResponse.json({ message: '코드와 종류는 필수입니다.' }, { status: 400 });
     }
 
+    const auth = await authorizeAnyMenuPaths(READ_PATHS);
     const existing = await prisma.productionJebonSizeMaster.findUnique({ where: { code } });
-    await authorizeAnyMenuPaths(READ_PATHS, { requireEditor: !!existing });
+    // 신규(또는 비활성 재등록): Access / 활성 항목 수정: Edit
+    if (existing?.isActive && !auth.permission.isEditor) {
+      return NextResponse.json({ message: '편집 권한이 없습니다.' }, { status: 403 });
+    }
 
     const row = await prisma.productionJebonSizeMaster.upsert({
       where: { code },
@@ -154,11 +158,9 @@ export async function DELETE(req: Request) {
     }
 
     if (isSeedJebonSizeCode(code)) {
-      const isLv1OrMaster =
-        auth.permission.isMaster || auth.permission.myRole === 'LV_1';
-      if (!isLv1OrMaster) {
+      if (auth.permission.myRole !== 'LV_1') {
         return NextResponse.json(
-          { message: '시드 판형 삭제는 LV_1(마스터) 권한이 필요합니다.' },
+          { message: '시드 판형 삭제는 LV_1만 가능합니다.' },
           { status: 403 }
         );
       }

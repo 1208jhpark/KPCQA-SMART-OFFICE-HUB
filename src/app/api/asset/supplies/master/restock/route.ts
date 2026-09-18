@@ -65,13 +65,24 @@ export async function POST(req: Request) {
   }
 }
 
-/** [DELETE] 입고 철회 — 재고 차감 · 해당 품목 owner_dept 편집 스코프 */
+/** [DELETE] 입고 철회(Edit) 또는 영구삭제(mode=purge · LV_1만) — 재고 차감 */
 export async function DELETE(req: Request) {
   try {
     const auth = await authorizeAnyMenuPaths(MENU_PATHS, { requireEditor: true });
+    const { searchParams } = new URL(req.url);
+    const id = searchParams.get('id');
+    const mode = String(searchParams.get('mode') || '').trim().toLowerCase();
 
-    const id = new URL(req.url).searchParams.get('id');
     if (!id) return NextResponse.json({ error: '삭제할 ID가 없습니다.' }, { status: 400 });
+
+    if (mode === 'purge') {
+      if (auth.permission.myRole !== 'LV_1') {
+        return NextResponse.json(
+          { error: '잘못된 데이터 영구삭제는 LV_1만 가능합니다.' },
+          { status: 403 }
+        );
+      }
+    }
 
     const log = await prisma.supplyPurchase.findUnique({
       where: { id },
@@ -104,12 +115,15 @@ export async function DELETE(req: Request) {
 
     return NextResponse.json({
       success: true,
-      message: '입고 내역이 철회되었으며 재고가 조정되었습니다.',
+      message: mode === 'purge' ? '입고 내역이 영구 삭제되었습니다.' : '입고가 철회되었습니다.',
     });
   } catch (error: any) {
     const authRes = authErrorToResponse(error);
     if (authRes.status !== 500) return authRes;
     console.error('[supplies/master/restock DELETE]', error);
-    return NextResponse.json({ error: '입고 철회 실패: ' + (error?.message || '') }, { status: 500 });
+    return NextResponse.json(
+      { error: error?.message || '삭제 처리 중 오류가 발생했습니다.' },
+      { status: 500 }
+    );
   }
 }

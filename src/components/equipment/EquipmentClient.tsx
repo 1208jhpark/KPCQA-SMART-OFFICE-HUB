@@ -122,6 +122,7 @@ export default function EquipmentClient({
         topOrgName: topOrg,
         myUnitName: myName,
         myHqName: myHq,
+        myUnitId: myId,
         globalMgmtDept,
         units,
       });

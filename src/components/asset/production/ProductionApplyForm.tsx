@@ -6,7 +6,7 @@ import Link from 'next/link';
 import { getKSTDateString } from '@/utils/dateUtils';
 import LoadingState from '@/components/common/LoadingState';
 import { getProductionCategoryFolderTabClasses } from '@/lib/production-category-theme';
-import { resolveInterfaceEditState } from '@/lib/permission-utils';
+import { resolveInterfaceEditState, isSystemLv1User } from '@/lib/permission-utils';
 import { isSeedPlateCode } from '@/lib/production-seed-plates';
 import { isSeedCertId } from '@/lib/production-seed-certs';
 import {
@@ -14,6 +14,7 @@ import {
   SEED_JEBON_SIZE_DEFAULTS,
 } from '@/lib/production-seed-jebon-sizes';
 import { isSeedPrintItemId } from '@/lib/production-seed-print-items';
+import { isSeedVendor } from '@/lib/production-seed-vendors';
 
 const MENU_PATH = '/asset/production/apply/request';
 
@@ -127,10 +128,16 @@ export default function ProductionApplyForm() {
     [currentUser, interfaceConfig]
   );
   const canEdit = editState.isEditor;
-  /** 시드 인증 삭제(LV_1) — 시스템 LV_1 또는 메뉴 Master만 */
-  const canDeleteLv1Cert = editState.isMaster;
+  /** 시드 삭제(LV_1) — 시스템 역할 LV_1만 (메뉴 Master 제외) */
+  const canDeleteLv1Cert = useMemo(() => {
+    const roles = Array.isArray(currentUser?.roles) ? currentUser.roles : [];
+    return roles.some((r: unknown) => {
+      const m = String(r ?? '').match(/(\d+)/);
+      return m ? `LV_${m[1]}` === 'LV_1' : String(r) === 'LV_1';
+    });
+  }, [currentUser]);
   const alertNoEditPermission = () => alert('편집 권한이 없습니다.');
-  const alertNoLv1Permission = () => alert('시드 항목 삭제는 LV_1(마스터) 권한이 필요합니다.');
+  const alertNoLv1Permission = () => alert('시드 항목 삭제는 LV_1만 가능합니다.');
 
   const handleVendorPriorityChange = async (
     vendor: {
@@ -621,7 +628,10 @@ const [signData, setSignData] = useState({
           printUnitValue: stillValid
             ? prev.printUnitValue || next.unitValue || 'VAL_1'
             : next.unitValue || 'VAL_1',
-          ...(stillValid ? {} : { quantity: Math.max(1, Number(next.orderQty) || 1) }),
+          // 기성품 orderQty는 PRINT 탭에서만 수량에 반영 (SIGN 등 공용 quantity 오염 방지)
+          ...(!stillValid && activeTab === 'PRINT'
+            ? { quantity: Math.max(1, Number(next.orderQty) || 1) }
+            : {}),
           ...(shouldApplyVendor && matchedVendor ? { vendor: matchedVendor.id } : {}),
         };
       });
@@ -650,7 +660,11 @@ const [signData, setSignData] = useState({
               vendorMasterList.find(
                 (v) => v.label.includes(supplier) || supplier.includes(v.label.trim())
               ));
-          return { ...prev, vendor: matched ? matched.id : '' };
+          return {
+            ...prev,
+            vendor: matched ? matched.id : '',
+            quantity: Math.max(1, Number(item?.orderQty) || 1),
+          };
         });
       }
       return;
@@ -663,9 +677,12 @@ const [signData, setSignData] = useState({
           : 'CUSTOMER_DIRECT'
       );
       const priority = vendorMasterList.find((v) => v.priorityCategory === activeTab);
-      if (priority) {
-        setSignData((prev) => ({ ...prev, vendor: priority.id }));
-      }
+      setSignData((prev) => ({
+        ...prev,
+        ...(priority ? { vendor: priority.id } : {}),
+        // 현판 신청수량은 기본 1 (기성품 orderQty와 분리)
+        ...(activeTab === 'SIGN' ? { quantity: 1 } : {}),
+      }));
     }
   }, [activeTab, mastersReady, vendorMasterList, printItemMasterList]);
 
@@ -1289,6 +1306,32 @@ const formattedValidPeriod = useMemo(() => {
     }
   };
 
+  const handleRestoreSeedVendors = async () => {
+    if (!canEdit) return alertNoEditPermission();
+    if (
+      !confirm(
+        '시드 기본 외주업체(아트로릭·한생미디어·드림디포) 중 없거나 삭제된 항목만 다시 채웁니다.\n이미 있는 업체의 명칭·연락처·품목·우선연결은 변경되지 않습니다. 계속할까요?'
+      )
+    ) {
+      return;
+    }
+    try {
+      const res = await fetch('/api/asset/production/master/vendors', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'restore-seeds' }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        return alert(data.message || '시드 업체 복구 실패');
+      }
+      alert(data.message || '시드 업체 복구 완료');
+      await reloadMasters();
+    } catch {
+      alert('시드 업체 복구 중 오류가 발생했습니다.');
+    }
+  };
+
   const handleDeletePrintItem = async (item: { id: string; name: string }) => {
     if (isSeedPrintItemId(item.id)) {
       if (!canDeleteLv1Cert) return alertNoLv1Permission();
@@ -1670,7 +1713,7 @@ return (
           <p className="text-white/70 text-xs mt-3 leading-relaxed max-w-xl">
             현판·제본·기타 제작·사무문구 발주 신청서를 작성하고 부서 관리 대장으로 이관합니다.
           </p>
-          {permissionSummary && (
+          {permissionSummary && isSystemLv1User(currentUser) && (
             <div className="flex flex-wrap items-center gap-2 mt-4 pt-3 border-t border-white/15">
               <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-white/10 border-white/25 text-blue-50 shadow-sm">
                 <span>👑 Master 책임자:</span>
@@ -1690,26 +1733,48 @@ return (
                 <span className="opacity-50">|</span>
                 <span>Level: {permissionSummary.editLevel}</span>
               </div>
-              {!canEdit && (
-                <span className="text-[10px] font-black text-amber-200 bg-amber-500/20 border border-amber-300/30 px-2.5 py-1 rounded-md">
-                  편집 권한 없음 — 조회만 가능
-                </span>
-              )}
             </div>
           )}
         </div>
       </div>
 
-      {/* 동적 탭 네비게이션 */}
-      <div className="flex gap-1.5 bg-slate-200/60 p-1.5 rounded-2xl border border-slate-200 shadow-inner w-full max-w-2xl mt-4">
-        {[{ name: '✍️ 신규 제작물 신청', path: '/asset/production/apply/request' }, { name: '📂 나의 신청 이력 관리', path: '/asset/production/apply/history' }].map((tab) => {
-          const isActive = pathname === tab.path || (tab.path === '/asset/production/apply' && pathname === '/asset/production/apply/request');
-          return (
-            <Link key={tab.path} href={tab.path} className={`flex-1 py-3 text-center text-[11px] font-black rounded-xl transition-all uppercase tracking-tight ${isActive ? 'bg-white text-blue-600 shadow-sm border border-blue-200/50 scale-[1.01]' : 'text-slate-500 hover:text-slate-800 hover:bg-white/40'}`}>
-              {tab.name}
-            </Link>
-          );
-        })}
+      {/* 탭 네비게이션 — dept-master/order 스위처 규격 */}
+      <div className="flex items-center justify-between bg-white p-2 rounded-xl border border-slate-200 shadow-sm">
+        <div className="flex items-center gap-1.5 bg-slate-100/80 p-1 rounded-lg flex-wrap min-h-[40px]">
+          {[
+            {
+              name: '✍️ 신규 제작물 신청',
+              path: '/asset/production/apply/request',
+              activeColor: 'text-blue-600',
+            },
+            {
+              name: '📂 나의 신청 이력 관리',
+              path: '/asset/production/apply/history',
+              activeColor: 'text-indigo-600',
+            },
+          ].map((tab) => {
+            const isActive =
+              pathname === tab.path ||
+              (tab.path === '/asset/production/apply/request' &&
+                pathname === '/asset/production/apply');
+            return (
+              <Link
+                key={tab.path}
+                href={tab.path}
+                className={`px-5 py-2 rounded-md text-xs font-black transition-all flex items-center gap-2 ${
+                  isActive
+                    ? `bg-white ${tab.activeColor} shadow-sm border border-slate-200/80`
+                    : 'text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                <span>{tab.name}</span>
+              </Link>
+            );
+          })}
+        </div>
+        <p className="text-[10px] text-slate-400 font-bold px-3 hidden sm:block">
+          ※ apply=개인 신청 · dept=부서 묶음 발주 · master=중앙 대조
+        </p>
       </div>
 
       {/* 분류 서류철 탭(좌) + MASTER CRITERIA 서류철(우) + 발급 신청서 */}
@@ -2591,17 +2656,22 @@ return (
                   {/* 헤더 */}
                   <div className="border-b border-blue-100 pb-4">
                     <h4 className="text-sm font-black text-blue-800 flex items-center gap-2">
-                      <span>📎</span> 사무문구류 견적서 등록 내역
+                      <span>📎</span> 사무문구류 견적서 내역 등록 
                     </h4>
-                    <p className="text-xs text-slate-500 mt-1.5 font-medium">
-                      외부 문구사에서 출력한 견적서 PDF의 내부 텍스트를 전체 복사(Ctrl + C)하여 전체 붙여넣기(Ctrl + V)하면 월말 정산 데이터로 키핑됩니다.
+                    <p className="text-xs text-slate-500 mt-1.5 font-medium whitespace-pre-line">
+                      {`실제 발주는 외주 문구사에서 발행한 견적서 PDF 파일을 기준으로 진행됩니다.
+향후 수령 및 명세서 검수를 위해, `}
+                      <strong className="font-bold text-slate-700">
+                        PDF 파일의 텍스트 전체를 복사(Ctrl+A, Ctrl+C)하여 아래에 붙여넣어(Ctrl+V)
+                      </strong>
+                      {` 주세요.`}
                     </p>
                   </div>
 
                  {/* 구분 타이틀 (라벨 바로 옆으로 버튼 이동 및 정렬 보정) */}
-                 <div>
+                 <div className="rounded-xl border border-sky-300 bg-sky-100/60 p-4">
                     <div className="flex items-center gap-2 mb-2">
-                      <label className="block text-[10px] font-black text-slate-500 tracking-widest uppercase">
+                      <label className="block text-[10px] font-black text-sky-900 tracking-widest uppercase">
                         1. 관리용 제목 설정 <span className="text-red-500">*</span>
                       </label>
                       <button 
@@ -2612,7 +2682,7 @@ return (
                             suppliesProjectName: `사무문구류 견적서 내역_${signData.dept || '해당부서'}` 
                           });
                         }}
-                        className="text-[9px] font-black text-blue-600 bg-blue-50 hover:bg-blue-100 px-2 py-0.5 rounded border border-blue-200 transition-colors shrink-0 cursor-pointer"
+                        className="text-[9px] font-black text-blue-700 bg-white hover:bg-sky-50 px-2 py-0.5 rounded border border-sky-300 transition-colors shrink-0 cursor-pointer"
                       >
                         ⚡ 제목 자동 생성
                       </button>
@@ -2622,7 +2692,7 @@ return (
                       placeholder="좌측 '제목 자동 생성' 버튼을 누르거나 직접 제목을 기재해 주세요." 
                       value={signData.suppliesProjectName || ''} 
                       onChange={(e) => setSignData({ ...signData, suppliesProjectName: e.target.value })} 
-                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-xs font-bold outline-none focus:bg-white focus:border-blue-500 transition-colors"
+                      className="w-full bg-white border border-sky-300 rounded-xl px-4 py-3 text-xs font-bold outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-200 transition-colors"
                     />
                   </div>
 
@@ -2635,7 +2705,7 @@ return (
                       <span className="text-[9px] font-bold text-blue-500 bg-blue-50 px-2 py-0.5 rounded">텍스트 전용</span>
                     </div>
                     <textarea 
-                      placeholder="견적서 PDF 파일의 텍스트 내용을 마우스로 긁어 그대로 붙여넣어 주세요. (품명, 규격, 수량, 단가 등이 포함되도록)" 
+                      placeholder="견적서 PDF 파일의 텍스트 전체를 복사하여 이곳에 붙여넣어 주세요. (품명, 규격, 수량, 단가 필수 포함)" 
                       value={signData.suppliesQuoteRawText || ''} 
                       onChange={(e) => setSignData({ ...signData, suppliesQuoteRawText: e.target.value })} 
                       className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-xs font-mono font-medium outline-none focus:bg-white focus:border-blue-500 min-h-[180px] resize-y"
@@ -2725,7 +2795,7 @@ return (
           {/* 🚀 [동적 변환 영역 종료] */}
 
   {/* 🚚 최종 제작물 실배송지 섹션 */}
-        <div className="p-6 bg-white rounded-2xl border border-slate-200 shadow-sm space-y-4">
+        <div className="p-6 rounded-2xl border border-sky-300 bg-sky-100/60 shadow-sm space-y-4">
           <h3 className="text-sm font-black text-slate-800 flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
             <div className="flex flex-wrap items-center gap-2 min-w-0">
               <span>🚚 최종 제작물 실배송지</span>
@@ -2908,9 +2978,9 @@ return (
 
       {/* ⚡ 현판·제본·기타제작: 관리용 제목 — 스펙 입력 후 · 부수 입력 전 */}
       {['SIGN', 'JEBON', 'PRINT'].includes(activeTab) && (
-        <div className="p-6 bg-white rounded-2xl border border-blue-200 shadow-sm space-y-3">
+        <div className="p-5 rounded-2xl border border-sky-300 bg-sky-100/60 shadow-sm space-y-3">
           <div className="flex items-center gap-2">
-            <label className="block text-[10px] font-black text-slate-500 tracking-widest uppercase">
+            <label className="block text-[10px] font-black text-sky-900 tracking-widest uppercase">
               관리용 제목 설정 <span className="text-red-500">*</span>
             </label>
             <button
@@ -2968,7 +3038,7 @@ return (
                   });
                 }
               }}
-              className="text-[9px] font-black text-blue-600 bg-blue-50 hover:bg-blue-100 px-2 py-0.5 rounded border border-blue-200 transition-colors shrink-0 cursor-pointer"
+              className="text-[9px] font-black text-blue-700 bg-white hover:bg-sky-50 px-2 py-0.5 rounded border border-sky-300 transition-colors shrink-0 cursor-pointer"
             >
               ⚡ 제목 자동 생성
             </button>
@@ -2992,7 +3062,7 @@ return (
                     : { ...signData, jebonFormTitle: e.target.value }
               )
             }
-            className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-xs font-bold outline-none focus:bg-white focus:border-blue-500 transition-colors"
+            className="w-full bg-white border border-sky-300 rounded-xl px-4 py-3 text-xs font-bold outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-200 transition-colors"
           />
         </div>
       )}
@@ -3160,7 +3230,7 @@ return (
                   <div>
                     <h4 className="text-sm font-black text-slate-800">🏢 외주 제작사 등록 관리</h4>
                     <p className="text-xs text-slate-400 mt-1">
-                      DB 공통 마스터입니다. 등록은 누구나 가능하며, 수정·삭제는 Edit 권한이 필요합니다.
+                      DB 공통 마스터입니다. 등록은 누구나 가능하며, 수정은 Edit, 시드 3사(아트로릭·한생미디어·드림디포) 삭제는 LV_1만 가능합니다.
                     </p>
                     <p className="text-[10px] text-slate-400 mt-1.5 leading-relaxed">
                       등록한 업체는 신청서 <span className="font-bold text-slate-500">외주 업체 · 제출 전 확인</span> 선택란에 반영됩니다.
@@ -3407,10 +3477,24 @@ return (
                               </button>
                               <button
                                 type="button"
-                                disabled={!canEdit}
-                                title={!canEdit ? '편집 권한 필요' : undefined}
+                                disabled={
+                                  !(isSeedVendor(v) ? canDeleteLv1Cert : canEdit)
+                                }
+                                title={
+                                  isSeedVendor(v)
+                                    ? canDeleteLv1Cert
+                                      ? undefined
+                                      : '시드 업체 삭제는 LV_1 권한 필요'
+                                    : !canEdit
+                                      ? '편집 권한 필요'
+                                      : undefined
+                                }
                                 onClick={async () => {
-                                  if (!canEdit) return alertNoEditPermission();
+                                  if (isSeedVendor(v)) {
+                                    if (!canDeleteLv1Cert) return alertNoLv1Permission();
+                                  } else if (!canEdit) {
+                                    return alertNoEditPermission();
+                                  }
                                   if (vendorMasterList.length <= 1)
                                     return alert('최소 한 개 이상의 외주업체가 필요합니다.');
                                   if (
@@ -3434,12 +3518,12 @@ return (
                                   }
                                 }}
                                 className={`text-[10px] font-black px-2.5 py-1 rounded-lg transition-colors border ${
-                                  canEdit
+                                  (isSeedVendor(v) ? canDeleteLv1Cert : canEdit)
                                     ? 'text-red-400 hover:text-red-600 bg-white border-slate-200 hover:border-red-200'
                                     : DISABLED_ACTION_BTN
                                 }`}
                               >
-                                삭제(Edit)
+                                {isSeedVendor(v) ? '삭제(LV_1)' : '삭제(Edit)'}
                               </button>
                             </div>
                           </div>
@@ -3461,6 +3545,25 @@ return (
                       )}
                     </div>
                   ))}
+                </div>
+
+                <div className="flex flex-wrap items-center justify-between gap-2 pt-3 border-t border-slate-100">
+                  <p className="text-[10px] text-slate-400 font-medium leading-relaxed max-w-xl">
+                    ※ 시드 3사(아트로릭·한생미디어·드림디포) 삭제는 LV_1만 가능합니다. 「시드 항목 복구(Edit)」는 누락·삭제분만 다시 채우며 기존 값은 유지합니다.
+                  </p>
+                  <button
+                    type="button"
+                    disabled={!canEdit}
+                    title={!canEdit ? '편집 권한 필요' : undefined}
+                    onClick={handleRestoreSeedVendors}
+                    className={`text-[10px] font-black px-3 py-1.5 rounded-lg border transition-colors shrink-0 ${
+                      canEdit
+                        ? 'bg-amber-50 text-amber-800 border-amber-200 hover:bg-amber-100'
+                        : DISABLED_ACTION_BTN
+                    }`}
+                  >
+                    시드 항목 복구(Edit)
+                  </button>
                 </div>
 
               </div>
@@ -4134,7 +4237,7 @@ return (
                               종류·규격·설명으로 관리합니다. 신청서 「제본 판형 지정」 콤보박스에 실시간 반영됩니다.
                             </p>
                             <p className="text-[10px] text-slate-400 mt-1.5 leading-relaxed">
-                              ※ 신규 판형 수정·삭제는 편집 권한, 시드 판형 삭제는 LV_1(마스터) 권한이 필요합니다. 「시드 항목 복구(Edit)」는 누락·삭제분만 다시 채우며 기존 종류·규격·설명은 유지합니다.
+                              ※ 신규 판형 수정·삭제는 편집 권한, 시드 판형 삭제는 LV_1만 가능합니다. 「시드 항목 복구(Edit)」는 누락·삭제분만 다시 채우며 기존 종류·규격·설명은 유지합니다.
                             </p>
                           </div>
                           <button
@@ -4974,7 +5077,7 @@ return (
                     </h4>
                     {!canEdit && (
                       <p className="text-[10px] text-amber-400/90 mt-1.5 font-bold">
-                        ※ 등급 수정·삭제는 편집 권한이 필요합니다. (추가·입력 방식은 가능)
+                        ※ 등급·입력방식·품목연결 변경은 편집 권한이 필요합니다.
                       </p>
                     )}
                   </div>
@@ -4983,6 +5086,7 @@ return (
                     const row = signCertMasterList.find((c) => c.id === selectedMasterCertId);
                     if (!row) return null;
                     const saveGradeInputMode = async (useMultiGradeSelect: boolean) => {
+                      if (!canEdit) return alertNoEditPermission();
                       if (row.useMultiGradeSelect === useMultiGradeSelect) return;
                       try {
                         await persistCert({
@@ -5008,9 +5112,12 @@ return (
                         <div className="grid grid-cols-2 gap-2">
                           <button
                             type="button"
+                            disabled={!canEdit}
                             onClick={() => saveGradeInputMode(true)}
                             className={`px-2.5 py-2 rounded-lg text-[10px] font-black border transition-all ${
-                              row.useMultiGradeSelect
+                              !canEdit
+                                ? DISABLED_ACTION_BTN
+                                : row.useMultiGradeSelect
                                 ? 'bg-blue-600 border-blue-500 text-white shadow-md'
                                 : 'bg-slate-900 border-slate-700 text-slate-400 hover:border-slate-500'
                             }`}
@@ -5019,9 +5126,12 @@ return (
                           </button>
                           <button
                             type="button"
+                            disabled={!canEdit}
                             onClick={() => saveGradeInputMode(false)}
                             className={`px-2.5 py-2 rounded-lg text-[10px] font-black border transition-all ${
-                              !row.useMultiGradeSelect
+                              !canEdit
+                                ? DISABLED_ACTION_BTN
+                                : !row.useMultiGradeSelect
                                 ? 'bg-indigo-600 border-indigo-500 text-white shadow-md'
                                 : 'bg-slate-900 border-slate-700 text-slate-400 hover:border-slate-500'
                             }`}
@@ -5046,7 +5156,10 @@ return (
                     />
                     <button
                       type="button"
+                      disabled={!canEdit}
+                      title={!canEdit ? '편집 권한 필요' : undefined}
                       onClick={async () => {
+                        if (!canEdit) return alertNoEditPermission();
                         if (!newGradeName.trim() || !selectedMasterCertId) return;
                         const nextGrades = [
                           ...(gradeMasterMap[selectedMasterCertId] || []),
@@ -5073,7 +5186,11 @@ return (
                           alert(err?.message || '등급 저장 실패');
                         }
                       }}
-                      className="font-black text-xs px-4 rounded-xl transition-all shadow-md bg-indigo-600 hover:bg-indigo-500 text-white"
+                      className={`font-black text-xs px-4 rounded-xl transition-all shadow-md ${
+                        canEdit
+                          ? 'bg-indigo-600 hover:bg-indigo-500 text-white'
+                          : DISABLED_ACTION_BTN
+                      }`}
                     >
                       추가
                     </button>
@@ -5218,6 +5335,7 @@ return (
                   }
                   const linked = new Set(row.linkedPlateCodes || []);
                   const togglePlate = async (code: string, checked: boolean) => {
+                    if (!canEdit) return alertNoEditPermission();
                     const next = checked
                       ? [...linked, code]
                       : [...linked].filter((c) => c !== code);
@@ -5252,15 +5370,18 @@ return (
                         return (
                           <label
                             key={p.code}
-                            className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-all ${
-                              checked
-                                ? 'bg-emerald-800/70 border-emerald-500 shadow-sm'
-                                : 'bg-emerald-900/50 border-emerald-800 hover:border-emerald-600'
+                            className={`flex items-start gap-3 p-3 rounded-xl border transition-all ${
+                              !canEdit
+                                ? 'opacity-50 cursor-not-allowed bg-emerald-900/40 border-emerald-800'
+                                : checked
+                                ? 'bg-emerald-800/70 border-emerald-500 shadow-sm cursor-pointer'
+                                : 'bg-emerald-900/50 border-emerald-800 hover:border-emerald-600 cursor-pointer'
                             }`}
                           >
                             <input
                               type="checkbox"
                               checked={checked}
+                              disabled={!canEdit}
                               onChange={(e) => togglePlate(p.code, e.target.checked)}
                               className="mt-0.5 w-3.5 h-3.5 accent-emerald-400 rounded shrink-0"
                             />

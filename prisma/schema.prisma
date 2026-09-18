@@ -20,7 +20,7 @@ model SystemConfig {
   layout_type             String   @default("horizontal")
   linked_sites            Json?    @default("[]")
   audit_baseline          String   @default("")
-  global_mgmt_dept        String   @default("경영기획본부") 
+  global_mgmt_dept        String   @default("경영기획본부") // OrgUnit.id (레거시: unit_name) 
   client_category_group   String   @default("") 
   supply_category_group   String   @default("") 
   unit_category_group     String   @default("") 
@@ -850,7 +850,7 @@ model OutsourcingVendor {
 model ProductionRequest {
   id              String   @id @default(cuid())
   postNumber      String   @unique // 예: P-SUP-PMD-260825-001
-  category        String   // 품목 분류: "JEBON"(제본), "SIGN"(현판), "BANNER"(현수막), "MEDAL"(상패)
+  category        String   // 품목 분류: SIGN | JEBON | PRINT | OFFICE_SUPPLIES
   
   // 🏢 부서 족보 데이터 (부서별 대조 및 조회 성능 최적화를 위한 인덱스 필드)
   userEmail       String   // 신청자 이메일

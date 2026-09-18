@@ -154,6 +154,43 @@ function resolveScopeFromUnits(
   };
 }
 
+function buildOrderScope(auth: {
+  user: { unit?: { id: string; unit_name: string } | null };
+  unitsList?: unknown[];
+  permission: { viewScope?: string; editScope?: string; myRole?: string; isMaster?: boolean };
+}) {
+  const myUnit = auth.user.unit;
+  if (!myUnit?.id || !myUnit.unit_name) return null;
+
+  const allUnits = (auth.unitsList || []).map((u: any) => ({
+    id: u.id as string,
+    unit_name: u.unit_name as string,
+    parent_id: (u.parent_id ?? null) as string | null,
+  }));
+
+  // 쓰기: editScope 우선, 없으면 viewScope (LV_1/Master TOTAL 포함)
+  const scopeKey =
+    auth.permission.isMaster || auth.permission.myRole === 'LV_1'
+      ? 'TOTAL'
+      : String(auth.permission.editScope || auth.permission.viewScope || 'DEPT');
+
+  return resolveScopeFromUnits(
+    { id: myUnit.id, unit_name: myUnit.unit_name },
+    allUnits,
+    scopeKey
+  );
+}
+
+function assertRowInDeptScope(
+  scope: ReturnType<typeof resolveScopeFromUnits> | null,
+  deptName: string | null | undefined
+) {
+  if (!scope || scope.viewScope === 'NONE' || scope.scopeNames.length === 0) {
+    return false;
+  }
+  return scope.scopeNames.includes(String(deptName || '').trim());
+}
+
 /** [GET] 연계 조직 제작 신청 내역 — apply/history DEPT 스코프와 동일 데이터 */
 export async function GET() {
   try {
@@ -226,6 +263,14 @@ export async function POST(req: Request) {
       return NextResponse.json({ message: '발주할 항목을 선택해주세요.' }, { status: 400 });
     }
 
+    const scope = buildOrderScope(auth);
+    if (!scope || scope.scopeNames.length === 0) {
+      return NextResponse.json(
+        { message: '부서 스코프가 없어 발주할 수 없습니다.' },
+        { status: 403 }
+      );
+    }
+
     let batchShipping: BatchShippingInput | null = null;
     if (batchShippingRaw && typeof batchShippingRaw === 'object') {
       batchShipping = {
@@ -252,12 +297,19 @@ export async function POST(req: Request) {
     const deptName = myUnit?.unit_name || '부서';
 
     const acceptedRows = await prisma.productionRequest.findMany({
-      where: { id: { in: requestIds }, status: 'ACCEPTED' },
+      where: {
+        id: { in: requestIds },
+        status: 'ACCEPTED',
+        deptName: { in: scope.scopeNames },
+      },
     });
 
     if (acceptedRows.length === 0) {
       return NextResponse.json(
-        { message: '발주대기(접수완료) 상태인 건만 묶음 발주할 수 있습니다. 먼저 접수 처리해 주세요.' },
+        {
+          message:
+            '발주대기(접수완료) 상태이면서 담당 부서 범위 안인 건만 묶음 발주할 수 있습니다. 먼저 접수 처리해 주세요.',
+        },
         { status: 400 }
       );
     }
@@ -304,7 +356,7 @@ export async function POST(req: Request) {
 /** [PATCH] 접수 / 반려 / 원문 수정(대기중·발주대기) */
 export async function PATCH(req: Request) {
   try {
-    await authorizeApi(MENU_PATH, { requireEditor: true });
+    const auth = await authorizeApi(MENU_PATH, { requireEditor: true });
     const body = await req.json().catch(() => ({}));
     const id = String(body.id || '').trim();
     const action = String(body.action || '').trim().toLowerCase();
@@ -313,9 +365,23 @@ export async function PATCH(req: Request) {
       return NextResponse.json({ message: '신청 ID가 필요합니다.' }, { status: 400 });
     }
 
+    const scope = buildOrderScope(auth);
+    if (!scope || scope.scopeNames.length === 0) {
+      return NextResponse.json(
+        { message: '부서 스코프가 없어 처리할 수 없습니다.' },
+        { status: 403 }
+      );
+    }
+
     const row = await prisma.productionRequest.findUnique({ where: { id } });
     if (!row) {
       return NextResponse.json({ message: '신청 내역을 찾을 수 없습니다.' }, { status: 404 });
+    }
+    if (!assertRowInDeptScope(scope, row.deptName)) {
+      return NextResponse.json(
+        { message: '담당 부서 범위 밖의 신청 건입니다.' },
+        { status: 403 }
+      );
     }
 
     if (action === 'update') {

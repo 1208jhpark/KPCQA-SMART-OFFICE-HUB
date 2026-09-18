@@ -68,6 +68,29 @@ export async function GET() {
   }
 }
 
+/** global_mgmt_dept: OrgUnit.id 로 정규화 (레거시 명칭 → id) */
+async function normalizeGlobalMgmtDept(raw: unknown): Promise<string> {
+  const ref = String(raw ?? '').trim();
+  if (!ref) return '';
+
+  const byId = await prisma.orgUnit.findFirst({
+    where: { id: ref, is_deleted: false },
+    select: { id: true },
+  });
+  if (byId) return byId.id;
+
+  const byName = await prisma.orgUnit.findFirst({
+    where: { unit_name: ref, is_deleted: false },
+    select: { id: true },
+  });
+  if (byName) return byName.id;
+
+  // 삭제·미존재 참조는 빈 값으로 두지 않고 거절
+  throw Object.assign(new Error(`총괄 관리 부서를 찾을 수 없습니다: ${ref}`), {
+    code: 'INVALID_GLOBAL_MGMT_DEPT',
+  });
+}
+
 /**
  * [PATCH] 시스템 글로벌 설정 수정하기 — LV_1만
  */
@@ -102,19 +125,20 @@ export async function PATCH(req: Request) {
     ];
 
     const updateData: any = {};
-    allowedFields.forEach((key) => {
-      if (Object.prototype.hasOwnProperty.call(body, key)) {
-        if (key === 'linked_sites' && typeof body[key] === 'string') {
-          try {
-            updateData[key] = JSON.parse(body[key]);
-          } catch {
-            updateData[key] = body[key];
-          }
-        } else {
+    for (const key of allowedFields) {
+      if (!Object.prototype.hasOwnProperty.call(body, key)) continue;
+      if (key === 'linked_sites' && typeof body[key] === 'string') {
+        try {
+          updateData[key] = JSON.parse(body[key]);
+        } catch {
           updateData[key] = body[key];
         }
+      } else if (key === 'global_mgmt_dept') {
+        updateData[key] = await normalizeGlobalMgmtDept(body[key]);
+      } else {
+        updateData[key] = body[key];
       }
-    });
+    }
 
     // tagline: Prisma client 미재생성 환경 대비 raw 저장
     const nextTagline =
@@ -136,6 +160,9 @@ export async function PATCH(req: Request) {
 
     return NextResponse.json({ ...updated, tagline });
   } catch (error: any) {
+    if (error?.code === 'INVALID_GLOBAL_MGMT_DEPT') {
+      return NextResponse.json({ message: error.message }, { status: 400 });
+    }
     if (error instanceof Error) {
       const res = authErrorToResponse(error);
       if (res.status !== 500) return res;

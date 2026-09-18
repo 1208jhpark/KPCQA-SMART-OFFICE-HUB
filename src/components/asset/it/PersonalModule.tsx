@@ -2,7 +2,7 @@
      
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import * as XLSX from 'xlsx'; 
-import { getKSTDateString, getKSTDaysUntil, getKSTNowYearMonth, getKSTYearMonth, toSortableTime, formatKSTDateTime } from '@/utils/dateUtils';
+import { getKSTDateString, getKSTDaysUntil, getKSTNowYearMonth, getKSTYearMonthParts, toSortableTime, formatKSTDateTime, formatKSTDisplayDate } from '@/utils/dateUtils';
 import LoadingState from '@/components/common/LoadingState';
 import {
   buildInfoCorrectionPending,
@@ -14,7 +14,7 @@ import {
   INFO_CORRECTION_FIELD_LABELS,
   type InfoCorrectionField,
 } from '@/utils/itInfoCorrection';
-import { resolveInterfaceEditState } from '@/lib/permission-utils';
+import { resolveInterfaceEditState, isSystemLv1User } from '@/lib/permission-utils';
 import {
   applyIdentityToRequestPayload,
   assetMatchesIdentity,
@@ -23,20 +23,6 @@ import {
 } from '@/utils/itUserIdentity';
 
 const MENU_PATH = '/asset/it/personal';
-
-/** KST 연·월 문자열 (year: '2026', month: '07') */
-function getKSTYearMonthParts(dateInput: Date | string | number | null | undefined) {
-  if (dateInput === null || dateInput === undefined || dateInput === '') return null;
-  const raw = String(dateInput).trim();
-  const ymd = raw.match(/^(\d{4})-(\d{2})-(\d{2})/);
-  if (ymd) return { year: ymd[1], month: ymd[2] };
-  const ym = getKSTYearMonth(dateInput);
-  if (!ym) return null;
-  return {
-    year: String(ym.year),
-    month: String(ym.month).padStart(2, '0'),
-  };
-}
 
 /** 관리자가 먼저 건 문의인지 (확인·종결로 status가 바뀌어도 동일) */
 function isAdminInquiryRow(req: any) {
@@ -208,14 +194,8 @@ function threadTurns(req: any) {
   const adminText = opinionDisplay(req?.adminOpinion);
   const reqDateRaw = req?.requestDate || req?.createdAt;
   const doneDateRaw = req?.completedAt || req?.updatedAt || req?.createdAt || reqDateRaw;
-  const reqDate =
-    formatKSTDateTime(reqDateRaw) !== '-'
-      ? formatKSTDateTime(reqDateRaw)
-      : getKSTDateString(reqDateRaw) || '';
-  const doneDate =
-    formatKSTDateTime(doneDateRaw) !== '-'
-      ? formatKSTDateTime(doneDateRaw)
-      : reqDate;
+  const reqDate = formatKSTDisplayDate(reqDateRaw);
+  const doneDate = formatKSTDisplayDate(doneDateRaw) || reqDate;
   const userName = String(req?.requester || req?.name || '').trim() || '사용자';
   const adminName = '관리자';
   const turns: { role: 'admin' | 'user'; name: string; text: string; date: string }[] = [];
@@ -1521,7 +1501,7 @@ const handleCancelRequest = async (id: string) => {
           <p className="text-slate-400 text-xs mt-3 leading-relaxed">
             보유 자산 현황을 확인하고 정기 실사·의견 요청을 처리합니다.
           </p>
-          {permissionSummary && (
+          {permissionSummary && isSystemLv1User(currentUser) && (
             <div className="flex flex-wrap items-center gap-2 mt-4 pt-3 border-t border-white/15">
               <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-white/10 border-white/25 text-slate-50 shadow-sm">
                 <span>👑 Master 책임자:</span>
@@ -1541,11 +1521,6 @@ const handleCancelRequest = async (id: string) => {
                 <span className="opacity-50">|</span>
                 <span>Level: {permissionSummary.editLevel}</span>
               </div>
-              {!canEdit && (
-                <span className="text-[10px] font-black text-amber-200 bg-amber-500/20 border border-amber-300/30 px-2.5 py-1 rounded-md">
-                  편집 권한 없음 — 조회만 가능
-                </span>
-              )}
             </div>
           )}
         </div>

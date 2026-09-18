@@ -5,7 +5,7 @@ import React, { useState, useEffect, useMemo, Suspense, useRef } from 'react';
 import { usePathname } from 'next/navigation';
 import Link from 'next/link';
 import { getKSTDateString } from '@/utils/dateUtils';
-import { resolveInterfaceEditState } from '@/lib/permission-utils';
+import { resolveInterfaceEditState, isSystemLv1User } from '@/lib/permission-utils';
 import { parseSupplyOwnerDepts, resolveTopOrgName } from '@/utils/orgUnits';
 import LoadingState from '@/components/common/LoadingState';
 import {
@@ -466,7 +466,7 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
     <p className="text-emerald-100/90 text-xs mt-3 leading-relaxed">
       전사 소모품의 전체 관리 및 실시간 재고 현황을 모니터링하고 관리합니다.
     </p>
-    {permissionSummary && (
+    {permissionSummary && isSystemLv1User(currentUser) && (
       <div className="flex flex-wrap items-center gap-2 mt-4 pt-3 border-t border-white/15">
         <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-white/10 border-white/25 text-emerald-50 shadow-sm">
           <span>👑 Master 책임자:</span>
@@ -486,11 +486,6 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
           <span className="opacity-50">|</span>
           <span>Level: {permissionSummary.editLevel}</span>
         </div>
-        {!canEdit && (
-          <span className="text-[10px] font-black text-amber-200 bg-amber-500/20 border border-amber-300/30 px-2.5 py-1 rounded-md">
-            편집 권한 없음 — 조회만 가능
-          </span>
-        )}
       </div>
     )}
   </div>

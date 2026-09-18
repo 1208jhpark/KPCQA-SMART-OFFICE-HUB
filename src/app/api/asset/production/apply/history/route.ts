@@ -1,58 +1,73 @@
 import { NextResponse } from 'next/server';
 import prisma from '@/lib/prisma';
 import { Prisma } from '@prisma/client';
-import { cookies } from 'next/headers';
-import jwt from 'jsonwebtoken';
+import {
+  authorizeAnyMenuPaths,
+  authErrorToResponse,
+} from '@/lib/server-auth-guard';
 
-import { JWT_SECRET } from '@/lib/jwt';
+export const dynamic = 'force-dynamic';
 
+const READ_PATHS = [
+  '/asset/production/apply/request',
+  '/asset/production/apply/history',
+];
+
+/** [GET] 신청 이력 — 메뉴 Access (본인 / 부서 스코프) */
 export async function GET(req: Request) {
   try {
-    const cookieStore = await cookies();
-    const token = cookieStore.get('token')?.value;
-    if (!token) return NextResponse.json({ message: 'No Token' }, { status: 401 });
-
-    const decoded: any = jwt.verify(token, JWT_SECRET);
-
-    // URL에서 조회 조건 파라미터 가져오기 (예: ?scope=dept 또는 본인)
+    const auth = await authorizeAnyMenuPaths(READ_PATHS);
     const { searchParams } = new URL(req.url);
     const scope = searchParams.get('scope') || 'OWN';
 
-    let whereClause: any = { isArchived: false }; // 숨김 처리되지 않은 데이터만 조회
+    let whereClause: any = { isArchived: false };
 
     if (scope === 'OWN') {
-      whereClause.userEmail = decoded.email;
+      whereClause.userEmail = auth.user.email;
     } else if (scope === 'DEPT') {
-      // 부서 전체 조회를 위해 현재 유저의 부서명을 DB에서 다시 확인
-      const user = await prisma.user.findUnique({
-        where: { email: decoded.email },
-        include: { unit: true }
-      });
-      whereClause.deptName = user?.unit?.unit_name || 'Unknown';
+      // unit_id 기준 동료 매칭 + 신청 시점 deptName 스냅샷(조직 개명·이동 보완)
+      const unitId = auth.user.unit_id;
+      const unitName = String(auth.user.unit?.unit_name || '').trim();
+      if (unitId) {
+        const peers = await prisma.user.findMany({
+          where: { unit_id: unitId },
+          select: { email: true },
+        });
+        const emails = peers.map((p) => p.email).filter(Boolean);
+        const or: Prisma.ProductionRequestWhereInput[] = [];
+        if (emails.length > 0) or.push({ userEmail: { in: emails } });
+        if (unitName) or.push({ deptName: unitName });
+        whereClause =
+          or.length > 0
+            ? { isArchived: false, OR: or }
+            : { isArchived: false, userEmail: auth.user.email };
+      } else if (unitName) {
+        whereClause.deptName = unitName;
+      } else {
+        whereClause.userEmail = auth.user.email;
+      }
+    } else {
+      whereClause.userEmail = auth.user.email;
     }
 
-    // 최신 신청순으로 데이터 가져오기
     const histories = await prisma.productionRequest.findMany({
       where: whereClause,
-      orderBy: { createdAt: 'desc' }
+      orderBy: { createdAt: 'desc' },
     });
 
     return NextResponse.json(histories);
-
   } catch (error) {
-    console.error("History Fetch Error:", error);
+    const authRes = authErrorToResponse(error);
+    if (authRes.status !== 500) return authRes;
+    console.error('History Fetch Error:', error);
     return NextResponse.json({ message: '데이터 조회 중 오류 발생' }, { status: 500 });
   }
 }
 
-/** 본인 신청 — cancel(삭제) / revert-accept(접수취소) / confirm-receive(수령완료) / update(수정) */
+/** 본인 신청 — cancel / revert-accept / confirm-receive / update — Access + 본인만 */
 export async function PATCH(req: Request) {
   try {
-    const cookieStore = await cookies();
-    const token = cookieStore.get('token')?.value;
-    if (!token) return NextResponse.json({ message: 'No Token' }, { status: 401 });
-
-    const decoded: any = jwt.verify(token, JWT_SECRET);
+    const auth = await authorizeAnyMenuPaths(READ_PATHS);
     const body = await req.json();
     const id = String(body.id || '').trim();
     const action = String(body.action || 'cancel').trim();
@@ -61,7 +76,7 @@ export async function PATCH(req: Request) {
 
     const row = await prisma.productionRequest.findUnique({ where: { id } });
     if (!row) return NextResponse.json({ message: '신청 내역을 찾을 수 없습니다.' }, { status: 404 });
-    if (row.userEmail !== decoded.email) {
+    if (row.userEmail.toLowerCase() !== String(auth.user.email || '').toLowerCase()) {
       return NextResponse.json({ message: '본인 신청만 처리할 수 있습니다.' }, { status: 403 });
     }
 
@@ -136,15 +151,12 @@ export async function PATCH(req: Request) {
           ? { ...prevOptions, ...body.options }
           : prevOptions;
 
-      const title =
-        body.title != null ? String(body.title).trim() : row.title;
+      const title = body.title != null ? String(body.title).trim() : row.title;
       if (!title) {
         return NextResponse.json({ message: '관리용 제목은 필수입니다.' }, { status: 400 });
       }
       const quantity =
-        body.quantity != null
-          ? Math.max(1, Number(body.quantity) || 1)
-          : row.quantity;
+        body.quantity != null ? Math.max(1, Number(body.quantity) || 1) : row.quantity;
 
       const updated = await prisma.productionRequest.update({
         where: { id },
@@ -159,6 +171,8 @@ export async function PATCH(req: Request) {
 
     return NextResponse.json({ message: '지원하지 않는 동작입니다.' }, { status: 400 });
   } catch (error) {
+    const authRes = authErrorToResponse(error);
+    if (authRes.status !== 500) return authRes;
     console.error('Production history PATCH error:', error);
     return NextResponse.json({ message: '처리 중 오류가 발생했습니다.' }, { status: 500 });
   }

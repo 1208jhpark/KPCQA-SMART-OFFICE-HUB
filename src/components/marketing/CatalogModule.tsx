@@ -4,7 +4,7 @@ import React, { useState, useEffect, useMemo, useRef, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation'; 
 import { getKSTDateString } from '@/utils/dateUtils';
 import { resolveTopOrgName, canDistributeMarketingOwnerDept, canEditTopOrgMarketingAsset, isGlobalMgmtOrgMember, canApplyViaViewRoles } from '@/utils/orgUnits';
-import { resolveInterfaceEditState } from '@/lib/permission-utils';
+import { resolveInterfaceEditState, isSystemLv1User } from '@/lib/permission-utils';
 import LoadingState from '@/components/common/LoadingState';
 
 const MAX_IMAGE_BYTES = 500 * 1024; // 원본 파일 기준
@@ -224,6 +224,7 @@ function CatalogContent() {
         topOrgName,
         myUnitName: myCenter,
         myHqName: myHq,
+        myUnitId: currentUser.unit_id || currentUser.unit?.id,
         globalMgmtDept,
         units,
       });
@@ -590,7 +591,7 @@ function CatalogContent() {
           <p className="text-white/70 text-xs mt-3 leading-relaxed">
             활성 기념품을 확인하고 등록합니다. 지급 신청으로 재고를 확보하세요. (입고·수정·마감은 소속 부서만)
           </p>
-          {permissionSummary && (
+          {permissionSummary && isSystemLv1User(currentUser) && (
             <div className="flex flex-wrap items-center gap-2 mt-4 pt-3 border-t border-white/15">
               <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-white/10 border-white/25 text-blue-50 shadow-sm">
                 <span>👑 Master 책임자:</span>
@@ -610,11 +611,6 @@ function CatalogContent() {
                 <span className="opacity-50">|</span>
                 <span>Level: {permissionSummary.editLevel}</span>
               </div>
-              {!canSeeAddForm && (
-                <span className="text-[10px] font-black text-amber-200 bg-amber-500/20 border border-amber-300/30 px-2.5 py-1 rounded-md">
-                  편집 권한 없음 — 조회·지급신청만 가능
-                </span>
-              )}
             </div>
           )}
         </div>

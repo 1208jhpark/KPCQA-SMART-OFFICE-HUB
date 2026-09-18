@@ -4,8 +4,8 @@ import React, { useState, useMemo, useEffect } from 'react';
 import * as XLSX from 'xlsx'; 
 import { getKSTDateString, getKSTDaysUntil } from '@/utils/dateUtils';
 import LoadingState from '@/components/common/LoadingState';
-import { resolveTopOrgName } from '@/utils/orgUnits';
-import { resolveInterfaceEditState } from '@/lib/permission-utils';
+import { resolveTopOrgName, isGlobalMgmtOrgMember } from '@/utils/orgUnits';
+import { resolveInterfaceEditState, isSystemLv1User } from '@/lib/permission-utils';
 import {
   getCompletedAuditLabel,
   getDisplayFieldValue,
@@ -26,6 +26,7 @@ function emailLocalPart(email: string | null | undefined) {
 /** 부서 화면 조회 범위: 본인 소속만 + (설정 시) 최상위 Organization */
 function buildDeptViewScope(opts: {
   userDept: string;
+  userUnitId?: string | null;
   units: Array<{ id?: string; unit_name?: string | null; parent_id?: string | null; unit_type?: string | null }>;
   globalMgmtDept: string;
 }): string[] {
@@ -33,24 +34,16 @@ function buildDeptViewScope(opts: {
   const own = String(opts.userDept || '').trim();
   if (own) depts.add(own);
 
-  const mgmt = String(opts.globalMgmtDept || '').trim();
   const topOrg = resolveTopOrgName(opts.units);
-  if (!mgmt || !topOrg || !own) return Array.from(depts);
-
-  const covers = (ancestorName: string, descendantName: string) => {
-    if (ancestorName === descendantName) return true;
-    let current = opts.units.find((u) => u.unit_name === descendantName);
-    while (current?.parent_id) {
-      const parent = opts.units.find((u) => u.id === current!.parent_id);
-      if (!parent) break;
-      if (parent.unit_name === ancestorName) return true;
-      current = parent;
-    }
-    return false;
-  };
-
-  // admin/settings 전사(최상위) 총괄 부서 지정 — 지정 부서 및 하위 Center만 Organization 자산 조회
-  if (own === mgmt || covers(mgmt, own)) {
+  if (
+    topOrg &&
+    isGlobalMgmtOrgMember({
+      myUnitName: own,
+      myUnitId: opts.userUnitId,
+      globalMgmtDept: opts.globalMgmtDept,
+      units: opts.units,
+    })
+  ) {
     depts.add(topOrg);
   }
   return Array.from(depts);
@@ -198,6 +191,7 @@ export default function DeptModule() {
         if (user) {
           const allowed = buildDeptViewScope({
             userDept: user.dept,
+            userUnitId: user.unit_id || user.unitId || null,
             units: unitData,
             globalMgmtDept: mgmtDept,
           });
@@ -219,6 +213,7 @@ export default function DeptModule() {
     if (!currentUser?.dept) return [];
     return buildDeptViewScope({
       userDept: currentUser.dept,
+      userUnitId: currentUser.unit_id || currentUser.unitId || null,
       units,
       globalMgmtDept,
     });
@@ -634,7 +629,7 @@ export default function DeptModule() {
           <p className="text-slate-400 text-xs mt-3 leading-relaxed">
             본인 소속 자산과 실사 현황을 조회합니다. (설정 시 최상위 조직 자산 포함)
           </p>
-          {permissionSummary && (
+          {permissionSummary && isSystemLv1User(currentUser) && (
             <div className="flex flex-wrap items-center gap-2 mt-4 pt-3 border-t border-white/15">
               <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-white/10 border-white/25 text-slate-50 shadow-sm">
                 <span>👑 Master 책임자:</span>
@@ -654,11 +649,6 @@ export default function DeptModule() {
                 <span className="opacity-50">|</span>
                 <span>Level: {permissionSummary.editLevel}</span>
               </div>
-              {!editState.isEditor && (
-                <span className="text-[10px] font-black text-amber-200 bg-amber-500/20 border border-amber-300/30 px-2.5 py-1 rounded-md">
-                  편집 권한 없음 — 조회만 가능
-                </span>
-              )}
             </div>
           )}
         </div>

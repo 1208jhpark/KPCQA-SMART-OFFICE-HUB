@@ -1,7 +1,6 @@
 import { NextResponse } from 'next/server';
 import prisma from '@/lib/prisma';
 import {
-  authorizeApi,
   authorizeAnyMenuPaths,
   authErrorToResponse,
 } from '@/lib/server-auth-guard';
@@ -12,7 +11,6 @@ import {
 
 export const dynamic = 'force-dynamic';
 
-const MENU_PATH = '/asset/production/apply/request';
 const READ_PATHS = [
   '/asset/production/apply/request',
   '/asset/production/apply/history',
@@ -22,7 +20,7 @@ const READ_PATHS = [
   '/asset/production/dept-master/archive',
 ];
 
-/** 시드 인증 — 삭제 시 LV_1/메뉴 Master 필요 (isSeedCertId) */
+/** 시드 인증 — 삭제 시 시스템 LV_1만 (isSeedCertId) */
 type MultiGradeRow = { certId: string; useMultiGradeSelect: boolean };
 type LinkedPlatesRow = { certId: string; linkedPlateCodes: unknown };
 
@@ -258,7 +256,7 @@ export async function POST(req: Request) {
 
     // 시드 누락분 복구: 없으면 추가, 비활성만 재활성 (명칭·서식·등급 등 보존)
     if (body?.action === 'restore-seeds') {
-      await authorizeApi(MENU_PATH, { requireEditor: true });
+      await authorizeAnyMenuPaths(READ_PATHS, { requireEditor: true });
       const type = String(body.type || '').trim().toUpperCase();
       if (type !== 'SIGN' && type !== 'JEBON') {
         return NextResponse.json(
@@ -270,6 +268,7 @@ export async function POST(req: Request) {
       const seeds = getSeedCertDefaultsForType(type);
       let created = 0;
       let reactivated = 0;
+      let gradeModeSynced = 0;
 
       for (const cert of seeds) {
         const existing = await prisma.productionCertMaster.findUnique({
@@ -305,9 +304,14 @@ export async function POST(req: Request) {
           created += 1;
           continue;
         }
+
+        // 등급 입력방식 시드 기본값 동기화
+        // SIGN: ISO만 체크박스 복수, 나머지·JEBON은 셀렉트 단일
+        const needsGradeModeSync =
+          Boolean(existing.useMultiGradeSelect) !== Boolean(cert.useMultiGradeSelect);
+
         if (!existing.isActive) {
           // 재활성 시 GRADE 패널(grades·복수선택)도 시드 기본값으로 맞춤
-          // (삭제 전 등급을 지운 상태로 비활성된 경우를 복구)
           await prisma.productionCertMaster.update({
             where: { certId: cert.certId },
             data: {
@@ -317,16 +321,24 @@ export async function POST(req: Request) {
             },
           });
           reactivated += 1;
+        } else if (needsGradeModeSync) {
+          await prisma.productionCertMaster.update({
+            where: { certId: cert.certId },
+            data: { useMultiGradeSelect: cert.useMultiGradeSelect },
+          });
+          gradeModeSynced += 1;
         }
       }
 
+      const touched = created + reactivated + gradeModeSynced;
       return NextResponse.json({
         message:
-          created + reactivated === 0
-            ? '복구할 시드 인증이 없습니다. (이미 모두 활성)'
-            : `시드 인증 복구 완료 (신규 ${created}건, 재활성 ${reactivated}건 · 등급 시드 반영)`,
+          touched === 0
+            ? '복구할 시드 인증이 없습니다. (이미 모두 활성 · 등급입력 기본값 일치)'
+            : `시드 인증 복구 완료 (신규 ${created}건, 재활성 ${reactivated}건, 등급입력방식 동기 ${gradeModeSynced}건)`,
         created,
         reactivated,
+        gradeModeSynced,
       });
     }
 
@@ -341,11 +353,10 @@ export async function POST(req: Request) {
       return NextResponse.json({ message: 'type은 SIGN 또는 JEBON 이어야 합니다.' }, { status: 400 });
     }
 
-    // 신규·viewerWritable(등급/입력방식/품목연결)은 메뉴 접근만, 그 외 수정은 Edit
+    // 신규(또는 비활성 재등록): Access / 활성 항목 수정·등급·품목연결: Edit
     const existing = await prisma.productionCertMaster.findUnique({ where: { certId } });
-    await authorizeApi(MENU_PATH, {
-      requireEditor: !!existing && !viewerWritable,
-    });
+    const isNew = !existing || !existing.isActive;
+    await authorizeAnyMenuPaths(READ_PATHS, { requireEditor: !isNew });
 
     if (viewerWritable && existing) {
       label = existing.label;
@@ -498,20 +509,20 @@ export async function POST(req: Request) {
 
 export async function DELETE(req: Request) {
   try {
-    const auth = await authorizeAnyMenuPaths(READ_PATHS, { requireEditor: true });
+    const auth = await authorizeAnyMenuPaths(READ_PATHS);
     const { searchParams } = new URL(req.url);
     const certId = searchParams.get('certId');
     if (!certId) return NextResponse.json({ message: 'ID가 필요합니다.' }, { status: 400 });
 
     if (isSeedCertId(certId)) {
-      const isLv1OrMaster =
-        auth.permission.isMaster || auth.permission.myRole === 'LV_1';
-      if (!isLv1OrMaster) {
+      if (auth.permission.myRole !== 'LV_1') {
         return NextResponse.json(
-          { message: '시드 인증 삭제는 LV_1(마스터) 권한이 필요합니다.' },
+          { message: '시드 인증 삭제는 LV_1만 가능합니다.' },
           { status: 403 }
         );
       }
+    } else if (!auth.permission.isEditor) {
+      return NextResponse.json({ message: '편집 권한이 없습니다.' }, { status: 403 });
     }
 
     const row = await prisma.productionCertMaster.findUnique({ where: { certId } });

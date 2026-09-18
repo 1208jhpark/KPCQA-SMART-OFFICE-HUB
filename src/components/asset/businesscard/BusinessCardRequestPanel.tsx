@@ -5,7 +5,7 @@ import * as XLSX from 'xlsx';
 import { usePathname } from 'next/navigation';
 import Link from 'next/link';
 import { getKSTDateString, getKSTNowYearMonth } from '@/utils/dateUtils';
-import { resolveInterfaceEditState } from '@/lib/permission-utils';
+import { resolveInterfaceEditState, isSystemLv1User } from '@/lib/permission-utils';
 import {
   BUSINESS_CARD_MASTER_TABS,
   useInterfaceStepTabs,
@@ -1014,7 +1014,7 @@ export default function BusinessCardRequestPanel() {
     <p className="text-emerald-100/90 text-xs mt-3 leading-relaxed">
       [접수대기] 원문 검수 후 접수확정 → [발주대기] 개별 또는 묶음 발주로 넘깁니다. (원문 검수 가능)
     </p>
-    {permissionSummary && (
+    {permissionSummary && isSystemLv1User(currentUser) && (
       <div className="flex flex-wrap items-center gap-2 mt-4 pt-3 border-t border-white/15">
         <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-white/10 border-white/25 text-emerald-50 shadow-sm">
           <span>👑 Master 책임자:</span>
@@ -1034,11 +1034,6 @@ export default function BusinessCardRequestPanel() {
           <span className="opacity-50">|</span>
           <span>Level: {permissionSummary.editLevel}</span>
         </div>
-        {!canEditMaster && (
-          <span className="text-[10px] font-black text-amber-200 bg-amber-500/20 border border-amber-300/30 px-2.5 py-1 rounded-md">
-            편집 권한 없음 — 조회만 가능
-          </span>
-        )}
       </div>
     )}
   </div>

@@ -180,6 +180,48 @@ export function canDistributeMarketingOwnerDept(
 }
 
 /**
+ * SystemConfig.global_mgmt_dept 해석
+ * - 신규: OrgUnit.id
+ * - 레거시: unit_name (명칭 변경 전 DB 값 호환)
+ */
+export function resolveGlobalMgmtUnit(
+  globalMgmtDept: string | null | undefined,
+  units: OrgUnitLike[] | null | undefined
+): { id: string; unit_name: string } | null {
+  const ref = String(globalMgmtDept || '').trim();
+  if (!ref || !Array.isArray(units) || units.length === 0) return null;
+
+  const byId = units.find((u) => String(u.id || '').trim() === ref);
+  if (byId?.id) {
+    return {
+      id: String(byId.id).trim(),
+      unit_name: String(byId.unit_name || '').trim(),
+    };
+  }
+
+  const byName = units.find((u) => String(u.unit_name || '').trim() === ref);
+  if (byName?.id) {
+    return {
+      id: String(byName.id).trim(),
+      unit_name: String(byName.unit_name || '').trim(),
+    };
+  }
+
+  return null;
+}
+
+/** owner_dept 등 명칭 비교용 — id/레거시명 → 현재 unit_name */
+export function resolveGlobalMgmtDeptName(
+  globalMgmtDept: string | null | undefined,
+  units: OrgUnitLike[] | null | undefined
+): string {
+  const resolved = resolveGlobalMgmtUnit(globalMgmtDept, units);
+  if (resolved?.unit_name) return resolved.unit_name;
+  // units 없이 레거시 명칭만 있는 경우 그대로 반환
+  return String(globalMgmtDept || '').trim();
+}
+
+/**
  * Organization(최상위) 자산 편집/입고/종료 가능 여부 — global_mgmt_dept만
  * (본인 소속이 topOrg여도 mgmt가 아니면 불가)
  * - 총괄 부서 본인
@@ -190,6 +232,7 @@ export function canEditTopOrgMarketingAsset(opts: {
   topOrgName?: string | null;
   myUnitName?: string | null;
   myHqName?: string | null;
+  myUnitId?: string | null;
   globalMgmtDept?: string | null;
   units?: OrgUnitLike[] | null;
 }): boolean {
@@ -200,28 +243,25 @@ export function canEditTopOrgMarketingAsset(opts: {
   if (!mgmt) return false;
   const me = (opts.myUnitName || '').trim();
   if (!me) return false;
-  const hq = (opts.myHqName || '').trim();
-  if (me === mgmt || hq === mgmt) return true;
 
-  // GLOBAL_MGMT(HQ 등)의 하위 소속(직속 Center 포함)도 허용
-  if (opts.units?.length) {
-    if (
-      isGlobalMgmtOrgMember({
-        myUnitName: me,
-        myUnitId: opts.units.find((u) => String(u.unit_name || '').trim() === me)?.id,
-        globalMgmtDept: mgmt,
-        units: opts.units,
-      })
-    ) {
-      return true;
-    }
-  }
-  return false;
+  const myId =
+    String(opts.myUnitId || '').trim() ||
+    String(
+      opts.units?.find((u) => String(u.unit_name || '').trim() === me)?.id || ''
+    ).trim();
+
+  return isGlobalMgmtOrgMember({
+    myUnitName: me,
+    myUnitId: myId || null,
+    globalMgmtDept: mgmt,
+    units: opts.units,
+  });
 }
 
 /**
  * admin/settings GLOBAL_MGMT 지정 부서 본인 또는 그 하위 조직(직속 Center 등) 소속인지
  * HQ로 지정하면 하위 Center까지 true (조상 체인이 mgmt에 도달하면 포함)
+ * global_mgmt_dept는 OrgUnit.id(권장) 또는 레거시 unit_name
  */
 export function isGlobalMgmtOrgMember(opts: {
   myUnitName?: string | null;
@@ -229,26 +269,43 @@ export function isGlobalMgmtOrgMember(opts: {
   globalMgmtDept?: string | null;
   units?: OrgUnitLike[] | null;
 }): boolean {
-  const mgmt = String(opts.globalMgmtDept || '').trim();
+  const mgmtRef = String(opts.globalMgmtDept || '').trim();
   const me = String(opts.myUnitName || '').trim();
-  if (!mgmt || !me) return false;
-  if (me === mgmt) return true;
-  if (!opts.units?.length) return false;
+  if (!mgmtRef) return false;
+
+  // units 없음: 레거시 명칭 직접 비교만 가능
+  if (!opts.units?.length) {
+    return !!me && me === mgmtRef;
+  }
 
   const units = opts.units;
-  const mgmtUnit = units.find((u) => String(u.unit_name || '').trim() === mgmt);
-  const mgmtId = mgmtUnit?.id ? String(mgmtUnit.id).trim() : '';
+  const mgmtUnit = resolveGlobalMgmtUnit(mgmtRef, units);
+  if (!mgmtUnit) {
+    // 해석 실패 시 레거시 명칭 직접 비교
+    return !!me && me === mgmtRef;
+  }
 
-  // 직속 하위 (HQ → Center)
-  const children = getChildUnitNames(mgmt, mgmtId || null, units);
-  if (children.includes(me)) return true;
+  const mgmtId = mgmtUnit.id;
+  const mgmtName = mgmtUnit.unit_name;
 
-  // 조상 체인 상승: Center → HQ(mgmt) 등
   const myId = String(opts.myUnitId || '').trim();
   let cur =
     (myId ? units.find((u) => String(u.id || '').trim() === myId) : undefined) ||
-    units.find((u) => String(u.unit_name || '').trim() === me);
+    (me ? units.find((u) => String(u.unit_name || '').trim() === me) : undefined);
 
+  if (!cur) return false;
+
+  // 본인이 총괄 부서
+  if (String(cur.id || '').trim() === mgmtId) return true;
+  if (mgmtName && String(cur.unit_name || '').trim() === mgmtName) return true;
+
+  // 직속 하위 (HQ → Center)
+  const children = getChildUnitNames(mgmtName || null, mgmtId, units);
+  if (me && children.includes(me)) return true;
+  const myName = String(cur.unit_name || '').trim();
+  if (myName && children.includes(myName)) return true;
+
+  // 조상 체인 상승: Center → HQ(mgmt)
   const seen = new Set<string>();
   while (cur) {
     const cid = cur.id ? String(cur.id).trim() : '';
@@ -258,13 +315,13 @@ export function isGlobalMgmtOrgMember(opts: {
     }
 
     const parentId = cur.parent_id ? String(cur.parent_id).trim() : '';
-    const parentRelName = String(cur.parent?.unit_name || '').trim();
-    if (mgmtId && parentId === mgmtId) return true;
-    if (parentRelName === mgmt) return true;
+    if (parentId && parentId === mgmtId) return true;
 
     if (!parentId) break;
     const parent = units.find((u) => String(u.id || '').trim() === parentId);
-    if (parent && String(parent.unit_name || '').trim() === mgmt) return true;
+    if (!parent) break;
+    if (String(parent.id || '').trim() === mgmtId) return true;
+    if (mgmtName && String(parent.unit_name || '').trim() === mgmtName) return true;
     cur = parent;
   }
   return false;

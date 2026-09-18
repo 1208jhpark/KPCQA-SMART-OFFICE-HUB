@@ -30,6 +30,9 @@ import {
   parseOfficeQuoteLineId,
   getOfficeQuoteLinesFromOptions,
   serializeOfficeQuoteLinesToRawText,
+  parseOfficeSuppliesQuoteText,
+  buildOfficeKeywordMasterLabels,
+  sanitizeOfficeProductAliases,
   type OfficeDbItemSource,
 } from '@/lib/production-office-statement-match';
 
@@ -171,37 +174,14 @@ export default function ProductionStatementCompareModal({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [loadingMasterFile, setLoadingMasterFile] = useState(false);
 
-  // 통합 명세표 매칭 규칙 상태 (칼럼 키워드, 인증종류 문구, 품목/규격 문구)
-  const [rules, setRules] = useState<ProductionStatementRules>(() => {
-    const currentCat = categoryKey || 'SIGN';
-    if (typeof window !== 'undefined') {
-      try {
-        const saved = localStorage.getItem(`prod_statement_rules_${currentCat}`);
-        if (saved) {
-          return migrateLegacyZebCertKeywords(JSON.parse(saved), currentCat);
-        }
-      } catch {}
-    }
-    return getDefaultRulesForCategory(currentCat);
-  });
+  // 통합 명세표 매칭 규칙 (서버 파일 저장 — localStorage 금지)
+  const [rules, setRules] = useState<ProductionStatementRules>(() =>
+    getDefaultRulesForCategory(categoryKey || 'SIGN')
+  );
 
-  // 카테고리 변경 시 rules 동기화
+  // 카테고리 변경 시 기본값으로 리셋 후 fetchRulesAndMasters가 서버 규칙 로드
   useEffect(() => {
-    const currentCat = categoryKey || 'SIGN';
-    try {
-      if (typeof window !== 'undefined') {
-        const saved = localStorage.getItem(`prod_statement_rules_${currentCat}`);
-        if (saved) {
-          const migrated = migrateLegacyZebCertKeywords(JSON.parse(saved), currentCat);
-          setRules(migrated);
-          try {
-            localStorage.setItem(`prod_statement_rules_${currentCat}`, JSON.stringify(migrated));
-          } catch {}
-          return;
-        }
-      }
-    } catch {}
-    setRules(getDefaultRulesForCategory(currentCat));
+    setRules(getDefaultRulesForCategory(categoryKey || 'SIGN'));
   }, [categoryKey]);
 
   // 규칙 설정 모달 상태
@@ -364,16 +344,21 @@ export default function ProductionStatementCompareModal({
       const ts = Date.now();
       const currentCat = categoryKey || 'SIGN';
       const categoryDefaults = getDefaultRulesForCategory(currentCat);
+      const isOffice = currentCat === 'OFFICE_SUPPLIES';
 
-      const calls: Promise<Response>[] = [
+      const calls: Promise<Response | null>[] = [
         fetch(`/api/asset/production/master/statement-rules?category=${currentCat}&t=${ts}`, { cache: 'no-store' }),
-        fetch(`/api/asset/production/master/certs?t=${ts}`, { cache: 'no-store' }),
+        isOffice
+          ? Promise.resolve(null)
+          : fetch(`/api/asset/production/master/certs?t=${ts}`, { cache: 'no-store' }),
       ];
 
       if (currentCat === 'JEBON') {
         calls.push(fetch(`/api/asset/production/master/jebon-sizes?t=${ts}`, { cache: 'no-store' }));
       } else if (currentCat === 'PRINT') {
         calls.push(fetch(`/api/asset/production/master/print-items?t=${ts}`, { cache: 'no-store' }));
+      } else if (isOffice) {
+        calls.push(Promise.resolve(null));
       } else {
         calls.push(fetch(`/api/asset/production/master/plates?t=${ts}`, { cache: 'no-store' }));
       }
@@ -381,15 +366,22 @@ export default function ProductionStatementCompareModal({
       const [rulesRes, certsRes, itemsRes] = await Promise.all(calls);
 
       let nextRules: ProductionStatementRules = categoryDefaults;
-      if (rulesRes.ok) {
+      if (rulesRes?.ok) {
         const rData = await rulesRes.json();
         if (rData.rules) {
           nextRules = migrateLegacyZebCertKeywords(rData.rules, currentCat);
         }
       }
+      if (isOffice) {
+        nextRules = {
+          ...nextRules,
+          plateItemKeywords: sanitizeOfficeProductAliases(nextRules.plateItemKeywords),
+          certTypeKeywords: {},
+        };
+      }
 
       let certList: CertMasterOption[] = [];
-      if (certsRes.ok) {
+      if (certsRes?.ok) {
         const cData = await certsRes.json();
         if (Array.isArray(cData)) {
           const targetType = currentCat === 'JEBON' ? 'JEBON' : 'SIGN';
@@ -403,10 +395,29 @@ export default function ProductionStatementCompareModal({
             }));
           setCertMasterList(certList);
         }
+      } else if (isOffice) {
+        setCertMasterList([]);
       }
 
       let itemList: PlateMasterOption[] = [];
-      if (itemsRes && itemsRes.ok) {
+      if (isOffice) {
+        const quoteNames = officeDbItems.flatMap((di) => {
+          const lines = parseOfficeSuppliesQuoteText(String(di.quoteRawText || ''));
+          return lines.map((l) => l.productName);
+        });
+        const labels = buildOfficeKeywordMasterLabels(
+          quoteNames,
+          nextRules.plateItemKeywords
+        );
+        itemList = labels.map((label) => ({
+          id: label,
+          code: '',
+          label,
+          size: '',
+          price: 0,
+        }));
+        setPlateMasterList(itemList);
+      } else if (itemsRes?.ok) {
         const iData = await itemsRes.json();
         if (Array.isArray(iData)) {
           if (currentCat === 'JEBON') {
@@ -472,13 +483,10 @@ export default function ProductionStatementCompareModal({
       }
 
       setRules(nextRules);
-      try {
-        localStorage.setItem(`prod_statement_rules_${currentCat}`, JSON.stringify(nextRules));
-      } catch {}
     } catch (e) {
       console.error('Failed to fetch rules and masters:', e);
     }
-  }, [categoryKey]);
+  }, [categoryKey, officeDbItems]);
 
   const inspectSnapshotKey = useMemo(
     () =>
@@ -949,15 +957,40 @@ export default function ProductionStatementCompareModal({
     const currentCat = categoryKey || 'SIGN';
     const defaults = getDefaultRulesForCategory(currentCat);
     let next = migrateLegacyZebCertKeywords(rules, currentCat);
+    const isOffice = currentCat === 'OFFICE_SUPPLIES';
+
+    if (isOffice) {
+      next = {
+        ...next,
+        plateItemKeywords: sanitizeOfficeProductAliases(next.plateItemKeywords),
+        certTypeKeywords: {},
+      };
+    }
 
     const certLabels = certMasterList.map((c) => c.label);
-    const itemLabels: string[] = [];
-    const seenItem = new Set<string>();
-    for (const p of plateMasterList) {
-      const label = String(p.label || '').trim();
-      if (!label || seenItem.has(label)) continue;
-      seenItem.add(label);
-      itemLabels.push(label);
+    let itemLabels: string[] = [];
+    if (isOffice) {
+      const quoteNames = officeDbItems.flatMap((di) =>
+        parseOfficeSuppliesQuoteText(String(di.quoteRawText || '')).map((l) => l.productName)
+      );
+      itemLabels = buildOfficeKeywordMasterLabels(quoteNames, next.plateItemKeywords);
+      setPlateMasterList(
+        itemLabels.map((label) => ({
+          id: label,
+          code: '',
+          label,
+          size: '',
+          price: 0,
+        }))
+      );
+    } else {
+      const seenItem = new Set<string>();
+      for (const p of plateMasterList) {
+        const label = String(p.label || '').trim();
+        if (!label || seenItem.has(label)) continue;
+        seenItem.add(label);
+        itemLabels.push(label);
+      }
     }
 
     if (currentCat === 'SIGN' || currentCat === 'JEBON') {
@@ -1011,9 +1044,6 @@ export default function ProductionStatementCompareModal({
       const data = await res.json();
       const savedRules = migrateLegacyZebCertKeywords(data.rules || parsedRules, currentCat);
       setRules(savedRules);
-      try {
-        localStorage.setItem(`prod_statement_rules_${currentCat}`, JSON.stringify(savedRules));
-      } catch {}
 
       setIsRulesModalOpen(false);
       alert(`[${categoryName || currentCat}] 명세표 매칭 규칙 및 키워드가 성공적으로 저장되었습니다.`);
@@ -2062,13 +2092,12 @@ export default function ProductionStatementCompareModal({
                   <div className="p-3 bg-indigo-50/60 rounded-xl border border-indigo-100 text-xs font-bold text-indigo-900 leading-relaxed">
                     💡{' '}
                     {categoryKey === 'JEBON'
-                      ? '신청서(apply/request) 인증별 제본 서식의 제본 판형 마스터'
+                      ? '신청서(apply/request) 인증별 제본 서식의 제본 판형 마스터 등록 목록·순서를 자동으로 따라옵니다. 신규 등록 시 아래에 자동 추가됩니다.'
                       : categoryKey === 'PRINT'
-                      ? '신청서 기타 제작물 품목 마스터'
+                      ? '신청서 기타 제작물 품목 마스터 등록 목록·순서를 자동으로 따라옵니다. 신규 등록 시 아래에 자동 추가됩니다.'
                       : categoryKey === 'OFFICE_SUPPLIES'
-                      ? '사무문구류 품목'
-                      : '신청서(apply/request) 현판 품목 마스터'}
-                    등록 목록·순서를 자동으로 따라옵니다. 신규 등록 시 아래에 자동 추가됩니다.
+                      ? '드림디포형 축약 품명 기본값 + 선택 묶음의 견적 품명이 목록에 잡힙니다. 자주 쓰는 축약어를 콤마로 보강하면 매칭이 더 잘 됩니다. (규칙만 보지 않고 부분 단어·단가도 함께 대조합니다)'
+                      : '신청서(apply/request) 현판 품목 마스터 등록 목록·순서를 자동으로 따라옵니다. 신규 등록 시 아래에 자동 추가됩니다.'}
                   </div>
 
                   {/* 등록된 품목/판형별 키워드 리스트 (마스터 순서) */}
@@ -2159,14 +2188,36 @@ export default function ProductionStatementCompareModal({
                   if (confirm('모든 설정값을 시스템 기본값으로 되돌리시겠습니까?')) {
                     const currentCat = categoryKey || 'SIGN';
                     const defaults = getDefaultRulesForCategory(currentCat);
+                    const isOffice = currentCat === 'OFFICE_SUPPLIES';
                     const certLabels = certMasterList.map((c) => c.label);
-                    const itemLabels: string[] = [];
-                    const seenItem = new Set<string>();
-                    for (const p of plateMasterList) {
-                      const label = String(p.label || '').trim();
-                      if (!label || seenItem.has(label)) continue;
-                      seenItem.add(label);
-                      itemLabels.push(label);
+                    let itemLabels: string[] = [];
+                    if (isOffice) {
+                      const quoteNames = officeDbItems.flatMap((di) =>
+                        parseOfficeSuppliesQuoteText(String(di.quoteRawText || '')).map(
+                          (l) => l.productName
+                        )
+                      );
+                      itemLabels = buildOfficeKeywordMasterLabels(
+                        quoteNames,
+                        defaults.plateItemKeywords
+                      );
+                      setPlateMasterList(
+                        itemLabels.map((label) => ({
+                          id: label,
+                          code: '',
+                          label,
+                          size: '',
+                          price: 0,
+                        }))
+                      );
+                    } else {
+                      const seenItem = new Set<string>();
+                      for (const p of plateMasterList) {
+                        const label = String(p.label || '').trim();
+                        if (!label || seenItem.has(label)) continue;
+                        seenItem.add(label);
+                        itemLabels.push(label);
+                      }
                     }
                     let reset = defaults;
                     if (currentCat === 'SIGN' || currentCat === 'JEBON') {

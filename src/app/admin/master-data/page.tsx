@@ -8,7 +8,6 @@ interface CodeItem {
   sort_order: number;
   label: string;
   value: string;
-  orgs: string[];
   is_active: boolean;
   is_visible: boolean;
   is_archived: boolean;
@@ -29,35 +28,40 @@ export default function MasterDataPage() {
   const [activeGroupId, setActiveGroupId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [isArchiveOpen, setIsArchiveOpen] = useState(false);
-  const [openOrgDropdownId, setOpenOrgDropdownId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  
-  const [orgs, setOrgs] = useState<any[]>([]);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [groups, setGroups] = useState<GroupItem[]>([]);
   
   const fetchAllData = async () => {
     try {
+      setLoadError(null);
       setLoading(true);
-      const [uRes, mRes] = await Promise.all([
-        fetch('/api/admin/units?active=true'),
-        fetch('/api/admin/master-data') 
-      ]);
+      const mRes = await fetch('/api/admin/master-data?admin=1', { cache: 'no-store' });
       
-      if (uRes.ok) setOrgs(await uRes.json());
-      if (mRes.ok) {
-        const data = await mRes.json();
-        if (data && data.length > 0) {
-          setGroups(data);
-          if (!activeGroupId) {
-            const sorted = [...data].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
-            setActiveGroupId(sorted[0].id);
-          }
-        } else {
-          setGroups([]);
-        }
+      if (!mRes.ok) {
+        const err = await mRes.json().catch(() => ({}));
+        setLoadError(err.message || err.error || `마스터 데이터 로드 실패 (${mRes.status})`);
+        setGroups([]);
+        return;
+      }
+
+      const data = await mRes.json();
+      if (Array.isArray(data) && data.length > 0) {
+        setGroups(data);
+        setActiveGroupId((prev) => {
+          if (prev && data.some((g: GroupItem) => g.id === prev)) return prev;
+          const sorted = [...data].sort(
+            (a: GroupItem, b: GroupItem) => (a.sort_order || 0) - (b.sort_order || 0)
+          );
+          return sorted[0].id;
+        });
+      } else {
+        setGroups([]);
       }
     } catch (error) {
-      console.error("Data Fetch Error", error);
+      console.error('Data Fetch Error', error);
+      setLoadError('데이터 로드 중 오류가 발생했습니다.');
+      setGroups([]);
     } finally {
       setLoading(false);
     }
@@ -160,26 +164,8 @@ export default function MasterDataPage() {
       ...g,
       codes: [
         ...(g.codes || []),
-        { id: nextId, sort_order: (g.codes?.length || 0) + 1, label: '', value: '', orgs: ['전체'], is_active: true, is_visible: true, is_archived: false, in_use: false }
+        { id: nextId, sort_order: (g.codes?.length || 0) + 1, label: '', value: '', is_active: true, is_visible: true, is_archived: false, in_use: false }
       ]
-    } : g));
-  };
-  
-  const handleToggleOrg = (codeId: string, orgName: string) => {
-    setGroups(prev => prev.map(g => g.id === activeGroupId ? {
-      ...g,
-      codes: g.codes.map(c => {
-        if (c.id !== codeId) return c;
-        if (orgName === '전체') return { ...c, orgs: ['전체'] };
-        
-        let nextOrgs = c.orgs.filter(o => o !== '전체');
-        if (nextOrgs.includes(orgName)) {
-          nextOrgs = nextOrgs.filter(o => o !== orgName);
-        } else {
-          nextOrgs.push(orgName);
-        }
-        return { ...c, orgs: nextOrgs.length === 0 ? ['전체'] : nextOrgs };
-      })
     } : g));
   };
   
@@ -209,7 +195,7 @@ export default function MasterDataPage() {
   const { activeCodes, archivedCodes } = useMemo(() => {
     const rawCodes = activeGroup?.codes || [];
     const filtered = [...rawCodes]
-      .filter(c => c.label.includes(searchQuery) || c.value.includes(searchQuery))
+      .filter(c => (c.label || '').includes(searchQuery) || (c.value || '').includes(searchQuery))
       .sort((a, b) => a.sort_order - b.sort_order);
     return {
       activeCodes: filtered.filter(c => !c.is_archived),
@@ -220,14 +206,30 @@ export default function MasterDataPage() {
   if (loading) return <LoadingState />;
   
   return (
-    <div className="p-5 min-h-screen bg-gray-50 font-sans text-slate-800 flex flex-col h-screen overflow-hidden" onClick={() => setOpenOrgDropdownId(null)}>
+    <div className="p-5 min-h-screen bg-gray-50 font-sans text-slate-800 flex flex-col h-screen overflow-hidden">
+      {loadError ? (
+        <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-bold text-rose-700 mb-4 shrink-0">
+          {loadError}
+          <button
+            type="button"
+            onClick={() => fetchAllData()}
+            className="ml-3 underline underline-offset-2 hover:text-rose-900"
+          >
+            다시 시도
+          </button>
+        </div>
+      ) : null}
       
-      {/* 🚀 상단 배너에서 저장 버튼 전면 폐기 (독립 구조 전환) */}
-      <div className="bg-slate-900 p-5 rounded-[2rem] text-white shadow-xl mb-6 shrink-0">
-        <h1 className="text-xl font-black tracking-tight flex items-center gap-2"><span className="text-blue-400">04.</span> Master Data Engine</h1>
-        <p className="text-[11px] text-slate-400 mt-1">
-          중앙 제어식 마스터 정보 허브입니다. 이제 각 카드별로 <span className="text-emerald-400 font-black">독립적인 저장 제어</span>가 이루어집니다.
-        </p>
+      <div className="bg-slate-900 p-8 rounded-[2rem] shadow-xl flex justify-between items-center text-white relative overflow-hidden mb-6 shrink-0">
+        <div className="absolute top-[-50px] right-[-50px] w-64 h-64 bg-blue-600 rounded-full blur-3xl opacity-20"></div>
+        <div className="relative z-10">
+          <h2 className="text-2xl font-black tracking-tight flex items-center gap-3 italic">
+            <span className="text-blue-400">04.</span> 마스터 데이터 관리
+          </h2>
+          <p className="text-[11px] text-slate-400 mt-1 uppercase tracking-widest pl-10">
+            드롭다운 항목 중앙 관리 허브입니다.
+          </p>
+        </div>
       </div>
   
       <div className="flex gap-6 flex-1 overflow-hidden pb-5">
@@ -309,13 +311,12 @@ export default function MasterDataPage() {
               </div>
   
               <div className="flex-1 overflow-auto bg-white pb-10">
-                <table className="w-full text-left text-[11px] min-w-[900px]">
+                <table className="w-full text-left text-[11px] min-w-[700px]">
                   <thead className="bg-slate-50 text-slate-400 font-black tracking-widest text-[9px] sticky top-0 z-10 shadow-sm border-b border-gray-200">
                     <tr>
                       <th className="p-3 text-center w-16">순서</th>
                       <th className="p-3 border-l border-gray-100 w-1/3">드롭다운 옵션명 (Label / 국문)</th>
                       <th className="p-3 border-l border-gray-100 w-1/3 text-blue-600 bg-blue-50/20">영문 매핑명 (Value / 공통 식별 키)</th>
-                      <th className="p-3 w-40 border-l border-gray-100 text-center">노출 조직 권한</th>
                       <th className="p-3 w-64 border-l border-gray-100 text-center sticky right-0 bg-slate-50">제어 및 상태</th>
                     </tr>
                   </thead>
@@ -338,29 +339,9 @@ export default function MasterDataPage() {
                               className="font-mono text-xs text-blue-600 bg-transparent w-full outline-none focus:bg-white focus:ring-1 ring-blue-400 rounded p-1.5 font-bold" 
                             />
                           </td>
-                          <td className="p-2 border-l border-gray-50 text-center relative">
-                            <button onClick={(e) => { e.stopPropagation(); setOpenOrgDropdownId(openOrgDropdownId === code.id ? null : code.id); }} className="w-full px-3 py-2 text-[11px] font-bold rounded truncate flex items-center justify-between border bg-white border-gray-200 text-slate-600 hover:bg-slate-50">
-                              <span className="truncate">{code.orgs.join(', ')}</span><span className="text-[8px] opacity-50 ml-1">▼</span>
-                            </button>
-                            {openOrgDropdownId === code.id && (
-                              <div className="absolute top-full left-1/2 -translate-x-1/2 mt-1 w-48 bg-white border border-gray-200 shadow-xl rounded-xl p-2 z-[99]" onClick={(e) => e.stopPropagation()}>
-                                <label className="flex items-center gap-2 p-2 hover:bg-slate-50 rounded cursor-pointer border-b mb-1">
-                                  <input type="checkbox" checked={code.orgs.includes('전체')} onChange={() => handleToggleOrg(code.id, '전체')} className="accent-blue-600 w-3 h-3" />
-                                  <span className="text-[11px] font-black">전체</span>
-                                </label>
-                                {orgs.map(org => (
-                                  <label key={org.id} className="flex items-center gap-2 p-1.5 hover:bg-slate-50 rounded cursor-pointer">
-                                    <input type="checkbox" checked={code.orgs.includes(org.unit_name)} onChange={() => handleToggleOrg(code.id, org.unit_name)} className="accent-blue-600 w-3 h-3" />
-                                    <span className="text-[10px] font-bold text-slate-600">{org.unit_name}</span>
-                                  </label>
-                                ))}
-                              </div>
-                            )}
-                          </td>
                           <td className="p-2 border-l border-gray-50 text-center sticky right-0 bg-white shadow-[-5px_0_10px_rgba(0,0,0,0.02)]">
                             <div className="flex justify-center items-center gap-1.5">
                               <button onClick={() => handleUpdateCode(code.id, 'is_active', !code.is_active)} className={`w-[48px] py-1.5 rounded-md text-[10px] font-black transition-all ${code.is_active ? 'bg-green-100 text-green-600' : 'bg-slate-200 text-slate-500'}`}>{code.is_active ? '활성' : '비활성'}</button>
-                              <button onClick={() => handleUpdateCode(code.id, 'is_visible', !code.is_visible)} className={`w-[48px] py-1.5 rounded-md text-[10px] font-black transition-all ${code.is_visible ? 'bg-indigo-100 text-indigo-600' : 'bg-red-50 text-red-400'}`}>{code.is_visible ? '보이기' : '숨기기'}</button>
                               <div className="w-[1px] h-4 bg-gray-200 mx-1"></div>
                               <button onClick={() => handleArchive(code.id)} className="w-[48px] py-1.5 rounded-md text-[10px] font-black bg-amber-50 text-amber-600 hover:bg-amber-100 border border-amber-200 transition-colors">보관</button>
                               <button onClick={() => handleDeleteCode(code.id)} className="w-[48px] py-1.5 rounded-md text-[10px] font-black bg-red-50 text-red-500 hover:bg-red-500 hover:text-white border border-red-200 transition-colors">삭제</button>

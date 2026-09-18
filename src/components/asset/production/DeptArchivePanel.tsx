@@ -4,9 +4,9 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation';
 import type { StatementFileRecord } from '@/app/api/asset/production/master/statement-file/route';
 import * as XLSX from 'xlsx';
-import { getKSTDateString, getKSTNowYearMonth, getKSTYearMonth } from '@/utils/dateUtils';
+import { getKSTDateString, getKSTNowYearMonth, getKSTYearMonthParts } from '@/utils/dateUtils';
 import LoadingState from '@/components/common/LoadingState';
-import { resolveInterfaceEditState } from '@/lib/permission-utils';
+import { resolveInterfaceEditState, isSystemLv1User } from '@/lib/permission-utils';
 import ProductionDeptShell from '@/components/asset/production/ProductionDeptShell';
 import ProductionRequestDetailModal from '@/components/asset/production/ProductionRequestDetailModal';
 import ProductionStatementCompareModal from '@/components/asset/production/ProductionStatementCompareModal';
@@ -414,16 +414,6 @@ function batchLabelOpts(kind: 'sign' | 'jebon' | 'print' | 'office' | 'other') {
   return {};
 }
 
-function getKSTYearMonthParts(dateInput: Date | string | number | null | undefined) {
-  if (dateInput == null) return null;
-  const ym = getKSTYearMonth(dateInput);
-  if (!ym) return null;
-  return {
-    year: String(ym.year),
-    month: String(ym.month).padStart(2, '0'),
-  };
-}
-
 function getBatchInspectStatus(batch: ArchiveBatch): 'idle' | 'match' | 'mismatch' {
   if (batch.inspectStatus === 'match' || batch.inspectStatus === 'mismatch') {
     return batch.inspectStatus;
@@ -490,6 +480,8 @@ export default function DeptArchivePanel({ variant = 'dept' }: DeptArchivePanelP
   const isMasterArchive = variant === 'master-archive';
   const isDeptArchive = variant === 'dept-archive';
   const isSettledArchiveView = isMasterArchive || isDeptArchive;
+  /** 부서 정산완료 보관함은 조회 전용 — 선택 체크박스 불필요 */
+  const showBatchSelect = !isDeptArchive;
   /** 대조완료/정산완료 보관함 공통 대장 표 (조직 솔트는 마스터만) */
   const useArchiveLedgerTable = isSettledArchiveView;
   const isDeptSettlement = variant === 'dept';
@@ -566,7 +558,7 @@ export default function DeptArchivePanel({ variant = 'dept' }: DeptArchivePanelP
   const handlePurgeSelectedArchivedBatches = async () => {
     if (!isMasterArchive) return;
     if (!canPurgeLv1) {
-      return alert('영구삭제는 LV_1(마스터) 권한이 필요합니다.');
+      return alert('영구삭제는 LV_1만 가능합니다.');
     }
     const ids = Array.from(selectedBatchIds);
     if (ids.length === 0) {
@@ -615,11 +607,8 @@ export default function DeptArchivePanel({ variant = 'dept' }: DeptArchivePanelP
     () => resolveInterfaceEditState(currentUser, interfaceConfig).isEditor,
     [currentUser, interfaceConfig]
   );
-  /** 정산완료 아카이브 테스트 데이터 영구삭제 — LV_1 / 메뉴 Master */
-  const canPurgeLv1 = useMemo(
-    () => resolveInterfaceEditState(currentUser, interfaceConfig).isMaster,
-    [currentUser, interfaceConfig]
-  );
+  /** 정산완료 아카이브 영구삭제 — 시스템 LV_1만 (메뉴 Master 제외) */
+  const canPurgeLv1 = useMemo(() => isSystemLv1User(currentUser), [currentUser]);
   const [purgingBatches, setPurgingBatches] = useState(false);
 
   // 이달의 외주 명세표 카테고리/외주업체별 파일 목록 상태
@@ -1967,7 +1956,7 @@ export default function DeptArchivePanel({ variant = 'dept' }: DeptArchivePanelP
                   disabled={purgingBatches || selectedBatchIds.size === 0 || !canPurgeLv1}
                   title={
                     !canPurgeLv1
-                      ? '영구삭제는 LV_1(마스터) 권한이 필요합니다'
+                      ? '영구삭제는 LV_1만 가능합니다'
                       : selectedBatchIds.size === 0
                         ? '삭제할 묶음을 체크박스로 선택해 주세요'
                         : '선택한 정산완료 아카이브 묶음을 DB에서 영구삭제합니다 (테스트용)'
@@ -2130,7 +2119,7 @@ export default function DeptArchivePanel({ variant = 'dept' }: DeptArchivePanelP
               >
                 {useArchiveLedgerTable && (
                   <colgroup>
-                    <col className="w-10" />
+                    {showBatchSelect && <col className="w-10" />}
                     <col className="w-12" />
                     <col className="w-64" />
                     {/* 발주확정일 ~ 처리자: 남은 폭 균등 분배 */}
@@ -2195,6 +2184,7 @@ export default function DeptArchivePanel({ variant = 'dept' }: DeptArchivePanelP
                     </tr>
                   )}
                   <tr className="bg-indigo-100">
+                    {showBatchSelect && (
                     <th
                       className={`h-12 text-center ${
                         useArchiveLedgerTable || showGroupedSettlementTable
@@ -2210,6 +2200,7 @@ export default function DeptArchivePanel({ variant = 'dept' }: DeptArchivePanelP
                         title="현재 페이지 전체 선택"
                       />
                     </th>
+                    )}
                     <th
                       className={`h-12 text-center ${
                         useArchiveLedgerTable || showGroupedSettlementTable
@@ -2363,7 +2354,9 @@ export default function DeptArchivePanel({ variant = 'dept' }: DeptArchivePanelP
                             : isDeptSettlement
                               ? 11
                               : useArchiveLedgerTable
-                                ? 11
+                                ? showBatchSelect
+                                  ? 11
+                                  : 10
                                 : 10
                         }
                         className="p-16 text-center text-slate-400 text-[11px] font-bold"
@@ -2393,6 +2386,7 @@ export default function DeptArchivePanel({ variant = 'dept' }: DeptArchivePanelP
                                 : 'hover:bg-indigo-50/40'
                             }`}
                           >
+                            {showBatchSelect && (
                             <td
                               className={`text-center ${
                                 ledgerCell ? 'w-10 px-0' : 'px-4'
@@ -2405,6 +2399,7 @@ export default function DeptArchivePanel({ variant = 'dept' }: DeptArchivePanelP
                                 className="w-3 h-3 accent-indigo-600 cursor-pointer"
                               />
                             </td>
+                            )}
                             <td
                               className={`text-center font-mono text-slate-500 tabular-nums ${
                                 ledgerCell ? 'w-12 px-0' : 'px-2'
@@ -2560,13 +2555,16 @@ export default function DeptArchivePanel({ variant = 'dept' }: DeptArchivePanelP
                                       ? '대조확정'
                                       : '명세표 대조';
                                   const locked = !settlementActionsEnabled;
+                                  const editBlocked = !canEdit;
                                   return (
                                     <button
                                       type="button"
-                                      disabled={locked}
+                                      disabled={locked || editBlocked}
                                       title={
                                         locked
                                           ? '마스터 명세표 게시 후 이용 가능'
+                                          : editBlocked
+                                            ? '편집 권한 필요'
                                           : handConfirmed
                                             ? '수기 단가 확정됨 · 다시 열어 수정 가능'
                                             : compareConfirmed
@@ -2575,7 +2573,7 @@ export default function DeptArchivePanel({ variant = 'dept' }: DeptArchivePanelP
                                       }
                                       onClick={() => openStatementModal(batch)}
                                       className={`px-2.5 py-1 text-[10px] font-black rounded-lg w-full whitespace-nowrap transition-colors ${
-                                        locked
+                                        locked || editBlocked
                                           ? DISABLED_ACTION_BTN
                                           : handConfirmed || compareConfirmed
                                             ? 'bg-indigo-600 hover:bg-indigo-700 text-white'

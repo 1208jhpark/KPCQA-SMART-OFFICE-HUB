@@ -37,6 +37,18 @@ export function isMenuMasterUser(userId: any, menu: any): boolean {
 }
 
 /**
+ * 시스템 역할 LV_1 여부 (메뉴 Master 제외).
+ * 배너 interface 칩(Master/Access/Edit) 표시 등에 사용.
+ */
+export function isSystemLv1User(user: { roles?: unknown } | null | undefined): boolean {
+  const roles = Array.isArray(user?.roles) ? user!.roles : [];
+  return roles.some((r: unknown) => {
+    const m = String(r ?? '').match(/(\d+)/);
+    return m ? `LV_${m[1]}` === 'LV_1' : String(r) === 'LV_1';
+  });
+}
+
+/**
  * 하위(자손) interface 카드 중 Master로 지정된 메뉴가 있는지.
  * Step3 사이드바는 L3 권한만 보므로, L4 Master만 있어도 조상 L3/L2가 보여야 함.
  */

@@ -6,7 +6,7 @@ import {
   assertCanEditOwnerDept,
   authErrorToResponse,
 } from '@/lib/server-auth-guard';
-import { isGlobalMgmtOrgMember, canDistributeMarketingOwnerDept, resolveTopOrgName, canApplyViaViewRoles } from '@/utils/orgUnits';
+import { isGlobalMgmtOrgMember, canDistributeMarketingOwnerDept, resolveTopOrgName, canApplyViaViewRoles, resolveGlobalMgmtDeptName } from '@/utils/orgUnits';
 
 export const dynamic = 'force-dynamic';
 
@@ -80,6 +80,7 @@ function canViewMarketingItem(
   const mgmtDept = String(
     (auth.systemConfig as { global_mgmt_dept?: string } | null)?.global_mgmt_dept || ''
   ).trim();
+  const mgmtDeptName = resolveGlobalMgmtDeptName(mgmtDept, auth.unitsList);
 
   // 신청 가능 범위(본인 소속·상위본부·전사 풀 등) → 항상 노출
   if (
@@ -109,7 +110,7 @@ function canViewMarketingItem(
 
   const owner = String(item.owner_dept || '').trim();
   const isGlobalMgmtAsset =
-    (!!topOrgName && owner === topOrgName) || (!!mgmtDept && owner === mgmtDept);
+    (!!topOrgName && owner === topOrgName) || (!!mgmtDeptName && owner === mgmtDeptName);
 
   const required = parseViewRoleIds(item.view_role_ids);
   const myRoles = userRoleIds(auth.user);

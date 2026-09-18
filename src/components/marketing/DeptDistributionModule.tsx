@@ -5,7 +5,7 @@ import { useSearchParams } from 'next/navigation';
 import * as XLSX from 'xlsx';
 import { getKSTDateString, getKSTYearMonth, getKSTNowYearMonth } from '@/utils/dateUtils';
 import { resolveTopOrgName, getChildUnitNames, isGlobalMgmtOrgMember, canEditTopOrgMarketingAsset } from '@/utils/orgUnits';
-import { resolveInterfaceEditState } from '@/lib/permission-utils';
+import { resolveInterfaceEditState, isSystemLv1User } from '@/lib/permission-utils';
 import LoadingState from '@/components/common/LoadingState';
 
 // [UI 표준] 공통 HeaderLight 컴포넌트
@@ -448,6 +448,7 @@ function DeptDistributionContent() {
         topOrgName: top,
         myUnitName: myCenter,
         myHqName: myHq,
+        myUnitId: currentUser.unit_id || currentUser.unit?.id,
         globalMgmtDept,
         units,
       });
@@ -1246,7 +1247,7 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
           <p className="text-slate-400 text-xs mt-3 leading-relaxed">
             부서원 지급·입고·종료 이력을 모니터링합니다.
           </p>
-          {permissionSummary && (
+          {permissionSummary && isSystemLv1User(currentUser) && (
             <div className="flex flex-wrap items-center gap-2 mt-4 pt-3 border-t border-white/15">
               <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-white/10 border-white/25 text-slate-50 shadow-sm">
                 <span>👑 Master 책임자:</span>
@@ -1266,11 +1267,6 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
                 <span className="opacity-50">|</span>
                 <span>Level: {permissionSummary.editLevel}</span>
               </div>
-              {!canEdit && (
-                <span className="text-[10px] font-black text-amber-200 bg-amber-500/20 border border-amber-300/30 px-2.5 py-1 rounded-md">
-                  편집 권한 없음 — 조회만 가능
-                </span>
-              )}
             </div>
           )}
         </div>

@@ -123,6 +123,40 @@ function resolveScopeFromUnits(
   };
 }
 
+function buildSettlementScope(auth: {
+  user: { unit?: { id: string; unit_name: string } | null };
+  unitsList?: unknown[];
+  permission: { viewScope?: string; editScope?: string; myRole?: string; isMaster?: boolean };
+}) {
+  const myUnit = auth.user.unit;
+  if (!myUnit?.id || !myUnit.unit_name) return null;
+
+  const allUnits = (auth.unitsList || []).map((u: any) => ({
+    id: u.id as string,
+    unit_name: u.unit_name as string,
+    parent_id: (u.parent_id ?? null) as string | null,
+  }));
+
+  const scopeKey =
+    auth.permission.isMaster || auth.permission.myRole === 'LV_1'
+      ? 'TOTAL'
+      : String(auth.permission.editScope || auth.permission.viewScope || 'DEPT');
+
+  return resolveScopeFromUnits(
+    { id: myUnit.id, unit_name: myUnit.unit_name },
+    allUnits,
+    scopeKey
+  );
+}
+
+function assertRowInDeptScope(
+  scope: ReturnType<typeof resolveScopeFromUnits> | null,
+  deptName: string | null | undefined
+) {
+  if (!scope || scope.viewScope === 'NONE' || scope.scopeNames.length === 0) return false;
+  return scope.scopeNames.includes(String(deptName || '').trim());
+}
+
 /** [GET] 정산 대기·확정 묶음 (마스터 보관함 이관 전) */
 export async function GET() {
   try {
@@ -268,7 +302,16 @@ export async function GET() {
 /** [PUT] 명세서 검수 결과 저장 */
 export async function PUT(req: Request) {
   try {
-    await authorizeAnyMenuPaths(READ_PATHS);
+    const auth = await authorizeApi(MENU_PATH, { requireEditor: true });
+    const scope = buildSettlementScope(auth);
+    if (!scope || scope.scopeNames.length === 0) {
+      return NextResponse.json(
+        { message: '부서 스코프가 없어 처리할 수 없습니다.' },
+        { status: 403 }
+      );
+    }
+    const scopeDeptFilter = { deptName: { in: scope.scopeNames } };
+
     const body = await req.json().catch(() => ({}));
     const rows: Array<{
       batchId: string;
@@ -296,10 +339,17 @@ export async function PUT(req: Request) {
       const inspectedAt = inspectStatus === 'idle' ? null : new Date().toISOString();
 
       const items = await prisma.productionRequest.findMany({
-        where: { batchId },
+        where: {
+          batchId,
+          isArchived: true,
+          status: 'VERIFIED',
+          ...scopeDeptFilter,
+        },
       });
+      if (items.length === 0) continue;
 
       for (const item of items) {
+        if (isMasterSettledArchived(item.options)) continue;
         const prevOpts = asOptionsRecord(item.options);
         const itemStatus = inspectResult?.itemStatus?.[item.id] || inspectStatus;
         const itemPrice = Number(inspectResult?.itemPrice?.[item.id] || 0);
@@ -324,6 +374,13 @@ export async function PUT(req: Request) {
       count += 1;
     }
 
+    if (count === 0) {
+      return NextResponse.json(
+        { message: '담당 부서 범위의 정산 대상 묶음이 없습니다.' },
+        { status: 400 }
+      );
+    }
+
     return NextResponse.json({ success: true, count });
   } catch (error: any) {
     const authRes = authErrorToResponse(error);
@@ -343,12 +400,95 @@ export async function POST(req: Request) {
     const action = String(body.action || '').trim().toLowerCase();
 
     if (action === 'inspect') {
-      await authorizeApi(MENU_PATH, { requireEditor: true });
-      return PUT(req);
+      // body는 이미 파싱됨 — PUT(req) 재호출 시 본문 소실되므로 직접 처리
+      const auth = await authorizeApi(MENU_PATH, { requireEditor: true });
+      const scope = buildSettlementScope(auth);
+      if (!scope || scope.scopeNames.length === 0) {
+        return NextResponse.json(
+          { message: '부서 스코프가 없어 처리할 수 없습니다.' },
+          { status: 403 }
+        );
+      }
+      const scopeDeptFilter = { deptName: { in: scope.scopeNames } };
+      const rows: Array<{
+        batchId: string;
+        inspectStatus: 'idle' | 'match' | 'mismatch';
+        inspectFileName?: string | null;
+        inspectResult?: any;
+      }> = Array.isArray(body?.batches) ? body.batches : [];
+
+      if (rows.length === 0) {
+        return NextResponse.json({ message: '저장할 검수 묶음이 없습니다.' }, { status: 400 });
+      }
+
+      let count = 0;
+      for (const row of rows) {
+        const batchId = String(row?.batchId || '').trim();
+        if (!batchId) continue;
+        const inspectStatus =
+          row.inspectStatus === 'match' || row.inspectStatus === 'mismatch'
+            ? row.inspectStatus
+            : 'idle';
+        const inspectFileName = row.inspectFileName
+          ? String(row.inspectFileName).slice(0, 255)
+          : null;
+        const inspectResult = row.inspectResult ?? null;
+        const inspectedAt = inspectStatus === 'idle' ? null : new Date().toISOString();
+
+        const items = await prisma.productionRequest.findMany({
+          where: {
+            batchId,
+            isArchived: true,
+            status: 'VERIFIED',
+            ...scopeDeptFilter,
+          },
+        });
+        if (items.length === 0) continue;
+
+        for (const item of items) {
+          if (isMasterSettledArchived(item.options)) continue;
+          const prevOpts = asOptionsRecord(item.options);
+          const itemStatus = inspectResult?.itemStatus?.[item.id] || inspectStatus;
+          const itemPrice = Number(inspectResult?.itemPrice?.[item.id] || 0);
+          const nextOpts = {
+            ...prevOpts,
+            inspectStatus: itemStatus,
+            inspectFileName,
+            inspectResult,
+            inspectedAt,
+            ...(itemPrice > 0 ? { inspectMatchedPrice: itemPrice } : {}),
+          };
+          await prisma.productionRequest.update({
+            where: { id: item.id },
+            data: {
+              options: asInputJson(nextOpts),
+              ...(itemPrice > 0 ? { finalPrice: itemPrice } : {}),
+            },
+          });
+        }
+        count += 1;
+      }
+
+      if (count === 0) {
+        return NextResponse.json(
+          { message: '담당 부서 범위의 정산 대상 묶음이 없습니다.' },
+          { status: 400 }
+        );
+      }
+      return NextResponse.json({ success: true, count });
     }
 
     if (action === 'statement-match') {
       const auth = await authorizeApi(MENU_PATH, { requireEditor: true });
+      const scope = buildSettlementScope(auth);
+      if (!scope || scope.scopeNames.length === 0) {
+        return NextResponse.json(
+          { message: '부서 스코프가 없어 처리할 수 없습니다.' },
+          { status: 403 }
+        );
+      }
+      const scopeDeptFilter = { deptName: { in: scope.scopeNames } };
+
       const batchId = String(body.batchId || '').trim();
       const prices = Array.isArray(body.prices) ? body.prices : [];
       if (!batchId) {
@@ -377,11 +517,19 @@ export async function POST(req: Request) {
         const baselinePrice =
           Number.isFinite(baselineRaw) && baselineRaw > 0 ? Math.trunc(baselineRaw) : null;
 
-        const item = await prisma.productionRequest.findUnique({
-          where: { id: requestId },
-          select: { options: true },
+        const item = await prisma.productionRequest.findFirst({
+          where: {
+            id: requestId,
+            batchId,
+            isArchived: true,
+            status: 'VERIFIED',
+            ...scopeDeptFilter,
+          },
+          select: { options: true, deptName: true },
         });
-        const prevOpts = asOptionsRecord(item?.options);
+        if (!item || !assertRowInDeptScope(scope, item.deptName)) continue;
+
+        const prevOpts = asOptionsRecord(item.options);
         if (prevOpts.masterSettledArchived === true) {
           continue;
         }
@@ -408,6 +556,7 @@ export async function POST(req: Request) {
             batchId,
             isArchived: true,
             status: 'VERIFIED',
+            ...scopeDeptFilter,
           },
           data: {
             finalPrice,
@@ -424,7 +573,15 @@ export async function POST(req: Request) {
       });
     }
 
-    await authorizeApi(MENU_PATH, { requireEditor: true });
+    const auth = await authorizeApi(MENU_PATH, { requireEditor: true });
+    const scope = buildSettlementScope(auth);
+    if (!scope || scope.scopeNames.length === 0) {
+      return NextResponse.json(
+        { message: '부서 스코프가 없어 처리할 수 없습니다.' },
+        { status: 403 }
+      );
+    }
+
     const batchId = String(body.batchId || '').trim();
 
     if (!batchId) {
@@ -436,13 +593,14 @@ export async function POST(req: Request) {
         batchId,
         status: 'VERIFIED',
         isArchived: false,
+        deptName: { in: scope.scopeNames },
       },
       data: { isArchived: true },
     });
 
     if (result.count === 0) {
       return NextResponse.json(
-        { message: '수령완료(VERIFIED) 건만 보관함으로 이동할 수 있습니다.' },
+        { message: '담당 부서 범위의 수령완료(VERIFIED) 건만 보관함으로 이동할 수 있습니다.' },
         { status: 400 }
       );
     }

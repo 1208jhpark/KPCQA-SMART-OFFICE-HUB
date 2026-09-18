@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useMemo, useRef, Suspense, Fragment } from 'react';
-import { getKSTDateString, getKSTNowYearMonth, getKSTYearMonth, toSortableTime, formatKSTDateTime } from '@/utils/dateUtils';
+import { getKSTDateString, getKSTNowYearMonth, getKSTYearMonthParts, toSortableTime, formatKSTDateTime, formatKSTDisplayDate } from '@/utils/dateUtils';
 import { resolveInterfaceEditState } from '@/lib/permission-utils';
 import LoadingState from '@/components/common/LoadingState';
 import ItMasterPageBanner from '@/components/asset/it/ItMasterPageBanner';
@@ -55,19 +55,7 @@ function descendantUnitNames(unitName: string, units: Array<{ id: string; unit_n
   return names;
 }
 
-/** KST 연·월 문자열 (year: '2026', month: '07') */
-function getKSTYearMonthParts(dateInput: Date | string | number | null | undefined) {
-  if (dateInput === null || dateInput === undefined || dateInput === '') return null;
-  const raw = String(dateInput).trim();
-  const ymd = raw.match(/^(\d{4})-(\d{2})/);
-  if (ymd) return { year: ymd[1], month: ymd[2] };
-  const ym = getKSTYearMonth(dateInput);
-  if (!ym) return null;
-  return {
-    year: String(ym.year),
-    month: String(ym.month).padStart(2, '0'),
-  };
-}
+/** KST 연·월 — dateUtils.getKSTYearMonthParts */
 
 /** 관리자가 먼저 건 문의인지 (확인·종결로 status가 바뀌어도 동일) */
 function isAdminInquiryRow(req: any) {
@@ -285,14 +273,8 @@ function threadTurns(req: any) {
   const adminText = opinionDisplay(req?.adminOpinion);
   const reqDateRaw = req?.requestDate || req?.createdAt;
   const doneDateRaw = req?.completedAt || req?.updatedAt || req?.createdAt || reqDateRaw;
-  const reqDate =
-    formatKSTDateTime(reqDateRaw) !== '-'
-      ? formatKSTDateTime(reqDateRaw)
-      : getKSTDateString(reqDateRaw) || '';
-  const doneDate =
-    formatKSTDateTime(doneDateRaw) !== '-'
-      ? formatKSTDateTime(doneDateRaw)
-      : reqDate;
+  const reqDate = formatKSTDisplayDate(reqDateRaw);
+  const doneDate = formatKSTDisplayDate(doneDateRaw) || reqDate;
   const userName = String(req?.requester || req?.name || '').trim() || '사용자';
   const adminName = '관리자';
   const turns: { role: 'admin' | 'user'; name: string; text: string; date: string }[] = [];

@@ -1,9 +1,5 @@
-// 📁 src/app/(service)/asset/businesscard/master/page.tsx
-'use client';
+import { redirect } from 'next/navigation';
 
-import React from 'react';
-import L4PanelRenderer from '@/components/admin/L4PanelRenderer';
-
-export default function BusinessCardMasterIndexPage() {
-  return <L4PanelRenderer />;
+export default function Page() {
+  redirect('/asset/businesscard/master/requests');
 }

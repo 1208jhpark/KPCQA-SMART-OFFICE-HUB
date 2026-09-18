@@ -5,7 +5,7 @@ import { usePathname } from 'next/navigation';
 import Link from 'next/link';
 import { getKSTDateString, getKSTNowYearMonth, getKSTYearMonth } from '@/utils/dateUtils';
 import LoadingState from '@/components/common/LoadingState';
-import { resolveInterfaceEditState } from '@/lib/permission-utils';
+import { resolveInterfaceEditState, isSystemLv1User } from '@/lib/permission-utils';
 import {
   SUPPLIES_MASTER_TABS,
   useInterfaceStepTabs,
@@ -303,7 +303,7 @@ function MasterRestockContent() {
     }
   };
 
-  /** LV_1 전용 — 잘못된 백데이터 정리용 영구 삭제 (입고철회와 동일 API) */
+  /** LV_1 전용 — 잘못된 백데이터 정리용 영구 삭제 */
   const handleDeletePurchaseLv1 = async (purchaseData: any) => {
     if (!canEdit) return alertNoEditPermission();
     if (!isLv1) {
@@ -319,11 +319,13 @@ function MasterRestockContent() {
     }
 
     try {
-      const res = await fetch(`/api/asset/supplies/master/restock?id=${purchaseData.id}`, {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: purchaseData.id }),
-      });
+      const res = await fetch(
+        `/api/asset/supplies/master/restock?id=${purchaseData.id}&mode=purge`,
+        {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+        }
+      );
 
       if (res.ok) {
         alert('🗑️ 입고 내역이 삭제되었습니다.');
@@ -425,7 +427,7 @@ function MasterRestockContent() {
     <p className="text-emerald-100/90 text-xs mt-3 leading-relaxed">
       신규 소모품 내역의 입고 내역을 관리합니다.
     </p>
-    {permissionSummary && (
+    {permissionSummary && isSystemLv1User(currentUser) && (
       <div className="flex flex-wrap items-center gap-2 mt-4 pt-3 border-t border-white/15">
         <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-white/10 border-white/25 text-emerald-50 shadow-sm">
           <span>👑 Master 책임자:</span>
@@ -445,11 +447,6 @@ function MasterRestockContent() {
           <span className="opacity-50">|</span>
           <span>Level: {permissionSummary.editLevel}</span>
         </div>
-        {!canEdit && (
-          <span className="text-[10px] font-black text-amber-200 bg-amber-500/20 border border-amber-300/30 px-2.5 py-1 rounded-md">
-            편집 권한 없음 — 조회만 가능
-          </span>
-        )}
       </div>
     )}
   </div>
@@ -788,10 +785,9 @@ function MasterRestockContent() {
                               : disabledActionBtn
                           }
                         >
-                          입고철회
+                          입고철회(Edit)
                         </button>
-                        {canEdit ? (
-                          isLv1 ? (
+                        {canEdit && isLv1 ? (
                             <button
                               type="button"
                               onClick={() => handleDeletePurchaseLv1(p)}
@@ -800,12 +796,16 @@ function MasterRestockContent() {
                             >
                               삭제(LV_1)
                             </button>
-                          ) : null
-                        ) : (
+                          ) : (
                           <button
                             type="button"
+                            disabled
                             onClick={() => handleDeletePurchaseLv1(p)}
-                            title="편집 권한 필요"
+                            title={
+                              !canEdit
+                                ? '편집 권한 필요'
+                                : '잘못된 데이터 삭제는 LV_1만 가능합니다'
+                            }
                             className={disabledActionBtn}
                           >
                             삭제(LV_1)

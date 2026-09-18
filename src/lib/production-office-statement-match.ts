@@ -8,6 +8,7 @@ import {
   getDefaultRulesForCategory,
   normalizeKo,
   parseStatementRow,
+  DEFAULT_PLATE_ITEM_ALIASES_OFFICE,
   type GroupMatchSummary,
   type ItemMatchResult,
   type ParsedStatementRow,
@@ -55,7 +56,7 @@ export function extractOfficeProductSpec(productName: string): string {
     .slice(0, 80);
 }
 
-function parseMoney(raw: string | number | null | undefined): number {
+function parseMoney(raw: unknown): number {
   if (typeof raw === 'number' && Number.isFinite(raw)) return Math.round(raw);
   const digits = String(raw ?? '').replace(/[^\d]/g, '');
   if (!digits) return 0;
@@ -157,24 +158,75 @@ export type OfficeSheetWorkbook = {
   Sheets: Record<string, unknown>;
 };
 
-/** 심한 축약명 → 견적서에 나오는 핵심어 */
+/** 심한 축약명 → 견적서에 나오는 핵심어 (기본값 = 명세표 규칙 기본과 동일) */
 export const DEFAULT_OFFICE_PRODUCT_ALIASES: Record<string, string[]> = {
-  각티슈: ['티슈', '로션티슈', '명품로션티슈', '잘풀리는집'],
-  건전지: ['건전지', '알카라인', '벡셀'],
-  다색리필: ['다색리필', '다색 리필', '리필'],
-  물티슈: ['물티슈'],
-  다용도테이프: ['다용도테이프', '스카치'],
-  제트스트림라이트터치펜: ['제트스트림라이트터치', '라이트터치'],
-  '제트스트림펜': ['제트스트림볼펜', '제트스트림'],
-  '포스트잇알뜰팩': ['포스트잇', '알뜰팩'],
-  복사용지: ['복사용지', '복사'],
-  고투명홀더: ['고투명홀더', '홀더'],
-  팬시페이퍼: ['팬시페이퍼', '색지'],
-  비닐안전봉투: ['비닐안전봉투', '안전봉투'],
-  뱅커스박스: ['뱅커스박스'],
-  문서보관상자: ['문서보관상자', '보관상자'],
-  메모리카드: ['메모리카드', 'SD'],
+  ...DEFAULT_PLATE_ITEM_ALIASES_OFFICE,
 };
+
+/** 현판 등 타 카테고리 키워드가 섞인 저장본 제거 */
+export function sanitizeOfficeProductAliases(
+  map: Record<string, string[]> | null | undefined
+): Record<string, string[]> {
+  const out: Record<string, string[]> = {};
+  for (const [rawKey, aliases] of Object.entries(map || {})) {
+    const key = String(rawKey || '').trim();
+    if (!key) continue;
+    if (/현판|주물현판|스텐현판|신주현판|텅스텐|명판/.test(key)) continue;
+    out[key] = (aliases || []).map((a) => String(a || '').trim()).filter(Boolean);
+  }
+  return out;
+}
+
+/** 기본 별칭 + UI 저장 규칙 병합 (규칙만 보지 않고 기본 퍼지 매칭과 함께 사용) */
+export function mergeOfficeProductAliases(
+  rulesAliases?: Record<string, string[]> | null
+): Record<string, string[]> {
+  const merged: Record<string, string[]> = {};
+  const add = (src: Record<string, string[]> | null | undefined) => {
+    for (const [k, v] of Object.entries(sanitizeOfficeProductAliases(src))) {
+      merged[k] = Array.from(new Set([...(merged[k] || []), ...v]));
+    }
+  };
+  add(DEFAULT_OFFICE_PRODUCT_ALIASES);
+  add(rulesAliases);
+  return merged;
+}
+
+/** 견적 풀네임 → 규칙 UI용 짧은 라벨 */
+export function shortenOfficeProductLabel(productName: string): string {
+  const cleaned = String(productName || '')
+    .replace(/\[[^\]]*\]/g, ' ')
+    .replace(/[（(][^）)]*[）)]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!cleaned) return '';
+  const tokens = cleaned
+    .split(/\s+/)
+    .map((t) => t.trim())
+    .filter((t) => normalizeKo(t).length >= 2)
+    .slice(0, 3);
+  return (tokens.join(' ') || cleaned).slice(0, 48);
+}
+
+/** 규칙 UI 목록: 기본 축약키 + 선택 묶음 견적 품명 (+ 저장키) */
+export function buildOfficeKeywordMasterLabels(
+  quoteProductNames: string[] = [],
+  savedKeywords?: Record<string, string[]> | null
+): string[] {
+  const labels: string[] = [];
+  const seen = new Set<string>();
+  const push = (raw: string) => {
+    const label = String(raw || '').trim();
+    if (!label || seen.has(label)) return;
+    if (/현판|주물현판|스텐현판|신주현판|텅스텐|명판/.test(label)) return;
+    seen.add(label);
+    labels.push(label);
+  };
+  for (const k of Object.keys(DEFAULT_OFFICE_PRODUCT_ALIASES)) push(k);
+  for (const name of quoteProductNames) push(shortenOfficeProductLabel(name));
+  for (const k of Object.keys(sanitizeOfficeProductAliases(savedKeywords))) push(k);
+  return labels;
+}
 
 const OFFICE_HEADER_FALLBACK: StatementColumnHeaderKeywords = {
   certType: ['품명', '품목', '제품명'],
@@ -346,32 +398,43 @@ function tokenizeProduct(name: string): string[] {
   return Array.from(new Set([...tokens, ...models]));
 }
 
-function aliasBoost(quoteName: string, stmtName: string): number {
+function aliasBoost(
+  quoteName: string,
+  stmtName: string,
+  aliasesMap: Record<string, string[]> = DEFAULT_OFFICE_PRODUCT_ALIASES
+): number {
   const q = normalizeKo(quoteName);
   const s = normalizeKo(stmtName);
-  for (const [abbr, aliases] of Object.entries(DEFAULT_OFFICE_PRODUCT_ALIASES)) {
-    const abbrN = normalizeKo(abbr);
-    if (!abbrN) continue;
-    const stmtHit = s === abbrN || s.includes(abbrN) || abbrN.includes(s);
-    if (!stmtHit) continue;
-    const aliasHit = aliases.some((a) => {
-      const an = normalizeKo(a);
-      return an && (q.includes(an) || an.includes(q));
-    });
-    if (aliasHit || q.includes(abbrN)) return 420;
+  if (!q || !s) return 0;
+
+  for (const [key, aliases] of Object.entries(aliasesMap)) {
+    const group = [key, ...(aliases || [])]
+      .map((a) => normalizeKo(a))
+      .filter((a) => a.length >= 2);
+    if (group.length === 0) continue;
+
+    const hits = (text: string) =>
+      group.some((kw) => text === kw || text.includes(kw) || kw.includes(text));
+
+    // 견적·명세가 같은 별칭 그룹에 걸리면 축약 매칭으로 본다
+    if (hits(q) && hits(s)) return 450;
   }
   return 0;
 }
 
-/** 견적 품명 ↔ 명세 축약 품명 점수 */
-export function scoreOfficeProductName(quoteName: string, stmtName: string): number {
+/** 견적 품명 ↔ 명세 축약 품명 점수 (부분 단어·별칭·단가 보조와 함께 사용) */
+export function scoreOfficeProductName(
+  quoteName: string,
+  stmtName: string,
+  aliasesMap: Record<string, string[]> = DEFAULT_OFFICE_PRODUCT_ALIASES
+): number {
   const q = normalizeKo(quoteName);
   const s = normalizeKo(stmtName);
   if (!q || !s) return 0;
   if (q === s) return 1000;
   if (q.includes(s) || s.includes(q)) return 820 + Math.min(s.length, q.length);
 
-  let score = aliasBoost(quoteName, stmtName);
+  let score = aliasBoost(quoteName, stmtName, aliasesMap);
 
   const qTokens = tokenizeProduct(quoteName);
   const sTokens = tokenizeProduct(stmtName);
@@ -460,7 +523,8 @@ type LinePair = {
 
 function matchQuoteLinesToStatement(
   quoteLines: OfficeQuoteLine[],
-  stmtRows: ParsedStatementRow[]
+  stmtRows: ParsedStatementRow[],
+  aliasesMap: Record<string, string[]> = DEFAULT_OFFICE_PRODUCT_ALIASES
 ): {
   pairs: Array<{ quote: OfficeQuoteLine; stmt: ParsedStatementRow; score: number }>;
   unmatchedQuotes: OfficeQuoteLine[];
@@ -471,7 +535,11 @@ function matchQuoteLinesToStatement(
     const q = quoteLines[qi];
     for (let si = 0; si < stmtRows.length; si++) {
       const s = stmtRows[si];
-      let score = scoreOfficeProductName(q.productName, s.categoryTitle || s.rawItem);
+      let score = scoreOfficeProductName(
+        q.productName,
+        s.categoryTitle || s.rawItem,
+        aliasesMap
+      );
       if (q.unitPrice > 0 && s.unitPrice > 0 && q.unitPrice === s.unitPrice) score += 350;
       if (q.supplyPrice > 0 && s.supplyPrice > 0 && q.supplyPrice === s.supplyPrice) score += 200;
       if (q.qty > 0 && s.qty > 0 && q.qty === s.qty) score += 80;
@@ -481,7 +549,7 @@ function matchQuoteLinesToStatement(
         const samePriceStmts = stmtRows.filter((x) => x.unitPrice === q.unitPrice).length;
         if (samePriceQuotes <= 2 && samePriceStmts === 1) score += 180;
       }
-      if (score >= 280) candidates.push({ quoteIdx: qi, stmtIdx: si, score });
+      if (score >= 240) candidates.push({ quoteIdx: qi, stmtIdx: si, score });
     }
   }
 
@@ -523,7 +591,11 @@ function matchQuoteLinesToStatement(
       const usedAmt = stmtAssignedAmount[si] || 0;
       if (s.qty > 0 && usedQty + q.qty > s.qty) continue;
       if (s.supplyPrice > 0 && usedAmt + q.supplyPrice > s.supplyPrice + 1) continue;
-      const nameScore = scoreOfficeProductName(q.productName, s.categoryTitle || s.rawItem);
+      const nameScore = scoreOfficeProductName(
+        q.productName,
+        s.categoryTitle || s.rawItem,
+        aliasesMap
+      );
       const score = 300 + nameScore;
       if (!best || score > best.score) best = { si, score };
     }
@@ -569,8 +641,10 @@ export type OfficeDbItemSource = ProductionDbItem & {
 export function runOfficeSuppliesStatementMatch(
   dbItems: OfficeDbItemSource[],
   statementRows: ParsedStatementRow[],
-  manualOverrides: Record<string, { rowIndex: number; unitPrice?: number }> = {}
+  manualOverrides: Record<string, { rowIndex: number; unitPrice?: number }> = {},
+  productAliases?: Record<string, string[]> | null
 ): OfficeMatchRunResult {
+  const aliasesMap = mergeOfficeProductAliases(productAliases);
   const logs: string[] = [];
   const itemMatches: ItemMatchResult[] = [];
   const matchedDbIdsByRow: Record<number, string[]> = {};
@@ -579,7 +653,7 @@ export function runOfficeSuppliesStatementMatch(
   });
 
   logs.push(
-    `📎 사무문구 줄단위 매칭: 명세 ${statementRows.length}행 / 신청 ${dbItems.length}건`
+    `📎 사무문구 줄단위 매칭: 명세 ${statementRows.length}행 / 신청 ${dbItems.length}건 (별칭 ${Object.keys(aliasesMap).length}그룹)`
   );
 
   for (const item of dbItems) {
@@ -632,7 +706,7 @@ export function runOfficeSuppliesStatementMatch(
       continue;
     }
 
-    const { pairs } = matchQuoteLinesToStatement(quoteLines, scoped);
+    const { pairs } = matchQuoteLinesToStatement(quoteLines, scoped, aliasesMap);
     const pairByLineNo = new Map(pairs.map((p) => [p.quote.lineNo, p]));
 
     let matchedLineCount = 0;
@@ -869,7 +943,8 @@ export function analyzeOfficeSuppliesExcelWorkbook(
   return runOfficeSuppliesStatementMatch(
     dbItems,
     statementRows,
-    manualOverrides || {}
+    manualOverrides || {},
+    rules?.plateItemKeywords
   );
 }
 
