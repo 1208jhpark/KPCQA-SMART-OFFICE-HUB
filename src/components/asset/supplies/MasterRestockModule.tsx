@@ -705,13 +705,13 @@ function MasterRestockContent() {
                 </th>
                 <th className="h-12 px-2 text-center">NO</th>
                 <th className="h-12 px-2 text-center whitespace-nowrap">창고 입고 일자</th>
-                <th className="h-12 px-2 text-indigo-600">물품명</th>
+                <th className="h-12 px-2 text-left text-indigo-600">물품명</th>
                 <th className="h-12 px-2 text-center whitespace-nowrap">입고수량</th>
                 <th className="h-12 px-2 text-center whitespace-nowrap">입고단위</th>
                 <th className="h-12 px-2 text-center whitespace-nowrap">환산수량 (지급/입고)</th>
                 <th className="h-12 px-2 text-center text-indigo-600 whitespace-nowrap">환산 입고수량</th>
                 <th className="h-12 px-2 text-center whitespace-nowrap">지급단위</th>
-                <th className="h-12 px-2 text-center border-l border-slate-200 whitespace-nowrap">부서 / 등록자</th>
+                <th className="h-12 px-2 text-left border-l border-slate-200 whitespace-nowrap">부서 / 등록자</th>
                 <th className="h-12 px-2 text-center whitespace-nowrap border-l border-slate-200">관리액션(Edit)</th>
               </tr>
             </thead>
@@ -758,7 +758,7 @@ function MasterRestockContent() {
                     <td className="px-2 text-center whitespace-nowrap tabular-nums text-slate-800">
                       {p.purchase_date ? getKSTDateString(p.purchase_date) : '-'}
                     </td>
-                    <td className="px-2 text-indigo-700 truncate" title={itemName}>{itemName}</td>
+                    <td className="px-2 text-left text-indigo-700 truncate" title={itemName}>{itemName}</td>
                     <td className="px-2 text-center font-mono whitespace-nowrap tabular-nums text-slate-900">{pQty}</td>
                     <td className="px-2 text-center text-slate-900">{pUnit}</td>
                     <td className="px-2 text-center font-mono tabular-nums text-slate-600">{linkQty}</td>
@@ -766,7 +766,7 @@ function MasterRestockContent() {
                       {stockQty}
                     </td>
                     <td className="px-2 text-center text-slate-900 whitespace-nowrap">{sUnit || '-'}</td>
-                    <td className="px-2 text-center border-l border-slate-200">
+                    <td className="px-2 text-left border-l border-slate-200">
                       <div className="truncate">
                         <span className="text-[10px] text-slate-500 block truncate">{p.purchaser_dept || '-'}</span>
                         <span className="text-slate-800 truncate">{p.purchaser_name || '관리자'}</span>

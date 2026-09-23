@@ -94,7 +94,7 @@ export async function GET(req: Request) {
     // 대시보드 (전사) TOP5 — 집계만 반환 (신청자·건별 상세 없음). 전원 조회 가능.
     if (summary === 'companyTop') {
       const rows = await prisma.marketingDistribution.findMany({
-        where: { status: { not: 'REJECTED' } },
+        where: { status: 'CONFIRMED' },
         select: {
           qty: true,
           dist_date: true,
@@ -364,6 +364,7 @@ export async function POST(req: Request) {
         );
       if (!allowed) throw new Error('FORBIDDEN_DISTRIBUTE');
 
+      // 즉시예약·승인대기 모두 신청 시점에 재고 예약(차감) — catalog/register 과신청 방지
       const stockResult = await tx.marketingItem.updateMany({
         where: {
           id: itemId,
@@ -374,8 +375,10 @@ export async function POST(req: Request) {
           current_stock: { decrement: qty },
         },
       });
-
       if (stockResult.count === 0) throw new Error('INSUFFICIENT_STOCK');
+
+      const isPending =
+        body.requires_approval === true || body.status === 'PENDING';
 
       const created = await tx.marketingDistribution.create({
         data: {
@@ -390,10 +393,7 @@ export async function POST(req: Request) {
           sender_dept: auth.user.unit?.unit_name || '미소속',
           sender_unit_id: auth.user.unit_id || (auth.user.unit as { id?: string } | null)?.id || null,
           sender_email: auth.user.email,
-          status:
-            body.requires_approval === true || body.status === 'PENDING'
-              ? 'PENDING'
-              : 'CONFIRMED',
+          status: isPending ? 'PENDING' : 'CONFIRMED',
           dist_date: parseDistDate(body.dist_date),
         },
       });
@@ -473,6 +473,7 @@ export async function PATCH(req: Request) {
       }
 
       if (action === 'approve') {
+        // 신청 시점에 이미 재고 예약됨 — 승인은 확정만
         const d = dist_date ? parseKSTDateOnly(dist_date) : new Date();
         const updated = await prisma.marketingDistribution.update({
           where: { id },
@@ -481,11 +482,12 @@ export async function PATCH(req: Request) {
             approved_at: new Date(),
             dist_date: Number.isNaN(d.getTime()) ? new Date() : d,
           },
+          include: { item: true },
         });
         return NextResponse.json(updated);
       }
 
-      // reject: 이력 유지(REJECTED) + 재고 복구, 사유 필수
+      // reject: 이력 유지(REJECTED) + 예약 재고 복구
       const reason = String(body.reject_reason || body.reason || '').trim();
       if (!reason) {
         return NextResponse.json({ error: '반려 사유를 입력해 주세요.' }, { status: 400 });
@@ -498,12 +500,14 @@ export async function PATCH(req: Request) {
             reject_reason: reason,
             rejected_at: new Date(),
           },
+          include: { item: true },
         });
         await tx.marketingItem.update({
           where: { id: existing.item_id },
           data: { current_stock: { increment: existing.qty } },
         });
-        return updated;
+        const item = await tx.marketingItem.findUnique({ where: { id: existing.item_id } });
+        return { ...updated, item: item || updated.item };
       });
       return NextResponse.json(rejected);
     }
@@ -574,7 +578,7 @@ export async function DELETE(req: Request) {
       }
 
       await tx.marketingDistribution.delete({ where: { id } });
-      // REJECTED는 반려 시 이미 재고 복구됨 — 중복 복구 방지
+      // REJECTED는 반려 시 이미 재고 복구됨 — 중복 복구 방지. PENDING·CONFIRMED는 예약분 복구.
       if (dist.status !== 'REJECTED') {
         await tx.marketingItem.update({
           where: { id: dist.item_id },

@@ -128,6 +128,13 @@ function sanitizeAndParsePayload(rawData: any) {
   if (rawData.is_active !== undefined) {
     sanitized.is_active = Boolean(rawData.is_active);
   }
+  if (rawData.replace_deferred !== undefined) {
+    sanitized.replace_deferred =
+      rawData.replace_deferred === true ||
+      rawData.replace_deferred === 'true' ||
+      rawData.replace_deferred === 1 ||
+      rawData.replace_deferred === '1';
+  }
 
   if (rawData.info_correction_pending !== undefined) {
     sanitized.info_correction_pending =

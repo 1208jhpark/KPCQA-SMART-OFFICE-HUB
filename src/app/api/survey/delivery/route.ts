@@ -70,6 +70,16 @@ async function tryDeliveryEditorOnPath(menuPath?: string | null) {
   }
 }
 
+/** Access(조회) 권한 — 긴급 게시중단 등 Edit 없이 허용할 때 */
+async function tryDeliveryAccessOnPath(menuPath?: string | null) {
+  if (!isDeliveryAdminPath(menuPath)) return null;
+  try {
+    return await authorizeApi(String(menuPath));
+  } catch {
+    return null;
+  }
+}
+
 function stripControlFields(payload: Record<string, any>) {
   const {
     menuPath: _menuPath,
@@ -540,6 +550,35 @@ if (action === 'SUBMIT_RESPONSE') {
   });
 
   return NextResponse.json(newResponse);
+}
+
+// --- 긴급 게시중단: Access만으로 허용 (Edit 불필요) ---
+if (action === 'PAUSE') {
+  if (!auth.isAdmin) {
+    const access = await tryDeliveryAccessOnPath(rest.menuPath);
+    if (!access) {
+      return NextResponse.json({ error: '권한이 없습니다.' }, { status: 403 });
+    }
+  }
+  const surveyId = String(id || rest.surveyId || '').trim();
+  if (!surveyId) {
+    return NextResponse.json({ error: '공고 ID가 필요합니다.' }, { status: 400 });
+  }
+  const existing = await prisma.deliverySurvey.findUnique({ where: { id: surveyId } });
+  if (!existing) {
+    return NextResponse.json({ error: '공고를 찾을 수 없습니다.' }, { status: 404 });
+  }
+  if (existing.status !== '진행중') {
+    return NextResponse.json(
+      { error: '진행 중인 공고만 중단할 수 있습니다.' },
+      { status: 400 }
+    );
+  }
+  const paused = await prisma.deliverySurvey.update({
+    where: { id: surveyId },
+    data: { status: '게시중단' },
+  });
+  return NextResponse.json(paused);
 }
 
 // --- 아래부터는 배달 관리자 전용 (LV_1 또는 해당 메뉴 편집 권한) ---

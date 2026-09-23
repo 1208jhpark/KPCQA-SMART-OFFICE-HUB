@@ -351,10 +351,10 @@ function MasterArchiveContent() {
                   </th>
                   <th className="h-12 px-2 text-center">NO</th>
                   <th className="h-12 px-2 text-center whitespace-nowrap">폐기 처리일</th>
-                  <th className="h-12 px-2">물품명</th>
+                  <th className="h-12 px-2 text-left">물품명</th>
                   <th className="h-12 px-2 text-center whitespace-nowrap">최종 재고</th>
-                  <th className="h-12 px-2">폐기 사유 (비고)</th>
-                  <th className="h-12 px-2 text-center border-l border-slate-200 whitespace-nowrap">부서 / 처리자</th>
+                  <th className="h-12 px-2 text-left">폐기 사유 (비고)</th>
+                  <th className="h-12 px-2 text-left border-l border-slate-200 whitespace-nowrap">부서 / 처리자</th>
                   <th className="h-12 px-2 text-center whitespace-nowrap border-l border-slate-200">관리액션(Edit)</th>
                 </tr>
               </thead>
@@ -377,15 +377,15 @@ function MasterArchiveContent() {
                       </td>
                       <td className="px-2 text-center font-mono text-slate-500 tabular-nums">{rowNo}</td>
                       <td className="px-2 text-center whitespace-nowrap tabular-nums text-slate-800">{displayDate}</td>
-                      <td className="px-2 text-slate-900 truncate" title={item.name}>{item.name}</td>
+                      <td className="px-2 text-left text-slate-900 truncate" title={item.name}>{item.name}</td>
                       <td className="px-2 text-center font-mono whitespace-nowrap tabular-nums text-slate-900">
                         {Number(item.current_stock || 0).toLocaleString()}
                         {sUnit && <span className="text-[9px] text-slate-400 font-bold ml-0.5">{sUnit}</span>}
                       </td>
-                      <td className="px-2 text-slate-600 truncate" title={item.ext.disposal_reason || ''}>
+                      <td className="px-2 text-left text-slate-600 truncate" title={item.ext.disposal_reason || ''}>
                         {item.ext.disposal_reason || '-'}
                       </td>
-                      <td className="px-2 text-center border-l border-slate-200">
+                      <td className="px-2 text-left border-l border-slate-200">
                         <div className="truncate">
                           <span className="text-[10px] text-slate-500 block truncate">{item.ext.disposer_dept || '-'}</span>
                           <span className="text-slate-800 truncate">{item.ext.disposer_name || '관리자'}</span>

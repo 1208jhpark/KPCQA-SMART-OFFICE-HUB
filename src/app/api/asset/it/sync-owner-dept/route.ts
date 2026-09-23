@@ -58,6 +58,11 @@ export async function POST() {
     const samples: Array<{ code: string; from: string; to: string }> = [];
 
     for (const asset of assets as any[]) {
+      // 공용 자산: admin/users에 담당자 없음 → 부서 동기화 대상 아님
+      if (String(asset.user || '').trim() === '공용') {
+        skippedShared += 1;
+        continue;
+      }
       if (isPlaceholderUserLabel(asset.user) && !asset.user_id && !asset.user_email) {
         skippedShared += 1;
         continue;

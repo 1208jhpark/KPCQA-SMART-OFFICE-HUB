@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import prisma from '@/lib/prisma';
-import { authorizeApi, authorizeAnyMenuPaths, authErrorToResponse } from '@/lib/server-auth-guard';
+import { authorizeAnyMenuPaths, authErrorToResponse } from '@/lib/server-auth-guard';
 import {
   DEFAULT_PROD_MAIL_BODY,
   DEFAULT_PROD_MAIL_SUBJECT,
@@ -10,7 +10,6 @@ import {
 
 export const dynamic = 'force-dynamic';
 
-const MENU_PATH = '/asset/production/dept-master/inspection';
 const READ_PATHS = [
   '/asset/production/dept-master/inspection',
   '/asset/production/dept-master/order',
@@ -18,30 +17,23 @@ const READ_PATHS = [
   '/asset/production/dept-master/archive',
 ];
 
-type MailSettingsRow = {
+type DeptMailRow = {
   unitId: string;
   mailShortcutUrl: string | null;
   subjectTemplate: string | null;
   bodyTemplate: string | null;
 };
 
-function serializeSettings(row: MailSettingsRow | null) {
-  return {
-    unitId: row?.unitId || '',
-    mailShortcutUrl: String(row?.mailShortcutUrl || '').trim(),
-    subjectTemplate: resolveProdMailSubjectTemplate(row?.subjectTemplate),
-    bodyTemplate: resolveProdMailBodyTemplate(row?.bodyTemplate),
-    defaults: {
-      subjectTemplate: DEFAULT_PROD_MAIL_SUBJECT,
-      bodyTemplate: DEFAULT_PROD_MAIL_BODY,
-    },
-  };
-}
+type UserMailRow = {
+  prod_mail_shortcut_url: string | null;
+  prod_mail_subject_template: string | null;
+  prod_mail_body_template: string | null;
+};
 
-async function readSettings(unitId: string): Promise<MailSettingsRow | null> {
+async function readDeptSettings(unitId: string): Promise<DeptMailRow | null> {
   if (!unitId) return null;
   try {
-    const rows = await prisma.$queryRaw<MailSettingsRow[]>`
+    const rows = await prisma.$queryRaw<DeptMailRow[]>`
       SELECT "unitId", "mailShortcutUrl", "subjectTemplate", "bodyTemplate"
       FROM "ProductionDeptMailSettings"
       WHERE "unitId" = ${unitId}
@@ -49,38 +41,63 @@ async function readSettings(unitId: string): Promise<MailSettingsRow | null> {
     `;
     return rows[0] || null;
   } catch (error) {
-    console.error('[production/mail-settings read]', error);
+    console.error('[production/mail-settings dept read]', error);
     return null;
   }
 }
 
-async function upsertSettings(
-  unitId: string,
-  data: { mailShortcutUrl: string; subjectTemplate: string; bodyTemplate: string }
-) {
-  await prisma.$executeRawUnsafe(
-    `INSERT INTO "ProductionDeptMailSettings"
-      ("id", "unitId", "mailShortcutUrl", "subjectTemplate", "bodyTemplate", "createdAt", "updatedAt")
-     VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
-     ON CONFLICT ("unitId") DO UPDATE SET
-       "mailShortcutUrl" = EXCLUDED."mailShortcutUrl",
-       "subjectTemplate" = EXCLUDED."subjectTemplate",
-       "bodyTemplate" = EXCLUDED."bodyTemplate",
-       "updatedAt" = NOW()`,
-    `pdms_${unitId}`,
-    unitId,
-    data.mailShortcutUrl,
-    data.subjectTemplate,
-    data.bodyTemplate
-  );
+async function readUserSettings(userId: string): Promise<UserMailRow | null> {
+  if (!userId) return null;
+  try {
+    const rows = await prisma.$queryRaw<UserMailRow[]>`
+      SELECT "prod_mail_shortcut_url", "prod_mail_subject_template", "prod_mail_body_template"
+      FROM "User"
+      WHERE id = ${userId}
+      LIMIT 1
+    `;
+    return rows[0] || null;
+  } catch (error) {
+    console.error('[production/mail-settings user read]', error);
+    return null;
+  }
 }
 
+function serialize(opts: {
+  unitId: string;
+  personal: UserMailRow | null;
+  dept: DeptMailRow | null;
+}) {
+  const pUrl = String(opts.personal?.prod_mail_shortcut_url || '').trim();
+  const pSubject = String(opts.personal?.prod_mail_subject_template || '');
+  const pBody = String(opts.personal?.prod_mail_body_template || '');
+  const dUrl = String(opts.dept?.mailShortcutUrl || '').trim();
+  const dSubject = String(opts.dept?.subjectTemplate || '');
+  const dBody = String(opts.dept?.bodyTemplate || '');
+
+  return {
+    unitId: opts.unitId,
+    mailShortcutUrl: pUrl || dUrl,
+    subjectTemplate: resolveProdMailSubjectTemplate(pSubject || dSubject),
+    bodyTemplate: resolveProdMailBodyTemplate(pBody || dBody),
+    isPersonalUrl: !!pUrl,
+    isPersonalTemplate: !!(pSubject.trim() || pBody.trim()),
+    defaults: {
+      subjectTemplate: DEFAULT_PROD_MAIL_SUBJECT,
+      bodyTemplate: DEFAULT_PROD_MAIL_BODY,
+    },
+  };
+}
+
+/** GET: 로그인 사용자 개인 설정 (없으면 부서 설정·기본값 폴백) — Edit 불필요 */
 export async function GET() {
   try {
     const auth = await authorizeAnyMenuPaths(READ_PATHS);
     const unitId = String(auth.user.unit?.id || '').trim();
-    const row = await readSettings(unitId);
-    return NextResponse.json(serializeSettings(row ? { ...row, unitId } : { unitId, mailShortcutUrl: '', subjectTemplate: '', bodyTemplate: '' }), {
+    const [personal, dept] = await Promise.all([
+      readUserSettings(auth.user.id),
+      readDeptSettings(unitId),
+    ]);
+    return NextResponse.json(serialize({ unitId, personal, dept }), {
       headers: { 'Cache-Control': 'no-store, max-age=0' },
     });
   } catch (error) {
@@ -91,37 +108,45 @@ export async function GET() {
   }
 }
 
+/** PUT: 본인 User 행에만 저장 — Edit 불필요 (개인 페이지 설정) */
 export async function PUT(req: Request) {
   try {
-    const auth = await authorizeApi(MENU_PATH, { requireEditor: true });
+    const auth = await authorizeAnyMenuPaths(READ_PATHS);
     const unitId = String(auth.user.unit?.id || '').trim();
-    if (!unitId) {
-      return NextResponse.json({ message: '소속 부서 정보가 없습니다.' }, { status: 400 });
-    }
-
     const body = await req.json().catch(() => ({}));
-    const existing = await readSettings(unitId);
+    const existing = await readUserSettings(auth.user.id);
 
-    const next = {
-      mailShortcutUrl:
-        body.mailShortcutUrl != null
-          ? String(body.mailShortcutUrl || '').trim()
-          : String(existing?.mailShortcutUrl || '').trim(),
-      subjectTemplate:
-        body.subjectTemplate != null
-          ? String(body.subjectTemplate || '')
-          : String(existing?.subjectTemplate || ''),
-      bodyTemplate:
-        body.bodyTemplate != null
-          ? String(body.bodyTemplate || '')
-          : String(existing?.bodyTemplate || ''),
-    };
+    const nextUrl =
+      body.mailShortcutUrl != null
+        ? String(body.mailShortcutUrl || '').trim()
+        : String(existing?.prod_mail_shortcut_url || '').trim();
+    const nextSubject =
+      body.subjectTemplate != null
+        ? String(body.subjectTemplate || '')
+        : String(existing?.prod_mail_subject_template || '');
+    const nextBody =
+      body.bodyTemplate != null
+        ? String(body.bodyTemplate || '')
+        : String(existing?.prod_mail_body_template || '');
 
-    await upsertSettings(unitId, next);
-    const row = await readSettings(unitId);
-    return NextResponse.json(
-      serializeSettings(row ? { ...row, unitId } : { unitId, ...next })
+    await prisma.$executeRawUnsafe(
+      `UPDATE "User" SET
+         "prod_mail_shortcut_url" = $1,
+         "prod_mail_subject_template" = $2,
+         "prod_mail_body_template" = $3,
+         "updatedAt" = NOW()
+       WHERE id = $4`,
+      nextUrl,
+      nextSubject,
+      nextBody,
+      auth.user.id
     );
+
+    const [personal, dept] = await Promise.all([
+      readUserSettings(auth.user.id),
+      readDeptSettings(unitId),
+    ]);
+    return NextResponse.json(serialize({ unitId, personal, dept }));
   } catch (error) {
     const authRes = authErrorToResponse(error);
     if (authRes.status !== 500) {

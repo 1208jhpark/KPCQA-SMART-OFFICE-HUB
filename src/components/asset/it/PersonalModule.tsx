@@ -682,13 +682,15 @@ export default function PersonalModule() {
   const getAssetLogic = (a: any) => {
     // 교체예정·D-day: API(마스터 규칙)가 부착한 값만 사용
     const repDate = a.replace_due_date || '-';
-    const dday =
+    const deferred = a.replace_deferred === true;
+    const rawDday =
       typeof a.replace_dday === 'number'
         ? a.replace_dday
         : a.replace_dday === 0
           ? 0
           : null;
-    const isTargetCount = dday !== null && dday <= 30;
+    const dday = deferred ? null : rawDday;
+    const isTargetCount = !deferred && dday !== null && dday <= 30;
     
     const lastAudit = a.last_audit_date || '';
     let auditStatusLabel = '미확인';
@@ -786,6 +788,7 @@ export default function PersonalModule() {
   
     return {
       repDate, dday, isTargetCount, isVerified, isNudged, hasInfoCorrection,
+      replaceDeferred: deferred,
       isInAuditScope: !!coveringAudit,
       auditStatusLabel, auditStatusDate, auditStatusText, auditStatusColor,
       commStatusLabel, commStatusDate, commStatusText, commStatusColor,
@@ -1029,12 +1032,11 @@ export default function PersonalModule() {
 
         const matchReplace = !showReplaceableOnly || logic.isTargetCount;
         let matchDday = true;
-        if (ddayFilter !== 'all' && logic.dday !== null) {
-          if (ddayFilter === 'd-30') matchDday = logic.dday > 0 && logic.dday <= 30;
+        if (ddayFilter !== 'all') {
+          if (logic.replaceDeferred || logic.dday === null) matchDday = false;
+          else if (ddayFilter === 'd-30') matchDday = logic.dday > 0 && logic.dday <= 30;
           else if (ddayFilter === 'd-day') matchDday = logic.dday === 0;
           else if (ddayFilter === 'd-plus') matchDday = logic.dday < 0;
-        } else if (ddayFilter !== 'all') {
-          matchDday = false;
         }
         let matchStatus = true;
         if (showStatusFilter === 'done') matchStatus = logic.isVerified;
@@ -1196,7 +1198,7 @@ export default function PersonalModule() {
     if (targetAssets.length === 0) return alert('다운로드할 데이터가 없습니다.');
     const excelData = targetAssets.map((a, index) => {
       const logic = getAssetLogic(a);
-      return { 'NO': targetAssets.length - index, '조직': a.dept || '-', '사용자': a.user || '-', '범주': a.category, '자산 분류': a.it_type, '조달유형': a.is_rental || '-', '자산번호': a.code, '모델명': a.model, 'S/N': a.sn, '제조사': a.brand || '-', '기본 사양': a.spec, '교체주기(M)': a.cycle, '교체예정일': logic.repDate, '최근실사일': a.last_audit_date || '-', '기타(메모)': a.memo };
+      return { 'NO': targetAssets.length - index, '조직': a.dept || '-', '사용자': a.user || '-', '범주': a.category, '자산 분류': a.it_type, '조달유형': a.is_rental || '-', '자산번호': a.code, '모델명': a.model, 'S/N': a.sn, '제조사': a.brand || '-', '기본 사양': a.spec, '교체주기(M)': a.cycle, '교체예정일': logic.repDate, '사용 연장(유예)': a.replace_deferred ? 'Y' : '', '최근실사일': a.last_audit_date || '-', '기타(메모)': a.memo };
     });
     const ws = XLSX.utils.json_to_sheet(excelData); const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "My_Assets"); XLSX.writeFile(wb, `나의업무자산현황_${currentUser?.name}.xlsx`);
@@ -1860,7 +1862,7 @@ const handleCancelRequest = async (id: string) => {
               )}
             </div>
             <p className="text-[11px] font-bold text-slate-400 pl-[18px]">
-              ※ 교체예정일 도래·경과 장비는 우측 [신규 요청하기]로 신청하세요.
+              ※ 교체예정일 도래·경과 장비, 사용 연장 의견은 우측 [신규 요청하기]로 신청하세요.
             </p>
           </div>
 
@@ -1973,13 +1975,19 @@ const handleCancelRequest = async (id: string) => {
                 <th className="h-12 px-2 text-slate-900">기본 사양</th>
                 <th className="h-12 px-1 text-center text-slate-900 whitespace-nowrap">교체주기(M)</th>
                 <th className="h-12 px-1 text-center whitespace-nowrap">교체예정일</th>
+                <th
+                  className="h-12 px-1 text-center whitespace-nowrap"
+                  title="체크 시 교체 D-30·D-Day·D+ 필터·알람 제외"
+                >
+                  사용 연장(유예)
+                </th>
                 <th className="h-12 px-1 text-center border-l border-slate-200 whitespace-nowrap">실사/정보수정</th>
                 <th className="h-12 px-1 text-center text-blue-700 whitespace-nowrap">의견/요청</th>
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-slate-100 text-[11px] font-bold text-slate-700">
               {paginatedAssets.length === 0 ? (
-                <tr><td colSpan={14} className="p-16 text-center text-slate-400 text-xs">조건에 맞는 자산이 없습니다.</td></tr>
+                <tr><td colSpan={15} className="p-16 text-center text-slate-400 text-xs">조건에 맞는 자산이 없습니다.</td></tr>
               ) : (
                 paginatedAssets.map((a, idx) => {
                   const logic = getAssetLogic(a);
@@ -2049,6 +2057,15 @@ const handleCancelRequest = async (id: string) => {
                             {logic.dday > 0 ? `D-${logic.dday}` : logic.dday === 0 ? 'D-Day' : `D+${Math.abs(logic.dday)}`}
                           </span>
                         )}
+                      </td>
+                      <td className="px-1 text-center whitespace-nowrap" title="사용 연장(유예) — 마스터/부서 Edit에서 설정">
+                        <input
+                          type="checkbox"
+                          checked={!!a.replace_deferred}
+                          disabled
+                          readOnly
+                          className="w-3.5 h-3.5 accent-slate-700 opacity-70 cursor-not-allowed"
+                        />
                       </td>
                       <td className="px-1 text-center border-l border-slate-200">
                         <button
@@ -2212,13 +2229,13 @@ const handleCancelRequest = async (id: string) => {
                 <th rowSpan={2} className="h-10 px-2 text-center align-middle whitespace-nowrap">진행상태</th>
               </tr>
               <tr>
-                <th className="h-10 px-2 text-center whitespace-nowrap">부서 / 사용자</th>
+                <th className="h-10 px-2 text-left whitespace-nowrap">부서 / 사용자</th>
                 <th className="h-10 px-2 text-center whitespace-nowrap">자산 분류</th>
                 <th className="h-10 px-2">자산번호</th>
                 <th className="h-10 px-2">모델명</th>
                 <th className="h-10 px-2">사용자 요청/답변</th>
                 <th className="h-10 px-2 border-l border-slate-200 bg-blue-50/40 text-blue-800">관리자 요청/답변</th>
-                <th className="h-10 px-2 text-center whitespace-nowrap bg-blue-50/40 text-blue-800">부서 / 관리자</th>
+                <th className="h-10 px-2 text-left whitespace-nowrap bg-blue-50/40 text-blue-800">부서 / 관리자</th>
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-slate-100 text-[11px] font-bold text-slate-700">
@@ -2253,7 +2270,7 @@ const handleCancelRequest = async (id: string) => {
                   return (
                     <tr key={req.id} className="h-12 transition-colors bg-white hover:bg-slate-50/50">
                       <td className="px-2 text-center font-mono text-slate-500 tabular-nums">{rowNo}</td>
-                      <td className="px-2 text-center">
+                      <td className="px-2 text-left">
                         {userLabel ? (
                           <span className="text-slate-800 truncate block" title={userLabel}>{userLabel}</span>
                         ) : (
@@ -2285,7 +2302,7 @@ const handleCancelRequest = async (id: string) => {
                           <span className="font-black text-slate-900">처리 완료(종료)</span>
                         )}
                       </td>
-                      <td className="px-2 text-center">
+                      <td className="px-2 text-left">
                         {adminLabel ? (
                           <span className="text-slate-800 truncate block" title={adminLabel}>{adminLabel}</span>
                         ) : (

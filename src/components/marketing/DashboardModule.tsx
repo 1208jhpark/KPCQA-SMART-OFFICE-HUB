@@ -209,6 +209,12 @@ const [selectedItemYear, setSelectedItemYear] = useState<number>(currentYear);
       });
   }, [activeItems, currentUser, topOrgName, units, isLv1]);
 
+  /** 재고 있는 신청가능 품목만 (품절 제외) */
+  const applicableInStockItems = useMemo(
+    () => applicableItems.filter((item) => (Number(item.current_stock) || 0) > 0),
+    [applicableItems]
+  );
+
   /** 부서 인기 지급 물품 TOP5 — 독립 연·월 + 부서(본인·직속하위) 스코프 */
   const deptTopItems = useMemo(() => {
     const myDept = currentUser?.unit?.unit_name || '';
@@ -221,7 +227,7 @@ const [selectedItemYear, setSelectedItemYear] = useState<number>(currentYear);
 
     const map: Record<string, number> = {};
     distributions.forEach((d) => {
-      if (d.status === 'REJECTED') return;
+      if (d.status !== 'CONFIRMED') return;
       if (!myDept || !scopedDepts.has(String(d.sender_dept || ''))) return;
       const ym = getKSTYearMonth(getDistBusinessDate(d) as string);
       if (!ym || ym.year !== deptTopYear) return;
@@ -252,7 +258,7 @@ const [selectedItemYear, setSelectedItemYear] = useState<number>(currentYear);
     let deptQty = 0;
 
     distributions.forEach((d) => {
-      if (d.status === 'REJECTED') return;
+      if (d.status !== 'CONFIRMED') return;
       const ym = getKSTYearMonth(getDistBusinessDate(d) as string);
       if (!ym || ym.year !== myStatsYear) return;
       if (myStatsMonth !== 'ALL' && ym.month !== myStatsMonth) return;
@@ -282,7 +288,7 @@ const [selectedItemYear, setSelectedItemYear] = useState<number>(currentYear);
   const myClientStats = useMemo(() => {
     const map: Record<string, { qty: number; amount: number }> = {};
     distributions.forEach((d) => {
-      if (d.status === 'REJECTED') return;
+      if (d.status !== 'CONFIRMED') return;
       if (!isMyDistribution(d, currentUser)) return;
       const ym = getKSTYearMonth(getDistBusinessDate(d) as string);
       if (!ym || ym.year !== myStatsYear) return;
@@ -348,9 +354,6 @@ const topClientsData = useMemo(() => {
             <h1 className="text-2xl md:text-3xl font-extrabold text-white tracking-tight">
               마케팅 통합 대시보드
             </h1>
-            <p className="text-slate-400 mt-1.5 text-xs font-medium max-w-xl leading-relaxed">
-              마케팅 물품 지급 현황 및 고객사 랭킹 모니터링
-            </p>
           </div>
           <span className="self-start md:self-auto bg-white/10 text-slate-300 font-bold px-3 py-1.5 rounded-xl text-[10px] border border-white/10 backdrop-blur-sm shrink-0">
             Current Analysis: {currentYear} YEAR (KST)
@@ -376,41 +379,41 @@ const topClientsData = useMemo(() => {
       {/* 2️⃣ KPI 요약 카드 — 동일 높이 + 하단 액션 라인 정렬 */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-stretch">
         <div className="bg-white p-5 rounded-[1.5rem] border border-slate-200 shadow-sm flex flex-col h-[248px]">
-          <div className="flex items-start justify-between gap-2 flex-wrap shrink-0 h-[40px]">
-            <div className="min-w-0">
-              <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest">
-                부서 인기 지급 물품
+          <div className="shrink-0 space-y-0.5">
+            <div className="flex items-start justify-between gap-2 min-h-5">
+              <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest leading-none truncate min-w-0 pt-0.5">
+                부서 최다 수량 지급 물품
               </p>
-              <p className="text-[9px] font-bold text-slate-400 mt-0.5">TOP 5</p>
+              <div className="flex items-center gap-1.5 shrink-0">
+                <select
+                  value={deptTopYear}
+                  onChange={(e) => setDeptTopYear(Number(e.target.value))}
+                  className="box-border h-5 max-h-5 min-h-0 text-[10px] font-bold bg-slate-50 border border-slate-200 text-slate-700 rounded-md px-1.5 py-0 leading-5 outline-none focus:ring-1 focus:ring-indigo-400 cursor-pointer"
+                >
+                  {availableYears.map((year) => (
+                    <option key={year} value={year}>
+                      {year}년
+                    </option>
+                  ))}
+                </select>
+                <select
+                  value={deptTopMonth}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setDeptTopMonth(v === 'ALL' ? 'ALL' : Number(v));
+                  }}
+                  className="box-border h-5 max-h-5 min-h-0 text-[10px] font-bold bg-slate-50 border border-slate-200 text-slate-700 rounded-md px-1.5 py-0 leading-5 outline-none focus:ring-1 focus:ring-indigo-400 cursor-pointer"
+                >
+                  <option value="ALL">전체</option>
+                  {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => (
+                    <option key={m} value={m}>
+                      {m}월
+                    </option>
+                  ))}
+                </select>
+              </div>
             </div>
-            <div className="flex items-center gap-1.5 shrink-0">
-              <select
-                value={deptTopYear}
-                onChange={(e) => setDeptTopYear(Number(e.target.value))}
-                className="text-[10px] font-bold bg-slate-50 border border-slate-200 text-slate-700 rounded-lg px-1.5 py-1 outline-none focus:ring-1 focus:ring-indigo-400 cursor-pointer"
-              >
-                {availableYears.map((year) => (
-                  <option key={year} value={year}>
-                    {year}년
-                  </option>
-                ))}
-              </select>
-              <select
-                value={deptTopMonth}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  setDeptTopMonth(v === 'ALL' ? 'ALL' : Number(v));
-                }}
-                className="text-[10px] font-bold bg-slate-50 border border-slate-200 text-slate-700 rounded-lg px-1.5 py-1 outline-none focus:ring-1 focus:ring-indigo-400 cursor-pointer"
-              >
-                <option value="ALL">전체</option>
-                {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => (
-                  <option key={m} value={m}>
-                    {m}월
-                  </option>
-                ))}
-              </select>
-            </div>
+            <p className="text-[9px] font-bold text-slate-400 leading-none h-4 flex items-center">TOP 5</p>
           </div>
 
           <div className="flex-1 min-h-0 mt-2.5">
@@ -480,18 +483,18 @@ const topClientsData = useMemo(() => {
         </div>
 
         <div className="bg-white p-5 rounded-[1.5rem] border border-slate-200 shadow-sm flex flex-col h-[248px]">
-          <div className="flex items-start justify-between gap-2 shrink-0 h-[40px]">
-            <div className="min-w-0">
-              <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest">
-                나의 고객사 지급 수량 TOP 3
+          <div className="shrink-0 space-y-0.5">
+            <div className="flex items-start justify-between gap-2 min-h-5">
+              <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest leading-none truncate min-w-0 pt-0.5">
+                나의 최다 수량 지급 고객사 TOP 3
               </p>
-              <p className="text-[9px] font-bold text-slate-400 mt-0.5">{myStatsPeriodLabel}</p>
-            </div>
-            <div className="text-right shrink-0">
-              <p className="text-sm font-black text-indigo-600 leading-none">
+              <p className="text-[10px] font-black text-indigo-600 leading-none shrink-0 tabular-nums pt-0.5">
                 {myDistStats.myQty.toLocaleString()}
               </p>
-              <p className="text-[9px] font-bold text-slate-400 mt-0.5">
+            </div>
+            <div className="flex items-center justify-between gap-2 h-4">
+              <p className="text-[9px] font-bold text-slate-400 leading-none">{myStatsPeriodLabel}</p>
+              <p className="text-[9px] font-bold text-slate-400 leading-none shrink-0">
                 {myClientStats.length.toLocaleString()}개 고객사
               </p>
             </div>
@@ -565,42 +568,46 @@ const topClientsData = useMemo(() => {
         </div>
 
         <div className="bg-white p-5 rounded-[1.5rem] border border-slate-200 shadow-sm hover:shadow-md transition-shadow flex flex-col h-[248px]">
-          <div className="flex items-center justify-between gap-2 flex-wrap shrink-0 h-[40px]">
-            <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest">
-              나의 지급
-            </p>
-            <div className="flex items-center gap-1.5">
-              <select
-                value={myStatsYear}
-                onChange={(e) => {
-                  setMyStatsYear(Number(e.target.value));
-                  setMyClientStatsExpanded(false);
-                }}
-                className="text-[10px] font-bold bg-slate-50 border border-slate-200 text-slate-700 rounded-lg px-1.5 py-1 outline-none focus:ring-1 focus:ring-emerald-400 cursor-pointer"
-              >
-                {availableYears.map((year) => (
-                  <option key={year} value={year}>
-                    {year}년
-                  </option>
-                ))}
-              </select>
-              <select
-                value={myStatsMonth}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  setMyStatsMonth(v === 'ALL' ? 'ALL' : Number(v));
-                  setMyClientStatsExpanded(false);
-                }}
-                className="text-[10px] font-bold bg-slate-50 border border-slate-200 text-slate-700 rounded-lg px-1.5 py-1 outline-none focus:ring-1 focus:ring-emerald-400 cursor-pointer"
-              >
-                <option value="ALL">전체</option>
-                {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => (
-                  <option key={m} value={m}>
-                    {m}월
-                  </option>
-                ))}
-              </select>
+          <div className="shrink-0 space-y-0.5">
+            <div className="flex items-start justify-between gap-2 min-h-5">
+              <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest leading-none truncate min-w-0 pt-0.5">
+                나의 지급
+              </p>
+              <div className="flex items-center gap-1.5 shrink-0">
+                <select
+                  value={myStatsYear}
+                  onChange={(e) => {
+                    setMyStatsYear(Number(e.target.value));
+                    setMyClientStatsExpanded(false);
+                  }}
+                  className="box-border h-5 max-h-5 min-h-0 text-[10px] font-bold bg-slate-50 border border-slate-200 text-slate-700 rounded-md px-1.5 py-0 leading-5 outline-none focus:ring-1 focus:ring-emerald-400 cursor-pointer"
+                >
+                  {availableYears.map((year) => (
+                    <option key={year} value={year}>
+                      {year}년
+                    </option>
+                  ))}
+                </select>
+                <select
+                  value={myStatsMonth}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setMyStatsMonth(v === 'ALL' ? 'ALL' : Number(v));
+                    setMyClientStatsExpanded(false);
+                  }}
+                  className="box-border h-5 max-h-5 min-h-0 text-[10px] font-bold bg-slate-50 border border-slate-200 text-slate-700 rounded-md px-1.5 py-0 leading-5 outline-none focus:ring-1 focus:ring-emerald-400 cursor-pointer"
+                >
+                  <option value="ALL">전체</option>
+                  {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => (
+                    <option key={m} value={m}>
+                      {m}월
+                    </option>
+                  ))}
+                </select>
+              </div>
             </div>
+            {/* 왼쪽 TOP3 카드 2번째 줄(기간)과 헤더 높이 맞춤 */}
+            <div className="h-4" aria-hidden />
           </div>
 
           <div className="flex-1 flex flex-col justify-center space-y-2 min-h-0 mt-2.5">
@@ -659,7 +666,7 @@ const topClientsData = useMemo(() => {
        {/* [왼쪽] 인기 지급 물품 TOP 5 (고정 5슬롯 적용 + 랭킹 뱃지 컬러 매칭) */}
        <div className="bg-white p-4 rounded-[1.5rem] border border-slate-200 shadow-sm flex flex-col w-full h-full min-h-0">
           <div className="flex justify-between items-center mb-2 shrink-0">
-            <h3 className="text-sm font-black text-slate-800 flex items-center gap-2"><span>🏆</span> (전사) 인기 지급 물품 TOP 5</h3>
+            <h3 className="text-sm font-black text-slate-800 flex items-center gap-2"><span>🏆</span> (전사) 최다 수량 지급 물품 TOP 5</h3>
             <select 
               value={selectedItemYear} 
               onChange={(e) => setSelectedItemYear(Number(e.target.value))}
@@ -721,7 +728,7 @@ const topClientsData = useMemo(() => {
         <div className="bg-white p-4 rounded-[1.5rem] border border-slate-200 shadow-sm flex flex-col w-full h-full min-h-0">
           <div className="flex justify-between items-center mb-2 shrink-0">
             <h3 className="text-sm font-black text-slate-800 flex items-center gap-2">
-              <span>🏢</span> (전사) 최다 지급 고객사 TOP 5
+              <span>🏢</span> (전사) 최다 수량 지급 고객사 TOP 5
             </h3>
             <select 
               value={selectedRankingYear} 
@@ -796,89 +803,52 @@ const topClientsData = useMemo(() => {
 <div className="bg-white p-4 rounded-[1.5rem] border border-slate-200 shadow-sm flex flex-col w-full h-full min-h-0">
           <div className="flex items-center justify-between gap-2 mb-2 shrink-0">
             <h3 className="text-sm font-black text-slate-800 flex items-center gap-2">
-              <span>🎁</span> 나의 신청가능 품목 보기
+              <span>🎁</span> 나의 신청 가능 기념품
             </h3>
-            <div className="flex items-center gap-1.5">
-              {applicableItems.some(
-                (i) => Number(i.alert_qty) > 0 && Number(i.current_stock) <= Number(i.alert_qty)
-              ) && (
-                <span className="text-[9px] font-black bg-red-100 text-red-600 px-1.5 py-0.5 rounded-md border border-red-200">
-                  재고확보 포함
-                </span>
-              )}
-              <span className="text-[10px] font-black bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded-md border border-indigo-100">
-                {applicableItems.length}종
-              </span>
-            </div>
+            <span className="text-[10px] font-black bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded-md border border-indigo-100">
+              {applicableInStockItems.length}종
+            </span>
           </div>
 
           <div className="flex-1 min-h-0 overflow-y-auto max-h-[248px] pr-0.5 space-y-1">
-            {applicableItems.length === 0 ? (
+            {applicableInStockItems.length === 0 ? (
               <div className="h-full min-h-[80px] flex items-center justify-center rounded-xl border border-dashed border-slate-200 bg-slate-50/50">
                 <p className="text-[11px] font-bold text-slate-400">신청 가능한 기념품이 없습니다.</p>
               </div>
             ) : (
-              applicableItems.map((item) => {
+              applicableInStockItems.map((item) => {
                 const stock = Number(item.current_stock) || 0;
-                const canApply = stock > 0;
-                const needRestock =
-                  Number(item.alert_qty) > 0 && stock <= Number(item.alert_qty);
                 return (
                   <div
                     key={item.id}
-                    className={`flex items-center gap-2 px-2 py-1.5 rounded-xl border transition-colors ${
-                      needRestock
-                        ? 'bg-red-50 border-red-200 hover:border-red-300 hover:bg-red-50/80'
-                        : 'bg-slate-50 border-slate-100 hover:border-indigo-100 hover:bg-indigo-50/40'
-                    }`}
+                    className="flex items-center gap-2 px-2 py-1.5 rounded-xl border bg-slate-50 border-slate-100 hover:border-indigo-100 hover:bg-indigo-50/40 transition-colors"
                   >
                     <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-1.5 min-w-0">
-                        <p
-                          className={`text-[11px] font-black truncate ${
-                            needRestock ? 'text-red-800' : 'text-slate-800'
-                          }`}
-                          title={item.name}
-                        >
-                          {item.name}
-                        </p>
-                        {needRestock && (
-                          <span className="shrink-0 text-[8px] font-black uppercase tracking-tight px-1.5 py-0.5 rounded bg-red-600 text-white">
-                            재고확보
-                          </span>
-                        )}
-                      </div>
-                      <p className={`text-[9px] font-bold truncate ${needRestock ? 'text-red-400' : 'text-slate-400'}`}>
+                      <p
+                        className="text-[11px] font-black truncate text-slate-800"
+                        title={item.name}
+                      >
+                        {item.name}
+                      </p>
+                      <p className="text-[9px] font-bold truncate text-slate-400">
                         {item.owner_dept || '-'}
-                        {needRestock ? ` · 기준 ${item.alert_qty}${item.unit || 'EA'} 이하` : ''}
                       </p>
                     </div>
                     <span
-                      className={`shrink-0 text-[10px] font-mono font-black tabular-nums px-1.5 py-0.5 rounded-md ${
-                        stock <= 0
-                          ? 'bg-red-100 text-red-600 border border-red-200'
-                          : needRestock
-                            ? 'bg-red-100 text-red-700 border border-red-200'
-                            : 'bg-white text-slate-600 border border-slate-200'
-                      }`}
-                      title={needRestock ? '재고 확보 필요' : '현재 재고'}
+                      className="shrink-0 text-[10px] font-mono font-black tabular-nums px-1.5 py-0.5 rounded-md bg-white text-slate-600 border border-slate-200"
+                      title="현재 재고"
                     >
                       {stock}
                       <span className="text-[8px] font-bold ml-0.5">{item.unit || 'EA'}</span>
                     </span>
                     <button
                       type="button"
-                      disabled={!canApply}
                       onClick={() =>
                         router.push(`/marketing/distribution/register?itemId=${item.id}`)
                       }
-                      className={`shrink-0 px-2 py-1.5 rounded-lg text-[9px] font-black whitespace-nowrap transition-colors ${
-                        canApply
-                          ? 'bg-indigo-600 text-white hover:bg-indigo-700 active:scale-95'
-                          : 'bg-slate-200 text-slate-400 cursor-not-allowed'
-                      }`}
+                      className="shrink-0 px-2 py-1.5 rounded-lg text-[9px] font-black whitespace-nowrap transition-colors bg-indigo-600 text-white hover:bg-indigo-700 active:scale-95"
                     >
-                      {canApply ? '지급신청하기' : '품절'}
+                      예약하기
                     </button>
                   </div>
                 );

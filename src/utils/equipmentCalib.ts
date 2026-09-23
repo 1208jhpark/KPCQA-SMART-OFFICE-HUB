@@ -60,20 +60,35 @@ export function isCalibScheduleDue(
   return Number.isFinite(diffDays) && diffDays <= windowDays;
 }
 
+/** 검교정 대상 여부 — 미설정(구데이터)은 대상으로 간주 */
+export function isCalibApplicable(eq: { calib_applicable?: boolean | null } | null | undefined): boolean {
+  return eq?.calib_applicable !== false;
+}
+
+/** 교체 대상 여부 — 미설정(구데이터)은 대상으로 간주 */
+export function isReplaceApplicable(eq: { replace_applicable?: boolean | null } | null | undefined): boolean {
+  return eq?.replace_applicable !== false;
+}
+
 /**
  * 목록/대시보드/상세 공통 예정일·일정확인 판정.
  * 표시 우선순위: (최신 이력 확정일|요청일 + 주기) → 없으면 저장 next_calib_date
  * ※ 이력으로 산정 가능하면 낡은 next_calib_date에 묶이지 않음
+ * ※ 검교정 대상 아님이면 예정일·알람 모두 제외
  */
 export function resolveCalibSchedule(eq: {
   histories?: any[] | null;
   calib_cycle_mo?: number | null;
   next_calib_date?: string | Date | null;
-}): { nCalib: string | null; isDue: boolean; diffDays: number | null } {
+  calib_applicable?: boolean | null;
+}): { nCalib: string | null; isDue: boolean; diffDays: number | null; applicable: boolean } {
+  if (!isCalibApplicable(eq)) {
+    return { nCalib: null, isDue: false, diffDays: null, applicable: false };
+  }
   const fromCycle = addMonthsToCalibYmd(getLatestCalibBaseYmd(eq.histories), eq.calib_cycle_mo);
   const fromStored = toCalibYmd(eq.next_calib_date);
   const nCalib = fromCycle || fromStored || null;
   const isDue = isCalibScheduleDue(nCalib);
   const diffDays = nCalib ? getKSTDaysUntil(nCalib) : null;
-  return { nCalib, isDue, diffDays };
+  return { nCalib, isDue, diffDays, applicable: true };
 }

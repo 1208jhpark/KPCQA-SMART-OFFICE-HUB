@@ -6,6 +6,7 @@ import LoadingState from '@/components/common/LoadingState';
 import { resolveInterfaceEditState } from '@/lib/permission-utils';
 import { formatBusinessCardEnNumber, stripBusinessCardEnPlus } from '@/lib/businesscard-phone';
 import { formatBusinessCardUserStatusLabel } from '@/lib/businesscard-status';
+import { formatCompanyAddressKo } from '@/lib/businesscard-seed-addresses';
 import { getKSTDateString, getKSTNowYearMonth, formatKSTDateTime } from '@/utils/dateUtils';
 import type { UserJobOption } from '@/lib/user-job-options';
 
@@ -214,7 +215,7 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
     emailEn: '',
     addressId: addr?.id || '',
     zipCode: addr?.zipCode || '',
-    addressKo: addr?.addressKo || '',
+    addressKo: formatCompanyAddressKo(addr || {}),
     addressEn: addr?.addressEn || '',
     adminStatus: '대기중' as const,
     isModifiedByAdmin: false,
@@ -629,7 +630,7 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
         ...p, 
         addressId: addrId, 
         zipCode: target.zipCode, 
-        addressKo: target.addressKo, 
+        addressKo: formatCompanyAddressKo(target), 
         addressEn: target.addressEn,
         fax: target.fax,
         faxEn: target.faxEn

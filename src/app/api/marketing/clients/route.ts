@@ -5,6 +5,7 @@ import {
   getKSTYearMonth,
   getKSTYearRange,
   getDistBusinessDate,
+  getKSTDateString,
 } from '@/utils/dateUtils';
 import {
   authorizeMarketingClientsRead,
@@ -12,6 +13,7 @@ import {
   authorizeMarketingClientsCreate,
   authErrorToResponse,
 } from '@/lib/server-auth-guard';
+import { buildMarketingClientAddressData } from '@/lib/marketing-client-address';
 
 export const dynamic = 'force-dynamic';
 
@@ -193,7 +195,7 @@ export async function GET(req: Request) {
      * 목록: 회사 단위 합계만 (deptStats 제외 → 펼침 시 지연 로딩).
      * distCount는 groupBy로 전체 건수만 집계.
      */
-    const [dists, distCountRows] = await Promise.all([
+    const [dists, distCountRows, lastDistRows] = await Promise.all([
       prisma.marketingDistribution.findMany({
         where: {
           client_id: { not: null },
@@ -212,11 +214,29 @@ export async function GET(req: Request) {
         by: ['client_id'],
         _count: { _all: true },
       }),
+      prisma.marketingDistribution.groupBy({
+        by: ['client_id'],
+        where: {
+          client_id: { not: null },
+          status: { notIn: ['PENDING', 'REJECTED'] },
+        },
+        _max: { dist_date: true },
+      }),
     ]);
 
     const distCountByClient = new Map<string, number>();
     for (const row of distCountRows) {
       if (row.client_id) distCountByClient.set(row.client_id, row._count._all);
+    }
+
+    const lastDistByClient = new Map<string, string | null>();
+    for (const row of lastDistRows) {
+      if (!row.client_id) continue;
+      const maxDate = row._max?.dist_date;
+      lastDistByClient.set(
+        row.client_id,
+        maxDate ? getKSTDateString(maxDate) : null
+      );
     }
 
     type ClientAgg = {
@@ -255,6 +275,7 @@ export async function GET(req: Request) {
       return {
         ...c,
         distCount: distCountByClient.get(c.id) ?? 0,
+        lastDistDate: lastDistByClient.get(c.id) ?? null,
         monthTotal: agg?.monthTotal ?? 0,
         yearTotal: agg?.yearTotal ?? 0,
         monthQty: agg?.monthQty ?? 0,
@@ -279,7 +300,7 @@ export async function POST(req: Request) {
   }
 
   try {
-    const { name, location, category } = await req.json();
+    const { name, location, category, zip_code, address_road, address_detail } = await req.json();
     const clientName = normalizeClientName(name);
     if (!clientName) {
       return NextResponse.json({ error: '고객사명은 필수입니다.' }, { status: 400 });
@@ -300,10 +321,17 @@ export async function POST(req: Request) {
       );
     }
 
+    const address = buildMarketingClientAddressData({
+      zip_code,
+      address_road,
+      address_detail,
+      location,
+    });
+
     const newClient = await prisma.marketingClient.create({
       data: {
         name: clientName,
-        location,
+        ...address,
         category,
         departments: [{ name: '전사', is_hidden: false }],
         is_active: true,
@@ -333,6 +361,9 @@ export async function PATCH(req: Request) {
       id,
       name,
       location,
+      zip_code,
+      address_road,
+      address_detail,
       category,
       departments,
       oldDeptName,
@@ -399,7 +430,15 @@ export async function PATCH(req: Request) {
       }
       data.name = clientName;
     }
-    if (location !== undefined) data.location = location;
+    if (location !== undefined || zip_code !== undefined || address_road !== undefined || address_detail !== undefined) {
+      const address = buildMarketingClientAddressData({
+        zip_code: zip_code !== undefined ? zip_code : clientBefore.zip_code,
+        address_road: address_road !== undefined ? address_road : clientBefore.address_road,
+        address_detail: address_detail !== undefined ? address_detail : clientBefore.address_detail,
+        location: location !== undefined ? location : clientBefore.location,
+      });
+      Object.assign(data, address);
+    }
     if (category !== undefined) data.category = category;
     if (departments !== undefined) {
       const dupDept = findDuplicateDeptName(departments);
@@ -445,6 +484,14 @@ export async function PATCH(req: Request) {
     }
 
     if (oldDeptName && newDeptName) {
+      const from = String(oldDeptName).trim();
+      const to = String(newDeptName).trim();
+      if (from === '전사' && to !== '전사') {
+        return NextResponse.json(
+          { error: "기본 부서 '전사'는 이름을 수정할 수 없습니다." },
+          { status: 400 }
+        );
+      }
       await prisma.marketingDistribution.updateMany({
         where: { client_id: id, client_dept: oldDeptName },
         data: { client_dept: newDeptName },

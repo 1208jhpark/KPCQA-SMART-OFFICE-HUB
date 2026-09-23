@@ -3,15 +3,15 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { saveAs } from 'file-saver';
-import { getKSTDateString, getKSTTimeString, formatKSTDateTime, isPastKSTDeadline, getKSTDaysUntil, formatKSTCalendarLabel } from '@/utils/dateUtils';
+import { formatKSTDateTimeMinute, isPastKSTDeadline, getKSTDaysUntil, formatKSTCalendarLabel } from '@/utils/dateUtils';
 import { getVisibleQuestionsByBranch } from '@/utils/surveyBranching';
 import LoadingState from '@/components/common/LoadingState';
      
 // 🚀 [UI 표준] 전사 공통 헤더 컴포넌트
 const HeaderLight = ({ title, count, children }: { title: string, count: number, children?: React.ReactNode }) => (
-  <div className="p-4 px-6 bg-slate-200/70 border-b border-slate-300 flex items-center justify-between shrink-0">
+  <div className="p-4 px-6 bg-slate-200/70 border-b border-slate-300 flex flex-wrap items-center justify-between gap-4 shrink-0">
     <div className="flex items-center gap-2">
-      <div className="w-2.5 h-2.5 rounded-full bg-teal-600"></div>
+      <div className="w-2.5 h-2.5 rounded-full bg-slate-600"></div>
       <h2 className="text-xs font-black text-slate-800 tracking-tight">{title}</h2>
       <span className="text-[11px] font-bold bg-slate-300/80 text-slate-700 px-2 py-0.5 rounded-md">{count}건</span>
     </div>
@@ -34,9 +34,12 @@ export default function DeliveryMySubmissions() {
   const [formData, setFormData] = useState<Record<string, any>>({});
   
   const [historyYear, setHistoryYear] = useState<string>('ALL');
+  const [historyMonth, setHistoryMonth] = useState<string>('ALL');
+  const [historyTitleQuery, setHistoryTitleQuery] = useState<string>('');
   const [eligiblePage, setEligiblePage] = useState<number>(1);
   const [historyPage, setHistoryPage] = useState<number>(1);
-  const itemsPerPage = 5;
+  const eligibleItemsPerPage = 5;
+  const historyItemsPerPage = 10;
      
   const [isHistoryOpen, setIsHistoryOpen] = useState<boolean>(false);
   const [showFeedbackModal, setShowFeedbackModal] = useState(false);
@@ -124,8 +127,9 @@ export default function DeliveryMySubmissions() {
             myDbResponses.forEach((r: any) => {
               if (r.userEmail === userData.email) {
                 nextMyRes[r.surveyId] = {
-                  submittedAt: r.submittedAt ? formatKSTDateTime(r.submittedAt) : '-',
+                  submittedAt: r.submittedAt ? formatKSTDateTimeMinute(r.submittedAt) : '-',
                   submittedAtRaw: r.submittedAt || null,
+                  approvedAt: r.approvedAt ? formatKSTDateTimeMinute(r.approvedAt) : '-',
                   answers: r.answers,
                   isApproved: r.isApproved,
                   isRevoked: r.isRevoked,
@@ -204,29 +208,76 @@ export default function DeliveryMySubmissions() {
   );
   
   const historyList = useMemo(() => {
-    return surveys.filter(s => {
-      const myRes = myResponses[s.id];
-      if (!myRes) return false;
-      if (myRes.isApproved) return true; // 승인된 건은 무조건 보관함
-      if (s.status === '진행중' || s.status === '게시중단') return false;
-     
-      // 💡 [수정] 오직 관리자가 마감(완료) 처리한 것만 보관함으로 이동!
-      const isGloballyClosed = s.status === '완료' || s.status === '보관됨';
-      return isGloballyClosed;
-    }).map(s => ({
-      ...s,
-      submittedAt: myResponses[s.id].submittedAt,
-      myAnswers: myResponses[s.id].answers,
-      isApproved: myResponses[s.id].isApproved
-    })).sort((a: any, b: any) => b.submittedAt.localeCompare(a.submittedAt));
+    const toAt = (v: unknown) => {
+      const t = new Date(String(v || '')).getTime();
+      return Number.isFinite(t) ? t : 0;
+    };
+    return surveys
+      .filter((s) => {
+        const myRes = myResponses[s.id];
+        if (!myRes) return false;
+        if (myRes.isApproved) return true; // 승인된 건은 무조건 보관함
+        if (s.status === '진행중' || s.status === '게시중단') return false;
+        // 관리자가 마감(완료/보관됨) 처리한 것만 보관함으로 이동
+        return s.status === '완료' || s.status === '보관됨';
+      })
+      .map((s) => ({
+        ...s,
+        submittedAt: myResponses[s.id].submittedAt,
+        approvedAt: myResponses[s.id].approvedAt || '-',
+        myAnswers: myResponses[s.id].answers,
+        isApproved: myResponses[s.id].isApproved,
+      }))
+      // 최신 보관/마감 건이 맨 위 (NO도 큰 수 → 상단)
+      .sort((a: any, b: any) => {
+        const bt = toAt(b.updatedAt || b.endDate || b.postDate);
+        const at = toAt(a.updatedAt || a.endDate || a.postDate);
+        if (bt !== at) return bt - at;
+        return String(b.submittedAt || '').localeCompare(String(a.submittedAt || ''));
+      });
   }, [surveys, myResponses]);
-     
-  const filteredHistory = useMemo(() => historyList.filter(s => historyYear === 'ALL' || s.submittedAt.split('-')[0] === historyYear), [historyList, historyYear]);
-  const paginatedEligible = useMemo(() => eligibleSurveys.slice((eligiblePage - 1) * itemsPerPage, eligiblePage * itemsPerPage), [eligibleSurveys, eligiblePage]);
-  const paginatedHistory = useMemo(() => filteredHistory.slice((historyPage - 1) * itemsPerPage, historyPage * itemsPerPage), [filteredHistory, historyPage]);
-     
-  const totalEligiblePages = Math.ceil(eligibleSurveys.length / itemsPerPage);
-  const totalHistoryPages = Math.ceil(filteredHistory.length / itemsPerPage);
+
+  const availableYears = useMemo(() => {
+    const years = historyList.map((s) => String(s.submittedAt || '').split('-')[0]).filter(Boolean);
+    return Array.from(new Set(years)).sort((a, b) => Number(b) - Number(a));
+  }, [historyList]);
+  const availableMonths = ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12'];
+
+  const filteredHistory = useMemo(() => {
+    const q = historyTitleQuery.trim().toLowerCase();
+    return historyList.filter((survey) => {
+      const submitted = String(survey.submittedAt || '');
+      const [y = '', m = ''] = submitted.split('-');
+      const yearMatch = historyYear === 'ALL' || y === historyYear;
+      const monthMatch = historyMonth === 'ALL' || m === historyMonth;
+      const titleMatch = !q || String(survey.title || '').toLowerCase().includes(q);
+      return yearMatch && monthMatch && titleMatch;
+    });
+  }, [historyList, historyYear, historyMonth, historyTitleQuery]);
+
+  const paginatedEligible = useMemo(
+    () => eligibleSurveys.slice((eligiblePage - 1) * eligibleItemsPerPage, eligiblePage * eligibleItemsPerPage),
+    [eligibleSurveys, eligiblePage]
+  );
+  const paginatedHistory = useMemo(
+    () => filteredHistory.slice((historyPage - 1) * historyItemsPerPage, historyPage * historyItemsPerPage),
+    [filteredHistory, historyPage]
+  );
+
+  const totalEligiblePages = Math.max(1, Math.ceil(eligibleSurveys.length / eligibleItemsPerPage));
+  const totalHistoryPages = Math.max(1, Math.ceil(filteredHistory.length / historyItemsPerPage));
+
+  useEffect(() => {
+    setHistoryPage(1);
+  }, [historyYear, historyMonth, historyTitleQuery]);
+
+  useEffect(() => {
+    if (historyPage > totalHistoryPages) setHistoryPage(totalHistoryPages);
+  }, [historyPage, totalHistoryPages]);
+
+  useEffect(() => {
+    if (eligiblePage > totalEligiblePages) setEligiblePage(totalEligiblePages);
+  }, [eligiblePage, totalEligiblePages]);
   
   const handleOpenUserPostcode = (qId: string) => {
     if (typeof window !== 'undefined' && (window as any).daum?.Postcode) {
@@ -340,7 +391,7 @@ export default function DeliveryMySubmissions() {
      
       if (res.ok) {
         const serverRes = await res.json();
-        const submittedDate = `${getKSTDateString()} ${getKSTTimeString()}`;
+        const submittedDate = formatKSTDateTimeMinute(new Date());
         
         // 🚀 2. [SPA 최적화] 무거운 window.location.reload()를 완전히 제거하고
         // 서버 DB의 실제 반환값(revisionCount 및 결재 플래그)을 다이렉트로 매핑
@@ -350,6 +401,9 @@ export default function DeliveryMySubmissions() {
             ...myResponses[activeFullScreenSurvey.id],
             submittedAt: submittedDate,
             submittedAtRaw: serverRes.submittedAt || new Date().toISOString(),
+            approvedAt: serverRes.approvedAt
+              ? formatKSTDateTimeMinute(serverRes.approvedAt)
+              : (serverRes.isApproved ? myResponses[activeFullScreenSurvey.id]?.approvedAt : '-') || '-',
             answers: formData,
             revisionCount: serverRes.revisionCount || 1,
             isApproved: serverRes.isApproved,
@@ -472,7 +526,7 @@ export default function DeliveryMySubmissions() {
             <tbody className="bg-white divide-y divide-slate-100 text-xs font-bold text-slate-700">
               {paginatedEligible.map((survey: any, index: number) => {
                 const submissionTimeStr = myResponses[survey.id]?.submittedAt || '-';
-                const reverseNo = eligibleSurveys.length - ((eligiblePage - 1) * itemsPerPage + index);
+                const reverseNo = eligibleSurveys.length - ((eligiblePage - 1) * eligibleItemsPerPage + index);
                 
                 // 💡 [KST 마감·D-day]
                 const rawTime = (survey.endTime || '').trim();
@@ -559,13 +613,13 @@ export default function DeliveryMySubmissions() {
             </tbody>
           </table>
         </div>
-        {totalEligiblePages > 1 && (
+        {eligibleSurveys.length > 0 && (
           <div className="flex justify-center items-center gap-1.5 pt-6 pb-6 border-t border-slate-100 bg-white">
-            <button disabled={eligiblePage === 1} onClick={() => setEligiblePage(p => Math.max(p - 1, 1))} className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 hover:bg-slate-50">이전</button>
+            <button disabled={eligiblePage === 1} onClick={() => setEligiblePage(p => Math.max(p - 1, 1))} className="px-3 py-1.5 text-[11px] bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 hover:bg-slate-50">이전</button>
             {Array.from({ length: totalEligiblePages }).map((_, i) => (
-              <button key={i} onClick={() => setEligiblePage(i + 1)} className={`w-8 h-8 rounded-xl font-black text-xs transition-all ${eligiblePage === i + 1 ? 'bg-slate-800 text-white shadow-sm scale-105' : 'bg-white border border-slate-200 text-slate-500 hover:bg-slate-50'}`}>{i + 1}</button>
+              <button key={i} onClick={() => setEligiblePage(i + 1)} className={`w-8 h-8 rounded-xl font-bold text-[11px] transition-all ${eligiblePage === i + 1 ? 'bg-slate-800 text-white shadow-sm' : 'bg-white border border-slate-200 text-slate-500 hover:bg-slate-50'}`}>{i + 1}</button>
             ))}
-            <button disabled={eligiblePage === totalEligiblePages} onClick={() => setEligiblePage(p => Math.min(p + 1, totalEligiblePages))} className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 hover:bg-slate-50">다음</button>
+            <button disabled={eligiblePage === totalEligiblePages} onClick={() => setEligiblePage(p => Math.min(p + 1, totalEligiblePages))} className="px-3 py-1.5 text-[11px] bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 hover:bg-slate-50">다음</button>
           </div>
         )}
       </div>
@@ -679,10 +733,11 @@ export default function DeliveryMySubmissions() {
   </div>
 )}
      
-{/* 📁 슬림 규격으로 압축한 참여 이력 보관함 토글 바 (다크 그레이 시인성 확보 버전) */}
+{/* 📁 참여 이력 보관함 — 토글 헤더 + 본문을 한 카드로 연결 */}
+<div className="mt-8 rounded-2xl border border-slate-400 shadow-sm overflow-hidden">
 <div 
   onClick={() => setIsHistoryOpen(!isHistoryOpen)} 
-  className="w-full bg-slate-200 border border-slate-400 p-4 px-7 rounded-2xl shadow-sm mt-8 cursor-pointer hover:bg-slate-200/70 active:scale-[0.995] transition-all select-none flex items-center justify-between gap-6"
+  className={`w-full bg-slate-200 p-4 px-7 cursor-pointer hover:bg-slate-200/70 active:scale-[0.995] transition-all select-none flex items-center justify-between gap-6 ${isHistoryOpen ? 'border-b border-slate-300' : ''}`}
 >
   <div className="flex items-center gap-4 flex-1 min-w-0">
     {/* 🎯 타이틀 & 펼치기 상태 뱃지 (기본 다크 그레이 text-slate-800 적용) */}
@@ -710,110 +765,160 @@ export default function DeliveryMySubmissions() {
      
       {/* 대장 2: 과거 완료 및 승인 이력 대장 */}
       {isHistoryOpen && (
-        <div className="bg-white border border-slate-200 rounded-[2.5rem] shadow-sm overflow-hidden mt-6 animate-in fade-in slide-in-from-top-4 duration-300">
+        <div className="bg-white animate-in fade-in slide-in-from-top-2 duration-200">
           <HeaderLight title="완료 및 승인 배송 대장" count={filteredHistory.length}>
-            <div className="flex items-center gap-2 text-xs font-bold text-slate-600">
-              <span className="text-slate-500">연도 필터 :</span>
-              <select 
-                value={historyYear} 
-                onChange={(e) => { setHistoryYear(e.target.value); setHistoryPage(1); }} 
-                className="text-[10px] font-bold bg-white border border-slate-300 rounded-lg px-2 py-1 outline-none focus:ring-1 focus:ring-slate-400 cursor-pointer"
-              >
-                <option value="ALL">전체 내역 보기</option>
-                <option value="2026">2026년도</option>
-                <option value="2025">2025년도</option>
-              </select>
+            <div className="flex items-center gap-2 flex-wrap">
+              <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm">
+                <span className="text-[10px] font-bold text-slate-400 uppercase">연도</span>
+                <select
+                  value={historyYear}
+                  onChange={(e) => setHistoryYear(e.target.value)}
+                  className="text-[11px] font-bold text-slate-800 outline-none cursor-pointer bg-transparent"
+                >
+                  <option value="ALL">전체</option>
+                  {availableYears.map((year) => (
+                    <option key={year} value={year}>{year}년</option>
+                  ))}
+                </select>
+
+                <div className="w-px h-3.5 bg-slate-300 mx-0.5"></div>
+
+                <span className="text-[10px] font-bold text-slate-400 uppercase">월별</span>
+                <select
+                  value={historyMonth}
+                  onChange={(e) => setHistoryMonth(e.target.value)}
+                  className="text-[11px] font-bold text-slate-800 outline-none cursor-pointer bg-transparent"
+                >
+                  <option value="ALL">전체</option>
+                  {availableMonths.map((month) => (
+                    <option key={month} value={month}>{month}월</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="relative w-44">
+                <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-[10px]">🔍</span>
+                <input
+                  type="text"
+                  placeholder="게시명 검색..."
+                  value={historyTitleQuery}
+                  onChange={(e) => setHistoryTitleQuery(e.target.value)}
+                  className="w-full pl-7 pr-3 py-1.5 bg-white border border-slate-200 rounded-lg text-[11px] font-bold outline-none focus:border-slate-400 shadow-sm transition-colors"
+                />
+              </div>
             </div>
           </HeaderLight>
-     
+
           <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse">
-            <thead className="bg-slate-100 text-slate-700 text-[10px] font-black uppercase tracking-widest border-b border-slate-200">
+            <table className="w-full table-fixed text-left border-collapse text-[11px] font-bold text-slate-700">
+              <colgroup>
+                <col className="w-[4%]" />
+                <col className="w-[7%]" />
+                <col className="w-[8%]" />
+                <col className="w-[14%]" />
+                <col className="w-[6%]" />
+                <col className="w-[7%]" />
+                <col className="w-[12%]" />
+                <col className="w-[12%]" />
+                <col className="w-[18%]" />
+                <col className="w-[12%]" />
+              </colgroup>
+              <thead className="bg-slate-100 text-slate-700 text-[11px] font-bold border-b border-slate-200">
                 <tr>
-                  <th className="h-12 pl-8 w-16 text-center">NO</th>
-                  <th className="h-12 px-3 w-28 text-center">게시번호</th>
-                  <th className="h-12 px-3 w-28 text-center">게시일</th>
-                  <th className="h-12 px-4">게시명</th>
-                  <th className="h-12 px-3 w-24 text-center">신청분류</th>
-                  <th className="h-12 px-3 w-36 text-center">대상</th>
-                  <th className="h-12 px-4 w-48 text-center">접수 일시</th>
-                  <th className="h-12 px-3 w-40 text-center">상태/기간</th>
-                  <th className="h-12 pr-8 w-44 text-center">명세서 확인</th>
+                  <th className="py-3 pl-4 text-center">NO</th>
+                  <th className="py-3 px-2 text-center">게시번호</th>
+                  <th className="py-3 px-2 text-center">게시일</th>
+                  <th className="py-3 px-3 text-left">게시명</th>
+                  <th className="py-3 px-2 text-center">신청분류</th>
+                  <th className="py-3 px-2 text-center">대상</th>
+                  <th className="py-3 px-2 text-center">접수 일시</th>
+                  <th className="py-3 px-2 text-center">승인 일시</th>
+                  <th className="py-3 px-2 text-center">기간</th>
+                  <th className="py-3 pr-4 text-center">명세서 확인</th>
                 </tr>
               </thead>
-              <tbody className="bg-white divide-y divide-slate-100 text-xs font-bold text-slate-700">
+              <tbody className="bg-white divide-y divide-slate-100">
                 {paginatedHistory.map((survey: any, index: number) => {
-                  const reverseNo = filteredHistory.length - ((historyPage - 1) * itemsPerPage + index);
+                  const reverseNo = filteredHistory.length - ((historyPage - 1) * historyItemsPerPage + index);
                   return (
-                    <tr key={survey.id} className="hover:bg-slate-50/50 transition-colors h-16">
-                      <td className="text-center text-slate-400 font-black pl-8">{reverseNo}</td>
-                      <td className="text-center font-mono text-slate-500 px-3">{survey.postNumber}</td>
-                      <td className="text-center font-mono text-slate-500 px-3">{survey.postDate}</td>
-                      <td className="px-4">
-                        <div className="font-black text-slate-800 text-[12px] whitespace-pre-wrap">{survey.title}</div>
+                    <tr key={survey.id} className="hover:bg-slate-50/50 transition-colors h-14">
+                      <td className="text-center text-slate-400 pl-4">{reverseNo}</td>
+                      <td className="text-center text-slate-500">{survey.postNumber}</td>
+                      <td className="text-center text-slate-500 whitespace-nowrap">{survey.postDate}</td>
+                      <td className="px-3">
+                        <div className="text-slate-800 truncate" title={survey.title}>{survey.title}</div>
                       </td>
-                      
-                      {/* 💡 상시/기간 뱃지로 통일 */}
                       <td className="text-center">
-                        <span className={`px-2 py-0.5 rounded text-[9px] font-black ${survey.deliveryType === 'ALWAYS' ? 'bg-pink-100 text-pink-700 border border-pink-200' : 'bg-amber-100 text-amber-700 border border-amber-200'}`}>
+                        <span className="inline-block px-2 py-0.5 border border-slate-200 rounded text-[11px] text-slate-500">
                           {survey.deliveryType === 'ALWAYS' ? '상시' : '기간'}
                         </span>
                       </td>
-                      
-                      <td className="text-center text-slate-500 font-medium px-3">{survey.target}</td>
-                      <td className="text-center text-slate-700 font-bold px-4 whitespace-nowrap">{survey.submittedAt}</td>
-                      
-                      <td className="text-center px-3 py-2">
-                        <div className="mb-1">
-                          {survey.isApproved ? (
-                            <span className="bg-emerald-100 text-emerald-700 px-2 py-1 rounded text-[10px] font-black inline-block border border-emerald-200">출고 승인완료</span>
-                          ) : (
-                            <span className="bg-slate-100 text-slate-500 px-2 py-1 rounded text-[10px] font-black inline-block border border-slate-200">공고 마감됨</span>
-                          )}
-                        </div>
-                        {/* 💡 가이드 반영: General과 서체(font-mono)를 통일하되 보관함은 예외 없이 먹색(slate-500)으로 단정하게 고정 */}
-                        <div className="font-mono text-slate-500 leading-relaxed whitespace-nowrap mt-1">
-                          <div>{survey.startDate} ~</div>
-                          <div className="text-slate-500 font-medium">
-                            {survey.endDate} <span className="text-[8px]">({survey.endTime || '23:59'})</span>
-                          </div>
-                        </div>
+                      <td className="text-center text-slate-500 px-2 truncate">{survey.target}</td>
+                      <td className="text-center text-slate-700 px-2 whitespace-nowrap">{survey.submittedAt}</td>
+                      <td className="text-center text-slate-700 px-2 whitespace-nowrap">
+                        {survey.isApproved ? (survey.approvedAt || '-') : '-'}
                       </td>
-                      
-                      <td className="text-center pr-8">
-                        <button 
+                      <td className="text-center text-slate-600 whitespace-nowrap px-2">
+                        {survey.startDate} ~ {survey.endDate} ({survey.endTime || '23:59'})
+                      </td>
+                      <td className="text-center pr-4">
+                        <button
+                          type="button"
                           onClick={() => {
                             let builderQuestions = [];
                             try {
                               builderQuestions = typeof survey.questions === 'string' ? JSON.parse(survey.questions) : (survey.questions || []);
                             } catch (e) { console.error("문항 파싱 오류:", e); }
                             setViewSurveyHistory({ ...survey, questions: builderQuestions });
-                          }} 
-                          className="w-full py-1.5 bg-white border border-slate-200 rounded-lg font-black text-[10px] text-slate-600 hover:bg-slate-50 shadow-sm transition-all"
+                          }}
+                          className="w-full py-1.5 bg-white border border-slate-200 rounded-lg text-[11px] font-bold text-slate-600 hover:bg-slate-50 shadow-sm transition-all"
                         >
-                          🔍 명세 기록 열람
+                          명세 기록 열람
                         </button>
                       </td>
                     </tr>
                   );
                 })}
                 {filteredHistory.length === 0 && (
-                  <tr><td colSpan={9} className="py-24 text-center text-slate-400 font-bold bg-slate-50/30">보관 처리된 내역이 없습니다.</td></tr>
+                  <tr>
+                    <td colSpan={10} className="py-16 text-center text-slate-400 bg-slate-50/30">
+                      보관 처리된 내역이 없습니다.
+                    </td>
+                  </tr>
                 )}
               </tbody>
             </table>
           </div>
-          {totalHistoryPages > 1 && (
-            <div className="flex justify-center items-center gap-1.5 pt-6 pb-6 border-t border-slate-100 bg-white">
-              <button disabled={historyPage === 1} onClick={() => setHistoryPage(p => Math.max(p - 1, 1))} className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 hover:bg-slate-50">이전</button>
+          {filteredHistory.length > 0 && (
+            <div className="flex justify-center items-center gap-1.5 py-3 border-t border-slate-100 bg-white">
+              <button
+                disabled={historyPage === 1}
+                onClick={() => setHistoryPage((p) => Math.max(p - 1, 1))}
+                className="px-3 py-1.5 text-[11px] bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors"
+              >
+                이전
+              </button>
               {Array.from({ length: totalHistoryPages }).map((_, i) => (
-                <button key={i} onClick={() => setHistoryPage(i + 1)} className={`w-8 h-8 rounded-xl font-black text-xs transition-all ${historyPage === i + 1 ? 'bg-slate-800 text-white shadow-sm scale-105' : 'bg-white border border-slate-200 text-slate-500 hover:bg-slate-50'}`}>{i + 1}</button>
+                <button
+                  key={i}
+                  onClick={() => setHistoryPage(i + 1)}
+                  className={`w-8 h-8 rounded-xl font-bold text-[11px] transition-all ${historyPage === i + 1 ? 'bg-slate-800 text-white shadow-sm' : 'bg-white border border-slate-200 text-slate-500 hover:bg-slate-50'}`}
+                >
+                  {i + 1}
+                </button>
               ))}
-              <button disabled={historyPage === totalHistoryPages} onClick={() => setHistoryPage(p => Math.min(p + 1, totalHistoryPages))} className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 hover:bg-slate-50">다음</button>
+              <button
+                disabled={historyPage === totalHistoryPages}
+                onClick={() => setHistoryPage((p) => Math.min(p + 1, totalHistoryPages))}
+                className="px-3 py-1.5 text-[11px] bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors"
+              >
+                다음
+              </button>
             </div>
           )}
         </div>
       )}
+</div>
      
       {/* 🌟 수정 폼 풀스크린 모달 */}
       {activeFullScreenSurvey && (

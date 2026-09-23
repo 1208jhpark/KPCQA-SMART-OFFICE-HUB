@@ -13,6 +13,7 @@ type CompanyAddressRow = {
   label: string;
   zipCode: string;
   addressKo: string;
+  addressDetailKo?: string;
   isActive?: boolean;
 };
 
@@ -125,7 +126,7 @@ export default function ProductionBatchShippingModal({
       ...prev,
       shippingZipCode: target.zipCode,
       shippingAddressRoad: target.addressKo,
-      shippingAddressDetail: '',
+      shippingAddressDetail: String(target.addressDetailKo || '').trim(),
       companyAddressLabel: target.label,
     }));
   };
@@ -248,7 +249,7 @@ export default function ProductionBatchShippingModal({
                 .filter((a) => a.isActive !== false)
                 .map((a) => (
                   <option key={a.id} value={a.id}>
-                    🏢 {a.label} — {a.addressKo}
+                    🏢 {a.label} — {[a.addressKo, a.addressDetailKo].filter(Boolean).join(' ')}
                   </option>
                 ))}
             </select>

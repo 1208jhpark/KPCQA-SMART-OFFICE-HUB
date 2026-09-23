@@ -1000,12 +1000,12 @@ function DeptContent() {
                   </th>
                   <th className="h-12 px-2 text-center">NO</th>
                   <th className="h-12 px-2 text-center whitespace-nowrap">신청일</th>
-                  <th className="h-12 px-2">부서 / 신청자</th>
-                  <th className="h-12 px-2 text-indigo-600">물품명</th>
+                  <th className="h-12 px-2 text-left">부서 / 신청자</th>
+                  <th className="h-12 px-2 text-left text-indigo-600">물품명</th>
                   <th className="h-12 px-2 text-center text-indigo-600 whitespace-nowrap">신청수량</th>
-                  <th className="h-12 px-2">사용자 의견</th>
-                  <th className="h-12 px-2 border-l border-slate-200">관리자 답변</th>
-                  <th className="h-12 px-2 text-center whitespace-nowrap">부서 / 처리자</th>
+                  <th className="h-12 px-2 text-left">사용자 의견</th>
+                  <th className="h-12 px-2 text-left border-l border-slate-200">관리자 답변</th>
+                  <th className="h-12 px-2 text-left whitespace-nowrap">부서 / 처리자</th>
                   <th className="h-12 px-2 text-center whitespace-nowrap">처리일</th>
                   <th className="h-12 px-2 text-center">상태</th>
                 </tr>
@@ -1040,20 +1040,20 @@ function DeptContent() {
                         </td>
                         <td className="px-2 text-center font-mono text-slate-500 tabular-nums">{rowNo}</td>
                         <td className="px-2 text-center whitespace-nowrap tabular-nums text-slate-800">{createdDate}</td>
-                        <td className="px-2 truncate">
+                        <td className="px-2 text-left truncate">
                           <span className="text-[10px] text-slate-500 block truncate">{String(requestDeptLabel(req))}</span>
                           <span className="text-slate-800 truncate">{req.user_name || '-'}</span>
                         </td>
-                        <td className="px-2 text-indigo-700 truncate" title={itemName}>{itemName}</td>
+                        <td className="px-2 text-left text-indigo-700 truncate" title={itemName}>{itemName}</td>
                         <td className="px-2 text-center font-mono whitespace-nowrap tabular-nums text-indigo-600">
                           {req.qty}
                           {sUnit && <span className="text-[10px] font-sans ml-0.5 text-slate-500">{sUnit}</span>}
                         </td>
-                        <td className="px-2 text-slate-700 truncate" title={req.note}>{req.note ? `"${req.note}"` : '-'}</td>
-                        <td className="px-2 text-slate-700 truncate border-l border-slate-200" title={req.admin_opinion}>
+                        <td className="px-2 text-left text-slate-700 truncate" title={req.note}>{req.note ? `"${req.note}"` : '-'}</td>
+                        <td className="px-2 text-left text-slate-700 truncate border-l border-slate-200" title={req.admin_opinion}>
                           {req.admin_opinion ? `" ${req.admin_opinion} "` : '-'}
                         </td>
-                        <td className="px-2 text-center">
+                        <td className="px-2 text-left">
                           {!isPending ? (
                             <div className="truncate">
                               <span className="text-[10px] text-slate-500 block truncate">{req.admin_dept || '-'}</span>
@@ -1075,7 +1075,7 @@ function DeptContent() {
                                 e.stopPropagation();
                                 handleCancelRequest(req);
                               }}
-                              className="px-1.5 py-0.5 rounded text-[9px] font-black border border-slate-300 text-slate-500 bg-white hover:bg-red-50 hover:text-red-600 hover:border-red-200 transition-colors disabled:opacity-40 whitespace-nowrap"
+                              className="inline-block border px-1.5 py-0.5 rounded text-[10px] font-bold whitespace-nowrap border-slate-300 text-slate-500 bg-white hover:bg-red-50 hover:text-red-600 hover:border-red-200 transition-colors disabled:opacity-40"
                             >
                               {cancellingId === req.id ? '처리중…' : '신청취소'}
                             </button>

@@ -14,6 +14,7 @@ import {
 } from '@/utils/itInfoCorrection';
 import { rowMatchesOrgUnit } from '@/lib/org-unit-match';
 import { userMatchesAuditTarget, assetInAuditTarget as assetMatchesAuditTarget } from '@/utils/itAuditTarget';
+import DeptProgramAccountsPanel from '@/components/asset/it/DeptProgramAccountsPanel';
 
 const MENU_PATH = '/asset/it/dept';
 
@@ -98,6 +99,8 @@ export default function DeptModule() {
   
   const [showReplaceableOnly, setShowReplaceableOnly] = useState(false);
   const [ddayFilter, setDdayFilter] = useState<'all' | 'd-30' | 'd-day' | 'd-plus'>('all');
+  /** 공용자산만 보기 (담당자 user === '공용') */
+  const [sharedOnlyFilter, setSharedOnlyFilter] = useState(false);
   const [showStatusFilter, setShowStatusFilter] = useState<'all' | 'done' | 'pending' | 'nudge' | 'info_correction'>('all');
   
   const [currentPage, setCurrentPage] = useState(1);
@@ -108,7 +111,7 @@ export default function DeptModule() {
   useEffect(() => {
     setCurrentPage(1);
     setSelectedIds(new Set());
-  }, [searchQuery, colFilters, showReplaceableOnly, showStatusFilter, ddayFilter, focusedAuditId]);
+  }, [searchQuery, colFilters, showReplaceableOnly, showStatusFilter, ddayFilter, sharedOnlyFilter, focusedAuditId]);
 
   const fetchAllData = async () => {
     setLoading(true);
@@ -304,13 +307,15 @@ export default function DeptModule() {
   const getAssetLogic = (a: any) => {
     // 교체예정·D-day: API(마스터 규칙)가 부착한 값만 사용
     const repDate = a.replace_due_date || '-';
-    const dday =
+    const deferred = a.replace_deferred === true;
+    const rawDday =
       typeof a.replace_dday === 'number'
         ? a.replace_dday
         : a.replace_dday === 0
           ? 0
           : null;
-    const isTargetCount = dday !== null && dday <= 30;
+    const dday = deferred ? null : rawDday;
+    const isTargetCount = !deferred && dday !== null && dday <= 30;
     
     const lastAudit = a.last_audit_date || '';
     let auditStatusLabel = '미확인';
@@ -373,6 +378,7 @@ export default function DeptModule() {
      
     return {
       repDate, dday, isTargetCount, isVerified, isNudged, hasInfoCorrection,
+      replaceDeferred: deferred,
       auditStatusLabel, auditStatusDate, auditStatusText, auditStatusColor,
     };
   };
@@ -410,6 +416,7 @@ export default function DeptModule() {
       d30Count,
       dDayCount,
       dPlusCount,
+      sharedCount: assets.filter((a) => String(a.user || '').trim() === '공용').length,
       unverified: assets.length - verified,
       auditDoneCount,
       auditPendingCount,
@@ -492,15 +499,16 @@ export default function DeptModule() {
           }) ||
           a.dept === colFilters.dept;
         const matchUser = !colFilters.user || a.user === colFilters.user;
+        const matchShared =
+          !sharedOnlyFilter || String(a.user || '').trim() === '공용';
 
         const matchReplace = !showReplaceableOnly || logic.isTargetCount;
         let matchDday = true;
-        if (ddayFilter !== 'all' && logic.dday !== null) {
-          if (ddayFilter === 'd-30') matchDday = logic.dday > 0 && logic.dday <= 30;
+        if (ddayFilter !== 'all') {
+          if (logic.replaceDeferred || logic.dday === null) matchDday = false;
+          else if (ddayFilter === 'd-30') matchDday = logic.dday > 0 && logic.dday <= 30;
           else if (ddayFilter === 'd-day') matchDday = logic.dday === 0;
           else if (ddayFilter === 'd-plus') matchDday = logic.dday < 0;
-        } else if (ddayFilter !== 'all') {
-          matchDday = false;
         }
         let matchStatus = true;
         if (showStatusFilter === 'done') matchStatus = logic.isVerified;
@@ -511,7 +519,7 @@ export default function DeptModule() {
         } else if (showStatusFilter === 'info_correction') {
           matchStatus = logic.hasInfoCorrection;
         }
-        return matchSearch && matchCategory && matchItType && matchRental && matchDept && matchUser && matchReplace && matchDday && matchStatus;
+        return matchSearch && matchCategory && matchItType && matchRental && matchDept && matchUser && matchShared && matchReplace && matchDday && matchStatus;
       })
       // 최신 등록이 위 · NO는 큰 수가 위
       .sort((a, b) => {
@@ -520,7 +528,7 @@ export default function DeptModule() {
         if (tb !== ta) return tb - ta;
         return String(b.id || '').localeCompare(String(a.id || ''));
       });
-  }, [assets, searchQuery, colFilters, showReplaceableOnly, ddayFilter, showStatusFilter, activeAudit, myRunningAudits, focusedAuditId]);
+  }, [assets, searchQuery, colFilters, showReplaceableOnly, ddayFilter, sharedOnlyFilter, showStatusFilter, activeAudit, myRunningAudits, focusedAuditId, units]);
   
   const paginatedAssets = filteredAssets.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
   const totalPages = Math.max(1, Math.ceil(filteredAssets.length / itemsPerPage));
@@ -556,6 +564,7 @@ export default function DeptModule() {
         '입고일': a.in_date || '-',
         '교체주기(M)': a.cycle,
         '교체예정일': logic.repDate,
+        '사용 연장(유예)': a.replace_deferred ? 'Y' : '',
         '최근실사일': a.last_audit_date || '-',
         '기타(메모)': a.memo,
       };
@@ -569,17 +578,13 @@ export default function DeptModule() {
     [currentUser, interfaceConfig]
   );
 
+  /** 공유 메모판: Access(열람) 가능 조직이면 수정 가능 — Edit 불필요 */
   const canEditMemo =
-    editState.isEditor &&
-    !!memoUnitId &&
-    editableUnitIds.includes(String(memoUnitId));
+    !!memoUnitId && editableUnitIds.includes(String(memoUnitId));
 
   const startMemoEdit = () => {
-    if (!editState.isEditor) {
-      return alert('공유 메모 수정 권한이 없습니다.\nadmin/interface에서 해당 메뉴 Edit 권한을 확인하세요.');
-    }
     if (!canEditMemo) {
-      return alert('선택한 조직은 Edit Scope 밖이라 공유 메모를 수정할 수 없습니다.');
+      return alert('선택한 조직의 공유 메모판을 수정할 수 없습니다.');
     }
     setMemoDraft(currentMemo);
     setMemoEditing(true);
@@ -591,8 +596,7 @@ export default function DeptModule() {
   };
 
   const saveMemo = async () => {
-    if (!editState.isEditor) return alert('공유 메모 수정 권한이 없습니다. (Edit 필요)');
-    if (!canEditMemo) return alert('선택한 조직은 Edit Scope 밖이라 공유 메모를 수정할 수 없습니다.');
+    if (!canEditMemo) return alert('선택한 조직의 공유 메모판을 수정할 수 없습니다.');
     if (!memoUnitId && !memoDeptName) return alert('대상 조직을 확인할 수 없습니다.');
     setMemoSaving(true);
     try {
@@ -704,7 +708,25 @@ export default function DeptModule() {
               })
             )}
           </div>
-          <div className="pt-3 mt-auto border-t border-slate-100 grid grid-cols-3 gap-1.5">
+          <div className="pt-3 mt-auto border-t border-slate-100 space-y-1.5">
+            <button
+              type="button"
+              title={
+                sharedOnlyFilter
+                  ? '클릭하면 공용자산 필터를 해제합니다'
+                  : '클릭하면 담당자가 「공용」인 자산만 표시합니다'
+              }
+              onClick={() => setSharedOnlyFilter((p) => !p)}
+              className={`w-full py-1.5 px-2.5 rounded-lg border flex items-center justify-between transition-all ${
+                sharedOnlyFilter
+                  ? 'bg-violet-600 border-violet-500 text-white shadow-sm'
+                  : 'bg-violet-50/80 border-violet-200 text-violet-800 hover:bg-violet-100'
+              }`}
+            >
+              <span className="text-[9px] font-black tracking-tight">공용자산</span>
+              <span className="text-sm font-black tabular-nums leading-none">{stats.sharedCount}</span>
+            </button>
+            <div className="grid grid-cols-3 gap-1.5">
             <button
               type="button"
               onClick={() => {
@@ -750,6 +772,7 @@ export default function DeptModule() {
               <span className="text-[8px] font-black mb-0.5 leading-tight text-center">교체(D+)</span>
               <span className="text-sm font-black tabular-nums">{stats.dPlusCount}</span>
             </button>
+            </div>
           </div>
         </div>
 
@@ -911,14 +934,14 @@ export default function DeptModule() {
                 type="button"
                 onClick={startMemoEdit}
                 disabled={!canEditMemo}
-                title={canEditMemo ? '공유 메모 수정' : '편집 권한 필요'}
+                title={canEditMemo ? '공유 메모 수정' : '열람 권한 범위 밖'}
                 className={`text-[9px] font-bold shrink-0 transition-colors ${
                   canEditMemo
                     ? 'text-slate-400 hover:text-indigo-600'
                     : 'text-slate-300 bg-slate-100 border border-slate-200 px-2 py-0.5 rounded-md cursor-not-allowed opacity-70'
                 }`}
               >
-                수정(Edit)
+                수정
               </button>
             ) : (
               <div className="flex items-center gap-1.5 shrink-0">
@@ -976,6 +999,11 @@ export default function DeptModule() {
             {ddayFilter !== 'all' && (
               <span className="text-[10px] font-black text-blue-600 bg-blue-50 border border-blue-200 px-2 py-0.5 rounded-md">
                 {ddayFilter === 'd-30' ? '교체(D-30)' : ddayFilter === 'd-day' ? '교체(D-Day)' : '교체(D+)'}만
+              </span>
+            )}
+            {sharedOnlyFilter && (
+              <span className="text-[10px] font-black text-violet-700 bg-violet-50 border border-violet-200 px-2 py-0.5 rounded-md">
+                공용자산만
               </span>
             )}
             {showStatusFilter === 'done' && (
@@ -1091,21 +1119,21 @@ export default function DeptModule() {
             <colgroup>
               <col style={{ width: '2.5%' }} />
               <col style={{ width: '3%' }} />
-              <col style={{ width: '6.5%' }} />
-              <col style={{ width: '5%' }} />
+              <col style={{ width: '5.5%' }} />
               <col style={{ width: '5.5%' }} />
               <col style={{ width: '4.5%' }} />
-              <col style={{ width: '9%' }} />
+              <col style={{ width: '8%' }} />
               <col style={{ width: '4.5%' }} />
               <col style={{ width: '8%' }} />
               <col style={{ width: '8%' }} />
               <col style={{ width: '6.5%' }} />
               <col style={{ width: '5%' }} />
-              <col style={{ width: '9%' }} />
+              <col style={{ width: '8%' }} />
               <col style={{ width: '5.5%' }} />
               <col style={{ width: '4%' }} />
-              <col style={{ width: '7%' }} />
-              <col style={{ width: '5.5%' }} />
+              <col style={{ width: '8%' }} />
+              <col style={{ width: '5%' }} />
+              <col style={{ width: '12%' }} />
             </colgroup>
             <thead className="bg-slate-100 text-slate-700 text-[10px] font-black uppercase tracking-widest border-b border-slate-200">
               <tr>
@@ -1122,7 +1150,6 @@ export default function DeptModule() {
                   />
                 </th>
                 <th className="h-12 px-1 text-center">NO</th>
-                <th className="h-12 px-1 text-center whitespace-nowrap">부서</th>
                 <th className="h-12 px-1 text-center whitespace-nowrap">사용자</th>
                 <th className="h-12 px-1 text-center whitespace-nowrap">이메일</th>
                 <th className="h-12 px-1 text-center whitespace-nowrap">범주</th>
@@ -1136,7 +1163,13 @@ export default function DeptModule() {
                 <th className="h-12 px-1 text-center text-slate-900 whitespace-nowrap">입고일</th>
                 <th className="h-12 px-1 text-center text-slate-900 whitespace-nowrap">교체주기(M)</th>
                 <th className="h-12 px-1 text-center whitespace-nowrap">교체예정일</th>
-                <th className="h-12 px-1 text-center border-l border-slate-200 whitespace-nowrap">실사/정보수정</th>
+                <th
+                  className="h-12 px-1 text-center whitespace-nowrap"
+                  title="마스터 대시보드에서 설정한 사용 연장(유예) 상태"
+                >
+                  사용 연장(유예)
+                </th>
+                <th className="h-12 px-1 text-center border-l border-slate-200 whitespace-nowrap min-w-[7rem]">실사/정보수정</th>
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-slate-100 text-[11px] font-bold text-slate-700">
@@ -1155,9 +1188,6 @@ export default function DeptModule() {
                       </td>
                       <td className="px-1 text-center font-mono text-slate-500 tabular-nums">
                         {rowNo}
-                      </td>
-                      <td className="px-1 text-center truncate" title={a.dept || ''}>
-                        {a.dept || '-'}
                       </td>
                       <td className="px-1 text-center truncate" title={a.user || ''}>
                         {a.user || '-'}
@@ -1224,10 +1254,22 @@ export default function DeptModule() {
                           </span>
                         )}
                       </td>
-                      <td className="px-1 text-center border-l border-slate-200">
+                      <td
+                        className="px-1 text-center whitespace-nowrap"
+                        title="마스터 대시보드에서 설정한 사용 연장(유예) 상태"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={!!a.replace_deferred}
+                          disabled
+                          readOnly
+                          className="w-3.5 h-3.5 accent-slate-700 opacity-70 cursor-not-allowed"
+                        />
+                      </td>
+                      <td className="px-1.5 text-center border-l border-slate-200 min-w-[7rem]">
                         <div
                           title={logic.auditStatusText}
-                          className={`w-full h-[2.25rem] px-0.5 rounded text-[10px] font-black tracking-tight border leading-tight flex flex-col items-center justify-center cursor-default ${logic.auditStatusColor}`}
+                          className={`w-full min-w-[6.5rem] h-[2.25rem] px-1 rounded text-[10px] font-black tracking-tight border leading-tight flex flex-col items-center justify-center cursor-default ${logic.auditStatusColor}`}
                         >
                           <span className="truncate max-w-full">{logic.auditStatusLabel}</span>
                           {logic.auditStatusDate && (
@@ -1253,6 +1295,12 @@ export default function DeptModule() {
           </div>
         )}
       </div>
+
+      <DeptProgramAccountsPanel
+        isEditor={!!editState.isEditor}
+        defaultUnitId={memoUnitId || currentUser?.unit_id || ''}
+        defaultDeptName={memoDeptName || currentUser?.dept || ''}
+      />
 
     </div>
   );

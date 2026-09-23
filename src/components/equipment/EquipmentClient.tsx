@@ -5,20 +5,22 @@ import { useRouter, useSearchParams } from 'next/navigation'; // 🚀 중복 임
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
 import * as XLSX from 'xlsx';
-import { getKSTDateString, getKSTDaysUntil, getKSTNowYearMonth, parseKSTDateOnly } from '@/utils/dateUtils';
+import { getKSTDateString, getKSTDaysUntil, getKSTNowYearMonth, getKSTYearMonthParts } from '@/utils/dateUtils';
 import { buildEquipmentImagePayload } from '@/utils/equipmentImage';
 import LoadingState from '@/components/common/LoadingState';
 import {
   addMonthsToCalibYmd,
+  isCalibApplicable,
+  isReplaceApplicable,
   pickLatestCalibHistory,
   resolveCalibSchedule,
   toCalibYmd,
 } from '@/utils/equipmentCalib';
 import EquipmentQrImage from '@/components/equipment/EquipmentQrImage';
-import { generateEquipmentQrDataUrls } from '@/utils/equipmentQr';
 import { getChildUnitNames, getChildUnitIds, resolveTopOrgName, canEditTopOrgMarketingAsset } from '@/utils/orgUnits';
 import { rowMatchesOrgUnit } from '@/lib/org-unit-match';
 import { parseEquipmentArchiveMemo, unwrapEquipmentEtcMemo } from '@/utils/equipmentMemo';
+import { isActiveEquipmentRow, isArchivedEquipmentRow } from '@/utils/equipmentActive';
 
 /** 검교정 결과상태 — 레거시 합격/불합격 → 적합/부적합 */
 const CALIB_RESULT_LABEL: Record<string, string> = {
@@ -52,6 +54,7 @@ export default function EquipmentClient({
   const [archives, setArchives] = useState<any[]>([]);
   const [units, setUnits] = useState<any[]>([]); 
   const [systemConfig, setSystemConfig] = useState<any>(null);
+  const [qtyUnitOptions, setQtyUnitOptions] = useState<{ label: string; value: string }[]>([]);
   const [loading, setLoading] = useState(true);
   
   const [currentPage, setCurrentPage] = useState(1);
@@ -87,9 +90,6 @@ export default function EquipmentClient({
   const [selectedMainIds, setSelectedMainIds] = useState<Set<string>>(new Set());
   const [selectedArchiveIds, setSelectedArchiveIds] = useState<Set<string>>(new Set());
   const [inventoryDeptFilter, setInventoryDeptFilter] = useState('ALL');
-  const [bulkPrintAssets, setBulkPrintAssets] = useState<any[]>([]);
-  const [bulkQrMap, setBulkQrMap] = useState<Record<string, string>>({});
-  const [bulkQrReady, setBulkQrReady] = useState(false);
   
   const [showAddHistoryModal, setShowAddHistoryModal] = useState(false);
   const [historyFormData, setHistoryFormData] = useState<any>({
@@ -195,19 +195,40 @@ export default function EquipmentClient({
   const fetchData = async () => {
     setLoading(true);
     try {
-      const [eqRes, unitRes, configRes] = await Promise.all([
+      const [eqRes, unitRes, configRes, masterRes] = await Promise.all([
         fetch(`/api/equipment?categoryCode=${categoryId}`),
         fetch('/api/admin/units?active=true'),
         fetch('/api/admin/config', { cache: 'no-store' }),
+        fetch('/api/admin/master-data', { cache: 'no-store' }),
       ]);
   
       if (eqRes.ok) {
         const data = await eqRes.json();
-        setEquipments(data.filter((e: any) => e.status === '정상').sort((a:any, b:any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()));
-        setArchives(data.filter((e: any) => e.status !== '정상').sort((a:any, b:any) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()));
+        setEquipments(data.filter((e: any) => isActiveEquipmentRow(e)).sort((a:any, b:any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()));
+        setArchives(data.filter((e: any) => isArchivedEquipmentRow(e)).sort((a:any, b:any) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()));
       }
       if (unitRes.ok) setUnits(await unitRes.json());
-      if (configRes.ok) setSystemConfig(await configRes.json());
+      let configData: any = null;
+      if (configRes.ok) {
+        configData = await configRes.json();
+        setSystemConfig(configData);
+      }
+      if (masterRes.ok) {
+        const masterData = await masterRes.json();
+        const groupId = configData?.unit_category_group;
+        if (groupId && Array.isArray(masterData)) {
+          const group = masterData.find((g: any) => g.id === groupId);
+          const codes = (group?.codes || []).filter(
+            (c: any) => c.is_active !== false && !c.is_archived && c.is_visible !== false
+          );
+          setQtyUnitOptions(
+            codes.map((c: any) => ({
+              label: String(c.label || ''),
+              value: String(c.value || ''),
+            }))
+          );
+        }
+      }
     } catch (error) {
       console.error("Data Fetch Error:", error);
     } finally {
@@ -220,8 +241,8 @@ export default function EquipmentClient({
       const res = await fetch(`/api/equipment?categoryCode=${categoryId}`);
       if (res.ok) {
         const data = await res.json();
-        setEquipments(data.filter((e: any) => e.status === '정상').sort((a:any, b:any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()));
-        setArchives(data.filter((e: any) => e.status !== '정상').sort((a:any, b:any) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()));
+        setEquipments(data.filter((e: any) => isActiveEquipmentRow(e)).sort((a:any, b:any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()));
+        setArchives(data.filter((e: any) => isArchivedEquipmentRow(e)).sort((a:any, b:any) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()));
         if (selectedEq) {
           const fullRes = await fetch(`/api/equipment?id=${selectedEq.id}&full=1`);
           if (fullRes.ok) {
@@ -235,6 +256,37 @@ export default function EquipmentClient({
   };
   
   const displayAssetNo = (no: string) => no?.split('_ARC_')[0] || '-';
+
+  const resolveQtyUnitLabel = (unitValue?: string | null) => {
+    const value = String(unitValue || '').trim() || 'VAL_1';
+    const hit = qtyUnitOptions.find((o) => o.value === value);
+    if (hit?.label) return hit.label;
+    // 레거시 EA → 마스터 VAL_* (라벨에 EA 포함) 폴백
+    if (value === 'EA') {
+      const eaOpt = qtyUnitOptions.find(
+        (o) => o.value === 'VAL_1' || /EA/i.test(o.label)
+      );
+      if (eaOpt?.label) return eaOpt.label;
+      return 'EA';
+    }
+    return value;
+  };
+
+  const shortQtyUnitLabel = (unitValue?: string | null) => {
+    const full = resolveQtyUnitLabel(unitValue);
+    const short = String(full || '')
+      .replace(/\([^)]*\)/g, '')
+      .trim();
+    return short || full || 'EA';
+  };
+
+  const defaultQtyUnitValue = () => {
+    if (qtyUnitOptions.length === 0) return 'VAL_1';
+    const ea = qtyUnitOptions.find(
+      (o) => o.value === 'VAL_1' || o.value === 'EA' || /EA/i.test(o.label)
+    );
+    return ea?.value || qtyUnitOptions[0].value;
+  };
   
   const renderDDay = (targetDate: string | null) => {
     if (!targetDate) return null;
@@ -277,37 +329,6 @@ export default function EquipmentClient({
     setSelectedMainIds(next);
   };
   
-  const openBulkQRPrint = () => {
-    const targetAssets = equipments.filter(a => selectedMainIds.has(a.id));
-    if (targetAssets.length === 0) return alert('출력할 자산을 좌측 체크박스로 선택해주세요.');
-    setBulkPrintAssets(targetAssets);
-  };
-
-  // 🖨️ 인쇄 전 QR 이미지를 전부 미리 생성 (생성 완료 전 인쇄 시 빈칸 방지)
-  useEffect(() => {
-    if (bulkPrintAssets.length === 0) {
-      setBulkQrMap({});
-      setBulkQrReady(false);
-      return;
-    }
-    let cancelled = false;
-    setBulkQrReady(false);
-    generateEquipmentQrDataUrls(bulkPrintAssets.map((a) => a.id), 150)
-      .then((map) => {
-        if (!cancelled) {
-          setBulkQrMap(map);
-          setBulkQrReady(true);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) setBulkQrReady(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [bulkPrintAssets]);
-  
-  
   const handleOpenDetail = async (eq: any) => {
     const withMemo = { ...eq, etc_memo: unwrapEquipmentEtcMemo(eq?.etc_memo) };
     setSelectedEq(eq);
@@ -343,7 +364,7 @@ export default function EquipmentClient({
         : filteredEquipments;
     if (targetAssets.length === 0) return alert('다운로드할 데이터가 없습니다.');
     const exportData = targetAssets.map((a, idx) => {
-      const { nCalib } = resolveCalibSchedule(a);
+      const { nCalib, applicable } = resolveCalibSchedule(a);
       return {
         'NO': targetAssets.length - idx,
         '자산번호': displayAssetNo(a.asset_no), 
@@ -351,10 +372,11 @@ export default function EquipmentClient({
         '제조사': a.brand || '-', 
         '모델번호': a.model_name || '-',
         '시리얼번호': a.serial_no || '-',
-        '보유개수': a.qty, 
+        '보유개수': a.qty,
+        '단위': resolveQtyUnitLabel(a.qty_unit),
         '제품사양': a.spec_summary || '-', 
         '구매일': a.purchase_date ? a.purchase_date.split('T')[0] : '-', // 🚀 구입일 항목 추가
-        '검교정예정일': nCalib ? nCalib : '-', 
+        '검교정예정일': !applicable ? '대상 아님' : nCalib ? nCalib : '-', 
         '장비관리소속': a.department || '-'
       };
     });
@@ -379,7 +401,7 @@ export default function EquipmentClient({
     const hist = pickLatestCalibHistory(eq?.histories);
     const latestReq = toCalibYmd(hist?.calib_request_date as string | Date | null | undefined) || '-';
     const latestDone = toCalibYmd(hist?.calib_date as string | Date | null | undefined) || '-';
-    const { nCalib } = resolveCalibSchedule(eq);
+    const { nCalib, applicable: calibApplicableExport } = resolveCalibSchedule(eq);
 
     const ymd = (raw: unknown) => {
       if (!raw) return '-';
@@ -407,10 +429,10 @@ export default function EquipmentClient({
           })
           .sort((a: any, b: any) => sortByDateDesc(a, b, 'date'))[0]?.date
       ) || ymd(eq.last_replace_date);
-    const replaceNext = addMonthsToDateStr(
-      purchaseLinked !== '-' ? purchaseLinked : null,
-      eq.replace_cycle_mo
-    );
+    const replaceApplicableExport = isReplaceApplicable(eq);
+    const replaceNext = replaceApplicableExport
+      ? addMonthsToDateStr(purchaseLinked !== '-' ? purchaseLinked : null, eq.replace_cycle_mo)
+      : null;
 
     /** 고정 헤더 시트 — 데이터 없어도 헤더만 유지 (붙여쓰기용 포맷 일정) */
     const sheetFromRows = (headers: string[], rows: Record<string, unknown>[]) => {
@@ -419,25 +441,25 @@ export default function EquipmentClient({
     };
 
     const summaryRow = {
-      '품목명(장비 명칭)': eq.name || '-',
       '자산번호': displayAssetNo(eq.asset_no),
+      '품목명(장비 명칭)': eq.name || '-',
       '장비 종류 범주': categoryLabel,
       '장비관리소속': eq.department || '-',
       '제조사': eq.brand || '-',
       '모델번호': eq.model_name || '-',
       '시리얼번호': eq.serial_no || '-',
       ...(eq.status && eq.status !== '정상'
-        ? { '폐기/반납개수': eq.qty ?? '-' }
-        : { '보유개수': eq.qty ?? '-' }),
+        ? { '폐기/반납개수': eq.qty ?? '-', '단위': resolveQtyUnitLabel(eq.qty_unit) }
+        : { '보유개수': eq.qty ?? '-', '단위': resolveQtyUnitLabel(eq.qty_unit) }),
       '제품사양 요약': eq.spec_summary || '-',
       '구매일': purchaseLinked,
       '최근 소모품교체/수리일': replaceLinked,
-      '교체주기(개월)': eq.replace_cycle_mo ?? '-',
-      '자동산정 교체예정일': replaceNext || '-',
+      '교체주기(개월)': !replaceApplicableExport ? '대상 아님' : eq.replace_cycle_mo ?? '-',
+      '자동산정 교체예정일': !replaceApplicableExport ? '대상 아님' : replaceNext || '-',
       '최근 검교정요청일': latestReq,
       '최근 검교정확정일': latestDone,
-      '검교정주기(개월)': eq.calib_cycle_mo ?? '-',
-      '자동산정 검교정예정일': nCalib || '-',
+      '검교정주기(개월)': !calibApplicableExport ? '대상 아님' : eq.calib_cycle_mo ?? '-',
+      '자동산정 검교정예정일': !calibApplicableExport ? '대상 아님' : nCalib || '-',
     };
     const summaryHeaders = Object.keys(summaryRow);
 
@@ -524,7 +546,7 @@ export default function EquipmentClient({
         'NO': targetArchives.length - idx,
         '처리일자': arc.last_replace_date ? arc.last_replace_date.split('T')[0] : arc.updatedAt?.split('T')[0],
         '자산번호': displayAssetNo(arc.asset_no),
-        '품목명': arc.name, '폐기/반납개수': arc.qty, '사유': reasonText, '관리소속': arc.department || '-', '상태': arc.status
+        '품목명': arc.name, '폐기/반납개수': arc.qty, '단위': resolveQtyUnitLabel(arc.qty_unit), '사유': reasonText, '관리소속': arc.department || '-', '상태': arc.status
       };
     });
     const ws = XLSX.utils.json_to_sheet(exportData);
@@ -544,13 +566,16 @@ export default function EquipmentClient({
       model_name: '',
       serial_no: '',
       qty: 1,
+      qty_unit: defaultQtyUnitValue(),
       spec_summary: '',
       department: currentUser?.unit?.unit_name || '',
       unit_id: currentUser?.unit?.id || currentUser?.unit_id || null,
       purchase_date: today,
       replace_cycle_mo: 0,
+      replace_applicable: true,
       last_replace_date: today,
       calib_cycle_mo: 12,
+      calib_applicable: true,
       calib_memo: '',
       thumbnail_url: '',
       histories: [],
@@ -701,7 +726,7 @@ export default function EquipmentClient({
     if (!archiveFormData.reason.trim()) return alert('사유를 입력해 주세요.');
     if (archiveFormData.qty <= 0 || archiveFormData.qty > selectedEq.qty) return alert('수량이 올바르지 않습니다.');
     try {
-      const today = parseKSTDateOnly(getKSTDateString()).toISOString();
+      const today = getKSTDateString();
       const res = await fetch('/api/equipment', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -1095,24 +1120,33 @@ export default function EquipmentClient({
     categoryId,
   ]);
 
-  /** 신규/수정 시 장비관리소속 — 편집 가능한 조직만 */
+  /** 신규/수정 시 장비관리소속 — 편집 가능한 조직만 (admin/units sort_order 순) */
   const assignableUnits = useMemo(() => {
     const all = Array.isArray(units) ? units : [];
+    const orderIndex = new Map(all.map((u: any, idx: number) => [String(u.id), idx]));
     const allowed = all.filter((u: any) => canAssignDepartment(u?.unit_name, u?.id));
     const currentId = String(editFormData?.unit_id || selectedEq?.unit_id || '').trim();
     const currentName = String(editFormData?.department || selectedEq?.department || '').trim();
     if (currentId && !allowed.some((u: any) => u.id === currentId)) {
       const orphan = all.find((u: any) => u.id === currentId);
       if (orphan) allowed.push(orphan);
-      else allowed.push({ id: currentId, unit_name: currentName || currentId });
+      else allowed.push({ id: currentId, unit_name: currentName || currentId, sort_order: 999999 });
     } else if (!currentId && currentName && !allowed.some((u: any) => u.unit_name === currentName)) {
       const orphan = all.find((u: any) => u.unit_name === currentName);
       if (orphan) allowed.push(orphan);
-      else allowed.push({ id: `legacy-${currentName}`, unit_name: currentName });
+      else allowed.push({ id: `legacy-${currentName}`, unit_name: currentName, sort_order: 999999 });
     }
-    return [...allowed].sort((a: any, b: any) =>
-      String(a.unit_name || '').localeCompare(String(b.unit_name || ''), 'ko-KR')
-    );
+    return [...allowed].sort((a: any, b: any) => {
+      const sa = Number(a.sort_order);
+      const sb = Number(b.sort_order);
+      const aOrder = Number.isFinite(sa) ? sa : 999999;
+      const bOrder = Number.isFinite(sb) ? sb : 999999;
+      if (aOrder !== bOrder) return aOrder - bOrder;
+      const ia = orderIndex.has(String(a.id)) ? (orderIndex.get(String(a.id)) as number) : 999999;
+      const ib = orderIndex.has(String(b.id)) ? (orderIndex.get(String(b.id)) as number) : 999999;
+      if (ia !== ib) return ia - ib;
+      return String(a.unit_name || '').localeCompare(String(b.unit_name || ''), 'ko-KR');
+    });
   // eslint-disable-next-line react-hooks/exhaustive-deps -- canAssignDepartment closes over permission/units/user
   }, [units, permission, currentUser, systemConfig, editFormData?.department, editFormData?.unit_id, selectedEq?.department, selectedEq?.unit_id]);
 
@@ -1130,6 +1164,7 @@ export default function EquipmentClient({
         units,
         unitId: e.unit_id,
         legacyNames: [e.department],
+        includeDescendants: false,
       })
     );
   }, [equipments, inventoryDeptFilter, units]);
@@ -1143,7 +1178,12 @@ export default function EquipmentClient({
   const paginatedEquipments = filteredEquipments.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
   
   const availableArchiveYears = useMemo(() => {
-    const years = archives.map(h => (h.last_replace_date || h.updatedAt || '').substring(0, 4)).filter(Boolean);
+    const years = archives
+      .map((h) => {
+        const parts = getKSTYearMonthParts(h.last_replace_date || h.archived_at || h.updatedAt);
+        return parts?.year || '';
+      })
+      .filter(Boolean);
     const unique = Array.from(new Set(years));
     const curYear = String(getKSTNowYearMonth().year);
     if (!unique.includes(curYear)) unique.push(curYear);
@@ -1171,8 +1211,8 @@ export default function EquipmentClient({
   const filteredArchives = useMemo(() => {
     return archives.filter((h) => {
       if (archiveYear !== 'ALL') {
-        const d = h.last_replace_date ? h.last_replace_date : h.updatedAt;
-        if (!d?.startsWith(archiveYear)) return false;
+        const parts = getKSTYearMonthParts(h.last_replace_date || h.archived_at || h.updatedAt);
+        if (parts?.year !== archiveYear) return false;
       }
       if (archiveDeptFilter !== 'ALL') {
         if (archiveDeptFilter.startsWith('legacy:')) {
@@ -1184,6 +1224,7 @@ export default function EquipmentClient({
             units,
             unitId: h.unit_id,
             legacyNames: [h.department],
+            includeDescendants: false,
           })
         ) {
           return false;
@@ -1233,7 +1274,11 @@ export default function EquipmentClient({
     toCalibYmd(currentEq?.last_replace_date as string | Date | null | undefined);
 
   // 구매일(이력 연동 우선) 기준으로 교체예정일 산정
-  const nextReplaceDate = addMonthsToDateStr(linkedPurchaseDate, currentEq?.replace_cycle_mo);
+  const replaceApplicable = isReplaceApplicable(currentEq);
+  const nextReplaceDate = replaceApplicable
+    ? addMonthsToDateStr(linkedPurchaseDate, currentEq?.replace_cycle_mo)
+    : null;
+  const calibApplicable = isCalibApplicable(currentEq);
   
   const renderFileSection = (title: string, field: string) => {
     const fileObj = parseFileData(currentEq?.[field]);
@@ -1363,15 +1408,6 @@ export default function EquipmentClient({
               </div>
               <button
                 type="button"
-                onClick={openBulkQRPrint}
-                className="px-3 py-1.5 bg-white border border-slate-200 text-slate-700 rounded-lg text-[10px] font-black shadow-sm hover:bg-slate-50 transition-all whitespace-nowrap"
-              >
-                {selectedMainIds.size > 0
-                  ? `🖨️ QR 일괄출력(${selectedMainIds.size})`
-                  : '🖨️ QR 일괄출력'}
-              </button>
-              <button
-                type="button"
                 onClick={handleExportExcel}
                 className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-[10px] font-black shadow-sm hover:bg-emerald-700 transition-all whitespace-nowrap"
               >
@@ -1379,20 +1415,31 @@ export default function EquipmentClient({
                   ? `선택 EXCEL 다운로드(${selectedMainIds.size})`
                   : '화면 목록 EXCEL 다운로드'}
               </button>
-              {canEditGeneral && (
-                <button
-                  type="button"
-                  onClick={handleAddEq}
-                  className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-[10px] font-black shadow-sm transition-all whitespace-nowrap"
-                >
-                  + 신규 등록(Edit)
-                </button>
-              )}
+              <button
+                type="button"
+                disabled={!canEditGeneral}
+                onClick={() => {
+                  if (!canEditGeneral) return;
+                  handleAddEq();
+                }}
+                title={
+                  canEditGeneral
+                    ? '신규 장비 등록'
+                    : '등록 권한이 없습니다. (Edit 필요)'
+                }
+                className={`px-3 py-1.5 rounded-lg text-[10px] font-black shadow-sm transition-all whitespace-nowrap ${
+                  canEditGeneral
+                    ? 'bg-blue-600 hover:bg-blue-700 text-white cursor-pointer'
+                    : 'bg-slate-200 text-slate-400 cursor-not-allowed'
+                }`}
+              >
+                + 신규 등록(Edit)
+              </button>
             </div>
           </div>
   
           <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse min-w-[1480px]">
+            <table className="w-full text-left border-collapse min-w-[1320px]">
               <thead className="bg-slate-100 text-slate-700 text-[10px] font-black uppercase tracking-widest border-b border-slate-200">
                 <tr>
                   <th className="h-12 w-12 text-center pl-4">
@@ -1405,25 +1452,24 @@ export default function EquipmentClient({
                   </th>
                   <th className="h-12 px-3 text-center w-12">NO</th>
                   <th className="h-12 px-3 text-center w-16">사진</th>
-                  <th className="h-12 px-3 w-28">자산번호</th>
-                  <th className="h-12 px-3 w-40">품목명(장비명칭)</th>
-                  <th className="h-12 px-3 w-28">제조사</th>
-                  <th className="h-12 px-3 w-32">모델번호</th>
-                  <th className="h-12 px-3 w-32">시리얼번호</th>
+                  <th className="h-12 px-3 w-28 text-left">자산번호</th>
+                  <th className="h-12 px-3 min-w-[10rem] w-48 text-left">품목명(장비명칭)</th>
+                  <th className="h-12 px-2 w-24 text-left">제조사</th>
+                  <th className="h-12 px-2 w-28 text-left">모델번호</th>
+                  <th className="h-12 px-2 w-24 text-left">시리얼번호</th>
                   <th className="h-12 px-3 w-20 text-center">보유개수</th>
-                  <th className="h-12 px-3 w-48">제품사양</th>
                   <th className="h-12 px-3 w-28 text-center">구매일</th>
-                  <th className="h-12 px-3 w-28 text-center">검교정예정일</th>
-                  <th className="h-12 px-3 w-32 text-center">관리소속</th>
+                  <th className="h-12 px-3 w-36 text-center whitespace-nowrap">검교정예정일</th>
+                  <th className="h-12 px-3 min-w-[9.5rem] w-40 text-left whitespace-nowrap">관리소속</th>
                   <th className="h-12 px-3 w-20 text-center">QR</th>
                   <th className="h-12 pr-6 w-28 text-center whitespace-nowrap">액션</th>
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-slate-100 text-xs font-bold text-slate-700">
                 {paginatedEquipments.length === 0 ? (
-                  <tr><td colSpan={15} className="h-24 text-center text-slate-400 italic">등록된 장비 데이터가 없습니다.</td></tr>
+                  <tr><td colSpan={14} className="h-24 text-center text-slate-400 italic">등록된 장비 데이터가 없습니다.</td></tr>
                 ) : paginatedEquipments.map((eq, idx) => {
-                  const { nCalib, isDue } = resolveCalibSchedule(eq);
+                  const { nCalib, isDue, applicable } = resolveCalibSchedule(eq);
   
                   return (
                     <tr key={eq.id} className={`h-16 hover:bg-slate-50/50 transition-colors ${isDue ? 'bg-red-50/30' : ''}`}>
@@ -1440,7 +1486,7 @@ export default function EquipmentClient({
                           className="accent-indigo-600 cursor-pointer w-3.5 h-3.5"
                         />
                       </td>
-                      <td className="px-3 text-center text-slate-400 font-mono text-[10px]">{filteredEquipments.length - ((currentPage - 1) * itemsPerPage + idx)}</td>
+                      <td className="px-3 text-center text-slate-400 font-mono text-[10px] tabular-nums">{filteredEquipments.length - ((currentPage - 1) * itemsPerPage + idx)}</td>
                       <td className="text-center">
                         {resolveImageSrc(eq.thumbnail_url) ? (
                           <img src={resolveImageSrc(eq.thumbnail_url)!} alt="" className="w-10 h-10 object-cover rounded-md mx-auto border" />
@@ -1448,25 +1494,33 @@ export default function EquipmentClient({
                           <div className="w-10 h-10 bg-slate-100 rounded-md mx-auto flex items-center justify-center text-[8px] text-slate-300 border">NO</div>
                         )}
                       </td>
-                      <td className="px-3 font-mono font-black text-slate-900">{displayAssetNo(eq.asset_no)}</td>
-                      <td className="px-3 text-blue-700">{eq.name}</td>
-                      <td className="px-3">{eq.brand || '-'}</td>
-                      <td className="px-3 text-[10px] text-slate-500">{eq.model_name || '-'}</td>
-                      <td className="px-3 text-[10px] font-mono text-slate-500">{eq.serial_no || '-'}</td>
-                      <td className="text-center">{eq.qty} EA</td>
-                      <td className="px-3 text-slate-500 truncate max-w-[150px] font-medium">{eq.spec_summary || '-'}</td>
-                      <td className="text-center font-bold text-slate-700">
+                      <td className="px-3 text-left font-mono font-black text-slate-900">{displayAssetNo(eq.asset_no)}</td>
+                      <td className="px-3 text-left text-blue-700 max-w-[13rem]" title={eq.name || ''}>
+                        <span className="line-clamp-1">{eq.name}</span>
+                      </td>
+                      <td className="px-2 text-left truncate max-w-[6rem]" title={eq.brand || ''}>{eq.brand || '-'}</td>
+                      <td className="px-2 text-left text-[10px] text-slate-500 truncate max-w-[7.5rem]" title={eq.model_name || ''}>{eq.model_name || '-'}</td>
+                      <td className="px-2 text-left text-[10px] font-mono text-slate-500 truncate max-w-[6.5rem]" title={eq.serial_no || ''}>{eq.serial_no || '-'}</td>
+                      <td className="text-center tabular-nums">{eq.qty} {shortQtyUnitLabel(eq.qty_unit)}</td>
+                      <td className="text-center font-bold text-slate-700 tabular-nums">
                         {eq.purchase_date ? eq.purchase_date.split('T')[0] : '-'}
                       </td>
-                      <td className="text-center font-black">
-                        {nCalib ? (
-                          <div className="flex flex-col items-center justify-center">
+                      <td className="text-center font-black tabular-nums">
+                        {!applicable ? (
+                          <span className="text-slate-400 font-bold">대상 아님</span>
+                        ) : nCalib ? (
+                          <div className="inline-flex items-center justify-center flex-nowrap whitespace-nowrap">
                             <span className="text-slate-900">{nCalib}</span>
                             {renderDDay(nCalib)}
                           </div>
                         ) : <span className="text-slate-300">-</span>}
                       </td>
-                      <td className="text-center text-slate-600">{eq.department || '-'}</td>
+                      <td
+                        className="px-3 text-left text-slate-600 whitespace-nowrap"
+                        title={eq.department || ''}
+                      >
+                        {eq.department || '-'}
+                      </td>
                       <td className="text-center">
                         <button type="button" onClick={(e) => { e.stopPropagation(); setShowQrModal(eq); }} className="px-2 py-1 bg-white border border-sky-200 text-sky-600 rounded text-[10px] whitespace-nowrap hover:bg-sky-50 transition-colors shadow-sm">QR보기</button>
                       </td>
@@ -1588,20 +1642,20 @@ export default function EquipmentClient({
                   </th>
                   <th className="h-12 px-3 text-center w-16">NO</th>
                   <th className="h-12 px-3 w-28 text-center">처리일자</th>
-                  <th className="h-12 px-3 w-32">자산번호</th>
-                  <th className="h-12 px-3 w-40">품목명(장비명칭)</th>
+                  <th className="h-12 px-3 w-32 text-left">자산번호</th>
+                  <th className="h-12 px-3 w-40 text-left">품목명(장비명칭)</th>
                   <th className="h-12 px-3 w-24 text-center">폐기/반납개수</th>
-                  <th className="h-12 px-3 w-[250px]">처리 사유</th>
-                  <th className="h-12 px-3 w-32 text-center">관리소속</th>
+                  <th className="h-12 px-3 w-[250px] text-left">처리 사유</th>
+                  <th className="h-12 px-3 w-32 text-left">관리소속</th>
                   <th className="h-12 px-3 w-20 text-center">상태</th>
                   <th className="h-12 px-3 w-24 text-center">상세</th>
                   <th className="h-12 px-3 w-24 text-center">관리액션</th>
-                  {isLv1 && <th className="h-12 pr-6 w-28 text-center text-red-500">삭제(LV_1)</th>}
+                  <th className="h-12 pr-6 w-28 text-center text-red-500">삭제(LV_1)</th>
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-slate-100 text-xs font-bold text-slate-700">
                 {paginatedArchives.length === 0 ? (
-                  <tr><td colSpan={isLv1 ? 12 : 11} className="h-24 text-center text-slate-400 italic">선택된 기간에 처리된 장비 내역이 없습니다.</td></tr>
+                  <tr><td colSpan={12} className="h-24 text-center text-slate-400 italic">선택된 기간에 처리된 장비 내역이 없습니다.</td></tr>
                 ) : paginatedArchives.map((arc, idx) => {
                   const reasonText = parseEquipmentArchiveMemo(arc.etc_memo).displayText || '-';
                   const canRestore = checkItemCanEdit(arc);
@@ -1620,13 +1674,20 @@ export default function EquipmentClient({
                           className="accent-indigo-600 cursor-pointer w-3.5 h-3.5"
                         />
                       </td>
-                      <td className="px-3 text-center text-slate-400 font-mono text-[10px]">{filteredArchives.length - ((archivePage - 1) * itemsPerPage + idx)}</td>
-                      <td className="text-center font-black">{arc.last_replace_date ? arc.last_replace_date.split('T')[0] : arc.updatedAt?.split('T')[0]}</td>
-                      <td className="px-3 font-mono font-black text-slate-900">{displayAssetNo(arc.asset_no)}</td>
-                      <td className="px-3 text-blue-700">{arc.name}</td>
-                      <td className="text-center">{arc.qty} EA</td>
-                      <td className="px-3 text-slate-500 font-medium truncate max-w-[250px]" title={reasonText}>"{reasonText}"</td>
-                      <td className="text-center text-slate-600">{arc.department || '-'}</td>
+                      <td className="px-3 text-center text-slate-400 font-mono text-[10px] tabular-nums">{filteredArchives.length - ((archivePage - 1) * itemsPerPage + idx)}</td>
+                      <td className="text-center font-black tabular-nums">
+                        {(() => {
+                          const raw = arc.last_replace_date || arc.archived_at || arc.updatedAt;
+                          if (!raw) return '-';
+                          const ymd = getKSTDateString(raw);
+                          return ymd || String(raw).split('T')[0] || '-';
+                        })()}
+                      </td>
+                      <td className="px-3 text-left font-mono font-black text-slate-900">{displayAssetNo(arc.asset_no)}</td>
+                      <td className="px-3 text-left text-blue-700">{arc.name}</td>
+                      <td className="text-center tabular-nums">{arc.qty} {shortQtyUnitLabel(arc.qty_unit)}</td>
+                      <td className="px-3 text-left text-slate-500 font-medium truncate max-w-[250px]" title={reasonText}>"{reasonText}"</td>
+                      <td className="px-3 text-left text-slate-600">{arc.department || '-'}</td>
                       <td className="text-center">
                         <span className={`px-2.5 py-1 rounded-md text-[10px] font-black ${arc.status === '폐기' ? 'bg-red-50 text-red-600 border border-red-100' : 'bg-slate-200 text-slate-600'}`}>{arc.status}</span>
                       </td>
@@ -1658,16 +1719,28 @@ export default function EquipmentClient({
                           복구(Edit)
                         </button>
                       </td>
-                      {isLv1 && (
-                        <td className="pr-6 text-center">
+                      <td className="pr-6 text-center">
                           <button
-                            onClick={() => handlePermanentDelete(arc.id)}
-                            className="w-full max-w-[6.5rem] mx-auto py-1.5 bg-white border border-red-200 text-red-500 rounded-lg hover:bg-red-50 transition-all font-black text-[9px] whitespace-nowrap shadow-sm"
+                            type="button"
+                            disabled={!isLv1}
+                            onClick={() => {
+                              if (!isLv1) return;
+                              handlePermanentDelete(arc.id);
+                            }}
+                            title={
+                              isLv1
+                                ? '영구 삭제 (복구 불가)'
+                                : '영구 삭제는 LV_1만 가능합니다.'
+                            }
+                            className={`w-full max-w-[6.5rem] mx-auto py-1.5 rounded-lg transition-all font-black text-[9px] whitespace-nowrap shadow-sm border ${
+                              isLv1
+                                ? 'bg-white border-red-200 text-red-500 hover:bg-red-50 cursor-pointer'
+                                : 'bg-slate-100 border-slate-200 text-slate-300 cursor-not-allowed'
+                            }`}
                           >
                             🗑️ 삭제(LV_1)
                           </button>
                         </td>
-                      )}
                     </tr>
                   )
                 })}
@@ -1718,7 +1791,7 @@ export default function EquipmentClient({
           }}
           title={
             canEditCurrent
-              ? '상세 정보 EXCEL 다운로드'
+              ? '상세 EXCEL 다운로드'
               : '해당 소속 장비에 대한 엑셀 다운로드 권한이 없습니다.'
           }
           className={`px-4 py-2 rounded-xl text-[11px] font-black transition-all shadow-sm ${
@@ -1727,7 +1800,7 @@ export default function EquipmentClient({
               : 'bg-slate-600/40 text-slate-400 cursor-not-allowed border border-slate-600'
           }`}
         >
-          EXCEL 다운로드
+          상세 EXCEL 다운로드
         </button>
         <button
           type="button"
@@ -1806,121 +1879,264 @@ export default function EquipmentClient({
                   </p>
                 </div>
               )}
-              <div className="flex flex-col lg:flex-row gap-8 bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
-                <div className="w-full lg:w-1/3 shrink-0 flex flex-col items-center justify-center bg-slate-50 rounded-xl border border-slate-100 p-4 min-h-[250px] relative group">
-                  {(() => {
-                     const imgSrc = resolveImageSrc(currentEq.thumbnail_url);
-                     return imgSrc ? (
-                        <img src={imgSrc} alt="장비사진" className="max-w-full max-h-[250px] object-contain rounded-lg shadow-sm" />
-                     ) : <span className="text-slate-300 font-black text-2xl">NO IMAGE</span>
-                  })()}
-                  
-                  {isEditingDetail && (
-                    <div className="absolute inset-0 bg-slate-900/50 flex flex-col items-center justify-center rounded-xl opacity-0 group-hover:opacity-100 transition-opacity gap-2 backdrop-blur-sm">
-                       <label className="cursor-pointer px-4 py-2 bg-white text-slate-800 rounded-lg font-black text-xs shadow-sm hover:bg-slate-100">
-                         📸 사진 등록/변경
-                         <input type="file" className="hidden" accept="image/*" onChange={(e) => handleFileUpload(e, 'thumbnail_url')} />
-                       </label>
-                       <p className="text-[9px] font-bold text-white/90 bg-slate-900/40 px-2 py-0.5 rounded">최대 {MAX_UPLOAD_LABEL} · 목록용 축소본 자동생성</p>
-                       {currentEq.thumbnail_url && (
-                         <button type="button" onClick={() => setEditFormData({...editFormData, thumbnail_url: ''})} className="px-4 py-2 bg-red-500 text-white rounded-lg font-black text-xs shadow-sm hover:bg-red-600">✕ 사진 삭제</button>
-                       )}
-                    </div>
-                  )}
-                  {isEditingDetail && (
-                    <p className="absolute bottom-2 left-0 right-0 text-center text-[9px] font-bold text-slate-400 group-hover:opacity-0 transition-opacity">
-                      사진 최대 {MAX_UPLOAD_LABEL} (목록은 축소 표출)
-                    </p>
-                  )}
-                </div>
-  
-                <div className="flex-1 grid grid-cols-2 gap-4 text-[11px]">
-                  {/* Row 1: 핵심 */}
-                  <div className="space-y-1"><p className="font-black text-slate-400 uppercase">품목명(장비 명칭)</p>
-                    {isEditingDetail ? <input type="text" value={editFormData.name || ''} onChange={e=>setEditFormData({...editFormData, name: e.target.value})} className="w-full p-2.5 border border-slate-200 rounded-lg outline-none focus:border-indigo-500 font-bold bg-white focus:bg-indigo-50/30 transition-all" placeholder="품목명(장비 명칭) 입력" /> : <p className="font-bold text-slate-800 text-sm py-1.5">{currentEq.name || '-'}</p>}
-                  </div>
-                  <div className="space-y-1"><p className="font-black text-slate-400 uppercase">자산번호</p>
-                    {isEditingDetail ? <input value={editFormData.asset_no} onChange={e=>setEditFormData({...editFormData, asset_no: e.target.value})} className="w-full p-2.5 border border-slate-200 rounded-lg outline-none focus:border-indigo-500 font-bold bg-white focus:bg-indigo-50/30 transition-all" placeholder="자산번호" /> : <p className="font-black text-slate-900 text-sm py-1.5">{displayAssetNo(currentEq.asset_no)}</p>}
-                  </div>
+              <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-5">
+                {/* 상단: 고정 사진 + 기본정보 (사양 길이와 무관하게 사진 비율 유지) */}
+                <div className="flex flex-col lg:flex-row gap-6 items-start">
+                  <div className="w-full lg:w-[240px] h-[240px] shrink-0 flex items-center justify-center bg-slate-50 rounded-xl border border-slate-100 p-3 relative group overflow-hidden">
+                    {(() => {
+                      const imgSrc = resolveImageSrc(currentEq.thumbnail_url);
+                      return imgSrc ? (
+                        <img
+                          src={imgSrc}
+                          alt="장비사진"
+                          className="max-w-full max-h-full w-auto h-auto object-contain rounded-lg shadow-sm"
+                        />
+                      ) : (
+                        <span className="text-slate-300 font-black text-xl">NO IMAGE</span>
+                      );
+                    })()}
 
-                  {/* Row 2: 행정/분류 */}
-                  <div className="space-y-1"><p className="font-black text-slate-400 uppercase">장비 종류 범주</p>
-                    {isEditingDetail ? (
-                      <select
-                        required
-                        value={editFormData.category || categoryId || ''}
-                        onChange={(e) => setEditFormData({ ...editFormData, category: e.target.value })}
-                        className="w-full p-2.5 border border-slate-200 rounded-lg font-bold bg-white outline-none focus:border-indigo-500 focus:bg-indigo-50/30 transition-all"
-                      >
-                        {assignableCategoryOptions.map((c) => (
-                          <option key={c.code} value={c.code}>
-                            {c.label}
-                          </option>
-                        ))}
-                      </select>
-                    ) : (
-                      <p className="font-black text-indigo-600 text-sm py-1.5">
-                        {(categoryOptions as { code: string; label: string }[]).find(
-                          (c) => c.code === (currentEq.category || categoryId)
-                        )?.label || currentEq.category || categoryId || '-'}
+                    {isEditingDetail && (
+                      <div className="absolute inset-0 bg-slate-900/50 flex flex-col items-center justify-center rounded-xl opacity-0 group-hover:opacity-100 transition-opacity gap-2 backdrop-blur-sm">
+                        <label className="cursor-pointer px-4 py-2 bg-white text-slate-800 rounded-lg font-black text-xs shadow-sm hover:bg-slate-100">
+                          📸 사진 등록/변경
+                          <input
+                            type="file"
+                            className="hidden"
+                            accept="image/*"
+                            onChange={(e) => handleFileUpload(e, 'thumbnail_url')}
+                          />
+                        </label>
+                        <p className="text-[9px] font-bold text-white/90 bg-slate-900/40 px-2 py-0.5 rounded">
+                          최대 {MAX_UPLOAD_LABEL} · 목록용 축소본 자동생성
+                        </p>
+                        {currentEq.thumbnail_url && (
+                          <button
+                            type="button"
+                            onClick={() => setEditFormData({ ...editFormData, thumbnail_url: '' })}
+                            className="px-4 py-2 bg-red-500 text-white rounded-lg font-black text-xs shadow-sm hover:bg-red-600"
+                          >
+                            ✕ 사진 삭제
+                          </button>
+                        )}
+                      </div>
+                    )}
+                    {isEditingDetail && (
+                      <p className="absolute bottom-2 left-0 right-0 text-center text-[9px] font-bold text-slate-400 group-hover:opacity-0 transition-opacity pointer-events-none">
+                        사진 최대 {MAX_UPLOAD_LABEL} (목록은 축소 표출)
                       </p>
                     )}
                   </div>
-                  <div className="space-y-1"><p className="font-black text-slate-400 uppercase">장비관리소속</p>
-                    {isEditingDetail ? (
-                      <select
-                        required
-                        value={
-                          editFormData.unit_id ||
-                          (editFormData.department
-                            ? assignableUnits.find((u: any) => u.unit_name === editFormData.department)?.id || ''
-                            : '')
-                        }
-                        onChange={(e) => {
-                          const id = e.target.value;
-                          const u = assignableUnits.find((x: any) => String(x.id) === id);
-                          setEditFormData({
-                            ...editFormData,
-                            unit_id: id.startsWith('legacy-') ? null : id,
-                            department: u?.unit_name || '',
-                          });
-                        }}
-                        className="w-full p-2.5 border border-slate-200 rounded-lg font-bold bg-white outline-none focus:border-indigo-500 focus:bg-indigo-50/30 transition-all"
-                      >
-                        <option value="" disabled>
-                          소속 선택
-                        </option>
-                        {assignableUnits.map((u: any) => (
-                          <option key={u.id} value={u.id}>
-                            {u.unit_name}
+
+                  <div className="flex-1 min-w-0 grid grid-cols-2 gap-4 text-[11px]">
+                    {/* Row 1: 핵심 — 자산번호 | 품목명 */}
+                    <div className="space-y-1">
+                      <p className="font-black text-slate-400 uppercase">자산번호</p>
+                      {isEditingDetail ? (
+                        <input
+                          value={editFormData.asset_no}
+                          onChange={(e) => setEditFormData({ ...editFormData, asset_no: e.target.value })}
+                          className="w-full p-2.5 border border-slate-200 rounded-lg outline-none focus:border-indigo-500 font-bold bg-white focus:bg-indigo-50/30 transition-all"
+                          placeholder="자산번호"
+                        />
+                      ) : (
+                        <p className="font-black text-slate-900 text-sm py-1.5">
+                          {displayAssetNo(currentEq.asset_no)}
+                        </p>
+                      )}
+                    </div>
+                    <div className="space-y-1">
+                      <p className="font-black text-slate-400 uppercase">품목명(장비 명칭)</p>
+                      {isEditingDetail ? (
+                        <input
+                          type="text"
+                          value={editFormData.name || ''}
+                          onChange={(e) => setEditFormData({ ...editFormData, name: e.target.value })}
+                          className="w-full p-2.5 border border-slate-200 rounded-lg outline-none focus:border-indigo-500 font-bold bg-white focus:bg-indigo-50/30 transition-all"
+                          placeholder="품목명(장비 명칭) 입력"
+                        />
+                      ) : (
+                        <p className="font-bold text-slate-800 text-sm py-1.5">{currentEq.name || '-'}</p>
+                      )}
+                    </div>
+
+                    {/* Row 2: 행정/분류 */}
+                    <div className="space-y-1">
+                      <p className="font-black text-slate-400 uppercase">장비 종류 범주</p>
+                      {isEditingDetail ? (
+                        <select
+                          required
+                          value={editFormData.category || categoryId || ''}
+                          onChange={(e) => setEditFormData({ ...editFormData, category: e.target.value })}
+                          className="w-full p-2.5 border border-slate-200 rounded-lg font-bold bg-white outline-none focus:border-indigo-500 focus:bg-indigo-50/30 transition-all"
+                        >
+                          {assignableCategoryOptions.map((c) => (
+                            <option key={c.code} value={c.code}>
+                              {c.label}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <p className="font-black text-indigo-600 text-sm py-1.5">
+                          {(categoryOptions as { code: string; label: string }[]).find(
+                            (c) => c.code === (currentEq.category || categoryId)
+                          )?.label ||
+                            currentEq.category ||
+                            categoryId ||
+                            '-'}
+                        </p>
+                      )}
+                    </div>
+                    <div className="space-y-1">
+                      <p className="font-black text-slate-400 uppercase">장비관리소속</p>
+                      {isEditingDetail ? (
+                        <select
+                          required
+                          value={
+                            editFormData.unit_id ||
+                            (editFormData.department
+                              ? assignableUnits.find((u: any) => u.unit_name === editFormData.department)
+                                  ?.id || ''
+                              : '')
+                          }
+                          onChange={(e) => {
+                            const id = e.target.value;
+                            const u = assignableUnits.find((x: any) => String(x.id) === id);
+                            setEditFormData({
+                              ...editFormData,
+                              unit_id: id.startsWith('legacy-') ? null : id,
+                              department: u?.unit_name || '',
+                            });
+                          }}
+                          className="w-full p-2.5 border border-slate-200 rounded-lg font-bold bg-white outline-none focus:border-indigo-500 focus:bg-indigo-50/30 transition-all"
+                        >
+                          <option value="" disabled>
+                            소속 선택
                           </option>
-                        ))}
-                      </select>
-                    ) : (
-                      <p className="font-black text-blue-600 text-sm py-1.5">{currentEq.department || '-'}</p>
-                    )}
-                  </div>
+                          {assignableUnits.map((u: any) => (
+                            <option key={u.id} value={u.id}>
+                              {u.unit_name}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <p className="font-black text-blue-600 text-sm py-1.5">
+                          {currentEq.department || '-'}
+                        </p>
+                      )}
+                    </div>
 
-                  {/* Row 3: 제조사 / 모델 */}
-                  <div className="space-y-1"><p className="font-black text-slate-400 uppercase">제조사</p>
-                    {isEditingDetail ? <input value={editFormData.brand || ''} onChange={e=>setEditFormData({...editFormData, brand: e.target.value})} className="w-full p-2.5 border border-slate-200 rounded-lg outline-none focus:border-indigo-500 font-bold bg-white focus:bg-indigo-50/30 transition-all" placeholder="제조사 명" /> : <p className="font-bold text-slate-800 text-sm py-1.5">{currentEq.brand || '-'}</p>}
-                  </div>
-                  <div className="space-y-1"><p className="font-black text-slate-400 uppercase">모델번호</p>
-                    {isEditingDetail ? <input value={editFormData.model_name || ''} onChange={e=>setEditFormData({...editFormData, model_name: e.target.value})} className="w-full p-2.5 border border-slate-200 rounded-lg outline-none focus:border-indigo-500 font-bold bg-white focus:bg-indigo-50/30 transition-all" placeholder="모델번호" /> : <p className="font-bold text-slate-800 text-sm py-1.5">{currentEq.model_name || '-'}</p>}
-                  </div>
+                    {/* Row 3: 제조사 / 모델 */}
+                    <div className="space-y-1">
+                      <p className="font-black text-slate-400 uppercase">제조사</p>
+                      {isEditingDetail ? (
+                        <input
+                          value={editFormData.brand || ''}
+                          onChange={(e) => setEditFormData({ ...editFormData, brand: e.target.value })}
+                          className="w-full p-2.5 border border-slate-200 rounded-lg outline-none focus:border-indigo-500 font-bold bg-white focus:bg-indigo-50/30 transition-all"
+                          placeholder="제조사 명"
+                        />
+                      ) : (
+                        <p className="font-bold text-slate-800 text-sm py-1.5">{currentEq.brand || '-'}</p>
+                      )}
+                    </div>
+                    <div className="space-y-1">
+                      <p className="font-black text-slate-400 uppercase">모델번호</p>
+                      {isEditingDetail ? (
+                        <input
+                          value={editFormData.model_name || ''}
+                          onChange={(e) =>
+                            setEditFormData({ ...editFormData, model_name: e.target.value })
+                          }
+                          className="w-full p-2.5 border border-slate-200 rounded-lg outline-none focus:border-indigo-500 font-bold bg-white focus:bg-indigo-50/30 transition-all"
+                          placeholder="모델번호"
+                        />
+                      ) : (
+                        <p className="font-bold text-slate-800 text-sm py-1.5">
+                          {currentEq.model_name || '-'}
+                        </p>
+                      )}
+                    </div>
 
-                  {/* Row 4: 시리얼 / 수량 */}
-                  <div className="space-y-1"><p className="font-black text-slate-400 uppercase">시리얼번호</p>
-                    {isEditingDetail ? <input value={editFormData.serial_no || ''} onChange={e=>setEditFormData({...editFormData, serial_no: e.target.value})} className="w-full p-2.5 border border-slate-200 rounded-lg outline-none focus:border-indigo-500 font-bold bg-white focus:bg-indigo-50/30 transition-all" placeholder="시리얼번호" /> : <p className="font-bold text-slate-800 text-sm py-1.5 font-mono">{currentEq.serial_no || '-'}</p>}
+                    {/* Row 4: 시리얼 / 수량 */}
+                    <div className="space-y-1">
+                      <p className="font-black text-slate-400 uppercase">시리얼번호</p>
+                      {isEditingDetail ? (
+                        <input
+                          value={editFormData.serial_no || ''}
+                          onChange={(e) =>
+                            setEditFormData({ ...editFormData, serial_no: e.target.value })
+                          }
+                          className="w-full p-2.5 border border-slate-200 rounded-lg outline-none focus:border-indigo-500 font-bold bg-white focus:bg-indigo-50/30 transition-all"
+                          placeholder="시리얼번호"
+                        />
+                      ) : (
+                        <p className="font-bold text-slate-800 text-sm py-1.5 font-mono">
+                          {currentEq.serial_no || '-'}
+                        </p>
+                      )}
+                    </div>
+                    <div className="space-y-1">
+                      <p className="font-black text-slate-400 uppercase">
+                        {isArchivedView ? '폐기/반납개수' : '보유개수'}
+                      </p>
+                      {isEditingDetail ? (
+                        <div className="flex gap-2">
+                          <input
+                            type="number"
+                            min={1}
+                            value={editFormData.qty}
+                            onChange={(e) =>
+                              setEditFormData({ ...editFormData, qty: Number(e.target.value) })
+                            }
+                            className="w-[45%] min-w-0 p-2.5 border border-slate-200 rounded-lg outline-none focus:border-indigo-500 font-bold bg-white focus:bg-indigo-50/30 transition-all"
+                            placeholder="수량"
+                          />
+                          <select
+                            value={editFormData.qty_unit || defaultQtyUnitValue()}
+                            onChange={(e) =>
+                              setEditFormData({ ...editFormData, qty_unit: e.target.value })
+                            }
+                            className="flex-1 min-w-0 p-2.5 border border-slate-200 rounded-lg outline-none focus:border-indigo-500 font-bold bg-white focus:bg-indigo-50/30 transition-all"
+                            title="단위 (settings · unit_category_group)"
+                          >
+                            {qtyUnitOptions.length === 0 ? (
+                              <option value="EA">EA</option>
+                            ) : (
+                              qtyUnitOptions.map((o) => (
+                                <option key={o.value} value={o.value}>
+                                  {o.label}
+                                </option>
+                              ))
+                            )}
+                          </select>
+                        </div>
+                      ) : (
+                        <p className="font-bold text-slate-800 text-sm py-1.5">
+                          {currentEq.qty} {shortQtyUnitLabel(currentEq.qty_unit)}
+                        </p>
+                      )}
+                    </div>
                   </div>
-                  <div className="space-y-1"><p className="font-black text-slate-400 uppercase">{isArchivedView ? '폐기/반납개수' : '보유개수'}</p>
-                    {isEditingDetail ? <input type="number" value={editFormData.qty} onChange={e=>setEditFormData({...editFormData, qty: Number(e.target.value)})} className="w-full p-2.5 border border-slate-200 rounded-lg outline-none focus:border-indigo-500 font-bold bg-white focus:bg-indigo-50/30 transition-all" /> : <p className="font-bold text-slate-800 text-sm py-1.5">{currentEq.qty} EA</p>}
-                  </div>
+                </div>
 
-                  {/* Row 5: 사양 전체 */}
-                  <div className="col-span-2 space-y-1"><p className="font-black text-slate-400 uppercase">제품사양 요약</p>
-                    {isEditingDetail ? <textarea value={editFormData.spec_summary || ''} onChange={e=>setEditFormData({...editFormData, spec_summary: e.target.value})} className="w-full p-3 border border-slate-200 rounded-xl outline-none focus:border-indigo-500 font-bold bg-white focus:bg-indigo-50/30 min-h-[60px] transition-all resize-none" placeholder="주요 사양 기재" /> : <p className="font-bold text-slate-700 p-4 bg-slate-50 rounded-xl border border-slate-100">{currentEq.spec_summary || '사양 정보 없음'}</p>}
-                  </div>
+                {/* 하단: 제품사양 요약 — 전폭 사용 (긴 사양 가독성) */}
+                <div className="space-y-1 text-[11px]">
+                  <p className="font-black text-slate-400 uppercase">제품사양 요약</p>
+                  {isEditingDetail ? (
+                    <textarea
+                      value={editFormData.spec_summary || ''}
+                      onChange={(e) =>
+                        setEditFormData({ ...editFormData, spec_summary: e.target.value })
+                      }
+                      className="w-full p-3 border border-slate-200 rounded-xl outline-none focus:border-indigo-500 font-bold bg-white focus:bg-indigo-50/30 min-h-[140px] transition-all resize-y"
+                      placeholder="주요 사양 기재"
+                    />
+                  ) : (
+                    <p className="font-bold text-slate-700 p-4 bg-slate-50 rounded-xl border border-slate-100 whitespace-pre-wrap leading-relaxed min-h-[80px]">
+                      {currentEq.spec_summary || '사양 정보 없음'}
+                    </p>
+                  )}
                 </div>
               </div>
   
@@ -1955,10 +2171,48 @@ export default function EquipmentClient({
                     <div>
                       <p className="text-slate-400 font-bold mb-1.5">교체주기(M)</p>
                       {isEditingDetail ? (
-                        <input type="number" value={editFormData.replace_cycle_mo || ''} onChange={e=>setEditFormData({...editFormData, replace_cycle_mo: Number(e.target.value)})} className="w-full p-2 border border-slate-200 rounded-lg outline-none font-bold text-indigo-600 bg-white focus:border-indigo-500" placeholder="개월 단위" />
+                        <div className="space-y-1.5">
+                          <label className="flex items-center gap-1.5 text-[10px] font-bold text-slate-500 cursor-pointer select-none">
+                            <input
+                              type="checkbox"
+                              checked={editFormData.replace_applicable === false}
+                              onChange={(e) =>
+                                setEditFormData({
+                                  ...editFormData,
+                                  replace_applicable: !e.target.checked,
+                                  ...(e.target.checked ? { next_replace_date: null } : {}),
+                                })
+                              }
+                              className="rounded border-slate-300"
+                            />
+                            교체 대상 아님
+                          </label>
+                          {editFormData.replace_applicable !== false ? (
+                            <input
+                              type="number"
+                              value={editFormData.replace_cycle_mo || ''}
+                              onChange={(e) =>
+                                setEditFormData({
+                                  ...editFormData,
+                                  replace_cycle_mo: Number(e.target.value),
+                                })
+                              }
+                              className="w-full p-2 border border-slate-200 rounded-lg outline-none font-bold text-indigo-600 bg-white focus:border-indigo-500"
+                              placeholder="개월 단위"
+                            />
+                          ) : (
+                            <p className="font-black text-sm text-slate-400 py-1">대상 아님</p>
+                          )}
+                        </div>
                       ) : (
-<p className="font-black text-sm text-slate-800">{currentEq.replace_cycle_mo ? `${currentEq.replace_cycle_mo} 개월` : '-'}</p>
-)}
+                        <p className="font-black text-sm text-slate-800">
+                          {!replaceApplicable
+                            ? '대상 아님'
+                            : currentEq.replace_cycle_mo
+                              ? `${currentEq.replace_cycle_mo} 개월`
+                              : '-'}
+                        </p>
+                      )}
                     </div>
 
                     {/* 4. 자동산정 교체예정일 */}
@@ -1970,12 +2224,16 @@ export default function EquipmentClient({
                         </span>
                       </p>
                       <div className="flex items-center h-[28px] font-black text-slate-800 text-[13px]">
-                        {nextReplaceDate ? (
+                        {!replaceApplicable ? (
+                          <span className="text-slate-400">대상 아님</span>
+                        ) : nextReplaceDate ? (
                           <div className="flex items-center gap-1.5">
                             <span>{nextReplaceDate}</span>
                             {renderDDay(nextReplaceDate)}
                           </div>
-                        ) : <span className="text-slate-300">-</span>}
+                        ) : (
+                          <span className="text-slate-300">-</span>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -2009,10 +2267,48 @@ export default function EquipmentClient({
                     <div>
                       <p className="text-slate-400 font-bold mb-1.5">검교정주기(M)</p>
                       {isEditingDetail ? (
-                        <input type="number" value={editFormData.calib_cycle_mo || ''} onChange={e=>setEditFormData({...editFormData, calib_cycle_mo: Number(e.target.value)})} className="w-full p-2 border border-slate-200 rounded-lg outline-none font-bold text-emerald-600 bg-white focus:border-emerald-500" placeholder="개월 단위" />
+                        <div className="space-y-1.5">
+                          <label className="flex items-center gap-1.5 text-[10px] font-bold text-slate-500 cursor-pointer select-none">
+                            <input
+                              type="checkbox"
+                              checked={editFormData.calib_applicable === false}
+                              onChange={(e) =>
+                                setEditFormData({
+                                  ...editFormData,
+                                  calib_applicable: !e.target.checked,
+                                  ...(e.target.checked ? { next_calib_date: null } : {}),
+                                })
+                              }
+                              className="rounded border-slate-300"
+                            />
+                            검교정 대상 아님
+                          </label>
+                          {editFormData.calib_applicable !== false ? (
+                            <input
+                              type="number"
+                              value={editFormData.calib_cycle_mo || ''}
+                              onChange={(e) =>
+                                setEditFormData({
+                                  ...editFormData,
+                                  calib_cycle_mo: Number(e.target.value),
+                                })
+                              }
+                              className="w-full p-2 border border-slate-200 rounded-lg outline-none font-bold text-emerald-600 bg-white focus:border-emerald-500"
+                              placeholder="개월 단위"
+                            />
+                          ) : (
+                            <p className="font-black text-sm text-slate-400 py-1">대상 아님</p>
+                          )}
+                        </div>
                       ) : (
-<p className="font-black text-sm text-slate-800">{currentEq.calib_cycle_mo ? `${currentEq.calib_cycle_mo} 개월` : '-'}</p>
-)}
+                        <p className="font-black text-sm text-slate-800">
+                          {!calibApplicable
+                            ? '대상 아님'
+                            : currentEq.calib_cycle_mo
+                              ? `${currentEq.calib_cycle_mo} 개월`
+                              : '-'}
+                        </p>
+                      )}
                     </div>
 
                     {/* 4. 자동산정 검교정예정일 */}
@@ -2024,12 +2320,16 @@ export default function EquipmentClient({
                         </span>
                       </p>
                       <div className="flex items-center h-[28px] font-black text-slate-800 text-[13px]">
-                        {nextCalibDate ? (
+                        {!calibApplicable ? (
+                          <span className="text-slate-400">대상 아님</span>
+                        ) : nextCalibDate ? (
                           <div className="flex items-center gap-1.5">
                             <span>{nextCalibDate}</span>
                             {renderDDay(nextCalibDate)}
                           </div>
-                        ) : <span className="text-slate-300">-</span>}
+                        ) : (
+                          <span className="text-slate-300">-</span>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -2757,99 +3057,7 @@ export default function EquipmentClient({
         </div>
       )}
   
-   {/* 일괄 QR 인쇄 모달 */}
-   {bulkPrintAssets.length > 0 && (
-        <div className="fixed inset-0 bg-slate-900/90 z-[600] flex flex-col p-8 overflow-y-auto print:p-0 print:bg-white" onClick={() => setBulkPrintAssets([])}>
-          <div className="max-w-5xl w-full mx-auto bg-white rounded-[2rem] p-8 shadow-2xl print:shadow-none print:rounded-none print:p-0" onClick={e => e.stopPropagation()}>
-
-            <div className="flex justify-between items-center mb-6 border-b border-slate-200 pb-4 print:hidden">
-              <div>
-                <h2 className="text-xl font-black text-slate-800">🖨️ 한국폼텍 28칸 정사각 QR 라벨 발행 센터</h2>
-                <p className="text-slate-500 text-xs font-bold mt-1">드림디포 구매 규격 [QR-3990] 적용 (40mm × 40mm 정사각형) | 총 {bulkPrintAssets.length}개의 라벨</p>
-              </div>
-              <div className="flex gap-2">
-                <button type="button" disabled={!bulkQrReady} onClick={() => window.print()} className={`px-6 py-2 font-black rounded-xl shadow-md flex items-center gap-2 text-xs transition-colors ${bulkQrReady ? 'bg-purple-600 text-white hover:bg-purple-700' : 'bg-slate-300 text-slate-500 cursor-not-allowed'}`}><span>🖨️</span> {bulkQrReady ? '라벨 인쇄 실행 (Ctrl+P)' : 'QR 생성 중…'}</button>
-                <button type="button" onClick={() => setBulkPrintAssets([])} className="px-6 py-2 bg-slate-100 text-slate-600 font-black rounded-xl hover:bg-slate-200 text-xs">닫기</button>
-              </div>
-            </div>
-
-            <div className="equipment-formtec-page bg-white p-0 relative" style={{ width: '210mm', minHeight: '297mm', margin: '0 auto', boxSizing: 'border-box' }}>
-              <div className="text-center font-black text-slate-800 text-xs mb-4 print:hidden bg-indigo-50 border border-indigo-100 py-2.5 rounded-xl max-w-[190mm] mx-auto">
-                📍 한국폼텍 28칸 기본 (드림디포 QR-3990 전용 4열 × 7행 정사각 매핑 완료) <br/>
-                <span className="text-[10px] text-indigo-500 font-medium font-sans mt-0.5 block">※ 화면에 보이는 회색 점선은 인쇄 시 출력되지 않는 안전 가이드 칼선입니다.</span>
-              </div>
-
-              <div className="max-w-[190mm] mx-auto mb-4 print:hidden bg-blue-50 border-2 border-blue-200 p-4 rounded-2xl text-left">
-                <p className="text-center font-black text-slate-800 text-[13px] mb-2">📍 한국폼텍 28칸 정사각 [QR-3990] 전용 출력 가이드</p>
-                <div className="grid grid-cols-3 gap-2 text-[10px] font-black text-blue-900 border-t border-blue-200 pt-2 bg-white/60 p-2 rounded-xl">
-                  <div className="border-r border-blue-100 pr-2">무조건 <span className="text-red-600 font-bold">"실제 크기 (100%)"</span></div>
-                  <div className="border-r border-blue-100 px-2">무조건 <span className="text-red-600 font-bold">"여백 없음 (None)"</span></div>
-                  <div className="pl-2"><span className="text-red-600 font-bold">"배경 그래픽"</span> 반드시 체크</div>
-                </div>
-              </div>
-
-              <div
-                className="grid grid-cols-4 print:grid-cols-4"
-                style={{
-                  width: '185mm',
-                  margin: '0 auto',
-                  paddingTop: '12mm',
-                  paddingLeft: '5mm',
-                  columnGap: '4.5mm',
-                  rowGap: '1.5mm'
-                }}
-              >
-                {Array.from({ length: Math.max(28, Math.ceil(bulkPrintAssets.length / 4) * 4) }).map((_, idx) => {
-                  const a = bulkPrintAssets[idx];
-                  if (!a) return <div key={`empty-${idx}`} className="border border-dashed border-slate-200 print:border-none opacity-30 print:opacity-0" style={{ width: '40mm', height: '40mm', boxSizing: 'border-box' }} />;
-
-                  return (
-                    <div
-                      key={a.id}
-                      className="flex flex-col justify-between bg-white overflow-hidden relative border border-dashed border-slate-200 print:border-none print:break-inside-avoid text-center"
-                      style={{ width: '40mm', height: '40mm', padding: '2.5mm 2mm 2mm 2mm', boxSizing: 'border-box' }}
-                    >
-                      <div className="w-full space-y-0.5">
-                        <div className="flex justify-center items-center gap-1">
-                          <span className="text-[7px] font-black bg-slate-900 text-white px-1.5 py-0.5 rounded-full leading-none">장비</span>
-                          <span className="text-[7px] font-black text-slate-700 truncate max-w-[26mm]">{a.name}</span>
-                        </div>
-                        <p className="text-[8px] font-black text-slate-900 truncate tracking-tight">{a.model_name || '모델번호 미상'}</p>
-                        {a.serial_no ? (
-                          <p className="text-[7px] font-mono text-slate-500 truncate">시리얼 {a.serial_no}</p>
-                        ) : null}
-                      </div>
-                      <div className="w-full flex justify-center items-center my-0.5">
-                        {bulkQrMap[a.id] ? (
-                          <img src={bulkQrMap[a.id]} alt="QR" className="w-[20mm] h-[20mm] object-contain" />
-                        ) : (
-                          <div className="w-[20mm] h-[20mm] flex items-center justify-center bg-slate-50 text-[6px] font-bold text-slate-400 animate-pulse">생성 중…</div>
-                        )}
-                      </div>
-                      <div className="w-full">
-                        <p className="text-[9px] font-black font-mono tracking-tighter text-indigo-700 leading-none">{displayAssetNo(a.asset_no)}</p>
-                        <p className="text-[6.5px] font-bold text-slate-400 truncate mt-0.5 scale-90">{a.department || '공용'} · <span className="text-amber-700 font-black">사내 Wi-Fi 스캔</span></p>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          </div>
-
-          <style jsx global>{`
-            @media print {
-              body * { visibility: hidden; }
-              .equipment-formtec-page, .equipment-formtec-page * { visibility: visible; }
-              .equipment-formtec-page { position: absolute; left: 0; top: 0; width: 210mm; height: 297mm; background: white !important; }
-              @page { size: A4 portrait; margin: 0; }
-            }
-          `}</style>
-        </div>
-      )}
-  
-      {/* 장비 개별 QR 보기 팝업 */}
-      {showQrModal && (
+  {showQrModal && (
         <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-sm z-[500] flex items-center justify-center p-4" onClick={() => setShowQrModal(null)}>
           <div className="bg-white p-8 rounded-[2rem] flex flex-col items-center shadow-2xl animate-fade-in" onClick={e => e.stopPropagation()}>
             <div className="w-full flex justify-between items-center mb-4">

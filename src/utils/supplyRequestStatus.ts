@@ -16,6 +16,7 @@ export type SupplyRequestStatus =
 const KO_TO_EN: Record<string, SupplyRequestStatus> = {
   대기중: 'PENDING',
   대기: 'PENDING',
+  신규대기: 'PENDING',
   수령대기: 'READY',
   지급대기: 'READY',
   지급승인: 'READY',
@@ -27,12 +28,20 @@ const KO_TO_EN: Record<string, SupplyRequestStatus> = {
 };
 
 const EN_LABEL: Record<SupplyRequestStatus, string> = {
-  PENDING: '대기중',
+  PENDING: '신규대기',
   READY: '지급대기',
   COMPLETED: '지급완료',
   REJECTED: '반려',
   CANCELLED: '취소',
 };
+
+/** 알람·대기건수 집계용 (영문 + 구 한글) */
+export const SUPPLY_REQUEST_PENDING_STATUSES = [
+  'PENDING',
+  '대기중',
+  '대기',
+  '신규대기',
+] as const;
 
 /** 구 한글 값·영문 값을 표준 영문으로 정규화. 실패 시 null */
 export function normalizeSupplyRequestStatus(
@@ -58,10 +67,11 @@ export function supplyRequestStatusLabel(raw: unknown): string {
   return en ? EN_LABEL[en] : '-';
 }
 
-/** 부서(신청자) 화면용 — READY→수령대기, COMPLETED→수령완료 */
+/** 부서(신청자) 화면용 — PENDING→대기중, READY→수령대기, COMPLETED→수령완료 */
 export function supplyRequestStatusLabelDept(raw: unknown): string {
   const en = normalizeSupplyRequestStatus(raw);
   if (!en) return '-';
+  if (en === 'PENDING') return '대기중';
   if (en === 'READY') return '수령대기';
   if (en === 'COMPLETED') return '수령완료';
   return EN_LABEL[en];

@@ -1,0 +1,2 @@
+-- AlterTable
+ALTER TABLE "Equipment" ADD COLUMN IF NOT EXISTS "qty_unit" TEXT NOT NULL DEFAULT 'EA';

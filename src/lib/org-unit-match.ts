@@ -49,19 +49,38 @@ export function collectDescendantUnitNames(
 }
 
 /**
- * 행이 선택 조직(및 하위)에 속하는지.
- * unitId 우선, 없으면 레거시 명칭(deptName/deptHead 등) 폴백.
+ * 행이 선택 조직에 속하는지.
+ * - includeDescendants true(기본): 선택 조직 + 하위 전체
+ * - includeDescendants false: 해당 조직만 (장비 대시보드 부서 칩 등)
  */
 export function rowMatchesOrgUnit(opts: {
   selectedOrgId: string;
   units: OrgUnitNode[] | null | undefined;
   unitId?: string | null;
   legacyNames?: Array<string | null | undefined>;
+  includeDescendants?: boolean;
 }): boolean {
   const selected = String(opts.selectedOrgId || '').trim();
   if (!selected || selected === 'ALL') return true;
+  const includeDescendants = opts.includeDescendants !== false;
   const uid = String(opts.unitId || '').trim();
-  if (uid) return collectDescendantUnitIds(selected, opts.units).has(uid);
+
+  if (uid) {
+    if (!includeDescendants) return uid === selected;
+    return collectDescendantUnitIds(selected, opts.units).has(uid);
+  }
+
+  if (!includeDescendants) {
+    const selectedName = String(
+      (opts.units || []).find((u) => String(u.id || '').trim() === selected)?.unit_name || ''
+    ).trim();
+    for (const raw of opts.legacyNames || []) {
+      const n = String(raw || '').trim();
+      if (n && selectedName && n === selectedName) return true;
+    }
+    return false;
+  }
+
   const names = collectDescendantUnitNames(selected, opts.units);
   for (const raw of opts.legacyNames || []) {
     const n = String(raw || '').trim();

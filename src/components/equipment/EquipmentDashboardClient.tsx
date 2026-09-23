@@ -9,6 +9,9 @@ import { resolveCalibSchedule, toCalibYmd } from '@/utils/equipmentCalib';
 import EquipmentQrImage from '@/components/equipment/EquipmentQrImage';
 import { generateEquipmentQrDataUrls } from '@/utils/equipmentQr';
 import { rowMatchesOrgUnit } from '@/lib/org-unit-match';
+import { SEED_EQUIPMENT_BY_CATEGORY } from '@/lib/equipment-seed-performance';
+import { isActiveEquipmentRow } from '@/utils/equipmentActive';
+import { resolveInterfaceEditState } from '@/lib/permission-utils';
 
 const LoadingSkeleton = () => (
   <div className="w-full max-w-[1600px] mx-auto py-16 px-8 space-y-6 animate-pulse">
@@ -47,7 +50,11 @@ export default function EquipmentMainDashboard() {
   
   const [equipments, setEquipments] = useState<any[]>([]);
   const [units, setUnits] = useState<any[]>([]);
+  const [qtyUnitLabelByValue, setQtyUnitLabelByValue] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
+  const [currentUser, setCurrentUser] = useState<any>(null);
+  const [interfaceConfig, setInterfaceConfig] = useState<any>(null);
+  const [restoringSeedCategory, setRestoringSeedCategory] = useState<string | null>(null);
   
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedDept, setSelectedDept] = useState<string>('ALL');
@@ -60,6 +67,79 @@ export default function EquipmentMainDashboard() {
    
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 10;
+
+  const isLv1 = useMemo(() => {
+    if (!currentUser) return false;
+    const roles = Array.isArray(currentUser.roles) ? currentUser.roles : [currentUser.role];
+    return roles.some((r: unknown) => {
+      const m = String(r || '').match(/(\d+)/);
+      return m ? `LV_${m[0]}` === 'LV_1' : String(r) === 'LV_1';
+    });
+  }, [currentUser]);
+
+  const canEdit = useMemo(
+    () => resolveInterfaceEditState(currentUser, interfaceConfig).isEditor,
+    [currentUser, interfaceConfig]
+  );
+  const seedCategoryCards = useMemo(
+    () => [
+      { code: 'safety' as const, label: '안전 장비' },
+      { code: 'performance' as const, label: '기계설비성능점검 장비' },
+      { code: 'airtightness' as const, label: '창호·기밀성능측정 장비' },
+    ],
+    []
+  );
+
+  const reloadEquipments = async () => {
+    const eqRes = await fetch('/api/equipment?activeOnly=1');
+    if (!eqRes.ok) return;
+    const eqData = await eqRes.json();
+    const activeEquipments = Array.isArray(eqData)
+      ? eqData.filter((e: any) => isActiveEquipmentRow(e))
+      : [];
+    setEquipments(activeEquipments);
+  };
+
+  const handleRestoreSeedEquipment = async (categoryCode: string, categoryLabel: string) => {
+    if (!isLv1) {
+      alert('시드 장비 복구는 LV_1만 가능합니다.');
+      return;
+    }
+    const seedCount =
+      SEED_EQUIPMENT_BY_CATEGORY[
+        categoryCode as keyof typeof SEED_EQUIPMENT_BY_CATEGORY
+      ]?.length ?? 0;
+    if (seedCount === 0) {
+      alert(`「${categoryLabel}」시드 데이터가 아직 없습니다.\n엑셀 시드 준비 후 반영됩니다.`);
+      return;
+    }
+    if (
+      !confirm(
+        `「${categoryLabel}」시드 ${seedCount}건 중 없는 항목만 추가합니다.\n이미 있는 자산번호는 덮어쓰지 않습니다. 계속할까요?`
+      )
+    ) {
+      return;
+    }
+    setRestoringSeedCategory(categoryCode);
+    try {
+      const res = await fetch('/api/equipment/restore-seeds', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'restore-seeds', categoryCode }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(data.error || data.message || '시드 장비 복구 실패');
+        return;
+      }
+      alert(data.message || '시드 장비 복구 완료');
+      await reloadEquipments();
+    } catch {
+      alert('시드 장비 복구 중 오류가 발생했습니다.');
+    } finally {
+      setRestoringSeedCategory(null);
+    }
+  };
    
   useEffect(() => {
     const initializePage = async () => {
@@ -67,6 +147,7 @@ export default function EquipmentMainDashboard() {
         const menuRes = await fetch('/api/admin/interface');
         const menus = await menuRes.json();
         const currentMenu = menus.find((m: any) => m.path === '/equipment/main');
+        if (currentMenu) setInterfaceConfig(currentMenu);
         
         if (currentMenu && currentMenu.l2_entry_mode === 'L3_DEFAULT') {
           const children = menus
@@ -77,10 +158,32 @@ export default function EquipmentMainDashboard() {
           }
         }
    
-        const [eqRes, unitRes] = await Promise.all([
-          fetch('/api/equipment'),
-          fetch('/api/admin/units?active=true').catch(() => null)
+        const [eqRes, unitRes, meRes, configRes, masterRes] = await Promise.all([
+          fetch('/api/equipment?activeOnly=1'),
+          fetch('/api/admin/units?active=true').catch(() => null),
+          fetch(`/api/auth/me?t=${Date.now()}`, { cache: 'no-store' }).catch(() => null),
+          fetch('/api/admin/config', { cache: 'no-store' }).catch(() => null),
+          fetch('/api/admin/master-data', { cache: 'no-store' }).catch(() => null),
         ]);
+
+        if (meRes && meRes.ok) {
+          const me = await meRes.json();
+          setCurrentUser(me?.user || me);
+        }
+
+        if (configRes?.ok && masterRes?.ok) {
+          const config = await configRes.json();
+          const masterData = await masterRes.json();
+          const groupId = config?.unit_category_group;
+          const group = Array.isArray(masterData)
+            ? masterData.find((g: any) => g.id === groupId)
+            : null;
+          const map: Record<string, string> = { EA: 'EA', VAL_1: 'EA' };
+          for (const c of group?.codes || []) {
+            if (c?.value) map[String(c.value)] = String(c.label || c.value);
+          }
+          setQtyUnitLabelByValue(map);
+        }
 
         if (!eqRes.ok) {
           console.error('equipment load failed', eqRes.status);
@@ -93,7 +196,7 @@ export default function EquipmentMainDashboard() {
         const unitData = unitRes && unitRes.ok ? await unitRes.json() : [];
         
         const activeEquipments = Array.isArray(eqData)
-          ? eqData.filter((e: any) => e.status === '정상')
+          ? eqData.filter((e: any) => isActiveEquipmentRow(e))
           : [];
         setEquipments(activeEquipments);
         setUnits(unitData);
@@ -108,8 +211,8 @@ export default function EquipmentMainDashboard() {
   
   const processedEquipments = useMemo(() => {
     return equipments.map(eq => {
-      const { nCalib, isDue } = resolveCalibSchedule(eq);
-      return { ...eq, nCalib, isUrgent: isDue };
+      const { nCalib, isDue, applicable } = resolveCalibSchedule(eq);
+      return { ...eq, nCalib, isUrgent: isDue, calibApplicable: applicable };
     });
   }, [equipments]);
    
@@ -125,6 +228,7 @@ export default function EquipmentMainDashboard() {
         '공용 (미지정)';
       const key = uid || `legacy:${name}`;
       if (!stats[key]) stats[key] = { total: 0, urgent: 0, filterKey: key };
+      // 활성 장비 건수(행) — 하단 리스트 「N건」과 동일 기준 (보유개수 qty 합산 아님)
       stats[key].total += 1;
       if (eq.isUrgent) stats[key].urgent += 1;
       (stats[key] as any).label = name;
@@ -132,6 +236,9 @@ export default function EquipmentMainDashboard() {
     return stats;
   }, [processedEquipments, units]);
   
+  /** Total Active = 활성 장비 건수 (행). 보유개수(EA) 합과 혼동하지 않음 */
+  const totalActiveCount = processedEquipments.length;
+
   const totalUrgentCount = processedEquipments.filter(e => e.isUrgent).length;
   
   const sortedDepts = useMemo(() => {
@@ -197,6 +304,7 @@ export default function EquipmentMainDashboard() {
             units,
             unitId: eq.unit_id,
             legacyNames: [eq.department],
+            includeDescendants: false,
           });
         }
       }
@@ -224,6 +332,9 @@ export default function EquipmentMainDashboard() {
   };
 
   const openBulkQRPrint = () => {
+    if (!canEdit) {
+      return alert('QR 일괄출력은 Edit 권한이 필요합니다.');
+    }
     const targetAssets = filteredEquipments.filter((a) => selectedMainIds.has(a.id));
     if (targetAssets.length === 0) return alert('출력할 자산을 좌측 체크박스로 선택해주세요.');
     setBulkPrintAssets(targetAssets);
@@ -260,7 +371,7 @@ export default function EquipmentMainDashboard() {
         : filteredEquipments;
     if (targetAssets.length === 0) return alert('다운로드할 데이터가 없습니다.');
     const exportData = targetAssets.map((a, idx) => {
-      const { nCalib } = resolveCalibSchedule(a);
+      const { nCalib, applicable } = resolveCalibSchedule(a);
       return {
         NO: targetAssets.length - idx,
         자산번호: displayAssetNo(a.asset_no),
@@ -271,7 +382,7 @@ export default function EquipmentMainDashboard() {
         보유개수: a.qty,
         제품사양: a.spec_summary || '-',
         구매일: a.purchase_date ? String(a.purchase_date).split('T')[0] : '-',
-        검교정예정일: nCalib || '-',
+        검교정예정일: !applicable ? '대상 아님' : nCalib || '-',
         장비관리소속: a.department || '-',
       };
     });
@@ -330,7 +441,27 @@ export default function EquipmentMainDashboard() {
               </div>
             </div>
 
-            <div className="flex items-center gap-4 px-5 py-3.5 min-h-[76px] rounded-xl bg-sky-500/15 border border-sky-400/40">
+            <div
+              role="button"
+              tabIndex={0}
+              onClick={() => {
+                setSelectedDept('ALL');
+                setShowUrgentOnly(false);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  setSelectedDept('ALL');
+                  setShowUrgentOnly(false);
+                }
+              }}
+              title="전체 활성 장비 보기"
+              className={`cursor-pointer flex items-center gap-4 px-5 py-3.5 min-h-[76px] rounded-xl border transition-all ${
+                selectedDept === 'ALL' && !showUrgentOnly
+                  ? 'bg-sky-500/25 border-sky-300/70 ring-1 ring-sky-300/40'
+                  : 'bg-sky-500/15 border-sky-400/40 hover:bg-sky-500/20'
+              }`}
+            >
               <div className="w-10 h-10 rounded-md bg-sky-500/20 border border-sky-400/40 flex items-center justify-center text-lg text-sky-300 shrink-0">
                 📦
               </div>
@@ -338,7 +469,7 @@ export default function EquipmentMainDashboard() {
                 <p className="text-[10px] font-black uppercase tracking-wider text-sky-300">Total Active</p>
                 <p className="text-[9px] font-bold text-sky-200/70 mt-0.5">보유 장비</p>
                 <p className="text-xl font-black font-mono text-white mt-1">
-                  {equipments.length} <span className="text-[10px] text-sky-200/80 font-sans font-normal">EA</span>
+                  {totalActiveCount} <span className="text-[10px] text-sky-200/80 font-sans font-normal">건</span>
                 </p>
               </div>
             </div>
@@ -356,28 +487,11 @@ export default function EquipmentMainDashboard() {
             </span>
           </div>
           <p className="text-[10px] text-slate-400 font-medium">
-            ※ 부서를 클릭하면 하단 리스트가 필터링됩니다. 빨간 점(🚨)은 검교정 일정(D-30 또는 D+) 장비를 보유한 부서입니다.
+            ※ 부서 클릭 시 하단 필터 · 다시 클릭 또는 Total Active로 전체 보기. 빨간 점(🚨)은 검교정 일정(D-30/D+) 보유 부서입니다.
           </p>
         </div>
 
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8 gap-2">
-          <button
-            type="button"
-            onClick={() => setSelectedDept('ALL')}
-            className={`flex items-center justify-between px-3 py-2 rounded-lg border text-xs transition-all relative ${
-              selectedDept === 'ALL'
-                ? 'bg-sky-500 border-sky-500 text-white font-black shadow-sm'
-                : 'bg-white/5 border-white/10 text-slate-300 font-bold hover:bg-white/10 hover:border-white/20 hover:text-white'
-            }`}
-          >
-            <span className="truncate">전체 보기</span>
-            <span className={`text-[11px] font-black font-mono ml-2 px-1.5 py-0.2 rounded ${
-              selectedDept === 'ALL' ? 'bg-white/20 text-white' : 'bg-slate-700 text-slate-400'
-            }`}>
-              {equipments.length}
-            </span>
-          </button>
-
           {sortedDepts.map((dept) => {
             const hasUrgent = dept.urgent > 0;
             const isSelected = selectedDept === dept.key;
@@ -385,7 +499,7 @@ export default function EquipmentMainDashboard() {
               <button
                 key={dept.key}
                 type="button"
-                onClick={() => setSelectedDept(dept.key)}
+                onClick={() => setSelectedDept(isSelected ? 'ALL' : dept.key)}
                 className={`flex items-center justify-between px-3 py-2 rounded-lg border text-xs transition-all relative group ${
                   isSelected
                     ? 'bg-sky-500 border-sky-500 text-white font-black shadow-sm'
@@ -438,12 +552,25 @@ export default function EquipmentMainDashboard() {
           <div className="flex items-center gap-2 flex-wrap">
             <button
               type="button"
-              onClick={openBulkQRPrint}
-              className="px-3 py-1.5 bg-white border border-slate-200 text-slate-700 rounded-lg text-[10px] font-black shadow-sm hover:bg-slate-50 transition-all whitespace-nowrap"
+              disabled={!canEdit}
+              onClick={() => {
+                if (!canEdit) return;
+                openBulkQRPrint();
+              }}
+              title={
+                canEdit
+                  ? '선택 자산 QR 일괄출력'
+                  : 'QR 일괄출력은 Edit 권한이 필요합니다.'
+              }
+              className={`px-3 py-1.5 rounded-lg text-[10px] font-black shadow-sm transition-all whitespace-nowrap ${
+                canEdit
+                  ? 'bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 cursor-pointer'
+                  : 'bg-slate-200 text-slate-400 border border-slate-200 cursor-not-allowed'
+              }`}
             >
               {selectedMainIds.size > 0
-                ? `🖨️ QR 일괄출력(${selectedMainIds.size})`
-                : '🖨️ QR 일괄출력'}
+                ? `🖨️ QR 일괄출력(${selectedMainIds.size})(Edit)`
+                : '🖨️ QR 일괄출력(Edit)'}
             </button>
             <button
               type="button"
@@ -468,7 +595,7 @@ export default function EquipmentMainDashboard() {
         </div>
    
         <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse min-w-[1480px]">
+          <table className="w-full text-left border-collapse min-w-[1320px]">
             <thead className={`${showUrgentOnly ? 'bg-red-50' : 'bg-slate-100'} text-slate-700 text-[10px] font-black uppercase tracking-widest border-b border-slate-200`}>
               <tr>
                 <th className="h-12 w-12 text-center pl-4">
@@ -481,23 +608,22 @@ export default function EquipmentMainDashboard() {
                 </th>
                 <th className="h-12 px-3 text-center w-12">NO</th>
                 <th className="h-12 px-3 text-center w-16">사진</th>
-                <th className="h-12 px-3 w-28">자산번호</th>
-                <th className="h-12 px-3 w-40">품목명(장비명칭)</th>
-                <th className="h-12 px-3 w-28">제조사</th>
-                <th className="h-12 px-3 w-32">모델번호</th>
-                <th className="h-12 px-3 w-32">시리얼번호</th>
+                <th className="h-12 px-3 w-28 text-left">자산번호</th>
+                <th className="h-12 px-3 min-w-[10rem] w-48 text-left">품목명(장비명칭)</th>
+                <th className="h-12 px-2 w-24 text-left">제조사</th>
+                <th className="h-12 px-2 w-28 text-left">모델번호</th>
+                <th className="h-12 px-2 w-24 text-left">시리얼번호</th>
                 <th className="h-12 px-3 w-20 text-center">보유개수</th>
-                <th className="h-12 px-3 w-48">제품사양</th>
                 <th className="h-12 px-3 w-28 text-center ">구매일</th>
-                <th className="h-12 px-3 w-28 text-center ">검교정예정일</th>
-                <th className="h-12 px-3 w-32 text-center">관리소속</th>
+                <th className="h-12 px-3 w-36 text-center whitespace-nowrap">검교정예정일</th>
+                <th className="h-12 px-3 min-w-[9.5rem] w-40 text-left whitespace-nowrap">관리소속</th>
                 <th className="h-12 px-3 w-20 text-center">QR</th>
                 <th className="h-12 pr-6 w-28 text-center whitespace-nowrap">액션</th>
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-slate-100 text-xs font-bold text-slate-700">
               {paginatedEquipments.length === 0 ? (
-                <tr><td colSpan={15} className="h-24 text-center text-slate-400 italic">조건에 맞는 장비가 없습니다.</td></tr>
+                <tr><td colSpan={14} className="h-24 text-center text-slate-400 italic">조건에 맞는 장비가 없습니다.</td></tr>
               ) : paginatedEquipments.map((eq, idx) => (
                 <tr key={eq.id} className={`h-16 hover:bg-slate-50/50 transition-colors ${eq.isUrgent ? 'bg-red-50/30' : ''}`}>
                   <td className="pl-4 text-center">
@@ -513,7 +639,7 @@ export default function EquipmentMainDashboard() {
                       className="accent-indigo-600 cursor-pointer w-3.5 h-3.5"
                     />
                   </td>
-                  <td className="px-3 text-center text-slate-400 font-mono text-[10px]">{filteredEquipments.length - ((currentPage - 1) * itemsPerPage + idx)}</td>
+                  <td className="px-3 text-center text-slate-400 font-mono text-[10px] tabular-nums">{filteredEquipments.length - ((currentPage - 1) * itemsPerPage + idx)}</td>
                   <td className="text-center">
                     {resolveImageSrc(eq.thumbnail_url) ? (
                       <img src={resolveImageSrc(eq.thumbnail_url)!} alt="" className="w-10 h-10 object-cover rounded-md mx-auto border" />
@@ -521,25 +647,38 @@ export default function EquipmentMainDashboard() {
                       <div className="w-10 h-10 bg-slate-100 rounded-md mx-auto flex items-center justify-center text-[8px] text-slate-300 border">NO</div>
                     )}
                   </td>
-                  <td className="px-3 font-mono font-black text-slate-900">{displayAssetNo(eq.asset_no)}</td>
-                  <td className="px-3 text-blue-700">{eq.name}</td>
-                  <td className="px-3">{eq.brand || '-'}</td>
-                  <td className="px-3 text-[10px] text-slate-500">{eq.model_name || '-'}</td>
-                  <td className="px-3 text-[10px] font-mono text-slate-500">{eq.serial_no || '-'}</td>
-                  <td className="text-center">{eq.qty} EA</td>
-                  <td className="px-3 text-slate-500 truncate max-w-[150px] font-medium">{eq.spec_summary || '-'}</td>
-                  <td className="text-center font-bold text-slate-700">
+                  <td className="px-3 text-left font-mono font-black text-slate-900">{displayAssetNo(eq.asset_no)}</td>
+                  <td className="px-3 text-left text-blue-700 max-w-[13rem]" title={eq.name || ''}>
+                    <span className="line-clamp-1">{eq.name}</span>
+                  </td>
+                  <td className="px-2 text-left truncate max-w-[6rem]" title={eq.brand || ''}>{eq.brand || '-'}</td>
+                  <td className="px-2 text-left text-[10px] text-slate-500 truncate max-w-[7.5rem]" title={eq.model_name || ''}>{eq.model_name || '-'}</td>
+                  <td className="px-2 text-left text-[10px] font-mono text-slate-500 truncate max-w-[6.5rem]" title={eq.serial_no || ''}>{eq.serial_no || '-'}</td>
+                  <td className="text-center tabular-nums">
+                    {eq.qty}{' '}
+                    {(qtyUnitLabelByValue[String(eq.qty_unit || 'EA')] || eq.qty_unit || 'EA')
+                      .replace(/\([^)]*\)/g, '')
+                      .trim() || 'EA'}
+                  </td>
+                  <td className="text-center font-bold text-slate-700 tabular-nums">
                     {eq.purchase_date ? String(eq.purchase_date).split('T')[0] : '-'}
                   </td>
-                  <td className="text-center font-black">
-                    {eq.nCalib ? (
-                      <div className="flex flex-col items-center justify-center">
+                  <td className="text-center font-black tabular-nums">
+                    {eq.calibApplicable === false ? (
+                      <span className="text-slate-400 font-bold">대상 아님</span>
+                    ) : eq.nCalib ? (
+                      <div className="inline-flex items-center justify-center flex-nowrap whitespace-nowrap">
                         <span className="text-slate-900">{eq.nCalib}</span>
                         {renderDDay(eq.nCalib)}
                       </div>
                     ) : <span className="text-slate-300">-</span>}
                   </td>
-                  <td className="text-center text-slate-600">{eq.department || '-'}</td>
+                  <td
+                    className="px-3 text-left text-slate-600 whitespace-nowrap"
+                    title={eq.department || ''}
+                  >
+                    {eq.department || '-'}
+                  </td>
                   <td className="text-center">
                     <button type="button" onClick={(e) => { e.stopPropagation(); setShowQrModal(eq); }} className="px-2 py-1 bg-white border border-sky-200 text-sky-600 rounded text-[10px] whitespace-nowrap hover:bg-sky-50 transition-colors shadow-sm">QR보기</button>
                   </td>
@@ -571,6 +710,51 @@ export default function EquipmentMainDashboard() {
           </div>
         )}
       </div>
+
+      {isLv1 && (
+        <div className="mt-6 mb-2 space-y-3 px-1">
+          <p className="text-[11px] font-bold text-slate-400 leading-relaxed">
+            LV_1 전용 · 범주별 시드 복구 (없는 자산번호만 추가 · 창호·기밀은 시드 준비 중)
+          </p>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+            {seedCategoryCards.map((card) => {
+              const seedCount = SEED_EQUIPMENT_BY_CATEGORY[card.code].length;
+              const restoring = restoringSeedCategory === card.code;
+              const canRestore = seedCount > 0;
+              return (
+                <button
+                  key={card.code}
+                  type="button"
+                  disabled={!canRestore || !!restoringSeedCategory}
+                  onClick={() => {
+                    if (!canRestore) return;
+                    handleRestoreSeedEquipment(card.code, card.label);
+                  }}
+                  title={
+                    seedCount === 0
+                      ? '시드 데이터 준비 중'
+                      : `시드 ${seedCount}건 중 없는 항목만 추가 (LV_1)`
+                  }
+                  className={`px-3 py-2.5 rounded-xl text-[10px] font-black border text-left transition-all ${
+                    seedCount === 0
+                      ? 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed'
+                      : restoringSeedCategory
+                        ? 'bg-emerald-50 text-emerald-700 border-emerald-200 opacity-50 cursor-not-allowed'
+                        : 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100 shadow-sm cursor-pointer'
+                  }`}
+                >
+                  <span className="block text-[9px] opacity-70 mb-0.5">{card.label}</span>
+                  {restoring
+                    ? '복구 중…'
+                    : seedCount === 0
+                      ? '시드 준비 중'
+                      : `시드 장비 복구(${seedCount})`}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
 
       {bulkPrintAssets.length > 0 && (

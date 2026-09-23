@@ -50,6 +50,23 @@ export async function POST(req: Request) {
           created += 1;
           continue;
         }
+
+        // 예전 한 줄 시드 주소만 기본/상세로 분리 (사용자 수정 주소는 유지)
+        const oldCombined = `${seed.addressKo} ${seed.addressDetailKo}`.trim();
+        const detailEmpty = !String(existing.addressDetailKo || '').trim();
+        if (detailEmpty && existing.addressKo.trim() === oldCombined) {
+          await prisma.companyAddress.update({
+            where: { id: existing.id },
+            data: {
+              addressKo: seed.addressKo,
+              addressDetailKo: seed.addressDetailKo,
+              ...(existing.isActive ? {} : { isActive: true }),
+            },
+          });
+          if (!existing.isActive) reactivated += 1;
+          continue;
+        }
+
         if (!existing.isActive) {
           await prisma.companyAddress.update({
             where: { id: existing.id },

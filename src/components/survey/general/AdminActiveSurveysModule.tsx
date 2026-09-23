@@ -219,6 +219,21 @@ const formatAnswerForExport = (ans: any) => {
     });
     return groups;
   }, [users]);
+
+  /** admin/units 와 동일 — unitsList(sort_order asc) 순으로 부서 나열 */
+  const orderedDeptEntries = useMemo(() => {
+    const orderIndex = new Map<string, number>();
+    unitsList.forEach((u: any, idx: number) => {
+      const name = String(u.unit_name || '').trim();
+      if (name && !orderIndex.has(name)) orderIndex.set(name, idx);
+    });
+    return Object.entries(groupedUsers).sort(([a], [b]) => {
+      const ai = orderIndex.has(a) ? orderIndex.get(a)! : Number.MAX_SAFE_INTEGER;
+      const bi = orderIndex.has(b) ? orderIndex.get(b)! : Number.MAX_SAFE_INTEGER;
+      if (ai !== bi) return ai - bi;
+      return a.localeCompare(b, 'ko');
+    });
+  }, [groupedUsers, unitsList]);
      
   const toggleDept = (dept: string) => {
     const next = new Set(collapsedDepts);
@@ -329,13 +344,33 @@ const formatAnswerForExport = (ans: any) => {
   };
      
   const handleStatusChange = async (id: string, action: 'UP' | 'DOWN' | 'ARCHIVE' | 'FORCE_COMPLETE') => {
-    if (!requireEdit()) return;
+    // 중단(DOWN)만 Edit 없이 Access로 긴급 허용
+    if (action !== 'DOWN' && !requireEdit()) return;
     const currentSurvey = surveys.find(s => s.id === id);
     if (!currentSurvey) return;
+
+    if (action === 'DOWN') {
+      try {
+        const res = await fetch('/api/survey/general', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'PAUSE', id, menuPath: pathname }),
+        });
+        if (res.ok) {
+          const savedNode = await res.json();
+          setSurveys(prev => prev.map(s => s.id === id ? savedNode : s));
+        } else {
+          const errData = await res.json().catch(() => ({}));
+          alert(`❌ 중단 실패: ${errData.error || '알 수 없는 오류'}`);
+        }
+      } catch {
+        alert('상태 변경 동기화에 실패했습니다 (네트워크 오류).');
+      }
+      return;
+    }
      
     let finalPayload: any = { ...currentSurvey, menuPath: pathname };
     if (action === 'UP') finalPayload = { ...finalPayload, status: '진행중', postDate: todayStr, hasBeenPublished: true };
-    if (action === 'DOWN') finalPayload = { ...finalPayload, status: '게시중단' };
     if (action === 'FORCE_COMPLETE') {
       if(!confirm("이 설문을 즉시 강제 종료(완료) 처리하시겠습니까?")) return;
       finalPayload = { ...finalPayload, status: '완료' };
@@ -618,7 +653,12 @@ const formatAnswerForExport = (ans: any) => {
       hasData = true;
 
       const safeTitle = String(survey.title || survey.code || '설문').replace(/[/\\?%*:|"<>]/g, '-');
-      const exportQuestions = parsedQuestions.filter((q: any) => q.type !== 'SECTION');
+      const exportQuestions = parsedQuestions.filter((q: any) => {
+        if (!q || q.type === 'SECTION') return false;
+        if (typeof q.allowAnalysis === 'boolean') return q.allowAnalysis;
+        // 구 데이터: 선택·만족도만 분석 (주소·이름 등 개인정보 제외)
+        return q.type === 'CHOICE_SINGLE' || q.type === 'CHOICE_MULTI' || q.type === 'SCALE';
+      });
       if (exportQuestions.length === 0) return;
 
       const rows: (string | number)[][] = [
@@ -722,7 +762,9 @@ const formatAnswerForExport = (ans: any) => {
     });
 
     if (!hasData) return alert('선택한 설문에 제출된 응답이 없습니다.');
-    if (wb.SheetNames.length === 0) return alert('분석할 문항이 없습니다.');
+    if (wb.SheetNames.length === 0) {
+      return alert('분석 허용된 문항이 없습니다.\n빌더에서 문항별 「분석 허용」을 켠 뒤 다시 시도해주세요.');
+    }
     XLSX.writeFile(wb, `[결과분석]_${getKSTDateString()}.xlsx`);
   };
      
@@ -898,7 +940,7 @@ const formatAnswerForExport = (ans: any) => {
               canEdit ? 'bg-blue-500 text-white hover:bg-blue-400' : 'bg-slate-300 text-slate-500 cursor-not-allowed'
             }`}
           >
-            + 새로운 설문 작성(Edit)
+            + 새로운 조사 목록 생성(Edit)
           </button>
         </div>
         <div className="overflow-x-auto">
@@ -909,16 +951,16 @@ const formatAnswerForExport = (ans: any) => {
                 <th className="py-3 px-2 w-20">식별코드</th>
                 <th className="py-3 px-2 w-16 text-center text-indigo-500">게시번호</th>
                 <th className="py-3 px-2 w-20 text-center">게시일</th>
-                <th className="py-3 px-2 w-[220px]">게시명 / 유형</th>
+                <th className="py-3 px-2 w-[160px]">게시 상세</th>
                 <th className="py-3 px-2 w-14 text-center text-indigo-500">익명여부</th>
                 <th className="py-3 px-2 w-24 text-center">대상</th>
                 <th className="py-3 px-2 w-24 text-center">기간</th>
-                <th className="py-3 px-2 w-12 text-center border-l bg-slate-100/50">참여율</th>
-                <th className="py-3 px-2 w-12 text-center bg-blue-50/50 text-blue-600">참여</th>
-                <th className="py-3 px-2 w-[110px] text-center bg-red-50/50 text-red-600 border-r">미참여인원</th>
+                <th className="py-3 px-2 w-14 text-center border-l bg-slate-100/50 whitespace-nowrap">참여율</th>
+                <th className="py-3 px-2 w-[72px] text-center bg-blue-50/50 text-blue-600 whitespace-nowrap">참여</th>
+                <th className="py-3 px-2 w-[180px] text-center bg-red-50/50 text-red-600 border-r whitespace-nowrap">미참여인원</th>
                 <th className="py-3 px-2 w-16 text-center">상태</th>
-                <th className="py-3 px-2 w-[140px] text-center border-l border-slate-200 bg-slate-100/30 text-indigo-600">게시 제어</th>
-                <th className="py-3 pr-4 w-[140px] text-center bg-slate-100/30 text-slate-600">명세 관리</th>
+                <th className="py-3 px-2 w-[140px] text-center border-l border-slate-200 bg-slate-100/30 text-indigo-600">게시제어(Edit)</th>
+                <th className="py-3 pr-4 w-[140px] text-center bg-slate-100/30 text-slate-600">관리액션(Edit)</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 text-[11px]">
@@ -967,27 +1009,38 @@ const formatAnswerForExport = (ans: any) => {
                       </div>
                     </td>
                     
-                    <td className="py-2 px-2 text-center font-black text-slate-700 border-l bg-slate-50/30 align-middle">{rate}%</td>
+                    <td className="py-2 px-2 text-center font-black text-slate-700 border-l bg-slate-50/30 align-middle whitespace-nowrap">{rate}%</td>
                     
-                    <td className="py-2 px-2 text-center bg-blue-50/30 align-middle">
+                    <td className="py-2 px-2 text-center bg-blue-50/30 align-middle whitespace-nowrap">
                       {s.isAnonymous ? (
                         <span className="text-slate-400 font-black cursor-not-allowed">{done}명 <span className="text-[8px]">🔒</span></span>
                       ) : (
-                        <button onClick={() => handleMatrixFilter(s.id, 'DONE')} className="text-blue-600 font-black hover:underline relative z-10">{done}명</button>
+                        <button onClick={() => handleMatrixFilter(s.id, 'DONE')} className="text-blue-600 font-black hover:underline relative z-10 whitespace-nowrap">{done}명</button>
                       )}
                     </td>
                     
                     <td className="py-2 px-2 text-center bg-red-50/30 border-r align-middle">
-                      <div className="flex items-center justify-center gap-1 w-full">
+                      <div className="flex items-center justify-center gap-1 w-full flex-nowrap whitespace-nowrap">
                         {s.isAnonymous ? (
-                          <span className="text-slate-400 font-black cursor-not-allowed">{notDone}명 <span className="text-[8px]">🔒</span></span>
+                          <span className="text-slate-400 font-black cursor-not-allowed shrink-0">{notDone}명 <span className="text-[8px]">🔒</span></span>
                         ) : (
-                          <button onClick={() => handleMatrixFilter(s.id, 'NOT_DONE')} className="text-red-500 font-black hover:underline">{notDone}명</button>
+                          <button onClick={() => handleMatrixFilter(s.id, 'NOT_DONE')} className="text-red-500 font-black hover:underline shrink-0 whitespace-nowrap">{notDone}명</button>
                         )}
                         
                         {s.status === '진행중' && notDone > 0 && (
-                          <div className="flex gap-0.5 ml-1">
-                            <button onClick={() => handleNudge(s.id)} className="px-1.5 py-0.5 bg-white border border-red-200 text-red-600 rounded text-[9px] font-black hover:bg-red-50 transition-colors shadow-sm whitespace-nowrap">🔔독촉</button>
+                          <div className="flex gap-0.5 ml-1 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => handleNudge(s.id)}
+                              disabled={!canEdit}
+                              className={`px-1.5 py-0.5 border rounded text-[9px] font-black transition-colors shadow-sm whitespace-nowrap ${
+                                canEdit
+                                  ? 'bg-white border-red-200 text-red-600 hover:bg-red-50'
+                                  : 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'
+                              }`}
+                            >
+                              🔔독촉
+                            </button>
                             <button onClick={() => handleCopyUnsubmittedEmails(s)} className={`px-1.5 py-0.5 border rounded text-[9px] font-black transition-colors shadow-sm whitespace-nowrap ${s.isAnonymous ? 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}>📧메일추출</button>
                           </div>
                         )}
@@ -1003,15 +1056,29 @@ const formatAnswerForExport = (ans: any) => {
                     <td className="py-2 px-2 align-middle border-l border-slate-200 bg-slate-50/50">
                       <div className="flex items-center justify-center gap-1 w-full">
                         <button onClick={() => handleStatusChange(s.id, 'UP')} disabled={!canEdit || s.status === '진행중' || s.status === '완료'} className={`flex-1 py-1.5 rounded text-[9px] font-black whitespace-nowrap transition-all shadow-sm border ${canEdit && (s.status === '게시전' || s.status === '게시중단') ? 'bg-indigo-600 text-white border-indigo-600 hover:bg-indigo-700' : 'bg-slate-50 border-slate-200 text-slate-300 cursor-not-allowed'}`}>게시</button>
-                        <button onClick={() => handleStatusChange(s.id, 'DOWN')} disabled={!canEdit || s.status !== '진행중'} className={`flex-1 py-1.5 rounded text-[9px] font-black whitespace-nowrap transition-all shadow-sm border ${canEdit && s.status === '진행중' ? 'bg-white border-slate-300 text-slate-700 hover:bg-slate-100' : 'bg-slate-50 border-slate-200 text-slate-300 cursor-not-allowed'}`}>중단</button>
+                        <button onClick={() => handleStatusChange(s.id, 'DOWN')} disabled={s.status !== '진행중'} className={`flex-1 py-1.5 rounded text-[9px] font-black whitespace-nowrap transition-all shadow-sm border ${s.status === '진행중' ? 'bg-white border-slate-300 text-slate-700 hover:bg-slate-100' : 'bg-slate-50 border-slate-200 text-slate-300 cursor-not-allowed'}`}>중단</button>
                         <button onClick={() => handleStatusChange(s.id, 'FORCE_COMPLETE')} disabled={!canEdit || s.status !== '진행중'} className={`flex-1 py-1.5 rounded text-[9px] font-black whitespace-nowrap transition-all shadow-sm border ${canEdit && s.status === '진행중' ? (isTimeOver ? 'bg-red-600 text-white border-red-600 hover:bg-red-700 animate-bounce' : 'bg-emerald-600 text-white border-emerald-600 hover:bg-emerald-700') : 'bg-slate-50 border-slate-200 text-slate-300 cursor-not-allowed'}`}>마감</button>
                       </div>
                     </td>
      
                     <td className="py-2 pr-4 align-middle bg-slate-50/50">
                       <div className="flex items-center justify-center gap-1 w-full">
-                        <button onClick={() => setEditModal(s)} disabled={s.status === '진행중' || s.status === '완료'} className={`flex-1 py-1.5 rounded text-[9px] font-black whitespace-nowrap transition-all ${s.status === '게시전' || s.status === '게시중단' ? 'bg-white border border-slate-300 text-slate-700 shadow-sm hover:bg-slate-100' : 'bg-slate-200 text-slate-400 cursor-not-allowed border border-transparent'}`}>수정(Edit)</button>
-                        <button onClick={() => handleDeleteSurvey(s.id)} disabled={s.hasBeenPublished} className={`flex-1 py-1.5 rounded text-[9px] font-black whitespace-nowrap transition-all ${!s.hasBeenPublished ? 'bg-white border border-red-200 text-red-500 shadow-sm hover:bg-red-50' : 'bg-slate-200 text-slate-400 cursor-not-allowed border border-transparent'}`}>삭제(Edit)</button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (!requireEdit()) return;
+                            setEditModal(s);
+                          }}
+                          disabled={!canEdit || s.status === '진행중' || s.status === '완료'}
+                          className={`flex-1 py-1.5 rounded text-[9px] font-black whitespace-nowrap transition-all ${
+                            canEdit && (s.status === '게시전' || s.status === '게시중단')
+                              ? 'bg-white border border-slate-300 text-slate-700 shadow-sm hover:bg-slate-100'
+                              : 'bg-slate-200 text-slate-400 cursor-not-allowed border border-transparent'
+                          }`}
+                        >
+                          수정
+                        </button>
+                        <button onClick={() => handleDeleteSurvey(s.id)} disabled={s.hasBeenPublished} className={`flex-1 py-1.5 rounded text-[9px] font-black whitespace-nowrap transition-all ${!s.hasBeenPublished ? 'bg-white border border-red-200 text-red-500 shadow-sm hover:bg-red-50' : 'bg-slate-200 text-slate-400 cursor-not-allowed border border-transparent'}`}>삭제</button>
                         <button onClick={() => handleStatusChange(s.id, 'ARCHIVE')} disabled={!canEdit || s.status !== '완료'} className={`flex-1 py-1.5 rounded text-[9px] font-black whitespace-nowrap transition-all ${canEdit && s.status === '완료' ? 'bg-slate-800 text-white shadow-sm hover:bg-slate-900' : 'bg-slate-200 text-slate-400 cursor-not-allowed border border-transparent'}`}>보관함이동</button>
                       </div>
                     </td>
@@ -1034,7 +1101,7 @@ const formatAnswerForExport = (ans: any) => {
                 canEdit ? 'bg-indigo-600 hover:bg-indigo-500' : 'bg-slate-500 cursor-not-allowed opacity-60'
               }`}
             >
-              <span>📥</span> 선택 ZIP 다운로드
+              <span>📥</span> 선택 ZIP 다운로드(Edit)
             </button>
             <button
               type="button"
@@ -1043,7 +1110,7 @@ const formatAnswerForExport = (ans: any) => {
                 canEdit ? 'bg-emerald-600 hover:bg-emerald-500' : 'bg-slate-500 cursor-not-allowed opacity-60'
               }`}
             >
-              <span>📈</span> 선택 Excel 다운로드
+              <span>📈</span> 선택 Excel 다운로드(Edit)
             </button>
             <div className="w-px h-6 bg-white/20 mx-0.5" />
             <button
@@ -1054,7 +1121,7 @@ const formatAnswerForExport = (ans: any) => {
               }`}
               title="단일·다중·만족도 통계 + 단답·장문 응답 원문"
             >
-              <span>📊</span> 결과 분석 다운로드
+              <span>📊</span> 결과 분석 다운로드(Edit)
             </button>
           </div>
         </div>
@@ -1088,18 +1155,18 @@ const formatAnswerForExport = (ans: any) => {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {Object.entries(groupedUsers).map(([dept, deptUsers]) => (
+              {orderedDeptEntries.map(([dept, deptUsers]) => (
                 <Fragment key={dept}>
-                  <tr className="bg-slate-50/80 cursor-pointer hover:bg-slate-100 border-b border-white" onClick={() => toggleDept(dept)}>
-                    <td className="py-2 pl-6 font-black text-indigo-700 flex items-center gap-2 text-[11px]"><span className="text-[8px] opacity-60">{collapsedDepts.has(dept) ? '▶' : '▼'}</span>{dept} <span className="text-[9px] text-slate-400 ml-1">{deptUsers.length}명</span></td>
+                  <tr className="bg-blue-100 cursor-pointer hover:bg-blue-200/80 border-b border-blue-200" onClick={() => toggleDept(dept)}>
+                    <td className="py-2 pl-6 font-black text-blue-900 flex items-center gap-2 text-[11px]"><span className="text-[8px] opacity-70 text-blue-700">{collapsedDepts.has(dept) ? '▶' : '▼'}</span>{dept} <span className="text-[9px] text-blue-600/80 ml-1">{deptUsers.length}명</span></td>
                     {sortedSurveys.filter(s => s.status !== '보관됨').map(s => {
                        const targetDepts = s.target.split(',').map((t:string) => t.trim());
-                       if (!isOrgAllowed(targetDepts, dept, { targetUnitIds: s.target_unit_ids })) return <td key={`ds-${s.id}`} className="py-2 border-l border-slate-200 text-center bg-slate-100/30 text-[10px] font-black text-slate-300">-</td>;
-                       if (s.isAnonymous) return <td key={`ds-${s.id}`} className="py-2 border-l border-slate-200 text-center bg-slate-100/30"><span className="text-[9px] font-black text-slate-400">🔒 블랭크</span></td>;
+                       if (!isOrgAllowed(targetDepts, dept, { targetUnitIds: s.target_unit_ids })) return <td key={`ds-${s.id}`} className="py-2 border-l border-blue-200 text-center bg-blue-50/80 text-[10px] font-black text-blue-300">-</td>;
+                       if (s.isAnonymous) return <td key={`ds-${s.id}`} className="py-2 border-l border-blue-200 text-center bg-blue-50/80"><span className="text-[9px] font-black text-blue-400">🔒 블랭크</span></td>;
                        
                        const dDone = deptUsers.filter(u => responses[`${s.id}_${u.email}`]?.isDone).length;
                        const dTotal = deptUsers.length;
-                       return <td key={`ds-${s.id}`} className="py-2 border-l border-slate-200 text-center bg-slate-100/30"><div className="text-[9px] font-bold text-slate-600"><span className="text-indigo-600 font-black">{dDone}명</span> / {dTotal}명 <span className="ml-1 text-[8px] text-slate-400">({dTotal > 0 ? Math.round((dDone/dTotal)*100) : 0}%)</span></div></td>
+                       return <td key={`ds-${s.id}`} className="py-2 border-l border-blue-200 text-center bg-blue-50/80"><div className="text-[9px] font-bold text-blue-800"><span className="text-blue-700 font-black">{dDone}명</span> / {dTotal}명 <span className="ml-1 text-[8px] text-blue-500">({dTotal > 0 ? Math.round((dDone/dTotal)*100) : 0}%)</span></div></td>
                     })}
                   </tr>
                   {!collapsedDepts.has(dept) && deptUsers.map(user => {
@@ -1187,12 +1254,16 @@ const formatAnswerForExport = (ans: any) => {
             onMouseDown={(e) => e.stopPropagation()}
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="p-5 bg-slate-800 text-white flex justify-between"><h3 className="font-black text-sm">설문 상세 편집 및 배포</h3><button onClick={() => setPreviewModal(null)} className="text-xl">✕</button></div>
+            <div className="p-5 bg-slate-800 text-white flex justify-between"><h3 className="font-black text-sm">게시 상세 설정</h3><button onClick={() => setPreviewModal(null)} className="text-xl">✕</button></div>
             <div className="p-6 space-y-5 bg-slate-50 flex-1">
-              <div><label className="text-[10px] font-black text-slate-500">설문 제목</label><input type="text" value={previewModal.title} onChange={e => setPreviewModal({...previewModal, title: e.target.value})} className="w-full p-2 border rounded text-xs font-black outline-none focus:border-indigo-500" /></div>
-              <div><label className="text-[10px] font-black text-slate-500">인사말 및 설명</label><textarea value={previewModal.description} onChange={e => setPreviewModal({...previewModal, description: e.target.value})} className="w-full p-2 border rounded text-xs outline-none focus:border-indigo-500 min-h-[80px]" /></div>
+              <div><label className="text-[10px] font-black text-slate-500">설문 제목</label><input type="text" value={previewModal.title} readOnly={!canEdit} onChange={e => canEdit && setPreviewModal({...previewModal, title: e.target.value})} className={`w-full p-2 border rounded text-xs font-black outline-none ${canEdit ? 'focus:border-indigo-500' : 'bg-slate-100 text-slate-600 cursor-default'}`} /></div>
+              <div><label className="text-[10px] font-black text-slate-500">인사말 및 설명</label><textarea value={previewModal.description} readOnly={!canEdit} onChange={e => canEdit && setPreviewModal({...previewModal, description: e.target.value})} className={`w-full p-2 border rounded text-xs outline-none min-h-[80px] ${canEdit ? 'focus:border-indigo-500' : 'bg-slate-100 text-slate-600 cursor-default'}`} /></div>
               
-              <button onClick={handleSavePreview} className="w-full py-3 bg-slate-900 text-white rounded-xl text-xs font-black shadow-md hover:bg-black transition-all">💾 기본 정보 저장하기</button>
+              {canEdit ? (
+                <button type="button" onClick={handleSavePreview} className="w-full py-3 bg-slate-900 text-white rounded-xl text-xs font-black shadow-md hover:bg-black transition-all">제목 및 설명 수정(edit)</button>
+              ) : (
+                <button type="button" disabled className="w-full py-3 bg-slate-200 text-slate-400 rounded-xl text-xs font-black cursor-not-allowed">제목 및 설명 수정(edit)</button>
+              )}
      
               <div className="text-center p-5 border-2 border-dashed border-indigo-200 bg-indigo-50 rounded-xl">
                 <Link href={`/survey/general/admin/survey-builder?id=${previewModal.id}`} className="px-5 py-3 bg-indigo-600 text-white rounded-xl text-[11px] font-black shadow-md hover:bg-indigo-700 block w-fit mx-auto">🛠️ 설문지 생성기(Builder) 열기</Link>
@@ -1350,9 +1421,14 @@ const formatAnswerForExport = (ans: any) => {
                 </div>
               </div>
               
-              <div className="pt-4 flex gap-2 mt-2 border-t border-slate-200">
-                <button type="button" onClick={() => setEditModal(null)} className="flex-1 py-2.5 bg-white border rounded-xl font-black text-slate-600 hover:bg-slate-50">취소</button>
-                <button type="submit" className="flex-1 py-2.5 bg-indigo-600 text-white rounded-xl font-black shadow-md hover:bg-indigo-700">정보 저장하기</button>
+              <div className="pt-4 mt-2 border-t border-slate-200 space-y-2.5">
+                <p className="text-[11px] font-bold text-indigo-700 bg-indigo-50 border border-indigo-100 rounded-xl px-3 py-2 leading-relaxed">
+                  생성된 목록을 클릭하여 조사지 내용 상세 작성바랍니다.
+                </p>
+                <div className="flex gap-2">
+                  <button type="button" onClick={() => setEditModal(null)} className="flex-1 py-2.5 bg-white border rounded-xl font-black text-slate-600 hover:bg-slate-50">취소</button>
+                  <button type="submit" className="flex-1 py-2.5 bg-indigo-600 text-white rounded-xl font-black shadow-md hover:bg-indigo-700">정보 저장하기</button>
+                </div>
               </div>
             </form>
           </div>

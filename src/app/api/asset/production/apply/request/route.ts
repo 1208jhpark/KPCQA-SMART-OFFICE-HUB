@@ -31,10 +31,11 @@ export async function POST(req: Request) {
 
     const body = await req.json();
     const { category, projectName, quantity, options, estimatedPrice } = body;
+    const title = String(projectName || '').trim();
 
-    if (!category || !projectName || !quantity) {
+    if (!category || !title || !quantity) {
       return NextResponse.json(
-        { message: '필수 입력값이 누락되었습니다. (품목 분류, 프로젝트명, 수량)' },
+        { message: '필수 입력값이 누락되었습니다. (품목 분류, 관리용 제목, 수량)' },
         { status: 400 }
       );
     }
@@ -64,7 +65,7 @@ export async function POST(req: Request) {
             unitId: unitRow?.id || user.unit_id || null,
             deptHead: unitRow?.parent?.unit_name || user.unit?.parent?.unit_name || '본부 미지정',
             deptName: unitRow?.unit_name || user.unit?.unit_name || '조직 미지정',
-            title: projectName,
+            title: title,
             quantity: Number(quantity) || 1,
             estimatedPrice: Number(estimatedPrice) || 0,
             status: 'PENDING',

@@ -775,7 +775,7 @@ export default function BusinessCardArchivePanel() {
             </colgroup>
             <thead className="bg-indigo-100 text-indigo-900 text-[10px] font-black uppercase tracking-widest border-b border-indigo-200">
               <tr>
-                <th className="h-12 px-4">
+                <th className="h-12 px-4 text-center">
                   <input
                     type="checkbox"
                     title="현재 페이지(최대 10건)만 선택"
@@ -785,9 +785,9 @@ export default function BusinessCardArchivePanel() {
                   />
                 </th>
                 <th className="h-12 px-2 text-center">NO</th>
-                <th className="h-12 px-2">묶음 번호</th>
-                <th className="h-12 px-4">발주 일자</th>
-                <th className="h-12 px-4">신청 상세</th>
+                <th className="h-12 px-2 text-left">묶음 번호</th>
+                <th className="h-12 px-4 text-center">발주 일자</th>
+                <th className="h-12 px-4 text-center">신청 상세</th>
                 <th className="h-12 px-2 text-center">
                   <div className="flex flex-col items-center justify-center gap-0.5 leading-tight">
                     <span className="whitespace-nowrap">건 / 통</span>
@@ -817,7 +817,7 @@ export default function BusinessCardArchivePanel() {
                       <tr
                         className={`h-16 hover:bg-indigo-50/40 transition-colors ${selectedBatchIds.has(batch.id) ? 'bg-indigo-50/50' : ''}`}
                       >
-                        <td className="px-4">
+                        <td className="px-4 text-center">
                           <input
                             type="checkbox"
                             checked={selectedBatchIds.has(batch.id)}
@@ -827,15 +827,15 @@ export default function BusinessCardArchivePanel() {
                         </td>
                         <td className="px-2 text-center font-mono text-slate-500 tabular-nums">{rowNo}</td>
                         <td
-                          className="px-2 font-mono text-indigo-600 cursor-pointer whitespace-nowrap tabular-nums truncate overflow-hidden"
+                          className="px-2 text-left font-mono text-indigo-600 cursor-pointer whitespace-nowrap tabular-nums truncate overflow-hidden"
                           title={formatBatchNo(batch.id)}
                           onClick={() => toggleBatchExpand(batch.id)}
                         >
                           {formatBatchNo(batch.id)}
                         </td>
-                        <td className="px-4 text-slate-600 font-mono">{batch.orderDate}</td>
+                        <td className="px-4 text-center text-slate-600 font-mono tabular-nums">{batch.orderDate}</td>
                         <td
-                          className="px-4 cursor-pointer"
+                          className="px-4 text-center cursor-pointer"
                           onClick={() => toggleBatchExpand(batch.id)}
                         >
                           <span className="text-indigo-600 underline underline-offset-2">상세보기</span>
@@ -915,10 +915,10 @@ export default function BusinessCardArchivePanel() {
                                           <span className="text-[10px] font-bold whitespace-nowrap text-slate-600">본인</span>
                                         )}
                                       </td>
-                                      <td className="px-2 truncate bg-transparent" title={item.deptHead || ''}>{item.deptHead || '-'}</td>
-                                      <td className="px-2 truncate bg-transparent" title={displayDeptName(item, units) || ''}>{displayDeptName(item, units) || <span className="text-slate-300">-</span>}</td>
-                                      <td className="px-2 text-slate-800 truncate bg-transparent">{item.userName || '-'}</td>
-                                      <td className="px-2 text-slate-800 truncate bg-transparent" title={item.title || ''}>{item.title || '-'}</td>
+                                      <td className="px-2 text-left truncate bg-transparent" title={item.deptHead || ''}>{item.deptHead || '-'}</td>
+                                      <td className="px-2 text-left truncate bg-transparent" title={displayDeptName(item, units) || ''}>{displayDeptName(item, units) || <span className="text-slate-300">-</span>}</td>
+                                      <td className="px-2 text-left text-slate-800 truncate bg-transparent">{item.userName || '-'}</td>
+                                      <td className="px-2 text-left text-slate-800 truncate bg-transparent" title={item.title || ''}>{item.title || '-'}</td>
                                       <td className="px-1 text-center font-mono tabular-nums text-slate-900 bg-transparent">{item.quantity || 1}</td>
                                       <td className="px-1 text-center font-mono tabular-nums text-slate-800 bg-transparent">{formatPriceWon(itemInspectPrice(batch, item))}</td>
                                       <td className="bg-transparent" aria-hidden />

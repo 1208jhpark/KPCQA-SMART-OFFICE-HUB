@@ -8,13 +8,19 @@ const MENU_PATH = '/asset/it/dept';
 
 type ScopeUnit = { id: string; unit_name: string };
 
-/** Edit scope 기준 메모 수정 가능 조직 (본인 + DEPT 직속하위 / TOTAL 전체하위) */
-function resolveEditableUnits(
+/**
+ * Access(viewScope) 기준 공유 메모 수정 가능 조직
+ * - OWN: 본인만
+ * - DEPT: 본인 + 직속 하위
+ * - TOTAL: 본인 + 하위 전체
+ * - NONE: 빈 목록
+ */
+function resolveAccessibleUnits(
   myUnit: { id: string; unit_name: string },
   allUnits: Array<{ id: string; unit_name: string; parent_id: string | null }>,
-  editScopeRaw: string
+  viewScopeRaw: string
 ): ScopeUnit[] {
-  const editScope = String(editScopeRaw || 'NONE').toUpperCase();
+  const viewScope = String(viewScopeRaw || 'NONE').toUpperCase();
   const scopeUnits: ScopeUnit[] = [];
   const seen = new Set<string>();
   const push = (u: { id: string; unit_name: string } | null | undefined) => {
@@ -23,15 +29,16 @@ function resolveEditableUnits(
     scopeUnits.push({ id: u.id, unit_name: u.unit_name });
   };
 
-  push({ id: myUnit.id, unit_name: myUnit.unit_name });
-  if (editScope === 'NONE') return [];
-  if (editScope === 'OWN') return scopeUnits;
+  if (viewScope === 'NONE') return [];
 
-  if (editScope === 'DEPT') {
+  push({ id: myUnit.id, unit_name: myUnit.unit_name });
+  if (viewScope === 'OWN') return scopeUnits;
+
+  if (viewScope === 'DEPT') {
     allUnits
       .filter((u) => u.parent_id === myUnit.id)
       .forEach((c) => push(c));
-  } else if (editScope === 'TOTAL') {
+  } else if (viewScope === 'TOTAL') {
     const walk = (parentId: string) => {
       allUnits
         .filter((u) => u.parent_id === parentId)
@@ -47,6 +54,7 @@ function resolveEditableUnits(
 
 /**
  * [GET] 부서 공유 메모판 (OrgUnit.supply_storage_note — 소모품 부서와 동일 필드)
+ * 수정 가능 범위 = Access(viewScope) — Edit 불필요
  */
 export async function GET() {
   try {
@@ -70,19 +78,22 @@ export async function GET() {
       select: { id: true, unit_name: true, supply_storage_note: true },
     });
 
-    const editScopeRaw = String(auth.permission?.editScope || 'NONE').toUpperCase();
-    const editableUnits = resolveEditableUnits(
+    const viewScopeRaw = String(auth.permission?.viewScope || 'NONE').toUpperCase();
+    const accessibleUnits = resolveAccessibleUnits(
       { id: myUnit.id, unit_name: myUnit.unit_name },
       allUnits,
-      editScopeRaw
+      viewScopeRaw
     );
 
     return NextResponse.json({
       unit_id: row?.id || myUnit.id,
       dept_name: row?.unit_name || myUnit.unit_name,
       note: row?.supply_storage_note || '',
-      editableUnitIds: editableUnits.map((u) => u.id),
-      editScope: editScopeRaw,
+      // 하위 호환: editableUnitIds = Access 범위 (메모 수정용)
+      editableUnitIds: accessibleUnits.map((u) => u.id),
+      accessibleUnitIds: accessibleUnits.map((u) => u.id),
+      viewScope: viewScopeRaw,
+      editScope: String(auth.permission?.editScope || 'NONE').toUpperCase(),
     });
   } catch (error) {
     const authRes = authErrorToResponse(error);
@@ -93,7 +104,7 @@ export async function GET() {
 }
 
 /**
- * [PATCH] 부서 공유 메모 저장 (소모품 부서 메모와 동일 DB 필드)
+ * [PATCH] 부서 공유 메모 저장 — 메뉴 Access + viewScope 내 조직 (Edit 불필요)
  */
 export async function PATCH(req: Request) {
   try {
@@ -112,14 +123,14 @@ export async function PATCH(req: Request) {
       parent_id: u.parent_id ? String(u.parent_id) : null,
     }));
 
-    const editScopeRaw = String(auth.permission?.editScope || 'NONE').toUpperCase();
-    const editableUnits = resolveEditableUnits(
+    const viewScopeRaw = String(auth.permission?.viewScope || 'NONE').toUpperCase();
+    const accessibleUnits = resolveAccessibleUnits(
       { id: myUnit.id, unit_name: myUnit.unit_name },
       allUnits,
-      editScopeRaw
+      viewScopeRaw
     );
 
-    if (editScopeRaw === 'NONE' || editableUnits.length === 0) {
+    if (viewScopeRaw === 'NONE' || accessibleUnits.length === 0) {
       return NextResponse.json(
         { error: '공유 메모 수정 권한이 없습니다.' },
         { status: 403 }
@@ -137,7 +148,7 @@ export async function PATCH(req: Request) {
       );
     }
 
-    const target = editableUnits.find((u) => u.id === unitId);
+    const target = accessibleUnits.find((u) => u.id === unitId);
     if (!target) {
       return NextResponse.json(
         { error: '해당 조직의 공유 메모는 수정할 수 없습니다.' },

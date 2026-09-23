@@ -13,6 +13,7 @@ import {
 import BusinessCardAdminApplyModal from '@/components/asset/businesscard/BusinessCardAdminApplyModal';
 import { formatBusinessCardEnNumber, stripBusinessCardEnPlus } from '@/lib/businesscard-phone';
 import { formatBusinessCardAdminStatusLabel } from '@/lib/businesscard-status';
+import { formatCompanyAddressKo } from '@/lib/businesscard-seed-addresses';
 import { rowMatchesOrgUnit } from '@/lib/org-unit-match';
 
 const MENU_PATH = '/asset/businesscard/master/requests';
@@ -77,6 +78,7 @@ interface AddressMaster {
   label: string;
   zipCode: string;
   addressKo: string;
+  addressDetailKo?: string;
   addressEn: string;
   fax: string;
   faxEn: string;
@@ -215,22 +217,51 @@ export default function BusinessCardRequestPanel() {
     () => resolveInterfaceEditState(currentUser, interfaceConfig).isEditor,
     [currentUser, interfaceConfig]
   );
-  const isLV1 = useMemo(() => {
-    if (!currentUser) return false;
-    const roles = Array.isArray(currentUser.roles) ? currentUser.roles : [currentUser.role];
-    return roles?.some((r: any) => String(r).includes('LV_1')) || currentUser.permissionLevel === 'LV_1';
-  }, [currentUser]);
+  /** 신청 영구삭제(LV_1) — 시스템 역할만 (메뉴 Master 제외) */
+  const isLV1 = useMemo(() => isSystemLv1User(currentUser), [currentUser]);
   const alertNoEditPermission = () => alert('편집 권한이 없습니다.');
   const [deletingBulk, setDeletingBulk] = useState(false);
 
   const fetchAddresses = async () => {
-    const res = await fetch(`/api/asset/businesscard/master/addresses?t=${Date.now()}`, { cache: 'no-store' });
-    if (res.ok) setAddresses(await res.json());
+    try {
+      const res = await fetch(`/api/asset/businesscard/master/addresses?t=${Date.now()}`, {
+        cache: 'no-store',
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setAddresses(Array.isArray(data) ? data : []);
+        return;
+      }
+      setAddresses([]);
+    } catch {
+      setAddresses([]);
+    }
   };
 
   const fetchQualifications = async () => {
-    const res = await fetch(`/api/asset/businesscard/master/qualifications?t=${Date.now()}`, { cache: 'no-store' });
-    if (res.ok) setQualifications(await res.json());
+    try {
+      const res = await fetch(`/api/asset/businesscard/master/qualifications?t=${Date.now()}`, {
+        cache: 'no-store',
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setQualifications(Array.isArray(data) ? data : []);
+        return;
+      }
+      setQualifications([]);
+    } catch {
+      setQualifications([]);
+    }
+  };
+
+  const openQualModal = async () => {
+    await fetchQualifications();
+    setIsQualModalOpen(true);
+  };
+
+  const openAddressModal = async () => {
+    await fetchAddresses();
+    setIsAddressModalOpen(true);
   };
 
   const handleRestoreSeedQualifications = async () => {
@@ -860,7 +891,7 @@ export default function BusinessCardRequestPanel() {
         ...prev,
         addressId: addrId,
         zipCode: target.zipCode,
-        addressKo: target.addressKo,
+        addressKo: formatCompanyAddressKo(target),
         addressEn: target.addressEn,
         fax: target.fax,
         faxEn: target.faxEn,
@@ -1072,10 +1103,18 @@ export default function BusinessCardRequestPanel() {
 </div>
 
      <div className="flex justify-end gap-2 mb-2 flex-wrap items-center">
-        <button onClick={() => setIsQualModalOpen(true)} className="px-5 py-2.5 bg-indigo-700 text-white font-black text-xs rounded-xl hover:bg-indigo-800 transition-colors shadow-sm flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => void openQualModal()}
+          className="px-5 py-2.5 bg-indigo-700 text-white font-black text-xs rounded-xl hover:bg-indigo-800 transition-colors shadow-sm flex items-center gap-2"
+        >
           🎓 자격사항 표준단어 (국/영문) 관리
         </button>
-        <button onClick={() => setIsAddressModalOpen(true)} className="px-5 py-2.5 bg-slate-800 text-white font-black text-xs rounded-xl hover:bg-slate-700 transition-colors shadow-sm flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => void openAddressModal()}
+          className="px-5 py-2.5 bg-slate-800 text-white font-black text-xs rounded-xl hover:bg-slate-700 transition-colors shadow-sm flex items-center gap-2"
+        >
           ⚙️ 시스템 공통선택지 (주소/팩스) 관리
         </button>
         <div className="flex items-center gap-1.5 bg-white border border-slate-200 rounded-xl px-3 py-1.5 shadow-sm">
@@ -1341,10 +1380,10 @@ export default function BusinessCardRequestPanel() {
                 <th className="h-12 px-2 text-center whitespace-nowrap">관리번호</th>
                 <th className="h-12 px-2 text-center whitespace-nowrap">신청일</th>
                 <th className="h-12 px-2 text-center whitespace-nowrap">신청주체</th>
-                <th className="h-12 px-2">본부 (상위 조직)</th>
-                <th className="h-12 px-2">센터 (하위 조직)</th>
-                <th className="h-12 px-2">대상자</th>
-                <th className="h-12 px-2">직책 / 직급</th>
+                <th className="h-12 px-2 text-left">본부 (상위 조직)</th>
+                <th className="h-12 px-2 text-left">센터 (하위 조직)</th>
+                <th className="h-12 px-2 text-left">대상자</th>
+                <th className="h-12 px-2 text-left">직책 / 직급</th>
                 <th className="h-12 px-2 text-center whitespace-nowrap">신청내역 (Edit)</th>
                 <th className="h-12 px-2 text-center whitespace-nowrap">수량(통)</th>
                 <th className="h-12 px-2 text-center whitespace-nowrap">공정상태</th>
@@ -1399,10 +1438,10 @@ export default function BusinessCardRequestPanel() {
                           </span>
                         )}
                       </td>
-                      <td className="px-2 truncate" title={row.deptHead || ''}>{row.deptHead || '-'}</td>
-                      <td className="px-2 truncate" title={displayDeptName(row, units) || ''}>{displayDeptName(row, units) || <span className="text-slate-300">-</span>}</td>
-                      <td className="px-2 text-slate-800 truncate">{row.userName || '-'}</td>
-                      <td className="px-2 text-slate-800 truncate" title={appliedTitle}>{appliedTitle}</td>
+                      <td className="px-2 text-left truncate" title={row.deptHead || ''}>{row.deptHead || '-'}</td>
+                      <td className="px-2 text-left truncate" title={displayDeptName(row, units) || ''}>{displayDeptName(row, units) || <span className="text-slate-300">-</span>}</td>
+                      <td className="px-2 text-left text-slate-800 truncate">{row.userName || '-'}</td>
+                      <td className="px-2 text-left text-slate-800 truncate" title={appliedTitle}>{appliedTitle}</td>
                       <td className="px-2 text-center">
                         {isPending ? (
                           <button
@@ -1658,7 +1697,11 @@ export default function BusinessCardRequestPanel() {
             <div className="flex justify-between items-center border-b border-slate-100 pb-3">
               <div>
                 <span className="text-[10px] font-black text-blue-600 font-mono tracking-widest">
-                  {isRequestEditing ? '⚡ 원문 편집 모드 활성화' : '🔎 원문 검수 모드'}
+                  {isRequestEditing
+                    ? '⚡ 원문 편집 모드 활성화'
+                    : detailTarget.adminStatus === '접수완료'
+                      ? '🔎 원문 최종 검수 모드'
+                      : '🔎 원문 검수 모드'}
                 </span>
                 <h2 className="text-base font-black text-slate-900 mt-1">
                   명함 신청 데이터 세부 검수창 ({detailTarget.userName} 님)
@@ -1683,7 +1726,11 @@ export default function BusinessCardRequestPanel() {
                   grades.some((g) => g.label === preview.title);
                 const matchedAddress =
                   addresses.find((a) => a.id === preview.addressId) ||
-                  addresses.find((a) => a.zipCode === preview.zipCode && a.addressKo === preview.addressKo);
+                  addresses.find(
+                    (a) =>
+                      a.zipCode === preview.zipCode &&
+                      formatCompanyAddressKo(a) === preview.addressKo
+                  );
                 const addressSelectValue = matchedAddress?.id || preview.addressId || '';
                 const addressOptions = [
                   ...addresses.filter((a) => a.isActive || a.id === addressSelectValue),
@@ -1939,7 +1986,8 @@ export default function BusinessCardRequestPanel() {
               ) : (
                 <>
                   <button onClick={() => setDetailTarget(null)} className="px-5 py-2.5 bg-slate-100 text-slate-700 rounded-xl font-black text-xs hover:bg-slate-200 transition-colors">닫기</button>
-                  {detailTarget.adminStatus === '대기중' && (
+                  {(detailTarget.adminStatus === '대기중' ||
+                    detailTarget.adminStatus === '접수완료') && (
                     <button
                       type="button"
                       disabled={!canEditMaster}
@@ -1948,7 +1996,11 @@ export default function BusinessCardRequestPanel() {
                       if (!canEditMaster) return alertNoEditPermission();
                       const matched =
                         addresses.find((a) => a.id === detailTarget.addressId) ||
-                        addresses.find((a) => a.zipCode === detailTarget.zipCode && a.addressKo === detailTarget.addressKo);
+                        addresses.find(
+                          (a) =>
+                            a.zipCode === detailTarget.zipCode &&
+                            formatCompanyAddressKo(a) === detailTarget.addressKo
+                        );
                       setIsRequestEditing(true);
                       setRequestEditForm({
                         ...detailTarget,
@@ -1980,57 +2032,58 @@ export default function BusinessCardRequestPanel() {
               <div className="min-w-0 flex-1">
                 <h2 className="text-base font-black text-slate-900">🎓 명함 전용 자격사항 (국/영문) 단어장 관리</h2>
                 <p className="text-[10px] text-slate-400 mt-1">
-                  ※ 「시드 항목 복구(Edit)」는 누락·미사용분만 다시 채우며 기존 국문·영문명은 유지합니다.
+                  {canEditMaster
+                    ? '※ 「시드 항목 복구(Edit)」는 누락·미사용분만 다시 채우며 기존 국문·영문명은 유지합니다.'
+                    : '※ 조회 전용입니다. 수정·등록은 Edit 권한이 필요합니다.'}
                 </p>
               </div>
               <div className="flex items-center gap-2 shrink-0">
-                <button
-                  type="button"
-                  disabled={!canEditMaster}
-                  title={!canEditMaster ? '편집 권한 필요' : '시드 기본 자격사항 중 없거나 미사용인 항목만 추가/재활성'}
-                  onClick={handleRestoreSeedQualifications}
-                  className={`text-[10px] font-black px-3 py-2 rounded-xl border transition-all ${
-                    canEditMaster
-                      ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
-                      : DISABLED_ACTION_BTN
-                  }`}
-                >
-                  시드 항목 복구(Edit)
-                </button>
+                {canEditMaster && (
+                  <button
+                    type="button"
+                    title="시드 기본 자격사항 중 없거나 미사용인 항목만 추가/재활성"
+                    onClick={handleRestoreSeedQualifications}
+                    className="text-[10px] font-black px-3 py-2 rounded-xl border transition-all bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100"
+                  >
+                    시드 항목 복구(Edit)
+                  </button>
+                )}
                 <button onClick={() => setIsQualModalOpen(false)} className="w-8 h-8 rounded-full bg-slate-200 text-slate-600 hover:bg-slate-300 font-black text-sm">✕</button>
               </div>
             </div>
             
             <div className="p-6 overflow-y-auto space-y-6">
               <div>
-                <h3 className="text-xs font-black text-slate-800 mb-3 tracking-widest uppercase">등록된 자격사항 매핑 목록</h3>
+                <h3 className="text-xs font-black text-slate-800 mb-3 tracking-widest uppercase">
+                  등록된 자격사항 매핑 목록
+                  <span className="ml-2 text-[10px] font-bold text-slate-400 normal-case tracking-normal">
+                    ({qualifications.length}건)
+                  </span>
+                </h3>
                 <div className="space-y-2">
                   {qualifications.map(q => (
                     <div key={q.id} className={`p-3 border rounded-xl flex flex-col md:flex-row justify-between items-start md:items-center gap-2 transition-colors ${q.isActive ? 'border-indigo-200 bg-white' : 'border-slate-100 bg-slate-50 opacity-60'}`}>
-                      {editingQualId === q.id ? (
+                      {editingQualId === q.id && canEditMaster ? (
                         <div className="flex flex-1 gap-2 w-full">
                           <input type="text" value={editQualForm.nameKo} onChange={e => setEditQualForm({...editQualForm, nameKo: e.target.value})} className="border p-1 text-xs rounded font-bold w-1/2" placeholder="국문명" />
                           <input type="text" value={editQualForm.nameEn} onChange={e => setEditQualForm({...editQualForm, nameEn: e.target.value})} className="border p-1 text-xs rounded font-bold w-1/2" placeholder="영문명" />
                         </div>
                       ) : (
-                        <div className="flex gap-4 items-center flex-1">
-                          <span className={`text-xs font-black w-32 ${q.isActive ? 'text-indigo-700' : 'text-slate-400'}`}>{q.nameKo}</span>
-                          <span className="text-slate-300 font-light">|</span>
-                          <span className={`text-[11px] font-bold ${q.isActive ? 'text-slate-700' : 'text-slate-400'}`}>{q.nameEn}</span>
-                          {!q.isActive && <span className="ml-2 text-[9px] font-bold bg-slate-200 text-slate-500 px-2 py-0.5 rounded">미사용</span>}
+                        <div className="flex gap-4 items-center flex-1 min-w-0">
+                          <span className={`text-xs font-black w-32 shrink-0 ${q.isActive ? 'text-indigo-700' : 'text-slate-400'}`}>{q.nameKo}</span>
+                          <span className="text-slate-300 font-light shrink-0">|</span>
+                          <span className={`text-[11px] font-bold truncate ${q.isActive ? 'text-slate-700' : 'text-slate-400'}`}>{q.nameEn}</span>
+                          {!q.isActive && <span className="ml-2 shrink-0 text-[9px] font-bold bg-slate-200 text-slate-500 px-2 py-0.5 rounded">미사용</span>}
                         </div>
                       )}
+                      {canEditMaster && (
                       <div className="flex items-center gap-1 w-full md:w-auto justify-end">
                         {editingQualId === q.id ? (
                           <>
                             <button
                               type="button"
-                              disabled={!canEditMaster}
-                              title={!canEditMaster ? '편집 권한 필요' : undefined}
                               onClick={() => executeUpdateQual(q.id)}
-                              className={`px-2 py-1 font-black text-[10px] rounded ${
-                                canEditMaster ? 'bg-emerald-600 text-white hover:bg-emerald-700' : DISABLED_ACTION_BTN
-                              }`}
+                              className="px-2 py-1 font-black text-[10px] rounded bg-emerald-600 text-white hover:bg-emerald-700"
                             >
                               저장
                             </button>
@@ -2040,30 +2093,19 @@ export default function BusinessCardRequestPanel() {
                           <>
                             <button
                               type="button"
-                              disabled={!canEditMaster}
-                              title={!canEditMaster ? '편집 권한 필요' : undefined}
                               onClick={() => {
-                                if (!canEditMaster) return alertNoEditPermission();
                                 setEditingQualId(q.id);
                                 setEditQualForm({ nameKo: q.nameKo, nameEn: q.nameEn });
                               }}
-                              className={`px-2 py-1 font-black text-[10px] rounded ${
-                                canEditMaster
-                                  ? 'bg-white border border-slate-300 text-slate-700 hover:bg-slate-50'
-                                  : DISABLED_ACTION_BTN
-                              }`}
+                              className="px-2 py-1 font-black text-[10px] rounded bg-white border border-slate-300 text-slate-700 hover:bg-slate-50"
                             >
                               수정(Edit)
                             </button>
                             <button
                               type="button"
-                              disabled={!canEditMaster}
-                              title={!canEditMaster ? '편집 권한 필요' : undefined}
                               onClick={() => toggleQualActive(q.id)}
                               className={`px-2 py-1 text-[10px] font-black rounded ${
-                                !canEditMaster
-                                  ? DISABLED_ACTION_BTN
-                                  : q.isActive
+                                  q.isActive
                                     ? 'bg-white border border-slate-300 text-slate-600 hover:bg-slate-50'
                                     : 'bg-slate-800 border border-slate-800 text-white hover:bg-slate-700'
                               }`}
@@ -2072,26 +2114,22 @@ export default function BusinessCardRequestPanel() {
                             </button>
                             <button
                               type="button"
-                              disabled={!canEditMaster}
-                              title={!canEditMaster ? '편집 권한 필요' : undefined}
                               onClick={() => executeDeleteQual(q.id, q.nameKo)}
-                              className={`px-2 py-1 font-black text-[10px] rounded ${
-                                canEditMaster
-                                  ? 'bg-rose-50 border border-rose-200 text-rose-600 hover:bg-rose-100'
-                                  : DISABLED_ACTION_BTN
-                              }`}
+                              className="px-2 py-1 font-black text-[10px] rounded bg-rose-50 border border-rose-200 text-rose-600 hover:bg-rose-100"
                             >
                               삭제(Edit)
                             </button>
                           </>
                         )}
                       </div>
+                      )}
                     </div>
                   ))}
                   {qualifications.length === 0 && <p className="text-xs text-slate-400 text-center py-4">등록된 자격사항 단어가 없습니다.</p>}
                 </div>
               </div>
 
+              {canEditMaster && (
               <div className="p-5 bg-indigo-50/50 rounded-2xl border border-indigo-100 space-y-4">
                 <h3 className="text-xs font-black text-indigo-900 tracking-widest uppercase">➕ 신규 자격사항(국/영문 대칭) 등록</h3>
                 <div className="grid grid-cols-2 gap-3">
@@ -2106,18 +2144,13 @@ export default function BusinessCardRequestPanel() {
                 </div>
                 <button
                   type="button"
-                  disabled={!canEditMaster}
-                  title={!canEditMaster ? '편집 권한 필요' : undefined}
                   onClick={saveNewQual}
-                  className={`w-full py-3 font-black text-xs rounded-xl shadow-sm transition-colors ${
-                    canEditMaster
-                      ? 'bg-indigo-600 text-white hover:bg-indigo-700'
-                      : DISABLED_ACTION_BTN
-                  }`}
+                  className="w-full py-3 font-black text-xs rounded-xl shadow-sm transition-colors bg-indigo-600 text-white hover:bg-indigo-700"
                 >
                   위 설정으로 단어장에 등록하기
                 </button>
               </div>
+              )}
             </div>
           </div>
         </div>
@@ -2130,64 +2163,66 @@ export default function BusinessCardRequestPanel() {
               <div className="min-w-0 flex-1">
                 <h2 className="text-base font-black text-slate-900">⚙️ 전사 공통 주소지 및 팩스번호 설정</h2>
                 <p className="text-[10px] text-slate-400 mt-1">
-                  ※ 「시드 항목 복구(Edit)」는 누락·미사용분만 다시 채우며 기존 주소·팩스는 유지합니다.
+                  {canEditMaster
+                    ? '※ 「시드 항목 복구(Edit)」는 누락·미사용분만 다시 채우며 기존 주소·팩스는 유지합니다.'
+                    : '※ 조회 전용입니다. 수정·등록은 Edit 권한이 필요합니다.'}
                 </p>
               </div>
               <div className="flex items-center gap-2 shrink-0">
-                <button
-                  type="button"
-                  disabled={!canEditMaster}
-                  title={!canEditMaster ? '편집 권한 필요' : '시드 기본 주소 중 없거나 미사용인 항목만 추가/재활성'}
-                  onClick={handleRestoreSeedAddresses}
-                  className={`text-[10px] font-black px-3 py-2 rounded-xl border transition-all ${
-                    canEditMaster
-                      ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
-                      : DISABLED_ACTION_BTN
-                  }`}
-                >
-                  시드 항목 복구(Edit)
-                </button>
+                {canEditMaster && (
+                  <button
+                    type="button"
+                    title="시드 기본 주소 중 없거나 미사용인 항목만 추가/재활성"
+                    onClick={handleRestoreSeedAddresses}
+                    className="text-[10px] font-black px-3 py-2 rounded-xl border transition-all bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100"
+                  >
+                    시드 항목 복구(Edit)
+                  </button>
+                )}
                 <button onClick={() => setIsAddressModalOpen(false)} className="w-8 h-8 rounded-full bg-slate-200 text-slate-600 hover:bg-slate-300 font-black text-sm">✕</button>
               </div>
             </div>
             
             <div className="p-6 overflow-y-auto space-y-6">
               <div>
-                <h3 className="text-xs font-black text-slate-800 mb-3 tracking-widest uppercase">등록된 공통 선택지 목록</h3>
+                <h3 className="text-xs font-black text-slate-800 mb-3 tracking-widest uppercase">
+                  등록된 공통 선택지 목록
+                  <span className="ml-2 text-[10px] font-bold text-slate-400 normal-case tracking-normal">
+                    ({addresses.length}건)
+                  </span>
+                </h3>
                 <div className="space-y-3">
                   {addresses.map(a => (
                     <div key={a.id} className={`p-4 border rounded-2xl flex flex-col md:flex-row justify-between items-stretch md:items-center gap-4 transition-colors ${a.isActive ? 'border-slate-300 bg-white' : 'border-slate-100 bg-slate-50 opacity-60'}`}>
-                      {editingAddressId === a.id ? (
+                      {editingAddressId === a.id && canEditMaster ? (
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-2 flex-1">
                           <input type="text" value={editAddressForm.label || ''} onChange={e => setEditAddressForm({...editAddressForm, label: e.target.value})} className="border p-1 text-xs rounded font-bold" placeholder="선택지명" />
                           <input type="text" value={editAddressForm.zipCode || ''} onChange={e => setEditAddressForm({...editAddressForm, zipCode: e.target.value})} className="border p-1 text-xs rounded font-mono" placeholder="우편번호" />
-                          <input type="text" value={editAddressForm.addressKo || ''} onChange={e => setEditAddressForm({...editAddressForm, addressKo: e.target.value})} className="border p-1 text-xs rounded md:col-span-2" placeholder="국문 주소" />
+                          <input type="text" value={editAddressForm.addressKo || ''} onChange={e => setEditAddressForm({...editAddressForm, addressKo: e.target.value})} className="border p-1 text-xs rounded md:col-span-2" placeholder="국문 기본 주소 (도로명)" />
+                          <input type="text" value={editAddressForm.addressDetailKo || ''} onChange={e => setEditAddressForm({...editAddressForm, addressDetailKo: e.target.value})} className="border p-1 text-xs rounded md:col-span-2" placeholder="국문 상세 주소 (건물·층)" />
                           <input type="text" value={editAddressForm.addressEn || ''} onChange={e => setEditAddressForm({...editAddressForm, addressEn: e.target.value})} className="border p-1 text-xs rounded md:col-span-2" placeholder="영문 주소" />
                           <input type="text" value={editAddressForm.fax || ''} onChange={e => setEditAddressForm({...editAddressForm, fax: e.target.value})} className="border p-1 text-xs rounded font-mono" placeholder="국문 팩스" />
                           <input type="text" value={editAddressForm.faxEn || ''} onChange={e => setEditAddressForm({...editAddressForm, faxEn: e.target.value})} className="border p-1 text-xs rounded font-mono" placeholder="영문 팩스" />
                         </div>
                       ) : (
-                        <div className="space-y-1 flex-1">
+                        <div className="space-y-1 flex-1 min-w-0">
                           <div className="flex items-center gap-2">
                             <span className={`text-xs font-black ${a.isActive ? 'text-blue-700' : 'text-slate-400'}`}>{a.label}</span>
                             {!a.isActive && <span className="text-[10px] font-bold bg-slate-200 text-slate-500 px-2 py-0.5 rounded">미사용</span>}
                           </div>
-                          <p className="text-[11px] text-slate-600 font-bold">[{a.zipCode}] {a.addressKo}</p>
+                          <p className="text-[11px] text-slate-600 font-bold">[{a.zipCode}] {formatCompanyAddressKo(a)}</p>
                           <p className="text-[11px] text-slate-400 leading-normal">{a.addressEn}</p>
                           <p className="text-[11px] font-mono text-slate-500">Fax: {a.fax} / En Fax: {a.faxEn}</p>
                         </div>
                       )}
+                      {canEditMaster && (
                       <div className="flex items-center gap-1 md:flex-col justify-end min-w-[80px]">
                         {editingAddressId === a.id ? (
                           <>
                             <button
                               type="button"
-                              disabled={!canEditMaster}
-                              title={!canEditMaster ? '편집 권한 필요' : undefined}
                               onClick={executeUpdateAddress}
-                              className={`w-full py-1 font-black text-[10px] rounded ${
-                                canEditMaster ? 'bg-emerald-600 text-white hover:bg-emerald-700' : DISABLED_ACTION_BTN
-                              }`}
+                              className="w-full py-1 font-black text-[10px] rounded bg-emerald-600 text-white hover:bg-emerald-700"
                             >
                               저장
                             </button>
@@ -2197,30 +2232,19 @@ export default function BusinessCardRequestPanel() {
                           <>
                             <button
                               type="button"
-                              disabled={!canEditMaster}
-                              title={!canEditMaster ? '편집 권한 필요' : undefined}
                               onClick={() => {
-                                if (!canEditMaster) return alertNoEditPermission();
                                 setEditingAddressId(a.id);
                                 setEditAddressForm(a);
                               }}
-                              className={`w-full py-1 font-black text-[10px] rounded ${
-                                canEditMaster
-                                  ? 'bg-white border border-slate-300 text-slate-700 hover:bg-slate-50'
-                                  : DISABLED_ACTION_BTN
-                              }`}
+                              className="w-full py-1 font-black text-[10px] rounded bg-white border border-slate-300 text-slate-700 hover:bg-slate-50"
                             >
                               수정(Edit)
                             </button>
                             <button
                               type="button"
-                              disabled={!canEditMaster}
-                              title={!canEditMaster ? '편집 권한 필요' : undefined}
                               onClick={() => toggleAddressActive(a.id)}
                               className={`w-full py-1 text-[10px] font-black rounded ${
-                                !canEditMaster
-                                  ? DISABLED_ACTION_BTN
-                                  : a.isActive
+                                  a.isActive
                                     ? 'bg-white border border-slate-300 text-slate-600 hover:bg-slate-50'
                                     : 'bg-slate-800 border border-slate-800 text-white hover:bg-slate-700'
                               }`}
@@ -2229,30 +2253,29 @@ export default function BusinessCardRequestPanel() {
                             </button>
                             <button
                               type="button"
-                              disabled={!canEditMaster}
-                              title={!canEditMaster ? '편집 권한 필요' : undefined}
                               onClick={() => executeDeleteAddress(a.id, a.label)}
-                              className={`w-full py-1 font-black text-[10px] rounded ${
-                                canEditMaster
-                                  ? 'bg-rose-50 border border-rose-200 text-rose-600 hover:bg-rose-100'
-                                  : DISABLED_ACTION_BTN
-                              }`}
+                              className="w-full py-1 font-black text-[10px] rounded bg-rose-50 border border-rose-200 text-rose-600 hover:bg-rose-100"
                             >
                               삭제(Edit)
                             </button>
                           </>
                         )}
                       </div>
+                      )}
                     </div>
                   ))}
+                  {addresses.length === 0 && (
+                    <p className="text-xs text-slate-400 text-center py-4">등록된 공통 선택지가 없습니다.</p>
+                  )}
                 </div>
               </div>
 
+              {canEditMaster && (
               <div className="p-5 bg-slate-50 rounded-2xl border border-slate-200 space-y-4">
                 <h3 className="text-xs font-black text-slate-800 tracking-widest uppercase">➕ 신규 선택지(주소/팩스) 등록</h3>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   <div>
-                    <label className="block text-[10px] font-bold text-slate-500 mb-1">선택지명 (예: 부산지사)</label>
+                    <label className="block text-[10px] font-bold text-slate-500 mb-1">선택지명 (예: 12F 경영기획본부)</label>
                     <input type="text" value={newAddress.label || ''} onChange={e => setNewAddress({...newAddress, label: e.target.value})} className="w-full p-2 border border-slate-200 rounded text-xs" />
                   </div>
                   <div>
@@ -2260,11 +2283,15 @@ export default function BusinessCardRequestPanel() {
                     <input type="text" value={newAddress.zipCode || ''} onChange={e => setNewAddress({...newAddress, zipCode: e.target.value})} className="w-full p-2 border border-slate-200 rounded text-xs font-mono" />
                   </div>
                   <div className="md:col-span-2">
-                    <label className="block text-[10px] font-bold text-slate-500 mb-1">국문 상세 주소</label>
-                    <input type="text" value={newAddress.addressKo || ''} onChange={e => setNewAddress({...newAddress, addressKo: e.target.value})} className="w-full p-2 border border-slate-200 rounded text-xs" />
+                    <label className="block text-[10px] font-bold text-slate-500 mb-1">국문 기본 주소 (도로명)</label>
+                    <input type="text" value={newAddress.addressKo || ''} onChange={e => setNewAddress({...newAddress, addressKo: e.target.value})} className="w-full p-2 border border-slate-200 rounded text-xs" placeholder="예: 서울특별시 중구 세종대로 39" />
                   </div>
                   <div className="md:col-span-2">
-                    <label className="block text-[10px] font-bold text-slate-500 mb-1">영문 상세 주소</label>
+                    <label className="block text-[10px] font-bold text-slate-500 mb-1">국문 상세 주소 (건물·층)</label>
+                    <input type="text" value={newAddress.addressDetailKo || ''} onChange={e => setNewAddress({...newAddress, addressDetailKo: e.target.value})} className="w-full p-2 border border-slate-200 rounded text-xs" placeholder="예: 대한상공회의소빌딩 12층" />
+                  </div>
+                  <div className="md:col-span-2">
+                    <label className="block text-[10px] font-bold text-slate-500 mb-1">영문 주소</label>
                     <input type="text" value={newAddress.addressEn || ''} onChange={e => setNewAddress({...newAddress, addressEn: e.target.value})} className="w-full p-2 border border-slate-200 rounded text-xs" />
                   </div>
                   <div>
@@ -2278,18 +2305,13 @@ export default function BusinessCardRequestPanel() {
                 </div>
                 <button
                   type="button"
-                  disabled={!canEditMaster}
-                  title={!canEditMaster ? '편집 권한 필요' : undefined}
                   onClick={saveNewAddress}
-                  className={`w-full mt-2 py-3 font-black text-xs rounded-xl shadow-sm transition-colors ${
-                    canEditMaster
-                      ? 'bg-blue-600 text-white hover:bg-blue-700'
-                      : DISABLED_ACTION_BTN
-                  }`}
+                  className="w-full mt-2 py-3 font-black text-xs rounded-xl shadow-sm transition-colors bg-blue-600 text-white hover:bg-blue-700"
                 >
                   위 설정으로 공통 주소지 등록하기
                 </button>
               </div>
+              )}
             </div>
           </div>
         </div>

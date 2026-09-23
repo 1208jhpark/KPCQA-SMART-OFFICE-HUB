@@ -85,6 +85,12 @@ export async function POST(req: Request) {
             where: { label: seed.label },
           });
         }
+        // 한생미디어(쇼핑백) → (쇼핑백, 달력) 리네임 전 잔여분
+        if (!existing && seed.id === 'seed_vend_hanseng_bag') {
+          existing = await prisma.productionVendorMaster.findFirst({
+            where: { label: '한생미디어(쇼핑백)' },
+          });
+        }
 
         if (!existing) {
           await prisma.productionVendorMaster.create({
@@ -110,6 +116,13 @@ export async function POST(req: Request) {
             data: { isActive: true },
           });
           reactivated += 1;
+        }
+        // 시드 이메일이 있고 DB 이메일이 비어 있으면만 채움 (기존 값 보존)
+        if (seed.email && !String(existing.email || '').trim()) {
+          await prisma.productionVendorMaster.update({
+            where: { id: existing.id },
+            data: { email: seed.email },
+          });
         }
       }
 

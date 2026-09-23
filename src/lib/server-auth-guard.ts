@@ -77,12 +77,16 @@ export function authorizeMarketingPurchasesWrite(options?: MarketingAuthOptions)
 /** 고객사 조회: client-search(+ register lite 선택용) */
 export function authorizeMarketingClientsRead(options?: {
   requireEditor?: boolean;
-  /** lite=지급신청 드롭다운 — register 접근도 허용 */
+  /** lite=지급신청·제작 실배송지 고객사 주소 — register·production apply 접근도 허용 */
   forRegisterLite?: boolean;
 }) {
   const { forRegisterLite, ...authOpts } = options || {};
   const paths = forRegisterLite
-    ? [MARKETING_MENU.clientSearch, MARKETING_MENU.register]
+    ? [
+        MARKETING_MENU.clientSearch,
+        MARKETING_MENU.register,
+        '/asset/production/apply/request',
+      ]
     : [MARKETING_MENU.clientSearch];
   return authorizeAnyMenuPaths(paths, authOpts);
 }
@@ -481,6 +485,40 @@ export async function authorizeEquipmentApi(options?: {
   return authorizeAnyMenuPaths(paths.length > 0 ? paths : fallback, {
     elevateMenuMaster: false,
   });
+}
+
+/**
+ * 대시보드(activeOnly)용: 접근 가능한 장비 범주 코드 목록.
+ * - `/equipment/main/{code}` 메뉴에 등록된 코드만 (DB 잔존 `기본`/`a`/`window` 등 제외)
+ * - LV_1 → 메뉴에 있는 전체 범주 코드
+ * - 그 외 → Access 있는 범주 코드만
+ */
+export function listAccessibleEquipmentCategoryCodes(
+  auth: Awaited<ReturnType<typeof authorizeEquipmentApi>>
+): string[] {
+  const isLv1 = auth.permission.myRole === 'LV_1';
+
+  const userForPerm = {
+    id: auth.user.id,
+    email: auth.user.email,
+    roles: auth.user.roles,
+    dept_id: auth.user.unit_id,
+    unit: auth.user.unit,
+  };
+
+  const codes: string[] = [];
+  for (const menu of auth.allMenus || []) {
+    const path = normalizePath(String(menu.path || ''));
+    const m = path.match(/^\/equipment\/main\/([^/]+)$/);
+    if (!m) continue;
+    if (isLv1) {
+      codes.push(m[1]);
+      continue;
+    }
+    const p = checkMenuPermission(userForPerm, menu, auth.allMenus, auth.unitsList);
+    if (p.hasAccess) codes.push(m[1]);
+  }
+  return codes;
 }
 
 export type OrgUnitRef = {

@@ -23,6 +23,8 @@ interface Question {
   type: QuestionType;
   title: string;
   isRequired: boolean;
+  /** 결과 분석 다운로드에 포함 여부 (품목 선택 등). 주소·이름 등은 기본 비허용 */
+  allowAnalysis?: boolean;
   options?: SurveyOption[]; 
   scaleMax?: number;  
   templateFileName?: string; 
@@ -36,6 +38,10 @@ interface Question {
   referenceLink?: string;
   goToSectionId?: string;
 }
+
+/** 선택·만족도는 기본 허용, 주소·이름 등 개인정보는 기본 비허용 */
+const defaultAllowAnalysis = (type: QuestionType) =>
+  type === 'CHOICE_SINGLE' || type === 'CHOICE_MULTI' || type === 'SCALE';
 
 const stripTitleOrderPrefix = (title: string) => String(title || '').replace(/^\d+\.\s*/, '');
 
@@ -144,6 +150,10 @@ export default function AdminDeliveryBuilderModule() {
                   
                 const migratedData = targetArray.map((q: any) => ({
                   ...q,
+                  allowAnalysis:
+                    typeof q.allowAnalysis === 'boolean'
+                      ? q.allowAnalysis
+                      : defaultAllowAnalysis(q.type),
                   options: q.options?.map((opt: any) => 
                     typeof opt === 'string' 
                       ? { label: opt, imageUrl: '', referenceLink: '', goToSectionId: '', stockLimit: null } 
@@ -250,7 +260,8 @@ export default function AdminDeliveryBuilderModule() {
     if (type === 'SECTION') defaultTitle = '배송 관련 새로운 단락';
      
     setQuestions(prev => [...prev, { 
-      id: `Q_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`, type, title: defaultTitle, isRequired: type !== 'SECTION', 
+      id: `Q_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`, type, title: defaultTitle, isRequired: type !== 'SECTION',
+      allowAnalysis: type === 'SECTION' ? false : defaultAllowAnalysis(type),
       options: type.includes('CHOICE') ? [{ label: '옵션 1', imageUrl: '', referenceLink: '', goToSectionId: '', stockLimit: null }] : undefined, 
       scaleMax: type === 'SCALE' ? 5 : undefined,
       questionImageUrl: '',
@@ -272,6 +283,7 @@ export default function AdminDeliveryBuilderModule() {
         return {
           ...q,
           type: newType,
+          allowAnalysis: newType === 'SECTION' ? false : defaultAllowAnalysis(newType),
           options: newType.includes('CHOICE')
             ? [{ label: '옵션 1', imageUrl: '', referenceLink: '', goToSectionId: '', stockLimit: null }]
             : undefined,
@@ -374,10 +386,6 @@ export default function AdminDeliveryBuilderModule() {
       <div className="sticky top-0 z-50 bg-white border-b border-slate-200 px-8 py-4 shadow-sm">
         <div className="flex justify-between items-center gap-4">
           <div className="flex items-center gap-4 min-w-0">
-            <Link href="/survey/delivery/admin/active-surveys" className="px-3 py-2 bg-slate-100 rounded-lg hover:bg-slate-200 transition-colors font-black text-[11px] text-slate-600 shrink-0">
-              ⬅️ 통합 공고 현황판으로 돌아가기
-            </Link>
-            <div className="h-6 w-px bg-slate-200 mx-2 shrink-0"></div>
             <div className="min-w-0">
               <h1 className="text-lg font-black text-slate-800">🛠️ 배달 신청 문항 생성기 (Delivery Builder)</h1>
               <p className="text-[10px] text-slate-400 font-bold mt-0.5">물품 배송에 특화된 서식 인프라 필드 및 사은품 옵션을 캔버스에 결합합니다.</p>
@@ -431,6 +439,7 @@ export default function AdminDeliveryBuilderModule() {
             >
               💾 배달 양식 문항 저장
             </button>
+            <Link href="/survey/delivery/admin/active-surveys" className="px-3 py-2.5 bg-slate-100 rounded-xl hover:bg-slate-200 transition-colors font-black text-[11px] text-slate-600 shrink-0 whitespace-nowrap">⬅️ 현황판으로 돌아가기</Link>
           </div>
         </div>
         {permissionSummary && isSystemLv1User(currentUser) && (
@@ -518,6 +527,20 @@ export default function AdminDeliveryBuilderModule() {
             </div>
   
             <div className="pl-8 pt-2">
+              {q.type !== 'SECTION' && (
+                <label className="mb-4 inline-flex items-center gap-2.5 cursor-pointer select-none rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 hover:bg-slate-100 transition-colors">
+                  <input
+                    type="checkbox"
+                    checked={!!q.allowAnalysis}
+                    onChange={(e) => updateQuestion(q.id, 'allowAnalysis', e.target.checked)}
+                    className="w-4 h-4 accent-teal-600 cursor-pointer"
+                  />
+                  <span className="text-[11px] font-black text-slate-700">분석 허용</span>
+                  <span className="text-[10px] font-bold text-slate-400">
+                    (결과 분석 다운로드에 포함 · 주소·이름 등은 해제 권장)
+                  </span>
+                </label>
+              )}
               {/* 🚀 모든 문항 타입(섹션 제외)에 부가설명/외부링크 동일 적용 */}
               {q.type !== 'SECTION' && (
                 <div className="mb-6 space-y-3 p-4 bg-teal-50/50 border border-teal-100 rounded-xl">

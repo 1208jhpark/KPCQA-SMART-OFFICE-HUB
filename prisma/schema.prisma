@@ -74,6 +74,24 @@ model User {
   // 로그인 화면에서 비밀번호 초기화 요청 (관리자 필터용)
   password_reset_requested    Boolean   @default(false)
   password_reset_requested_at DateTime?
+
+  /// 홈 알람 스누즈: { [alarmId]: ISO snoozed_until }
+  alarm_snoozes Json @default("{}")
+
+  /// 홈 알람 확인(회색): { [alarmId]: count }
+  alarm_seen Json @default("{}")
+
+  /// 홈 알람 ✕ 삭제: { [alarmId]: count }
+  alarm_dismisses Json @default("{}")
+
+  /// 마케팅 지급 대장 — 개인 그룹웨어 결재 바로가기 URL (미설정 시 SystemConfig 기본값)
+  mkt_groupware_shortcut_url String @default("")
+
+  /// 제작물 검수 — 개인 그룹웨어 메일 바로가기 URL (미설정 시 부서 설정 폴백)
+  prod_mail_shortcut_url     String @default("")
+  /// 제작물 검수 — 개인 메일 제목/본문 양식 (미설정 시 부서·시스템 기본)
+  prod_mail_subject_template String @default("")
+  prod_mail_body_template    String @default("")
   
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
@@ -205,6 +223,8 @@ model ITAsset {
   end_date        String?
   first_bill      String?
   cycle           Int      @default(48)
+  /// 사용 연장(유예) — true면 교체 D-30/D-Day/D+ 필터·알람 제외
+  replace_deferred Boolean @default(false)
   memo            String?  @default("-")
   reg_date        String?
   /// 등록 경로: excel(엑셀 업로드) | manual(신규 자산 추가) — 당일 행 하이라이트용
@@ -244,11 +264,17 @@ model Equipment {
   /// 소속 조직 FK — 명칭 변경에도 권한·필터 유지
   unit_id           String?  
   qty               Int      @default(1) 
+  /// 보유 수량 단위 — admin settings unit_category_group 마스터 코드 value (예: VAL_1)
+  qty_unit          String   @default("VAL_1")
   purchase_date     DateTime? 
   replace_cycle_mo  Int?     
+  /// false = 교체 대상 아님 (주기·예정일 산정/알람 제외)
+  replace_applicable Boolean @default(true)
   last_replace_date DateTime?
   next_replace_date DateTime?
   calib_cycle_mo    Int      @default(12) 
+  /// false = 검교정 대상 아님 (주기·예정일 산정/알람 제외)
+  calib_applicable  Boolean  @default(true)
   next_calib_date   DateTime? 
   calib_memo        String?  
   status            String   @default("정상") 
@@ -400,10 +426,17 @@ model MarketingDistribution {
      
 model MarketingClient {
   id          String   @id @default(cuid())
-  name        String   
-  location    String?  
-  category    String?  
-  departments Json?    @default("[]") 
+  name        String
+  /// 합친 소재지 스냅샷 (목록·검색·레거시 표시용)
+  location    String?
+  /// 우편번호 (5자리) — 제작 실배송지 shippingZipCode 연동용
+  zip_code    String?
+  /// 기본(도로명) 주소 — shippingAddressRoad 연동용
+  address_road String?
+  /// 상세주소 — shippingAddressDetail 연동용
+  address_detail String?
+  category    String?
+  departments Json?    @default("[]")
   is_active   Boolean  @default(true)
   is_archived Boolean  @default(false) // 보관함 (운영목록에서만 숨김)
   archived_at       DateTime? // 보관함 처리 시각
@@ -747,6 +780,30 @@ model ITAssetArchive {
   @@index([unit_id])
 }
 
+/// 부서 전용 — 인력별 프로그램 사용 관리 (마스터 경로와 비공유)
+model ITDeptProgramAccount {
+  id               String   @id @default(cuid())
+  unit_id          String
+  dept             String?
+  person_name      String
+  registered_date  String?
+  program_type     String?  // 프로그램 종류
+  program_used     Boolean  @default(false)
+  program_id       String?
+  program_password String?
+  ip_address       String?
+  mac_address      String?
+  note1            String?
+  note2            String?
+  note3            String?
+  created_by_name  String?
+  created_by_email String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([unit_id])
+}
+
 // 📦 [교정 완료] 명함 신청 및 제작 상태 관리 테이블 스키마
 model BusinessCardRequest {
   id                String                  @id @default(cuid())
@@ -843,16 +900,17 @@ model BusinessCardOrderBatch {
 // 🏢 시스템 공통 주소지 마스터 (명함, 배송 등 전사 공통 사용)
 // -----------------------------------------------------------------
 model CompanyAddress {
-  id          String   @id @default(cuid())
-  label       String   // 선택지명 (예: 본사, 센터)
-  zipCode     String
-  addressKo   String
-  addressEn   String
-  fax         String
-  faxEn       String
-  isActive    Boolean  @default(true) // 활성/비활성 토글
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id              String   @id @default(cuid())
+  label           String   // 선택지명 (예: 본사, 센터)
+  zipCode         String
+  addressKo       String   // 국문 기본(도로명) 주소
+  addressDetailKo String   @default("") // 국문 상세 주소 (건물·층 등)
+  addressEn       String
+  fax             String
+  faxEn           String
+  isActive        Boolean  @default(true) // 활성/비활성 토글
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 }
 
 // -----------------------------------------------------------------

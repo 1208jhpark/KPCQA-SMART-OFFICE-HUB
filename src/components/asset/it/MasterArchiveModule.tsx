@@ -624,14 +624,14 @@ function MasterArchiveContent() {
                 </th>
                 <th className="h-12 px-2 text-center">NO</th>
                 <th className="h-12 px-2 text-center whitespace-nowrap">종료처리일자</th>
-                <th className="h-12 px-2 whitespace-nowrap">부서/사용자</th>
+                <th className="h-12 px-2 text-left whitespace-nowrap">부서/사용자</th>
                 <th className="h-12 px-2 text-center whitespace-nowrap">자산 분류</th>
                 <th className="h-12 px-2">자산번호</th>
                 <th className="h-12 px-2">모델명</th>
                 <th className="h-12 px-2">S/N</th>
                 <th className="h-12 px-2 border-l border-slate-200">종료사유</th>
-                <th className="h-12 px-2 text-center whitespace-nowrap">반납처/매각처</th>
-                <th className="h-12 px-2 text-right whitespace-nowrap">매각금액</th>
+                <th className="h-12 px-2 text-left whitespace-nowrap">반납처/매각처</th>
+                <th className="h-12 px-2 text-center whitespace-nowrap tabular-nums">매각금액</th>
                 <th className="h-12 px-2 text-center">상태</th>
                 <th className="h-12 px-2 text-center whitespace-nowrap border-l border-slate-200">관리액션(Edit)</th>
               </tr>
@@ -670,7 +670,7 @@ function MasterArchiveContent() {
                       </td>
                       <td className="px-2 text-center font-mono text-slate-500 tabular-nums">{rowNo}</td>
                       <td className="px-2 text-center whitespace-nowrap tabular-nums text-slate-800">{terminatedAt}</td>
-                      <td className="px-2">
+                      <td className="px-2 text-left">
                         <div className="leading-tight min-w-0" title={`${h.dept || '-'} / ${h.user || '공용'}`}>
                           <p className="text-slate-900 truncate">{h.dept || '-'}</p>
                           <p className="text-slate-900 truncate text-[10px]">{h.user || '공용'}</p>
@@ -687,10 +687,10 @@ function MasterArchiveContent() {
                       <td className="px-2 border-l border-slate-200 text-slate-700 truncate" title={h.reason || ''}>
                         {h.reason ? `"${h.reason}"` : '-'}
                       </td>
-                      <td className="px-2 text-center text-slate-800 truncate" title={h.reseller || ''}>
+                      <td className="px-2 text-left text-slate-800 truncate" title={h.reseller || ''}>
                         {h.reseller || <span className="text-slate-300">-</span>}
                       </td>
-                      <td className="px-2 text-right font-mono tabular-nums text-slate-800">
+                      <td className="px-2 text-center font-mono tabular-nums text-slate-800">
                         {h.resellPrice ? formatNumber(h.resellPrice) : <span className="text-slate-300">-</span>}
                       </td>
                       <td className="px-2 text-center">

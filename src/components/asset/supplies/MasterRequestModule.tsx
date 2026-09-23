@@ -39,14 +39,14 @@ const FOLDER_TAB_IDLE =
 const FOLDER_TABS = [
   {
     id: 'ACTIVE' as const,
-    label: '사용자 신청 현황',
-    icon: '📋',
+    label: '신청·지급 대기',
+    icon: '📄',
     activeClass:
       'bg-slate-900 text-white border-slate-900 border-b-white z-10 -mb-px',
   },
   {
     id: 'COMPLETED' as const,
-    label: '처리 완료 내역 장부',
+    label: '처리 완료 내역',
     icon: '✅',
     activeClass:
       'bg-emerald-600 text-white border-emerald-500 border-b-white z-10 -mb-px shadow-sm',
@@ -434,6 +434,7 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
       } catch (e) {}
 
       const itemName = r.item_name || r.item?.name || '';
+      const statusKo = supplyRequestStatusLabel(r.status);
       return {
         NO: target.length - idx,
         신청일시: formatKSTDateTime(r.createdAt),
@@ -445,7 +446,7 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
         '관리자 답변': r.admin_opinion || '',
         처리자: r.admin_name || '',
         처리일시: r.processedAt ? formatKSTDateTime(r.processedAt) : '',
-        상태: supplyRequestStatusLabel(r.status),
+        상태: statusKo,
       };
     });
 
@@ -880,11 +881,9 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
                 <span className="text-sm leading-none">{tab.icon}</span>
                 <span className="flex items-center gap-1">
                   <span>{tab.label}</span>
-                  {badgeCount > 0 ? (
-                    <span className={`tabular-nums ${active ? 'opacity-95' : 'text-indigo-600'}`}>
-                      ({badgeCount})
-                    </span>
-                  ) : null}
+                  <span className={`tabular-nums ${active ? 'opacity-95' : 'text-indigo-600'}`}>
+                    ({badgeCount})
+                  </span>
                 </span>
               </button>
             );
@@ -902,9 +901,9 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
                     ? '반려 처리건'
                     : selectedStatus === 'COMPLETED'
                       ? '지급 완료건'
-                      : '처리 완료 내역 장부'
+                      : '처리 완료 내역'
                   : selectedStatus === 'ALL'
-                    ? '사용자 신청 현황'
+                    ? '신청·지급 대기'
                     : selectedStatus === 'PENDING'
                       ? '신규 신청 대기건'
                       : '지급 대기건'}
@@ -931,7 +930,7 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
                       : 'bg-orange-50 text-orange-600 border border-orange-100 hover:bg-orange-100'
                   }`}
                 >
-                  신규 대기 {countPending}
+                  신규대기 {countPending}
                 </button>
                 <button
                   type="button"
@@ -1130,12 +1129,12 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
                   <th className="h-12 pl-4 text-center"><input type="checkbox" checked={paginatedRequests.length > 0 && paginatedRequests.every(r => selectedIds.has(r.id))} onChange={toggleSelectAll} className="w-3 h-3 accent-indigo-600 cursor-pointer" /></th>
                   <th className="h-12 px-2 text-center">NO</th>
                   <th className="h-12 px-2 text-center whitespace-nowrap">신청 일자</th>
-                  <th className="h-12 px-2">부서 / 신청자</th>
-                  <th className="h-12 px-2 text-indigo-600">물품명</th>
+                  <th className="h-12 px-2 text-left">부서 / 신청자</th>
+                  <th className="h-12 px-2 text-left text-indigo-600">물품명</th>
                   <th className="h-12 px-2 text-center text-indigo-600 whitespace-nowrap">신청수량</th>
-                  <th className="h-12 px-2">사용자 의견</th>
-                  <th className="h-12 px-2 border-l border-slate-200">관리자 답변</th>
-                  <th className="h-12 px-2 text-center whitespace-nowrap">부서 / 처리자</th>
+                  <th className="h-12 px-2 text-left">사용자 의견</th>
+                  <th className="h-12 px-2 text-left border-l border-slate-200">관리자 답변</th>
+                  <th className="h-12 px-2 text-left whitespace-nowrap">부서 / 처리자</th>
                   <th className="h-12 px-2 text-center whitespace-nowrap">처리 일자</th>
                   <th className="h-12 px-2 text-center">상태</th>
                   <th className="h-12 px-2 text-center whitespace-nowrap border-l border-slate-200">관리액션(Edit)</th>
@@ -1163,17 +1162,17 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
                       <td className="pl-4 text-center"><input type="checkbox" checked={selectedIds.has(req.id)} onChange={() => { const next = new Set(selectedIds); selectedIds.has(req.id) ? next.delete(req.id) : next.add(req.id); setSelectedIds(next); }} className="w-3 h-3 accent-indigo-600 cursor-pointer" /></td>
                       <td className="px-2 text-center font-mono text-slate-500 tabular-nums">{rowNo}</td>
                       <td className="px-2 text-center whitespace-nowrap tabular-nums text-slate-800">{createdDate}</td>
-                      <td className="px-2 truncate">
+                      <td className="px-2 text-left truncate">
                         <span className="text-[10px] text-slate-500 block truncate">{req.dept_name || '-'}</span>
                         <span className="text-slate-800 truncate">{req.user_name || '-'}</span>
                       </td>
-                      <td className="px-2 text-indigo-700 truncate" title={itemName}>{itemName}</td>
+                      <td className="px-2 text-left text-indigo-700 truncate" title={itemName}>{itemName}</td>
                       <td className="px-2 text-center font-mono whitespace-nowrap tabular-nums text-indigo-600">
                         {req.qty}
                         <span className="text-[10px] font-sans ml-0.5 text-slate-500">{sUnit}</span>
                       </td>
-                      <td className="px-2 text-slate-700 truncate" title={req.note}>{req.note ? `"${req.note}"` : '-'}</td>
-                      <td className="px-2 border-l border-slate-200">
+                      <td className="px-2 text-left text-slate-700 truncate" title={req.note}>{req.note ? `"${req.note}"` : '-'}</td>
+                      <td className="px-2 text-left border-l border-slate-200">
                         {isPending ? (
                           <input 
                             placeholder="답변..." 
@@ -1188,7 +1187,7 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
                         )}
                       </td>
      
-                      <td className="px-2 text-center">
+                      <td className="px-2 text-left">
                         {!isPending ? (
                           <div className="truncate">
                             <span className="text-[10px] text-slate-500 block truncate">{req.admin_dept || '-'}</span>
@@ -1211,7 +1210,7 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
                           isRejected ? 'bg-red-50 text-red-600 border-red-200' :
                           'bg-emerald-50 text-emerald-600 border-emerald-200'
                         }`}>
-                          {statusLabel === '대기중' ? '대기' : statusLabel}
+                          {statusLabel}
                         </span>
                       </td>
      
@@ -1224,8 +1223,8 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
                               title={canEdit ? '반려' : '편집 권한 필요'}
                               className={
                                 canEdit
-                                  ? 'px-1.5 py-1 bg-red-50 text-red-500 border border-red-100 rounded-md text-[9px] font-black hover:bg-red-500 hover:text-white transition-colors shadow-sm whitespace-nowrap'
-                                  : 'px-1.5 py-1 bg-slate-100 text-slate-400 border border-slate-200 rounded-md text-[9px] font-black cursor-not-allowed whitespace-nowrap opacity-70'
+                                  ? 'inline-block border px-1.5 py-0.5 rounded text-[10px] font-bold whitespace-nowrap bg-red-50 text-red-500 border-red-100 hover:bg-red-500 hover:text-white transition-colors shadow-sm'
+                                  : 'inline-block border px-1.5 py-0.5 rounded text-[10px] font-bold whitespace-nowrap bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed opacity-70'
                               }
                             >
                               반려
@@ -1236,23 +1235,11 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
                               title={canEdit ? '지급승인 → 수령대기' : '편집 권한 필요'}
                               className={
                                 canEdit
-                                  ? 'px-1.5 py-1 bg-indigo-600 text-white border border-indigo-700 rounded-md text-[9px] font-black shadow-sm hover:bg-indigo-700 whitespace-nowrap'
-                                  : 'px-1.5 py-1 bg-slate-100 text-slate-400 border border-slate-200 rounded-md text-[9px] font-black cursor-not-allowed whitespace-nowrap opacity-70'
+                                  ? 'inline-block border px-1.5 py-0.5 rounded text-[10px] font-bold whitespace-nowrap bg-indigo-600 text-white border-indigo-700 shadow-sm hover:bg-indigo-700'
+                                  : 'inline-block border px-1.5 py-0.5 rounded text-[10px] font-bold whitespace-nowrap bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed opacity-70'
                               }
                             >
                               지급승인
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleProcessRequest(req, 'COMPLETED')}
-                              title={canEdit ? '지급완료' : '편집 권한 필요'}
-                              className={
-                                canEdit
-                                  ? 'px-1.5 py-1 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-md text-[9px] font-black hover:bg-emerald-100 shadow-sm whitespace-nowrap'
-                                  : 'px-1.5 py-1 bg-slate-100 text-slate-400 border border-slate-200 rounded-md text-[9px] font-black cursor-not-allowed whitespace-nowrap opacity-70'
-                              }
-                            >
-                              지급완료
                             </button>
                           </div>
                         ) : isReady ? (
@@ -1263,8 +1250,8 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
                               title={canEdit ? '지급완료' : '편집 권한 필요'}
                               className={
                                 canEdit
-                                  ? 'px-1.5 py-1 bg-emerald-600 text-white border border-emerald-700 rounded-md text-[9px] font-black shadow-sm hover:bg-emerald-700 whitespace-nowrap'
-                                  : 'px-1.5 py-1 bg-slate-100 text-slate-400 border border-slate-200 rounded-md text-[9px] font-black cursor-not-allowed whitespace-nowrap opacity-70'
+                                  ? 'inline-block border px-1.5 py-0.5 rounded text-[10px] font-bold whitespace-nowrap bg-emerald-600 text-white border-emerald-700 shadow-sm hover:bg-emerald-700'
+                                  : 'inline-block border px-1.5 py-0.5 rounded text-[10px] font-bold whitespace-nowrap bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed opacity-70'
                               }
                             >
                               지급완료

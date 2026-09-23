@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { saveAs } from 'file-saver';
-import { getKSTDateString, getKSTTimeString, formatKSTDateTime, isPastKSTDeadline, getKSTDaysUntil } from '@/utils/dateUtils';
+import { formatKSTDateTimeMinute, isPastKSTDeadline, getKSTDaysUntil } from '@/utils/dateUtils';
 import {
   resolveBranchTarget,
   getVisibleQuestionsByBranch,
@@ -114,7 +114,7 @@ export default function MySubmissionsModule() {
             dbResponses.forEach((r: any) => {
               if (r.userEmail === userData.email) {
                 nextMyRes[r.surveyId] = {
-                  submittedAt: r.submittedAt ? formatKSTDateTime(r.submittedAt) : '-',
+                  submittedAt: r.submittedAt ? formatKSTDateTimeMinute(r.submittedAt) : '-',
                   // 익명: 클라이언트에 답변 본문을 두지 않음 (열람·수정 차단)
                   answers: anonymousIds.has(r.surveyId) ? {} : (r.answers || {}),
                   isApproved: r.isApproved || false
@@ -204,21 +204,33 @@ export default function MySubmissionsModule() {
   }, [surveys, currentUser, unitsList, myResponses]);
      
   const historyList = useMemo(() => {
-    return surveys.filter(s => {
-      const myRes = myResponses[s.id];
-      if (!myRes) return false;
-      if (myRes.isApproved) return true;
-      if (s.status === '진행중' || s.status === '게시중단') return false;
-      
-      // 💡 [수정] 관리자가 명시적으로 마감(완료/보관됨) 처리한 것만 보관함으로 이동
-      return s.status === '완료' || s.status === '보관됨';
-    }).map(s => ({
-      ...s,
-      submittedAt: myResponses[s.id].submittedAt,
-      // 익명 설문은 본인에게도 답변 명세를 넘기지 않음
-      myAnswers: s.isAnonymous ? {} : myResponses[s.id].answers,
-      isApproved: myResponses[s.id].isApproved
-    })).sort((a: any, b: any) => b.submittedAt.localeCompare(a.submittedAt));
+    const toAt = (v: unknown) => {
+      const t = new Date(String(v || '')).getTime();
+      return Number.isFinite(t) ? t : 0;
+    };
+    return surveys
+      .filter((s) => {
+        const myRes = myResponses[s.id];
+        if (!myRes) return false;
+        if (myRes.isApproved) return true;
+        if (s.status === '진행중' || s.status === '게시중단') return false;
+        // 관리자가 명시적으로 마감(완료/보관됨) 처리한 것만 보관함으로 이동
+        return s.status === '완료' || s.status === '보관됨';
+      })
+      .map((s) => ({
+        ...s,
+        submittedAt: myResponses[s.id].submittedAt,
+        // 익명 설문은 본인에게도 답변 명세를 넘기지 않음
+        myAnswers: s.isAnonymous ? {} : myResponses[s.id].answers,
+        isApproved: myResponses[s.id].isApproved,
+      }))
+      // 최신 보관/마감 건이 맨 위 (NO도 큰 수 → 상단)
+      .sort((a: any, b: any) => {
+        const bt = toAt(b.updatedAt || b.endDate || b.postDate);
+        const at = toAt(a.updatedAt || a.endDate || a.postDate);
+        if (bt !== at) return bt - at;
+        return String(b.submittedAt || '').localeCompare(String(a.submittedAt || ''));
+      });
   }, [surveys, myResponses]);
      
   const availableYears = useMemo(() => {
@@ -254,7 +266,15 @@ export default function MySubmissionsModule() {
   useEffect(() => {
     setHistoryPage(1);
   }, [historyYear, historyMonth, historyTitleQuery]);
-  
+
+  useEffect(() => {
+    if (historyPage > totalHistoryPages) setHistoryPage(totalHistoryPages);
+  }, [historyPage, totalHistoryPages]);
+
+  useEffect(() => {
+    if (eligiblePage > totalEligiblePages) setEligiblePage(totalEligiblePages);
+  }, [eligiblePage, totalEligiblePages]);
+
   const handleOpenSurvey = (survey: any, isEditMode: boolean) => {
     // 익명: 제출 후 본인에게도 답변 수정·열람 불가
     if (survey.isAnonymous && myResponses[survey.id]) {
@@ -440,7 +460,7 @@ const handlePrevSection = () => {
       });
      
       if (res.ok) {
-        const submittedDate = `${getKSTDateString()} ${getKSTTimeString()}`;
+        const submittedDate = formatKSTDateTimeMinute(new Date());
         const nextResponses = { 
           ...myResponses, 
           [activeFullScreenSurvey.id]: {
@@ -536,13 +556,32 @@ const handlePrevSection = () => {
         <HeaderLight title="내가 제출한 설문 리스트" count={eligibleSurveys.length} />
   
         <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse">
-          <thead className="bg-slate-100 text-slate-700 text-[10px] font-black uppercase tracking-widest border-b border-slate-200">
+          <table className="w-full table-fixed text-left border-collapse text-[11px] font-bold text-slate-700">
+            <colgroup>
+              <col className="w-[4%]" />
+              <col className="w-[8%]" />
+              <col className="w-[9%]" />
+              <col className="w-[18%]" />
+              <col className="w-[7%]" />
+              <col className="w-[8%]" />
+              <col className="w-[14%]" />
+              <col className="w-[18%]" />
+              <col className="w-[14%]" />
+            </colgroup>
+            <thead className="bg-slate-100 text-slate-700 text-[11px] font-bold border-b border-slate-200">
               <tr>
-                <th className="py-4 pl-8 w-16 text-center">NO</th><th className="py-4 px-3 w-28 text-center">게시번호</th><th className="py-4 px-3 w-28 text-center">게시일</th><th className="py-4 px-4">게시명</th><th className="py-4 px-3 w-24 text-center">익명여부</th><th className="py-4 px-3 w-36 text-center">대상</th><th className="py-4 px-4 w-48 text-center">나의 제출 일시</th><th className="py-4 px-3 w-40 text-center">기간</th><th className="py-4 pr-8 w-44 text-center">상태 / 액션</th>
+                <th className="py-3 pl-4 text-center">NO</th>
+                <th className="py-3 px-2 text-center">게시번호</th>
+                <th className="py-3 px-2 text-center">게시일</th>
+                <th className="py-3 px-3 text-left">게시명</th>
+                <th className="py-3 px-2 text-center">익명여부</th>
+                <th className="py-3 px-2 text-center">대상</th>
+                <th className="py-3 px-2 text-center">나의 제출 일시</th>
+                <th className="py-3 px-2 text-center">기간</th>
+                <th className="py-3 pr-4 text-center">상태 / 액션</th>
               </tr>
             </thead>
-            <tbody className="bg-white divide-y divide-slate-100 text-xs font-bold text-slate-700">
+            <tbody className="bg-white divide-y divide-slate-100">
               {paginatedEligible.map((survey: any, index: number) => {
                 const isAnonymousAndSubmitted = survey.isAnonymous && Boolean(myResponses[survey.id]);
                 
@@ -561,17 +600,15 @@ const handlePrevSection = () => {
                 }
      
                 return (
-                  <tr key={survey.id} className={`transition-colors h-16 ${isTimeOver ? 'bg-slate-50/70 opacity-60 grayscale' : 'hover:bg-slate-50/50'}`}>
-                    <td className="text-center text-slate-400 font-black pl-8">{eligibleSurveys.length - ((eligiblePage - 1) * eligibleItemsPerPage + index)}</td>
-                    <td className="text-center font-mono text-slate-500">{survey.postNumber || '-'}</td>
-                    <td className="text-center font-mono text-slate-500">{survey.postDate}</td>
-                    <td className="px-4">
-                      <div className="flex items-center gap-3 h-16">
-                        <span className={`font-black truncate ${isTimeOver ? 'text-slate-500' : 'text-slate-900'}`}>{survey.title}</span>
-                        
-                        {/* 💡 [표출방식 일치] D-Day는 빨강, D-1~D-3은 노랑으로 세분화 및 통일 */}
+                  <tr key={survey.id} className={`transition-colors h-14 ${isTimeOver ? 'bg-slate-50/70 opacity-60 grayscale' : 'hover:bg-slate-50/50'}`}>
+                    <td className="text-center text-slate-400 pl-4">{eligibleSurveys.length - ((eligiblePage - 1) * eligibleItemsPerPage + index)}</td>
+                    <td className="text-center text-slate-500">{survey.postNumber || '-'}</td>
+                    <td className="text-center text-slate-500 whitespace-nowrap">{survey.postDate}</td>
+                    <td className="px-3">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className={`truncate ${isTimeOver ? 'text-slate-500' : 'text-slate-900'}`}>{survey.title}</span>
                         {dDayText && (
-                          <span className={`shrink-0 text-[8px] px-1.5 py-0.5 rounded font-black animate-pulse ${
+                          <span className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded font-bold animate-pulse ${
                             dDayText === 'D-Day' 
                               ? 'bg-red-600 text-white' 
                               : 'bg-amber-400 text-amber-950'
@@ -579,57 +616,56 @@ const handlePrevSection = () => {
                             {dDayText}
                           </span>
                         )}
-                        {isTimeOver && <span className="shrink-0 bg-slate-500 text-white text-[8px] px-1.5 py-0.5 rounded font-black">종료됨</span>}
+                        {isTimeOver && <span className="shrink-0 bg-slate-500 text-white text-[10px] px-1.5 py-0.5 rounded font-bold">종료됨</span>}
                       </div>
                     </td>
-                    <td className="text-center"><span className={`px-2 py-0.5 border rounded text-[10px] ${survey.isAnonymous ? 'bg-slate-800 text-white font-black border-slate-950' : 'text-slate-400 border-slate-200'}`}>{survey.isAnonymous ? '익명' : '기명'}</span></td>
-                    <td className="text-center text-slate-500 font-medium px-3">{survey.target}</td>
-                    <td className="text-center text-slate-700 font-bold px-4 whitespace-nowrap">{myResponses[survey.id]?.submittedAt || '-'}</td>
-                    
-                    {/* 💡 [기간 컬러 표기 일치] 마감 임박 상태에 맞춰 날짜 텍스트 컬러 완벽 매칭 */}
-                    <td className="text-center font-mono text-slate-500 leading-relaxed whitespace-nowrap px-3">
-                      <div>{survey.startDate} ~</div>
-                      <div className={
-                        isTimeOver ? 'text-slate-400 font-bold' 
-                        : dDayText === 'D-Day' ? 'text-red-500 font-black' 
-                        : dDayText ? 'text-amber-500 font-black' 
-                        : 'text-slate-600'
-                      }>
-                        {survey.endDate} <span className="text-[8px]">({timeStr})</span>
-                      </div>
+                    <td className="text-center">
+                      <span className={`inline-block px-2 py-0.5 border rounded text-[11px] ${survey.isAnonymous ? 'bg-slate-800 text-white border-slate-950' : 'text-slate-400 border-slate-200'}`}>
+                        {survey.isAnonymous ? '익명' : '기명'}
+                      </span>
                     </td>
-                    
-                    <td className="text-center pr-8">
+                    <td className="text-center text-slate-500 px-2 truncate">{survey.target}</td>
+                    <td className="text-center text-slate-700 px-2 whitespace-nowrap">{myResponses[survey.id]?.submittedAt || '-'}</td>
+                    <td className={`text-center whitespace-nowrap px-2 ${
+                      isTimeOver ? 'text-slate-400'
+                      : dDayText === 'D-Day' ? 'text-red-500'
+                      : dDayText ? 'text-amber-600'
+                      : 'text-slate-600'
+                    }`}>
+                      {survey.startDate} ~ {survey.endDate} ({timeStr})
+                    </td>
+                    <td className="text-center pr-4">
                       {isTimeOver ? (
-                        <button disabled className="w-full py-1.5 rounded-lg font-black text-[10px] shadow-sm border bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed">
-                          ⏰ 기간종료 (수정불가)
+                        <button disabled className="w-full py-1.5 rounded-lg text-[11px] font-bold shadow-sm border bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed">
+                          기간종료 (수정불가)
                         </button>
                       ) : (
-                        <button onClick={() => handleOpenSurvey(survey, true)} disabled={isAnonymousAndSubmitted} className={`w-full py-1.5 rounded-lg font-black text-[10px] transition-all shadow-sm border ${isAnonymousAndSubmitted ? 'bg-slate-50 border-slate-200 text-slate-300 cursor-not-allowed line-through' : 'bg-white border-blue-200 text-blue-600 hover:bg-blue-50'}`}>
-                          {isAnonymousAndSubmitted ? '🔒 익명 서식 변경 불가' : '✏️ 답변 내역 수정'}
+                        <button onClick={() => handleOpenSurvey(survey, true)} disabled={isAnonymousAndSubmitted} className={`w-full py-1.5 rounded-lg text-[11px] font-bold transition-all shadow-sm border ${isAnonymousAndSubmitted ? 'bg-slate-50 border-slate-200 text-slate-300 cursor-not-allowed line-through' : 'bg-white border-blue-200 text-blue-600 hover:bg-blue-50'}`}>
+                          {isAnonymousAndSubmitted ? '익명 서식 변경 불가' : '답변 내역 수정'}
                         </button>
                       )}
                     </td>
                   </tr>
                 );
               })}
-              {eligibleSurveys.length === 0 && <tr><td colSpan={9} className="py-16 text-center text-slate-400 font-bold bg-slate-50/30">현재 변경 가능한 활성 제출 내역이 없습니다.</td></tr>}
+              {eligibleSurveys.length === 0 && <tr><td colSpan={9} className="py-16 text-center text-slate-400 bg-slate-50/30">현재 변경 가능한 활성 제출 내역이 없습니다.</td></tr>}
             </tbody>
           </table>
         </div>
-        {totalEligiblePages > 1 && (
+        {eligibleSurveys.length > 0 && (
           <div className="flex justify-center items-center gap-1.5 py-4 border-t border-slate-100 bg-white">
-            <button disabled={eligiblePage === 1} onClick={() => setEligiblePage(p => p - 1)} className="px-3 py-1 text-xs bg-white border border-slate-200 rounded-xl">이전</button>
-            {Array.from({ length: totalEligiblePages }).map((_, i) => <button key={i} onClick={() => setEligiblePage(i + 1)} className={`w-7 h-7 rounded-xl text-xs font-black ${eligiblePage === i + 1 ? 'bg-slate-800 text-white' : 'bg-white text-slate-500 border'}`}>{i + 1}</button>)}
-            <button disabled={eligiblePage === totalEligiblePages} onClick={() => setEligiblePage(p => p + 1)} className="px-3 py-1 text-xs bg-white border border-slate-200 rounded-xl">다음</button>
+            <button disabled={eligiblePage === 1} onClick={() => setEligiblePage(p => p - 1)} className="px-3 py-1 text-[11px] font-bold bg-white border border-slate-200 rounded-xl text-slate-500 disabled:opacity-30">이전</button>
+            {Array.from({ length: totalEligiblePages }).map((_, i) => <button key={i} onClick={() => setEligiblePage(i + 1)} className={`w-7 h-7 rounded-xl text-[11px] font-bold ${eligiblePage === i + 1 ? 'bg-slate-800 text-white' : 'bg-white text-slate-500 border'}`}>{i + 1}</button>)}
+            <button disabled={eligiblePage === totalEligiblePages} onClick={() => setEligiblePage(p => p + 1)} className="px-3 py-1 text-[11px] font-bold bg-white border border-slate-200 rounded-xl text-slate-500 disabled:opacity-30">다음</button>
           </div>
         )}
       </div>
      
-{/* 📁 슬림 규격으로 압축한 참여 이력 보관함 토글 바 (다크 그레이 시인성 확보 버전) */}
+{/* 📁 참여 이력 보관함 — 토글 헤더 + 본문을 한 카드로 연결 */}
+<div className="mt-8 rounded-2xl border border-slate-400 shadow-sm overflow-hidden">
 <div 
   onClick={() => setIsHistoryOpen(!isHistoryOpen)} 
-  className="w-full bg-slate-200 border border-slate-400 p-4 px-7 rounded-2xl shadow-sm mt-8 cursor-pointer hover:bg-slate-200/70 active:scale-[0.995] transition-all select-none flex items-center justify-between gap-6"
+  className={`w-full bg-slate-200 p-4 px-7 cursor-pointer hover:bg-slate-200/70 active:scale-[0.995] transition-all select-none flex items-center justify-between gap-6 ${isHistoryOpen ? 'border-b border-slate-300' : ''}`}
 >
   <div className="flex items-center gap-4 flex-1 min-w-0">
     {/* 🎯 타이틀 & 펼치기 상태 뱃지 (기본 다크 그레이 text-slate-800 적용) */}
@@ -656,7 +692,7 @@ const handlePrevSection = () => {
 </div>
      
       {isHistoryOpen && (
-        <div className="bg-white border border-slate-200 rounded-[2.5rem] shadow-sm overflow-hidden mt-6 animate-in fade-in slide-in-from-top-4 duration-300">
+        <div className="bg-white animate-in fade-in slide-in-from-top-2 duration-200">
           <HeaderLight title="과거 완료 설문 명세 대장" count={filteredHistory.length}>
             <div className="flex items-center gap-2 flex-wrap">
               <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm">
@@ -701,53 +737,66 @@ const handlePrevSection = () => {
           </HeaderLight>
      
           <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse">
-            <thead className="bg-slate-100 text-slate-700 text-[10px] font-black uppercase tracking-widest border-b border-slate-200">
+            <table className="w-full table-fixed text-left border-collapse text-[11px] font-bold text-slate-700">
+              <colgroup>
+                <col className="w-[4%]" />
+                <col className="w-[8%]" />
+                <col className="w-[9%]" />
+                <col className="w-[18%]" />
+                <col className="w-[7%]" />
+                <col className="w-[8%]" />
+                <col className="w-[14%]" />
+                <col className="w-[18%]" />
+                <col className="w-[14%]" />
+              </colgroup>
+              <thead className="bg-slate-100 text-slate-700 text-[11px] font-bold border-b border-slate-200">
                 <tr>
-                  <th className="py-4 pl-8 w-16 text-center">NO</th><th className="py-4 px-3 w-28 text-center">게시번호</th><th className="py-4 px-3 w-28 text-center">게시일</th><th className="py-4 px-4">게시명</th><th className="py-4 px-3 w-24 text-center">익명여부</th><th className="py-4 px-3 w-36 text-center">대상</th><th className="py-4 px-4 w-48 text-center">나의 제출 일시</th><th className="py-4 px-3 w-40 text-center">기간</th><th className="py-4 pr-8 w-44 text-center">결과 열람</th>
+                  <th className="py-3 pl-4 text-center">NO</th>
+                  <th className="py-3 px-2 text-center">게시번호</th>
+                  <th className="py-3 px-2 text-center">게시일</th>
+                  <th className="py-3 px-3 text-left">게시명</th>
+                  <th className="py-3 px-2 text-center">익명여부</th>
+                  <th className="py-3 px-2 text-center">대상</th>
+                  <th className="py-3 px-2 text-center">나의 제출 일시</th>
+                  <th className="py-3 px-2 text-center">기간</th>
+                  <th className="py-3 pr-4 text-center">결과 열람</th>
                 </tr>
               </thead>
-              <tbody className="bg-white divide-y divide-slate-100 text-xs font-bold text-slate-700">
+              <tbody className="bg-white divide-y divide-slate-100">
                 {paginatedHistory.map((survey: any, index: number) => {
                   return (
-                    <tr key={survey.id} className="hover:bg-slate-50/50 transition-colors h-16">
-                      <td className="text-center text-slate-400 font-black pl-8">
+                    <tr key={survey.id} className="hover:bg-slate-50/50 transition-colors h-14">
+                      <td className="text-center text-slate-400 pl-4">
                         {filteredHistory.length - ((historyPage - 1) * historyItemsPerPage + index)}
                       </td>
-                      <td className="text-center font-mono text-slate-500">{survey.postNumber || '-'}</td>
-                      <td className="text-center font-mono text-slate-500">{survey.postDate}</td>
-                      <td className="px-4">
-                        <div className="font-black text-slate-800 text-[12px] whitespace-pre-wrap line-clamp-1">
+                      <td className="text-center text-slate-500">{survey.postNumber || '-'}</td>
+                      <td className="text-center text-slate-500 whitespace-nowrap">{survey.postDate}</td>
+                      <td className="px-3">
+                        <div className="text-slate-800 truncate" title={survey.title}>
                           {survey.title}
                         </div>
                       </td>
                       <td className="text-center">
-                        <span className={`px-2 py-0.5 border rounded text-[10px] ${survey.isAnonymous ? 'bg-slate-700 text-white font-black border-slate-900' : 'text-slate-400 border-slate-200'}`}>
+                        <span className={`inline-block px-2 py-0.5 border rounded text-[11px] ${survey.isAnonymous ? 'bg-slate-700 text-white border-slate-900' : 'text-slate-400 border-slate-200'}`}>
                           {survey.isAnonymous ? '익명' : '기명'}
                         </span>
                       </td>
-                      <td className="text-center text-slate-500 font-medium px-3">{survey.target}</td>
-                      <td className="text-center text-slate-700 font-bold px-4 whitespace-nowrap">
+                      <td className="text-center text-slate-500 px-2 truncate">{survey.target}</td>
+                      <td className="text-center text-slate-700 px-2 whitespace-nowrap">
                         {survey.submittedAt}
                       </td>
-                      
-                      {/* 💡 [복구 및 가이드 반영]: 보관함 특성에 맞춰 임박 색상(노랑/빨강) 없이 차분한 slate-500 먹색 서체로 고정 */}
-                      <td className="text-center font-mono text-slate-500 leading-relaxed whitespace-nowrap px-3">
-                        <div>{survey.startDate} ~</div>
-                        <div className="text-slate-500 font-medium">
-                          {survey.endDate} <span className="text-[8px]">({survey.endTime || '23:59'})</span>
-                        </div>
+                      <td className="text-center text-slate-600 whitespace-nowrap px-2">
+                        {survey.startDate} ~ {survey.endDate} ({survey.endTime || '23:59'})
                       </td>
-                      
-                      <td className="text-center pr-8">
+                      <td className="text-center pr-4">
                         {survey.isAnonymous ? (
                           <button
                             type="button"
                             disabled
                             title="익명 설문은 제출 후 본인에게도 명세 열람이 불가합니다."
-                            className="w-full py-1.5 rounded-lg font-black text-[10px] shadow-sm border bg-slate-50 border-slate-200 text-slate-300 cursor-not-allowed"
+                            className="w-full py-1.5 rounded-lg text-[11px] font-bold shadow-sm border bg-slate-50 border-slate-200 text-slate-300 cursor-not-allowed"
                           >
-                            🔒 익명 열람 불가
+                            익명 열람 불가
                           </button>
                         ) : (
                           <button
@@ -759,9 +808,9 @@ const handlePrevSection = () => {
                               } catch (e) { console.error("문항 파싱 오류:", e); }
                               setViewSurveyHistory({ ...survey, questions: builderQuestions });
                             }}
-                            className="w-full py-1.5 bg-white border border-slate-200 rounded-lg font-black text-[10px] text-slate-600 hover:bg-slate-50 shadow-sm transition-all"
+                            className="w-full py-1.5 bg-white border border-slate-200 rounded-lg text-[11px] font-bold text-slate-600 hover:bg-slate-50 shadow-sm transition-all"
                           >
-                            🔍 명세 기록 열람
+                            명세 기록 열람
                           </button>
                         )}
                       </td>
@@ -770,7 +819,7 @@ const handlePrevSection = () => {
                 })}
                 {filteredHistory.length === 0 && (
                   <tr>
-                    <td colSpan={9} className="py-16 text-center text-slate-400 font-bold bg-slate-50/30">
+                    <td colSpan={9} className="py-16 text-center text-slate-400 bg-slate-50/30">
                       보관 처리된 완료 내역이 없습니다.
                     </td>
                   </tr>
@@ -783,7 +832,7 @@ const handlePrevSection = () => {
               <button
                 disabled={historyPage === 1}
                 onClick={() => setHistoryPage((p) => p - 1)}
-                className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors"
+                className="px-3 py-1.5 text-[11px] bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors"
               >
                 이전
               </button>
@@ -791,7 +840,7 @@ const handlePrevSection = () => {
                 <button
                   key={i}
                   onClick={() => setHistoryPage(i + 1)}
-                  className={`w-8 h-8 rounded-xl font-black text-xs transition-all ${historyPage === i + 1 ? 'bg-slate-800 text-white shadow-sm scale-105' : 'bg-white border border-slate-200 text-slate-500 hover:bg-slate-50'}`}
+                  className={`w-8 h-8 rounded-xl font-bold text-[11px] transition-all ${historyPage === i + 1 ? 'bg-slate-800 text-white shadow-sm' : 'bg-white border border-slate-200 text-slate-500 hover:bg-slate-50'}`}
                 >
                   {i + 1}
                 </button>
@@ -799,7 +848,7 @@ const handlePrevSection = () => {
               <button
                 disabled={historyPage === totalHistoryPages}
                 onClick={() => setHistoryPage((p) => p + 1)}
-                className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors"
+                className="px-3 py-1.5 text-[11px] bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors"
               >
                 다음
               </button>
@@ -807,6 +856,7 @@ const handlePrevSection = () => {
           )}
         </div>
       )}
+</div>
      
       {/* 설문 수정 풀스크린 에디터 */}
       {activeFullScreenSurvey && (

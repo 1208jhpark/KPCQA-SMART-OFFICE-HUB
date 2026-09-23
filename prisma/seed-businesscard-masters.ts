@@ -43,6 +43,7 @@ export async function seedBusinessCardMasters(
     label: addr.label,
     zipCode: addr.zipCode,
     addressKo: addr.addressKo,
+    addressDetailKo: addr.addressDetailKo,
     addressEn: addr.addressEn,
     fax: addr.fax,
     faxEn: addr.faxEn,

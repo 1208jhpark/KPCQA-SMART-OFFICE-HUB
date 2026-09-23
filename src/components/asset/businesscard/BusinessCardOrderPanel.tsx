@@ -26,6 +26,7 @@ import {
   formatBusinessCardEnNumber,
   stripBusinessCardEnPlus,
 } from '@/lib/businesscard-phone';
+import { formatCompanyAddressKo } from '@/lib/businesscard-seed-addresses';
 import {
   applyBcMailTemplate,
   DEFAULT_BC_MAIL_BODY,
@@ -191,6 +192,7 @@ interface AddressMaster {
   label: string;
   zipCode: string;
   addressKo: string;
+  addressDetailKo?: string;
   addressEn: string;
   fax: string;
   faxEn: string;
@@ -1118,7 +1120,7 @@ const handleEditAddressChange = (addrId: string) => {
       ...prev,
       addressId: addrId,
       zipCode: target.zipCode,
-      addressKo: target.addressKo,
+      addressKo: formatCompanyAddressKo(target),
       addressEn: target.addressEn,
       fax: target.fax,
       faxEn: target.faxEn,
@@ -1174,7 +1176,9 @@ const beginRequestEdit = (row: RequestHistory) => {
   if (!canEditMaster) return alertNoEditPermission();
   const matched =
     addresses.find((a) => a.id === row.addressId) ||
-    addresses.find((a) => a.zipCode === row.zipCode && a.addressKo === row.addressKo);
+    addresses.find(
+      (a) => a.zipCode === row.zipCode && formatCompanyAddressKo(a) === row.addressKo
+    );
   setIsRequestEditing(true);
   setRequestEditForm({
     ...row,
@@ -1931,10 +1935,10 @@ return (
               </th>
             </tr>
             <tr className="bg-indigo-100">
-              <th className="h-12 px-4 w-[50px]"><input type="checkbox" onChange={handleSelectAllBatches} checked={allPageBatchesSelected} className="w-3 h-3 accent-indigo-600 cursor-pointer" /></th>
-              <th className="h-12 px-2 w-[160px]">묶음 번호</th>
-              <th className="h-12 px-4 w-[120px]">발주 일자</th>
-              <th className="h-12 px-2 w-[100px]">신청 상세</th>
+              <th className="h-12 px-4 w-[50px] text-center"><input type="checkbox" onChange={handleSelectAllBatches} checked={allPageBatchesSelected} className="w-3 h-3 accent-indigo-600 cursor-pointer" /></th>
+              <th className="h-12 px-2 w-[160px] text-left">묶음 번호</th>
+              <th className="h-12 px-4 w-[120px] text-center">발주 일자</th>
+              <th className="h-12 px-2 w-[100px] text-center">신청 상세</th>
               <th className="h-12 px-2 text-center w-[90px] border-r border-slate-300">
                 <div className="flex flex-col items-center justify-center gap-0.5 leading-tight">
                   <span className="whitespace-nowrap">건 / 통</span>
@@ -2010,17 +2014,17 @@ return (
             ) : paginatedBatches.map((batch) => (
               <React.Fragment key={batch.id}>
                 <tr className={`h-16 hover:bg-indigo-50/40 transition-colors ${selectedBatchIds.has(batch.id) ? 'bg-indigo-50/50' : ''}`}>
-                  <td className="px-4"><input type="checkbox" checked={selectedBatchIds.has(batch.id)} onChange={() => handleSelectBatchRow(batch.id)} className="w-3 h-3 accent-indigo-600 cursor-pointer" /></td>
+                  <td className="px-4 text-center"><input type="checkbox" checked={selectedBatchIds.has(batch.id)} onChange={() => handleSelectBatchRow(batch.id)} className="w-3 h-3 accent-indigo-600 cursor-pointer" /></td>
                   <td
-                    className="px-2 font-mono text-indigo-600 cursor-pointer whitespace-nowrap tabular-nums truncate overflow-hidden"
+                    className="px-2 text-left font-mono text-indigo-600 cursor-pointer whitespace-nowrap tabular-nums truncate overflow-hidden"
                     title={formatBatchNo(batch.id)}
                     onClick={() => toggleBatchExpand(batch.id)}
                   >
                     {formatBatchNo(batch.id)}
                   </td>
-                  <td className="px-4 text-slate-600 font-mono">{batch.orderDate}</td>
+                  <td className="px-4 text-center text-slate-600 font-mono tabular-nums">{batch.orderDate}</td>
                   <td
-                    className="px-2 cursor-pointer"
+                    className="px-2 text-center cursor-pointer"
                     onClick={() => toggleBatchExpand(batch.id)}
                   >
                     <span className="text-indigo-600 underline underline-offset-2">상세보기</span>
@@ -2218,10 +2222,10 @@ return (
                               <th className="h-10 px-2 w-[110px] text-center whitespace-nowrap bg-transparent">관리번호</th>
                               <th className="h-10 px-2 w-[96px] text-center whitespace-nowrap bg-transparent">신청일</th>
                               <th className="h-10 px-2 w-[72px] text-center whitespace-nowrap bg-transparent">신청주체</th>
-                              <th className="h-10 px-2 bg-transparent">본부 (상위 조직)</th>
-                              <th className="h-10 px-2 bg-transparent">센터 (하위 조직)</th>
-                              <th className="h-10 px-2 bg-transparent">대상자</th>
-                              <th className="h-10 px-2 bg-transparent">직책 / 직급</th>
+                              <th className="h-10 px-2 bg-transparent text-left">본부 (상위 조직)</th>
+                              <th className="h-10 px-2 bg-transparent text-left">센터 (하위 조직)</th>
+                              <th className="h-10 px-2 bg-transparent text-left">대상자</th>
+                              <th className="h-10 px-2 bg-transparent text-left">직책 / 직급</th>
                               <th className="h-10 px-2 text-center w-[72px] whitespace-nowrap bg-transparent">수량(통)</th>
                               <th className="h-10 px-2 text-center w-[120px] whitespace-nowrap bg-transparent">원문확인 (Edit)</th>
                               <th className="h-10 px-2 text-center w-[100px] whitespace-nowrap bg-transparent">수령확인 (Edit)</th>
@@ -2244,10 +2248,10 @@ return (
                                     <span className="text-[10px] font-bold whitespace-nowrap text-slate-600">본인</span>
                                   )}
                                 </td>
-                                <td className="px-2 truncate bg-transparent" title={item.deptHead || ''}>{item.deptHead || '-'}</td>
-                                <td className="px-2 truncate bg-transparent" title={displayDeptName(item, units) || ''}>{displayDeptName(item, units) || <span className="text-slate-300">-</span>}</td>
-                                <td className="px-2 text-slate-800 truncate bg-transparent">{item.userName || '-'}</td>
-                                <td className="px-2 text-slate-800 truncate bg-transparent" title={item.title || ''}>{item.title || '-'}</td>
+                                <td className="px-2 text-left truncate bg-transparent" title={item.deptHead || ''}>{item.deptHead || '-'}</td>
+                                <td className="px-2 text-left truncate bg-transparent" title={displayDeptName(item, units) || ''}>{displayDeptName(item, units) || <span className="text-slate-300">-</span>}</td>
+                                <td className="px-2 text-left text-slate-800 truncate bg-transparent">{item.userName || '-'}</td>
+                                <td className="px-2 text-left text-slate-800 truncate bg-transparent" title={item.title || ''}>{item.title || '-'}</td>
                                 <td className="px-2 text-center font-mono tabular-nums text-slate-900 bg-transparent">{item.quantity || 1}</td>
                                 <td className="px-4 text-center bg-transparent">
                                   <button
@@ -2377,7 +2381,11 @@ return (
                 grades.some((g) => g.label === preview.title);
               const matchedAddress =
                 addresses.find((a) => a.id === preview.addressId) ||
-                addresses.find((a) => a.zipCode === preview.zipCode && a.addressKo === preview.addressKo);
+                addresses.find(
+                  (a) =>
+                    a.zipCode === preview.zipCode &&
+                    formatCompanyAddressKo(a) === preview.addressKo
+                );
               const addressSelectValue = matchedAddress?.id || preview.addressId || '';
               const addressOptions = [
                 ...addresses.filter((a) => a.isActive || a.id === addressSelectValue),
@@ -2994,9 +3002,9 @@ return (
             <table className="w-full text-left text-xs">
               <thead className="bg-slate-50 text-slate-600 font-black border-b border-slate-200 text-[10px]">
                 <tr>
-                  <th className="h-10 px-2">관리번호</th>
-                  <th className="h-10 px-2">대상자</th>
-                  <th className="h-10 px-2">직책 / 직급</th>
+                  <th className="h-10 px-2 text-center">관리번호</th>
+                  <th className="h-10 px-2 text-left">대상자</th>
+                  <th className="h-10 px-2 text-left">직책 / 직급</th>
                   <th className="h-10 px-2 text-center">수량</th>
                   <th className="h-10 px-2 text-right w-[140px]">정산단가(원)</th>
                 </tr>
@@ -3004,12 +3012,12 @@ return (
               <tbody className="divide-y divide-slate-100 font-bold text-slate-700">
                 {(settlementBatch.items || []).map((item) => (
                   <tr key={item.id} className="h-12">
-                    <td className="px-2 font-mono text-[11px]">{item.postNumber}</td>
-                    <td className="px-2 text-[11px]">{item.userName}</td>
-                    <td className="px-2 text-[11px] truncate max-w-[200px]" title={item.title}>
+                    <td className="px-2 text-center font-mono text-[11px] tabular-nums">{item.postNumber}</td>
+                    <td className="px-2 text-left text-[11px]">{item.userName}</td>
+                    <td className="px-2 text-left text-[11px] truncate max-w-[200px]" title={item.title}>
                       {item.title || '-'}
                     </td>
-                    <td className="px-2 text-center text-[11px]">{item.quantity || 1}통</td>
+                    <td className="px-2 text-center text-[11px] tabular-nums">{item.quantity || 1}통</td>
                     <td className="px-2 text-right">
                       {(() => {
                         const changed = isPriceDraftChanged(item.id);

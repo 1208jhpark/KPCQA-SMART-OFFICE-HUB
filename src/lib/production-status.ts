@@ -1,10 +1,10 @@
-/** 제작물 신청 공정 상태 — 접수대기 → 발주대기 → 수령대기 → 수령완료 */
+/** 제작물 신청 공정 상태 — 접수대기 → 발주대기 → 발주완료 → 수령완료 */
 export const PRODUCTION_STATUS = {
   /** 신청 접수 전 (부서원 신청 직후) */
   PENDING: 'PENDING',
   /** 접수 완료 · 발주확정 전 */
   ACCEPTED: 'ACCEPTED',
-  /** 묶음 편성 후 (발주확정 전=발주대기, 발주확정 후=수령대기) */
+  /** 묶음 편성 후 (발주확정 전=발주대기, 발주확정 후=발주완료) */
   ORDERED: 'ORDERED',
   /** 수령확인 완료 */
   VERIFIED: 'VERIFIED',
@@ -22,10 +22,10 @@ function isVendorDispatched(options?: Record<string, unknown> | null): boolean {
 }
 
 /**
- * 화면 공정상태 라벨 (4단계)
+ * 화면 공정상태 라벨
  * PENDING → 접수대기
  * ACCEPTED / ORDERED(미발주확정) → 발주대기
- * ORDERED(발주확정) → 수령대기
+ * ORDERED(발주확정) → 발주완료
  * VERIFIED → 수령완료
  */
 export function productionStatusLabel(
@@ -38,7 +38,7 @@ export function productionStatusLabel(
     case PRODUCTION_STATUS.ACCEPTED:
       return '발주대기';
     case PRODUCTION_STATUS.ORDERED:
-      return isVendorDispatched(options) ? '수령대기' : '발주대기';
+      return isVendorDispatched(options) ? '발주완료' : '발주대기';
     case PRODUCTION_STATUS.VERIFIED:
       return '수령완료';
     case PRODUCTION_STATUS.REJECTED:
@@ -61,7 +61,7 @@ export function productionStatusTextClass(
     case PRODUCTION_STATUS.ACCEPTED:
       return 'text-blue-600';
     case PRODUCTION_STATUS.ORDERED:
-      return isVendorDispatched(options) ? 'text-teal-700' : 'text-blue-600';
+      return isVendorDispatched(options) ? 'text-emerald-700' : 'text-blue-600';
     case PRODUCTION_STATUS.VERIFIED:
       return 'text-slate-900 font-bold';
     case PRODUCTION_STATUS.REJECTED:
@@ -81,7 +81,7 @@ export function productionActionHint(
     case PRODUCTION_STATUS.ACCEPTED:
       return '발주 대기';
     case PRODUCTION_STATUS.ORDERED:
-      return isVendorDispatched(options) ? '수령 대기' : '발주 대기';
+      return isVendorDispatched(options) ? '발주 완료' : '발주 대기';
     case PRODUCTION_STATUS.VERIFIED:
       return '완료';
     case PRODUCTION_STATUS.REJECTED:

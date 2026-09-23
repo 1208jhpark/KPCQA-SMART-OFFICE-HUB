@@ -5,6 +5,8 @@ import { getKSTDateString, getKSTDaysUntil, parseKSTDateOnly } from "@/utils/dat
 import {
   addMonthsToCalibYmd,
   getLatestCalibBaseYmd,
+  isCalibApplicable,
+  isReplaceApplicable,
   toCalibYmd,
 } from "@/utils/equipmentCalib";
 import { parseEquipmentArchiveMemo } from "@/utils/equipmentMemo";
@@ -139,11 +141,13 @@ export default async function PublicEquipmentVerifyPage({
   const assetNo = equipment.asset_no?.split("_ARC_")[0] || "-";
   const { normalQty, archivedQty, totalQty } = await resolveQtyBreakdown(equipment);
 
+  const calibApplicable = isCalibApplicable(equipment);
   const baseCalib = getLatestCalibBaseYmd(equipment.histories);
-  const nextCalibDate =
-    addMonthsToCalibYmd(baseCalib, equipment.calib_cycle_mo) ||
-    toCalibYmd(equipment.next_calib_date) ||
-    "-";
+  const nextCalibDate = !calibApplicable
+    ? "대상 아님"
+    : addMonthsToCalibYmd(baseCalib, equipment.calib_cycle_mo) ||
+      toCalibYmd(equipment.next_calib_date) ||
+      "-";
 
   const lastCalibYmd = toCalibYmd(
     [...(equipment.histories || [])].sort(
@@ -154,8 +158,11 @@ export default async function PublicEquipmentVerifyPage({
 
   const lastReplaceYmd = toCalibYmd(equipment.last_replace_date);
   const purchaseYmd = toCalibYmd(equipment.purchase_date);
+  const replaceApplicable = isReplaceApplicable(equipment);
   let nextReplaceDate = "-";
-  if (purchaseYmd && equipment.replace_cycle_mo) {
+  if (!replaceApplicable) {
+    nextReplaceDate = "대상 아님";
+  } else if (purchaseYmd && equipment.replace_cycle_mo) {
     const d = parseKSTDateOnly(purchaseYmd);
     if (!Number.isNaN(d.getTime())) {
       d.setMonth(d.getMonth() + Number(equipment.replace_cycle_mo));
@@ -164,7 +171,7 @@ export default async function PublicEquipmentVerifyPage({
   }
 
   const dDay =
-    nextCalibDate !== "-"
+    calibApplicable && nextCalibDate !== "-"
       ? (() => {
           const diff = getKSTDaysUntil(nextCalibDate);
           if (diff === 0) return "D-Day";
@@ -174,7 +181,7 @@ export default async function PublicEquipmentVerifyPage({
       : null;
 
   const replaceDDay =
-    nextReplaceDate !== "-"
+    replaceApplicable && nextReplaceDate !== "-" && nextReplaceDate !== "대상 아님"
       ? (() => {
           const diff = getKSTDaysUntil(nextReplaceDate);
           if (diff === 0) return "D-Day";
@@ -245,7 +252,13 @@ export default async function PublicEquipmentVerifyPage({
               <InfoCell label="최근 검교정확정일" value={lastCalibYmd || "-"} tone="indigo" />
               <InfoCell
                 label="검교정 주기"
-                value={equipment.calib_cycle_mo ? `${equipment.calib_cycle_mo}개월` : "-"}
+                value={
+                  !calibApplicable
+                    ? "대상 아님"
+                    : equipment.calib_cycle_mo
+                      ? `${equipment.calib_cycle_mo}개월`
+                      : "-"
+                }
                 tone="indigo"
               />
               <InfoCell

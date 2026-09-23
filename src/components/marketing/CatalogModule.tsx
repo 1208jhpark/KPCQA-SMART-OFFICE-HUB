@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useMemo, useRef, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation'; 
 import { getKSTDateString } from '@/utils/dateUtils';
-import { resolveTopOrgName, canDistributeMarketingOwnerDept, canEditTopOrgMarketingAsset, isGlobalMgmtOrgMember, canApplyViaViewRoles } from '@/utils/orgUnits';
+import { resolveTopOrgName, resolveGlobalMgmtDeptName, canDistributeMarketingOwnerDept, canEditTopOrgMarketingAsset, isGlobalMgmtOrgMember, canApplyViaViewRoles } from '@/utils/orgUnits';
 import { resolveInterfaceEditState, isSystemLv1User } from '@/lib/permission-utils';
 import LoadingState from '@/components/common/LoadingState';
 
@@ -96,6 +96,7 @@ function CatalogContent() {
     current_stock: '' as string | number,
     alert_qty: '' as string | number,
     owner_dept: '',
+    owner_unit_id: null as string | null,
     description: '',
     image_url: '',
     owner_type: 'CENTER',
@@ -113,7 +114,20 @@ function CatalogContent() {
   }, [searchParams]);
       
   useEffect(() => { fetchData(); }, []);
-      
+
+  /** register 등에서 예약 후 복귀 시 재고 즉시 반영 */
+  useEffect(() => {
+    const refresh = () => {
+      if (document.visibilityState === 'visible') fetchData();
+    };
+    document.addEventListener('visibilitychange', refresh);
+    window.addEventListener('focus', refresh);
+    return () => {
+      document.removeEventListener('visibilitychange', refresh);
+      window.removeEventListener('focus', refresh);
+    };
+  }, []);
+
   const fetchData = async () => {
     setLoadError(null);
     try {
@@ -297,6 +311,18 @@ function CatalogContent() {
     });
   }, [currentUser, systemConfig, units, isLv1]);
 
+  /** /admin/settings 에 지정된 GLOBAL_MGMT 부서명 */
+  const globalMgmtDeptLabel = useMemo(
+    () => resolveGlobalMgmtDeptName(systemConfig?.global_mgmt_dept, units) || '미지정',
+    [systemConfig, units]
+  );
+
+  const VIEW_ROLE_OPTIONS = [
+    { id: 'LV_1', label: 'LV_1' },
+    { id: 'LV_2', label: 'LV_2(관리자)' },
+    { id: 'LV_3', label: 'LV_3(사용자)' },
+  ] as const;
+
   const toggleFormViewRole = (lv: string, checked: boolean) => {
     setFormData((prev) => {
       const cur = Array.isArray(prev.view_role_ids) ? prev.view_role_ids : [];
@@ -304,7 +330,7 @@ function CatalogContent() {
       return {
         ...prev,
         view_role_ids: next,
-        view_allow_apply: next.length > 0 ? prev.view_allow_apply : false,
+        view_allow_apply: next.length > 0,
       };
     });
   };
@@ -316,7 +342,7 @@ function CatalogContent() {
       return {
         ...prev,
         view_role_ids: next,
-        view_allow_apply: next.length > 0 ? prev.view_allow_apply : false,
+        view_allow_apply: next.length > 0,
       };
     });
   };
@@ -400,7 +426,7 @@ function CatalogContent() {
       ...item,
       unit: item.unit || 'EA',
       view_role_ids: roles,
-      view_allow_apply: !!item.view_allow_apply && roles.length > 0,
+      view_allow_apply: roles.length > 0,
     });
   };
       
@@ -418,7 +444,12 @@ function CatalogContent() {
       const lockedByDist = editingId ? itemHasDistLedger(editingId) : false;
       // 열람 LV는 GLOBAL_MGMT만 — 일반 편집자가 alert_qty 등만 저장할 때 403 방지
       let payload: Record<string, unknown> = canSetViewRoles
-        ? { ...safeEdit, view_role_ids, view_allow_apply }
+        ? {
+            ...safeEdit,
+            view_role_ids,
+            view_allow_apply:
+              Array.isArray(view_role_ids) && view_role_ids.length > 0,
+          }
         : { ...safeEdit };
       if (payload.owner_dept && !payload.owner_unit_id) {
         payload.owner_unit_id =
@@ -615,10 +646,10 @@ function CatalogContent() {
             MARKETING ASSET CATALOG
           </h3>
           <h1 className="text-2xl font-extrabold tracking-tight text-white leading-none">
-            마케팅 카탈로그 쇼룸
+          기념품 조회 및 재고 예약
           </h1>
           <p className="text-white/70 text-xs mt-3 leading-relaxed">
-            활성 기념품을 확인하고 등록합니다. 지급 신청으로 재고를 확보하세요. (입고·수정·마감은 소속 부서만)
+          전사 및 부서별 기념품 현황을 확인하고 출고 전 수량을 미리 예약합니다. (신규 등록 및 재고 관리는 담당 부서 전용)
           </p>
           {permissionSummary && isSystemLv1User(currentUser) && (
             <div className="flex flex-wrap items-center gap-2 mt-4 pt-3 border-t border-white/15">
@@ -698,54 +729,38 @@ function CatalogContent() {
             <button type="submit" className="w-full lg:w-24 shrink-0 h-10 bg-slate-900 text-white rounded-xl text-[11px] font-black shadow-lg hover:bg-indigo-600 transition-all active:scale-95">신규등록(Edit)</button>
           </form>
           {canSetViewRoles && (
-            <div className="mt-3 px-1 flex flex-wrap items-center gap-2">
-              <span className="text-[10px] font-black text-amber-700 uppercase tracking-tight">타부서 열람 레벨</span>
-              <span className="text-[9px] font-bold text-slate-400">
-                (미지정=타부서 열람 불가 / 열람 레벨 각 지정필요: LV_1(운영관리자), LV_2(센터장 이상), LV_3(일반 직원))
-              </span>
-              {['LV_1', 'LV_2', 'LV_3'].map((lv) => {
-                const checked = (formData.view_role_ids || []).includes(lv);
-                return (
-                  <label
-                    key={lv}
-                    className={`px-2.5 py-1 rounded-lg border text-[10px] font-black cursor-pointer transition-all ${
-                      checked
-                        ? 'bg-amber-500 border-amber-500 text-white shadow-sm'
-                        : 'bg-white border-slate-200 text-slate-500 hover:border-amber-300'
-                    }`}
-                  >
-                    <input
-                      type="checkbox"
-                      className="hidden"
-                      checked={checked}
-                      onChange={(e) => toggleFormViewRole(lv, e.target.checked)}
-                    />
-                    {lv}
-                  </label>
-                );
-              })}
-              <label
-                className={`ml-1 px-2.5 py-1 rounded-lg border text-[10px] font-black cursor-pointer transition-all ${
-                  formData.view_allow_apply && (formData.view_role_ids || []).length > 0
-                    ? 'bg-emerald-600 border-emerald-600 text-white shadow-sm'
-                    : 'bg-white border-slate-200 text-slate-500 hover:border-emerald-300'
-                } ${(formData.view_role_ids || []).length === 0 ? 'opacity-40 cursor-not-allowed' : ''}`}
-                title="열람 LV를 먼저 지정해야 신청 허용을 켤 수 있습니다"
-              >
-                <input
-                  type="checkbox"
-                  className="hidden"
-                  disabled={(formData.view_role_ids || []).length === 0}
-                  checked={!!formData.view_allow_apply && (formData.view_role_ids || []).length > 0}
-                  onChange={(e) =>
-                    setFormData((prev) => ({
-                      ...prev,
-                      view_allow_apply: e.target.checked && (prev.view_role_ids || []).length > 0,
-                    }))
-                  }
-                />
-                지정 LV 신청 허용
-              </label>
+            <div className="mt-3 px-1 space-y-2 rounded-xl border border-amber-200/80 bg-amber-50/40 p-3">
+              <div className="text-[10px] font-black text-amber-800 tracking-tight">
+                GLOBAL_MGMT ({globalMgmtDeptLabel}) 권한
+              </div>
+              <p className="text-[9px] font-bold text-slate-500 leading-relaxed">
+                1) 관리조직 [{topOrgName || '최상위'}] 설정시 전사에게 공유되는 물품
+              </p>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-[9px] font-black text-slate-600">2) 타부서 열람 및 신청허용 레벨</span>
+                {VIEW_ROLE_OPTIONS.map(({ id, label }) => {
+                  const checked = (formData.view_role_ids || []).includes(id);
+                  return (
+                    <label
+                      key={id}
+                      className={`px-2.5 py-1 rounded-lg border text-[10px] font-black cursor-pointer transition-all ${
+                        checked
+                          ? 'bg-amber-500 border-amber-500 text-white shadow-sm'
+                          : 'bg-white border-slate-200 text-slate-500 hover:border-amber-300'
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        className="hidden"
+                        checked={checked}
+                        onChange={(e) => toggleFormViewRole(id, e.target.checked)}
+                      />
+                      {label}
+                    </label>
+                  );
+                })}
+                <span className="text-[9px] font-bold text-slate-400">(지정 LV는 열람·신청 가능 / 미지정시 타부서 불가)</span>
+              </div>
             </div>
           )}
         </div>
@@ -874,7 +889,7 @@ function CatalogContent() {
             ownerUnitId: item.owner_unit_id,
           });
           const viaViewApply = canApplyViaViewRoles(item, currentUser?.roles);
-          // Organization 풀 · 열람LV 신청허용(타부서) → 승인 요청(앰버). 승인 단계는 지급대장에서 예정
+          // Organization 풀 · 타부서 열람·신청 LV → 승인 요청(앰버). 승인 단계는 지급대장에서 예정
           const needsApprovalRequest = inStock && (isTopOrgItem || (viaViewApply && !viaOwner));
       
           return (
@@ -919,9 +934,14 @@ function CatalogContent() {
                           {item.owner_dept}
                         </span>
                         {Array.isArray(item.view_role_ids) && item.view_role_ids.length > 0 && (
-                          <span className="text-[8px] font-black px-2 py-0.5 rounded-md bg-amber-50 text-amber-700 border border-amber-200 whitespace-nowrap">
-                            열람 {item.view_role_ids.map(normalizeRoleId).join(', ')}
-                            {item.view_allow_apply ? ' · 신청허용' : ''}
+                          <span
+                            className="text-[8px] font-black px-2 py-0.5 rounded-md bg-amber-50 text-amber-700 border border-amber-200 whitespace-nowrap"
+                            title="지정 LV의 타부서 사용자가 열람·신청(예약) 가능"
+                          >
+                            타부서 열람·신청 ({' '}
+                            {item.view_role_ids.map(normalizeRoleId).join(', ')}
+                            {' '}
+                            )
                           </span>
                         )}
                       </div>
@@ -1061,19 +1081,23 @@ function CatalogContent() {
                         />
                       </div>
                       {canSetViewRoles && (
-                        <div className="col-span-2 flex flex-col mt-1 gap-1.5">
-                          <span className="text-amber-600 font-bold text-[9px]">
-                            타부서 열람 레벨 (미지정=타부서 숨김, 열람레벨 각 설정(LV_1,2=센터장 이상 조회)
+                        <div className="col-span-2 flex flex-col mt-1 gap-1.5 rounded-lg border border-amber-200/80 bg-amber-50/40 p-2">
+                          <span className="text-amber-800 font-black text-[9px]">
+                            GLOBAL_MGMT ({globalMgmtDeptLabel}) 권한
+                          </span>
+                          <span className="text-slate-500 font-bold text-[9px] leading-relaxed">
+                            1) 관리조직 [{topOrgName || '최상위'}] 설정시 전사에게 공유되는 물품
                           </span>
                           <div className="flex flex-wrap gap-1.5 items-center">
-                            {['LV_1', 'LV_2', 'LV_3'].map((lv) => {
+                            <span className="text-slate-600 font-black text-[9px]">2) 타부서 열람 및 신청허용 레벨</span>
+                            {VIEW_ROLE_OPTIONS.map(({ id, label }) => {
                               const roles = Array.isArray(currentData.view_role_ids)
                                 ? currentData.view_role_ids.map(normalizeRoleId)
                                 : [];
-                              const checked = roles.includes(lv);
+                              const checked = roles.includes(id);
                               return (
                                 <label
-                                  key={lv}
+                                  key={id}
                                   className={`px-2 py-1 rounded-md border text-[9px] font-black cursor-pointer ${
                                     checked
                                       ? 'bg-amber-500 border-amber-500 text-white'
@@ -1084,50 +1108,13 @@ function CatalogContent() {
                                     type="checkbox"
                                     className="hidden"
                                     checked={checked}
-                                    onChange={(e) => toggleEditViewRole(lv, e.target.checked)}
+                                    onChange={(e) => toggleEditViewRole(id, e.target.checked)}
                                   />
-                                  {lv}
+                                  {label}
                                 </label>
                               );
                             })}
-                            <label
-                              className={`px-2 py-1 rounded-md border text-[9px] font-black cursor-pointer ${
-                                currentData.view_allow_apply &&
-                                Array.isArray(currentData.view_role_ids) &&
-                                currentData.view_role_ids.length > 0
-                                  ? 'bg-emerald-600 border-emerald-600 text-white'
-                                  : 'bg-white border-slate-200 text-slate-500'
-                              } ${
-                                !Array.isArray(currentData.view_role_ids) ||
-                                currentData.view_role_ids.length === 0
-                                  ? 'opacity-40 cursor-not-allowed'
-                                  : ''
-                              }`}
-                            >
-                              <input
-                                type="checkbox"
-                                className="hidden"
-                                disabled={
-                                  !Array.isArray(currentData.view_role_ids) ||
-                                  currentData.view_role_ids.length === 0
-                                }
-                                checked={
-                                  !!currentData.view_allow_apply &&
-                                  Array.isArray(currentData.view_role_ids) &&
-                                  currentData.view_role_ids.length > 0
-                                }
-                                onChange={(e) =>
-                                  setEditFormData((prev: any) => ({
-                                    ...prev,
-                                    view_allow_apply:
-                                      e.target.checked &&
-                                      Array.isArray(prev.view_role_ids) &&
-                                      prev.view_role_ids.length > 0,
-                                  }))
-                                }
-                              />
-                              지정 LV 신청 허용
-                            </label>
+                            <span className="text-[8px] font-bold text-slate-400">(지정 LV는 열람·신청 가능 / 미지정시 타부서 불가)</span>
                           </div>
                         </div>
                       )}
@@ -1157,13 +1144,13 @@ function CatalogContent() {
                             });
                           }}
                           className="px-3 py-1.5 bg-emerald-50 text-emerald-600 rounded-md text-[10px] font-black hover:bg-emerald-600 hover:text-white transition-colors"
-                        >📦 입고</button>
+                        >📦 입고(Edit)</button>
                         <button onClick={() => handleOpenEdit(item)} className="px-3 py-1.5 bg-white border border-slate-200 text-slate-600 rounded-md text-[10px] font-black hover:bg-slate-100 transition-colors">✏️ 수정(Edit)</button>
                         
                         {!hasLedger ? (
                           <button onClick={() => handleDelete(item.id)} className="px-3 py-1.5 bg-red-50 text-red-500 rounded-md text-[10px] font-black hover:bg-red-500 hover:text-white transition-colors">🗑️ 삭제(Edit·신청이력X)</button>
                         ) : (
-                          <button onClick={() => handleEndItem(item.id)} className="px-3 py-1.5 bg-slate-800 text-white rounded-md text-[10px] font-black hover:bg-black transition-colors">🛑 종료(마감)</button>
+                          <button onClick={() => handleEndItem(item.id)} className="px-3 py-1.5 bg-slate-800 text-white rounded-md text-[10px] font-black hover:bg-black transition-colors">🛑 종료(Edit)</button>
                         )}
                       </>
                     )
@@ -1192,11 +1179,11 @@ function CatalogContent() {
                           ? '품절 (Sold Out)'
                           : needsApprovalRequest
                             ? '승인 요청하기'
-                            : '지급 신청하기'}
+                            : '재고 예약하기'}
                     </span>
                     {inStock && (
                       <span className="text-[9px] font-medium opacity-70">
-                        {needsApprovalRequest ? '클릭 시 요청 폼 이동' : '클릭 시 폼 이동'}
+                        {needsApprovalRequest ? '승인 후 예약 확정' : '즉시 예약 확정'}
                       </span>
                     )}
                   </button>

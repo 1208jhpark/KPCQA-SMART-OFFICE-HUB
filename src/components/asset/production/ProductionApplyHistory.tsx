@@ -19,9 +19,9 @@ import {
 } from '@/lib/production-category-theme';
 import { isVendorDispatched } from '@/lib/production-shipping';
 
-// 🚀 [신청 페이지 CATEGORIES와 1:1 싱크 통일 + 전체내역 탭 추가]
+// 서류철: 진행 전체 / 분류별은 수령완료만
 const HISTORY_CATEGORIES = [
-  { id: 'ALL', label: '전체 내역', icon: '📋' },
+  { id: 'ALL', label: '진행 중 내역', icon: '📋' },
   { id: 'SIGN', label: '현판/명판/상패', icon: '📛' },
   { id: 'JEBON', label: '제본', icon: '📚' },
   { id: 'PRINT', label: '기타 제작물', icon: '📜' },
@@ -52,6 +52,8 @@ export default function ProductionApplyHistory() {
   const [currentUser, setCurrentUser] = useState<any>(null);
 
   const [activeCategory, setActiveCategory] = useState('ALL');
+  /** 진행 중 내역 탭 전용 — 분류 솔트 (서류철 분류 탭과 별개) */
+  const [progressCategoryFilter, setProgressCategoryFilter] = useState('ALL');
   const [selectedYear, setSelectedYear] = useState(() => String(getKSTNowYearMonth().year));
   const [selectedMonth, setSelectedMonth] = useState('ALL');
   const [currentPage, setCurrentPage] = useState(1);
@@ -102,7 +104,11 @@ export default function ProductionApplyHistory() {
   useEffect(() => {
     setCurrentPage(1);
     setSelectedIds([]);
-  }, [activeCategory, selectedYear, selectedMonth]);
+  }, [activeCategory, progressCategoryFilter, selectedYear, selectedMonth]);
+
+  useEffect(() => {
+    if (activeCategory !== 'ALL') setProgressCategoryFilter('ALL');
+  }, [activeCategory]);
 
   // 🚀 코드가 아닌 한글 매핑 명칭을 안전하게 추출하는 공통 헬퍼
   const getCategoryLabel = (catId: string) => {
@@ -156,12 +162,21 @@ export default function ProductionApplyHistory() {
       // 예전 soft-cancel(CANCELLED) 잔여분 숨김 — 발주대기 취소는 이제 DB 삭제
       if (item.status === 'CANCELLED') return false;
       const ym = getKSTYearMonthParts(item.createdAt);
-      const matchCategory = activeCategory === 'ALL' || item.category === activeCategory;
       const matchYear = selectedYear === 'ALL' || ym?.year === selectedYear;
       const matchMonth = selectedMonth === 'ALL' || ym?.month === selectedMonth;
-      return matchCategory && matchYear && matchMonth;
+      if (!matchYear || !matchMonth) return false;
+
+      // 진행 중: 수령완료·반려 제외(+분류 솔트) / 분류 서류철: 수령완료·반려만
+      if (activeCategory === 'ALL') {
+        if (item.status === 'VERIFIED' || item.status === 'REJECTED') return false;
+        return progressCategoryFilter === 'ALL' || item.category === progressCategoryFilter;
+      }
+      return (
+        (item.status === 'VERIFIED' || item.status === 'REJECTED') &&
+        item.category === activeCategory
+      );
     });
-  }, [histories, activeCategory, selectedYear, selectedMonth]);
+  }, [histories, activeCategory, progressCategoryFilter, selectedYear, selectedMonth]);
 
   const totalPages = Math.max(1, Math.ceil(filteredHistories.length / ITEMS_PER_PAGE));
   const paginatedHistories = useMemo(() => {
@@ -245,34 +260,6 @@ export default function ProductionApplyHistory() {
       alert('접수가 취소되어 접수대기 상태로 변경되었습니다.');
     } catch {
       alert('접수 취소 처리 중 오류가 발생했습니다.');
-    } finally {
-      setActionBusyId(null);
-    }
-  };
-
-  const handleConfirmReceive = async (item: any) => {
-    if (item.status !== 'ORDERED') return;
-    if (!confirm(`[${item.postNumber}] 물품을 수령확정 처리할까요?`)) {
-      return;
-    }
-    setActionBusyId(item.id);
-    try {
-      const res = await fetch('/api/asset/production/apply/history', {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: item.id, action: 'confirm-receive' }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        alert(data.message || '수령확정 처리에 실패했습니다.');
-        return;
-      }
-      setHistories((prev) =>
-        prev.map((h) => (h.id === item.id ? { ...h, status: 'VERIFIED' } : h))
-      );
-      alert('수령확정 처리되었습니다.');
-    } catch {
-      alert('수령확정 처리 중 오류가 발생했습니다.');
     } finally {
       setActionBusyId(null);
     }
@@ -484,7 +471,11 @@ export default function ProductionApplyHistory() {
         <div className="p-4 px-6 bg-slate-200/70 border-b border-slate-300 flex items-center justify-between flex-wrap gap-4">
           <div className="flex items-center gap-2">
             <div className="w-2.5 h-2.5 rounded-full bg-blue-600"></div>
-            <h2 className="text-sm font-black text-slate-800 tracking-tight">개인 신청 내역 관리 대장</h2>
+            <h2 className="text-sm font-black text-slate-800 tracking-tight">
+              {activeCategory === 'ALL'
+                ? '실시간 신청·진행 현황'
+                : `${getCategoryLabel(activeCategory)} 제작·수령 완료 이력`}
+            </h2>
             <span className="text-[11px] font-bold bg-slate-300/80 text-slate-700 px-2 py-0.5 rounded-md">
               {filteredHistories.length}건
             </span>
@@ -501,8 +492,30 @@ export default function ProductionApplyHistory() {
                 role="tooltip"
                 className="pointer-events-none absolute left-0 top-full mt-1.5 z-50 hidden group-hover/filter:block whitespace-nowrap rounded-lg bg-slate-800 px-2.5 py-1.5 text-[10px] font-bold text-white shadow-lg"
               >
-                연도 → 월 · 연계필터
+                {activeCategory === 'ALL'
+                  ? '분류 → 연도 → 월 · 연계필터'
+                  : '연도 → 월 · 연계필터'}
               </span>
+
+              {activeCategory === 'ALL' && (
+                <>
+                  <span className="text-[10px] font-black text-slate-400 uppercase">분류</span>
+                  <select
+                    value={progressCategoryFilter}
+                    onChange={(e) => setProgressCategoryFilter(e.target.value)}
+                    className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent max-w-[9.5rem]"
+                    aria-label="진행 중 내역 분류 솔트"
+                  >
+                    <option value="ALL">전체</option>
+                    {HISTORY_CATEGORIES.filter((c) => c.id !== 'ALL').map((cat) => (
+                      <option key={cat.id} value={cat.id}>
+                        {cat.label}
+                      </option>
+                    ))}
+                  </select>
+                  <div className="w-px h-3.5 bg-slate-300 mx-0.5" />
+                </>
+              )}
 
               <span className="text-[10px] font-black text-slate-400 uppercase">연도</span>
               <select
@@ -573,15 +586,15 @@ export default function ProductionApplyHistory() {
                   <th className="h-12 px-2 text-center">No</th>
                   <th className="h-12 px-2 text-center whitespace-nowrap">관리번호</th>
                   <th className="h-12 px-2 text-center whitespace-nowrap">신청일</th>
-                  <th className="h-12 px-2">소속 부서</th>
-                  <th className="h-12 px-2">신청자</th>
+                  <th className="h-12 px-2 text-left">소속 부서</th>
+                  <th className="h-12 px-2 text-left">신청자</th>
                   <th className="h-12 px-2 text-center whitespace-nowrap">분류</th>
-                  <th className="h-12 px-2">관리용 제목</th>
+                  <th className="h-12 px-2 text-left">관리용 제목</th>
                   <th className="h-12 px-2 text-center whitespace-nowrap">신청내역</th>
                   <th className="h-12 px-2 text-center whitespace-nowrap">
                     {activeCategory === 'OFFICE_SUPPLIES' ? '건' : '수량'}
                   </th>
-                  <th className="h-12 px-2 text-center whitespace-nowrap">외주업체</th>
+                  <th className="h-12 px-2 text-left whitespace-nowrap">외주업체</th>
                   <th className="h-12 px-2 text-center whitespace-nowrap">공정상태</th>
                   <th className="h-12 px-2 text-center whitespace-nowrap">액션</th>
                 </tr>
@@ -607,7 +620,7 @@ export default function ProductionApplyHistory() {
                     const opts = (item.options || {}) as Record<string, unknown>;
                     const isDispatched = opts.vendorDispatched === true;
 
-                    // 1) 공정상태 판정 — 접수대기 → 발주대기 → 수령대기 → 수령완료
+                    // 1) 공정상태 판정 — 접수대기 → 발주대기 → 발주완료 → 수령완료
                     let statusLabel = item.status;
                     let statusClass = 'text-slate-500';
 
@@ -618,8 +631,8 @@ export default function ProductionApplyHistory() {
                       statusLabel = '발주대기';
                       statusClass = 'text-blue-600 font-bold';
                     } else if (isOrdered && isDispatched) {
-                      statusLabel = '수령대기';
-                      statusClass = 'text-teal-700 font-bold';
+                      statusLabel = '발주완료';
+                      statusClass = 'text-emerald-700 font-bold';
                     } else if (isVerified) {
                       statusLabel = '수령완료';
                       statusClass = 'text-slate-900 font-bold';
@@ -654,10 +667,10 @@ export default function ProductionApplyHistory() {
                       <td className="px-2 text-center whitespace-nowrap tabular-nums text-slate-800">
                         {getKSTDateString(item.createdAt)}
                       </td>
-                      <td className="px-2 truncate" title={item.deptName || ''}>
+                      <td className="px-2 text-left truncate" title={item.deptName || ''}>
                         {item.deptName || <span className="text-slate-300">-</span>}
                       </td>
-                      <td className="px-2 text-slate-800 truncate">{item.userName || '-'}</td>
+                      <td className="px-2 text-left text-slate-800 truncate">{item.userName || '-'}</td>
                       <td className="px-2 text-center">
                         <span
                           className={`px-2.5 py-1 rounded text-[10px] font-bold tracking-tight border ${getProductionCategoryBadgeClass(item.category)}`}
@@ -665,7 +678,7 @@ export default function ProductionApplyHistory() {
                           {getCategoryLabel(item.category)}
                         </span>
                       </td>
-                      <td className="px-2 text-slate-800 truncate" title={item.title || ''}>
+                      <td className="px-2 text-left text-slate-800 truncate" title={item.title || ''}>
                         {item.title || '-'}
                       </td>
                       <td className="px-2 text-center">
@@ -693,15 +706,11 @@ export default function ProductionApplyHistory() {
                           {formatQuantityUnit(item)}
                         </span>
                       </td>
-                      <td className="px-2 text-center text-slate-800 truncate">
+                      <td className="px-2 text-left text-slate-800 truncate">
                         {item.options?.vendor || '-'}
                       </td>
                       <td className="px-2 text-center">
-                        {isOrdered && isDispatched ? (
-                          <span className="text-[10px] font-bold text-teal-700 whitespace-nowrap">
-                            수령대기
-                          </span>
-                        ) : isRejected ? (
+                        {isRejected ? (
                           (() => {
                             const rejectReason = String(opts.rejectReason || '').trim();
                             const rejectedAt = String(opts.rejectedAt || '').trim();
@@ -757,19 +766,6 @@ export default function ProductionApplyHistory() {
                           >
                             {actionBusyId === item.id ? '처리중…' : '접수취소'}
                           </button>
-                        ) : isOrdered && isDispatched ? (
-                          <button
-                            type="button"
-                            disabled={actionBusyId === item.id}
-                            onClick={() => handleConfirmReceive(item)}
-                            className="px-2.5 py-1 text-[10px] font-black rounded-lg whitespace-nowrap transition-colors bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm disabled:opacity-50"
-                          >
-                            {actionBusyId === item.id ? '처리중…' : '수령확정'}
-                          </button>
-                        ) : isVerified ? (
-                          <span className="text-[10px] text-slate-400 font-bold whitespace-nowrap">
-                            -
-                          </span>
                         ) : (
                           <span className="text-[10px] text-slate-400 font-bold whitespace-nowrap">
                             -

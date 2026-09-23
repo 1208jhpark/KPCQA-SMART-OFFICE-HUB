@@ -432,15 +432,14 @@ export function isGlobalMgmtOrgMember(opts: {
 }
 
 /**
- * 타부서 열람 LV로 지정된 인원에게 신청을 열어둔 물품인지
- * (view_role_ids 미지정=전원 열람만 → 신청 개방 안 함)
+ * 타부서 열람·신청 LV로 지정된 인원인지
+ * (view_role_ids 지정 = 열람+신청 동일 / 미지정 = 타부서 개방 없음)
  */
 export function canApplyViaViewRoles(
   item: { view_role_ids?: unknown; view_allow_apply?: boolean | null },
   userRoles: unknown
 ): boolean {
-  if (!item?.view_allow_apply) return false;
-  const raw = item.view_role_ids;
+  const raw = item?.view_role_ids;
   if (!raw) return false;
   const arr = Array.isArray(raw) ? raw : [raw];
   const required = Array.from(

@@ -15,6 +15,12 @@ import {
   resolveOwnerUnitIdsFromNames,
 } from '@/utils/orgUnits';
 import { SEED_SUPPLY_ITEM_DEFAULTS } from '@/lib/supply-seed-items';
+import {
+  isSupplyDirectStockLocked,
+  parseSupplyItemExt,
+  withSupplyStockLocked,
+} from '@/utils/supplyStockLock';
+import { SUPPLY_REQUEST_PENDING_STATUSES } from '@/utils/supplyRequestStatus';
 
 function resolveOwnerDepts(body: any, unitsList: any[] | undefined): string[] {
   if (Array.isArray(body?.owner_depts)) {
@@ -49,8 +55,8 @@ const MASTER_MENU_PATHS = [
   '/asset/supplies/master/archive',
 ];
 
-/** 대기 상태(영문·구 한글) — requests 메뉴 Access 없이 대시보드에서 집계 */
-const PENDING_STATUSES = ['PENDING', '대기중', '대기'];
+/** 대기 상태 — supplyRequestStatus 와 동일 (영문 + 구 한글) */
+const PENDING_STATUSES = [...SUPPLY_REQUEST_PENDING_STATUSES];
 
 const cleanNum = (val: any) => Number(String(val ?? '').replace(/,/g, '')) || 0;
 
@@ -140,15 +146,8 @@ export async function POST(req: Request) {
       return NextResponse.json({ success: true, data: result.data });
     }
 
-    // 시드 누락분 복구: LV_1 전용 — 없으면 추가, 비활성만 재활성 (단위·비고·재고 보존)
+    // 시드 누락분 복구: Edit — 없으면 추가, 비활성만 재활성 (단위·비고·재고 보존)
     if (body?.action === 'restore-seeds') {
-      if (auth.permission?.myRole !== 'LV_1') {
-        return NextResponse.json(
-          { error: '시드 항목 복구는 LV_1만 가능합니다.' },
-          { status: 403 }
-        );
-      }
-
       let created = 0;
       let reactivated = 0;
 
@@ -168,8 +167,9 @@ export async function POST(req: Request) {
               id: seed.id,
               name: seed.name,
               unit_price: 0,
-              current_stock: seed.current_stock,
-              alert_qty: seed.alert_qty,
+              // 시드는 품목 껍데기만 — 현재고·안전재고는 운영에서 수정/입고로 맞춤
+              current_stock: 0,
+              alert_qty: 0,
               owner_dept: serializeSupplyOwnerDepts(parseSupplyOwnerDepts(seed.owner_dept)),
               category: seed.category,
               description: JSON.stringify({
@@ -270,7 +270,10 @@ export async function PATCH(req: Request) {
     const id = String(body.id || '').trim();
     if (!id) return NextResponse.json({ error: 'ID 누락' }, { status: 400 });
 
-    const existing = await prisma.supplyItem.findUnique({ where: { id } });
+    const existing = await prisma.supplyItem.findUnique({
+      where: { id },
+      include: { _count: { select: { purchases: true, requests: true } } },
+    });
     if (!existing) return NextResponse.json({ error: '품목을 찾을 수 없습니다.' }, { status: 404 });
 
     // [A-1] 폐기(보관함 이동)
@@ -324,9 +327,17 @@ export async function PATCH(req: Request) {
         parseSupplyOwnerDepts(existing.owner_dept),
         (existing as { owner_unit_ids?: unknown }).owner_unit_ids
       );
+      const nextPublished = body.is_published === true;
+      const data: { is_published: boolean; description?: string } = {
+        is_published: nextPublished,
+      };
+      // 최초 게시 시 현재고 직접수정 영구 잠금 (이후 내리기해도 유지)
+      if (nextPublished) {
+        data.description = withSupplyStockLocked(existing.description);
+      }
       await prisma.supplyItem.update({
         where: { id },
-        data: { is_published: body.is_published },
+        data,
       });
       return NextResponse.json({ success: true });
     }
@@ -371,13 +382,21 @@ export async function PATCH(req: Request) {
       vendor: undefined,
     });
 
+    const canDirectStock =
+      auth.permission?.myRole === 'LV_1' ||
+      !isSupplyDirectStockLocked({
+        is_published: existing.is_published,
+        description: existing.description,
+        _count: existing._count,
+      });
+
     const updated = await prisma.supplyItem.update({
       where: { id },
       data: {
         name,
         unit_price: cleanNum(body.unit_price) || existing.unit_price || 0,
-        // 현재고는 기본 미변경 — LV_1만 초기재고·강제 보정 허용
-        ...(auth.permission?.myRole === 'LV_1' && body.current_stock !== undefined
+        // 현재고: 미게시·이력 없음 Edit 허용 · 잠금 후 LV_1만 · 평소는 입고 API
+        ...(body.current_stock !== undefined && canDirectStock
           ? { current_stock: Math.max(0, Math.floor(cleanNum(body.current_stock))) }
           : {}),
         alert_qty: cleanNum(body.alert_qty) || 0,

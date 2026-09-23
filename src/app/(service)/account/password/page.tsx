@@ -3,6 +3,7 @@
 import { useState, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
+import { patchServiceShellUser } from '@/lib/service-shell-cache';
 
 function PasswordEyeButton({
   show,
@@ -97,7 +98,8 @@ function ChangePasswordForm() {
         return;
       }
       alert('비밀번호가 변경되었습니다.');
-      // layout의 오래된 must_reset_password 상태 때문에 router.push만으로는 다시 튕김 → 전체 새로고침
+      // 캐시에 must_reset_password:true 가 남아 /home 진입 직후 다시 강제 리다이렉트되는 루프 방지
+      patchServiceShellUser({ must_reset_password: false });
       window.location.href = '/home';
       return;
     } catch {

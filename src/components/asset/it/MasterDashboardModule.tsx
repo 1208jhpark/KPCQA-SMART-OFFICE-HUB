@@ -28,6 +28,9 @@ import { rowMatchesOrgUnit } from '@/lib/org-unit-match';
 
 const MENU_PATH = '/asset/it/master/dashboard';
 const DEPT_FILTER_ALL = '조직 (전체)';
+/** 부서 내 담당자 select — admin/users에 없는 공용 자산용 (동기화 대상 제외) */
+const SHARED_USER_SELECT_VALUE = '__SHARED_COMMON__';
+const SHARED_USER_LABEL = '공용';
 const DISABLED_ACTION_BTN =
   'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed opacity-70 shadow-none';
 
@@ -269,6 +272,8 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
   });
   
   const [searchQuery, setSearchQuery] = useState('');
+  /** 담당자 이름 텍스트 검색 (자산번호 검색과 분리) */
+  const [nameSearchQuery, setNameSearchQuery] = useState('');
   const [userFilter, setUserFilter] = useState('');
   const [colFilters, setColFilters] = useState({ category: '범주 (전체)', it_type: '자산 분류 (전체)', dept: DEPT_FILTER_ALL, is_rental: '조달유형 (전체)' });
   
@@ -278,7 +283,9 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
   const [showFeedbackFilter, setShowFeedbackFilter] = useState(false); 
   /** 관리자 요청 전송내역 — 처리 완료 전(요청·답변완료 포함) */
   const [showAdminOutboundFilter, setShowAdminOutboundFilter] = useState(false);
-  const [ddayFilter, setDdayFilter] = useState<'all' | 'd-30' | 'd-day' | 'd-plus'>('all'); 
+  const [ddayFilter, setDdayFilter] = useState<'all' | 'd-30' | 'd-day' | 'd-plus'>('all');
+  /** 공용자산만 보기 (담당자 user === '공용') */
+  const [sharedOnlyFilter, setSharedOnlyFilter] = useState(false);
   const [itMasterLabel, setItMasterLabel] = useState('자산 분류');
   
   const [currentPage, setCurrentPage] = useState(1);
@@ -390,7 +397,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
   useEffect(() => {
     setCurrentPage(1);
     setSelectedIds(new Set());
-  }, [searchQuery, userFilter, colFilters, showReplaceableOnly, showDuplicatesOnly, showStatusFilter, showFeedbackFilter, showAdminOutboundFilter, ddayFilter, focusedAuditId]);
+  }, [searchQuery, nameSearchQuery, userFilter, colFilters, showReplaceableOnly, showDuplicatesOnly, showStatusFilter, showFeedbackFilter, showAdminOutboundFilter, ddayFilter, sharedOnlyFilter, focusedAuditId]);
 
   const canEdit = useMemo(
     () => resolveInterfaceEditState(currentUser, interfaceConfig).isEditor,
@@ -411,8 +418,10 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
       .sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'ko'));
   };
 
-  /** 자산 행에 매칭되는 사용자 select value (user_id 우선) */
+  /** 자산 행에 매칭되는 사용자 select value (공용 / user_id 우선) */
   const resolveSelectedUserId = (asset: any, deptName: string) => {
+    const name = String(asset?.user || '').trim();
+    if (name === SHARED_USER_LABEL) return SHARED_USER_SELECT_VALUE;
     const list = usersOfDept(deptName);
     const uid = String(asset?.user_id || '').trim();
     if (uid && list.some((u) => u.id === uid)) return uid;
@@ -423,8 +432,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
       );
       if (byEmail) return byEmail.id;
     }
-    const name = String(asset?.user || '').trim();
-    if (name && name !== '-' && name !== '공용') {
+    if (name && name !== '-' && name !== SHARED_USER_LABEL) {
       const byName = list.filter((u) => String(u.name || '').trim() === name);
       if (byName.length === 1) return byName[0].id;
     }
@@ -439,6 +447,13 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
         const id = String(userId || '').trim();
         if (!id) {
           updated.user = '';
+          updated.user_email = null;
+          updated.user_id = null;
+          return updated;
+        }
+        // 공용: admin/users에 없음 → id/email 비움. 동기화 버튼이 부서를 바꾸지 않음
+        if (id === SHARED_USER_SELECT_VALUE) {
+          updated.user = SHARED_USER_LABEL;
           updated.user_email = null;
           updated.user_id = null;
           return updated;
@@ -481,15 +496,22 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
       if (field === 'dept') {
         const matchedUnit = orgs.find((o: any) => o.unit_name === value);
         updated.unit_id = matchedUnit?.id || null;
-        const inDept = usersOfDept(String(value || ''));
-        const stillInDept =
-          (updated.user_id && inDept.some((u) => u.id === updated.user_id)) ||
-          (!updated.user_id &&
-            inDept.some((u) => u.name === updated.user && inDept.filter((x) => x.name === updated.user).length === 1));
-        if (!stillInDept) {
-          updated.user = '';
+        // 공용 자산은 부서만 바뀌고 담당자(공용) 유지
+        if (String(updated.user || '').trim() === SHARED_USER_LABEL) {
+          updated.user = SHARED_USER_LABEL;
           updated.user_email = null;
           updated.user_id = null;
+        } else {
+          const inDept = usersOfDept(String(value || ''));
+          const stillInDept =
+            (updated.user_id && inDept.some((u) => u.id === updated.user_id)) ||
+            (!updated.user_id &&
+              inDept.some((u) => u.name === updated.user && inDept.filter((x) => x.name === updated.user).length === 1));
+          if (!stillInDept) {
+            updated.user = '';
+            updated.user_email = null;
+            updated.user_id = null;
+          }
         }
       }
 
@@ -508,7 +530,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
       return updated;
     }));
   };
-     
+
   const handleAdd = async () => {
     if (!canEdit) return alertNoEditPermission();
     const today = getKSTDateString();
@@ -517,7 +539,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
       id: newId, category: masterFilters.categories[0] || 'HW', it_type: masterFilters.types[0] || '기기', dept: topOrgName || sortedOrgs[0]?.unit_name || '', unit_id: sortedOrgs.find((o) => o.unit_name === (topOrgName || sortedOrgs[0]?.unit_name))?.id || sortedOrgs[0]?.id || null, user: '', code: `AST-${Date.now()}`, 
       model: '', sn: '', spec: '', brand: '', is_rental: masterFilters.rentals[0] || '', rental_months: 0, 
       in_date: today, start_date: null, end_date: null, purchase_price: 0, monthly_fee: 0, 
-      first_bill: null, cycle: 48, memo: '-', reg_date: today, entry_source: 'manual',
+      first_bill: null, cycle: 48, replace_deferred: false, memo: '-', reg_date: today, entry_source: 'manual',
     };
     
     setAssets(prev => [newObj, ...prev]);
@@ -976,7 +998,8 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
     }
 
     const repDate = schedule.replace_due_date || '-';
-    const dday = schedule.replace_dday;
+    const deferred = a.replace_deferred === true;
+    const dday = deferred ? null : schedule.replace_dday;
     let ddayText = '';
     let ddayColor = '';
     let showDdayBadge = false;
@@ -1090,7 +1113,9 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
     const commStatusText = commStatusDate ? `${commStatusLabel} (${commStatusDate})` : commStatusLabel;
          
     return { 
-      turnDisplay, repDate, dday, ddayText, ddayColor, showDdayBadge, isTargetCount: dday !== null && dday <= 90, 
+      turnDisplay, repDate, dday, ddayText, ddayColor, showDdayBadge,
+      replaceDeferred: deferred,
+      isTargetCount: !deferred && dday !== null && dday <= 90, 
       auditStatusColor, auditStatusLabel, auditStatusDate, auditStatusText,
       isChecked, hasUserIncomingRequest, hasAdminOutboundRequest, commStatusLabel, commStatusDate, commStatusText, commStatusColor 
     };
@@ -1193,6 +1218,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
     return {
       counts, replaceableCount, hwCount, swCount, furnitureCount, feedbackIncomingCount, adminOutboundCount, total: assets.length,
       d30Count, dDayCount, dPlusCount, duplicateCount,
+      sharedCount: assets.filter((a) => String(a.user || '').trim() === '공용').length,
       auditDoneCount, auditPendingCount, auditNudgeCount, infoCorrectionCount,
     };
   }, [assets, audits, requests, duplicateCodes, duplicateModels, duplicateSns, isAuditActive, focusedAudit, orgs, focusedAuditId]);
@@ -1200,9 +1226,14 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
   const filteredAssets = useMemo(() => {
     return assets.filter(a => {
       const s = searchQuery.toLowerCase().trim();
+      const nameQ = nameSearchQuery.toLowerCase().trim();
       const logic = getAssetLogic(a);
       
       const matchSearch = !s || [a.code, a.model, a.sn].some(v => String(v).toLowerCase().includes(s));
+      const matchNameSearch =
+        !nameQ ||
+        String(a.user || '').toLowerCase().includes(nameQ) ||
+        String(a.user_email || '').toLowerCase().includes(nameQ);
       // user_id / user_email 우선, id·email 없는 레거시 행은 이름 폴백
       const matchUser = (() => {
         if (!userFilter) return true;
@@ -1271,23 +1302,26 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
       
       let matchDday = true;
       if (ddayFilter !== 'all') {
-        if (logic.dday === null) matchDday = false;
+        if (logic.replaceDeferred || logic.dday === null) matchDday = false;
         else if (ddayFilter === 'd-30') matchDday = (logic.dday > 0 && logic.dday <= 30);
         else if (ddayFilter === 'd-day') matchDday = (logic.dday === 0);
         else if (ddayFilter === 'd-plus') matchDday = (logic.dday < 0);
       }
+
+      const matchShared =
+        !sharedOnlyFilter || String(a.user || '').trim() === '공용';
      
       const isDup =
         duplicateCodes.has(a.code) ||
         (duplicateModels.has(String(a.model).trim()) && String(a.model).trim() !== '') ||
         (duplicateSns.has(String(a.sn || '').trim()) && String(a.sn || '').trim() !== '');
      
-      return matchSearch && matchUser && matchDept && matchCategory && matchItType && matchRental 
+      return matchSearch && matchNameSearch && matchUser && matchDept && matchCategory && matchItType && matchRental 
              && (!showReplaceableOnly || logic.isTargetCount) 
              && (!showDuplicatesOnly || isDup) 
-             && matchStatus && matchIncomingFeedback && matchAdminOutbound && matchDday;
+             && matchStatus && matchIncomingFeedback && matchAdminOutbound && matchDday && matchShared;
     });
-  }, [assets, searchQuery, userFilter, users, colFilters, showReplaceableOnly, showDuplicatesOnly, showStatusFilter, showFeedbackFilter, showAdminOutboundFilter, ddayFilter, audits, orgs, requests, duplicateCodes, duplicateModels, duplicateSns, isAuditActive, focusedAudit, focusedAuditId]);
+  }, [assets, searchQuery, nameSearchQuery, userFilter, users, colFilters, showReplaceableOnly, showDuplicatesOnly, showStatusFilter, showFeedbackFilter, showAdminOutboundFilter, ddayFilter, sharedOnlyFilter, audits, orgs, requests, duplicateCodes, duplicateModels, duplicateSns, isAuditActive, focusedAudit, focusedAuditId]);
      
   const totalPages = Math.max(1, Math.ceil(filteredAssets.length / itemsPerPage));
   const paginatedAssets = filteredAssets.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
@@ -1342,6 +1376,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
         '납입차': logic.turnDisplay || '-',
         '교체주기(M)': a.cycle || '-',
         '교체예정일': logic.repDate || '-',
+        '사용 연장(유예)': a.replace_deferred ? 'Y' : '',
         '메모': a.memo || '-',
         '실사': logic.auditStatusText || '-',
         '의견/요청': logic.commStatusText || '-',
@@ -1968,7 +2003,25 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
               비품 <span className={colFilters.category === '비품' ? 'text-amber-100' : 'text-amber-600'}>{stats.furnitureCount}</span>
             </button>
           </div>
-          <div className="pt-3 mt-auto border-t border-slate-100 grid grid-cols-4 gap-1.5">
+          <div className="pt-3 mt-auto border-t border-slate-100 space-y-1.5">
+            <button
+              type="button"
+              title={
+                sharedOnlyFilter
+                  ? '클릭하면 공용자산 필터를 해제합니다'
+                  : '클릭하면 담당자가 「공용」인 자산만 표시합니다'
+              }
+              onClick={() => setSharedOnlyFilter((p) => !p)}
+              className={`w-full py-1.5 px-2.5 rounded-lg border flex items-center justify-between transition-all ${
+                sharedOnlyFilter
+                  ? 'bg-violet-600 border-violet-500 text-white shadow-sm'
+                  : 'bg-violet-50/80 border-violet-200 text-violet-800 hover:bg-violet-100'
+              }`}
+            >
+              <span className="text-[9px] font-black tracking-tight">공용자산</span>
+              <span className="text-sm font-black tabular-nums leading-none">{stats.sharedCount}</span>
+            </button>
+            <div className="grid grid-cols-4 gap-1.5">
             <button type="button" onClick={() => setDdayFilter(p => p === 'd-30' ? 'all' : 'd-30')} className={`w-full py-2 px-1 rounded-xl border flex flex-col items-center transition-all ${ddayFilter === 'd-30' ? 'bg-blue-500 border-blue-400 text-white shadow-sm' : 'bg-white border-slate-200 text-blue-600 hover:bg-blue-50'}`}>
               <span className="text-[8px] font-black mb-0.5 leading-tight text-center">교체(D-30)</span>
               <span className="text-sm font-black tabular-nums">{stats.d30Count}</span>
@@ -1998,6 +2051,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                 <span className="absolute -bottom-1 left-1/2 h-2 w-2 -translate-x-1/2 rotate-45 bg-slate-900" />
               </span>
             </button>
+            </div>
           </div>
         </div>
 
@@ -2215,6 +2269,11 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                 {ddayFilter === 'd-30' ? '교체(D-30)' : ddayFilter === 'd-day' ? '교체(D-Day)' : '교체(D+)'}만
               </span>
             )}
+            {sharedOnlyFilter && (
+              <span className="text-[10px] font-black text-violet-700 bg-violet-50 border border-violet-200 px-2 py-0.5 rounded-md">
+                공용자산만
+              </span>
+            )}
             {showDuplicatesOnly && (
               <button
                 type="button"
@@ -2235,7 +2294,17 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                 title="클릭 시 검색 해제"
                 className="text-[10px] font-black text-indigo-600 bg-indigo-50 border border-indigo-200 px-2 py-0.5 rounded-md hover:bg-indigo-100"
               >
-                검색: {searchQuery.trim()} ×
+                자산검색: {searchQuery.trim()} ×
+              </button>
+            )}
+            {!!nameSearchQuery.trim() && (
+              <button
+                type="button"
+                onClick={() => setNameSearchQuery('')}
+                title="클릭 시 이름 검색 해제"
+                className="text-[10px] font-black text-violet-600 bg-violet-50 border border-violet-200 px-2 py-0.5 rounded-md hover:bg-violet-100"
+              >
+                이름: {nameSearchQuery.trim()} ×
               </button>
             )}
           </div>
@@ -2397,6 +2466,16 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
               <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-[10px]">🔍</span>
               <input type="text" placeholder="자산번호 · 모델 · S/N" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} className="w-full pl-7 pr-3 py-1.5 bg-white border border-slate-200 rounded-lg text-[11px] font-bold outline-none focus:border-indigo-500 shadow-sm" />
             </div>
+            <div className="relative w-[120px] shrink-0">
+              <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-[10px]">👤</span>
+              <input
+                type="text"
+                placeholder="담당자 이름"
+                value={nameSearchQuery}
+                onChange={(e) => setNameSearchQuery(e.target.value)}
+                className="w-full pl-7 pr-3 py-1.5 bg-white border border-slate-200 rounded-lg text-[11px] font-bold outline-none focus:border-violet-500 shadow-sm"
+              />
+            </div>
 
             <div className="flex items-center gap-1.5 ml-auto shrink-0">
               <button
@@ -2461,15 +2540,15 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
         </div>
 
         <div className="overflow-x-auto scrollbar-thin scrollbar-thumb-slate-300 scrollbar-track-slate-50">
-          <table className="w-full text-left border-collapse min-w-[2320px] table-fixed">
+          <table className="w-full text-left border-collapse min-w-[2400px] table-fixed">
             <colgroup>
               <col className="w-[36px]" /><col className="w-[40px]" />
               <col className="w-[88px]" /><col className="w-[72px]" /><col className="w-[72px]" />
               <col className="w-[52px]" /><col className="w-[112px]" />
               <col className="w-[120px]" /><col className="w-[132px]" /><col className="w-[108px]" /><col className="w-[80px]" /><col className="w-[156px]" />
               <col className="w-[60px]" /><col className="w-[92px]" /><col className="w-[118px]" />
-              <col className="w-[96px]" /><col className="w-[96px]" /><col className="w-[96px]" /><col className="w-[88px]" /><col className="w-[68px]" /><col className="w-[60px]" /><col className="w-[108px]" /><col className="w-[108px]" />
-              <col className="w-[120px]" /><col className="w-[120px]" /><col className="w-[56px]" /><col className="w-[148px]" />
+              <col className="w-[96px]" /><col className="w-[96px]" /><col className="w-[96px]" /><col className="w-[88px]" /><col className="w-[68px]" /><col className="w-[60px]" /><col className="w-[108px]" /><col className="w-[72px]" /><col className="w-[108px]" />
+              <col className="w-[120px]" /><col className="w-[128px]" /><col className="w-[64px]" /><col className="w-[148px]" />
             </colgroup>
             <thead className="bg-slate-100 text-slate-700 text-[11px] font-black tracking-wide border-b border-slate-200">
               <tr className="text-center text-[10px] tracking-wider">
@@ -2498,7 +2577,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                 </th>
                 <th colSpan={5} className="h-9 bg-slate-50 border-r border-slate-200 text-slate-500/40" />
                 <th colSpan={3} className="h-9 bg-emerald-50/50 border-r border-slate-200 text-emerald-700">조달·비용</th>
-                <th colSpan={8} className="h-9 bg-blue-50/50 border-r border-slate-200 text-blue-700">일정·생애주기</th>
+                <th colSpan={9} className="h-9 bg-blue-50/50 border-r border-slate-200 text-blue-700">일정·생애주기</th>
                 <th colSpan={4} className="h-9 bg-slate-100 text-slate-600">제어·상태</th>
               </tr>
               <tr>
@@ -2512,19 +2591,19 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                   />
                 </th>
                 <th className="h-11 sticky left-[36px] bg-slate-100 z-30 text-center text-slate-700 uppercase tracking-widest text-[10px]">NO</th>
-                <th className="h-11 sticky left-[76px] bg-slate-100 z-30 text-center text-slate-700 uppercase tracking-widest text-[10px] px-0.5 whitespace-nowrap">부서</th>
-                <th className="h-11 sticky left-[164px] bg-slate-100 z-30 text-center text-slate-700 uppercase tracking-widest text-[10px] px-0.5 whitespace-nowrap">사용자</th>
-                <th className="h-11 sticky left-[236px] bg-slate-100 z-30 text-center text-slate-700 uppercase tracking-widest text-[10px] px-0.5 whitespace-nowrap">이메일</th>
-                <th className="h-11 sticky left-[308px] bg-slate-100 z-30 text-center text-slate-700 uppercase tracking-widest text-[10px] whitespace-nowrap">범주</th>
-                <th className="h-11 sticky left-[360px] bg-indigo-50 z-30 border-r-2 border-slate-200 text-center text-indigo-600 uppercase tracking-widest text-[10px] px-0.5 whitespace-nowrap">{itMasterLabel}</th>
+                <th className="h-11 sticky left-[76px] bg-slate-100 z-30 text-left text-slate-700 uppercase tracking-widest text-[10px] px-0.5 whitespace-nowrap">부서</th>
+                <th className="h-11 sticky left-[164px] bg-slate-100 z-30 text-left text-slate-700 uppercase tracking-widest text-[10px] px-0.5 whitespace-nowrap">사용자</th>
+                <th className="h-11 sticky left-[236px] bg-slate-100 z-30 text-left text-slate-700 uppercase tracking-widest text-[10px] px-0.5 whitespace-nowrap">이메일</th>
+                <th className="h-11 sticky left-[308px] bg-slate-100 z-30 text-left text-slate-700 uppercase tracking-widest text-[10px] whitespace-nowrap">범주</th>
+                <th className="h-11 sticky left-[360px] bg-indigo-50 z-30 border-r-2 border-slate-200 text-left text-indigo-600 uppercase tracking-widest text-[10px] px-0.5 whitespace-nowrap">{itMasterLabel}</th>
                 <th className="h-11 px-1.5">자산번호</th>
                 <th className="h-11 px-1.5">모델명</th>
                 <th className="h-11 px-1.5">S/N</th>
                 <th className="h-11 px-1.5">제조사</th>
                 <th className="h-11 px-1.5 text-slate-500 border-r border-slate-200">기본 사양</th>
                 <th className="h-11 text-center bg-emerald-50/50 px-0.5 whitespace-nowrap">조달유형</th>
-                <th className="h-11 text-right text-emerald-600 bg-emerald-50/50 pr-1.5 whitespace-nowrap">구매비(원)</th>
-                <th className="h-11 text-right text-emerald-700 bg-emerald-50/50 pr-1.5 whitespace-nowrap border-r border-slate-200">월렌탈/구독비(원)</th>
+                <th className="h-11 text-center text-emerald-600 bg-emerald-50/50 px-0.5 whitespace-nowrap tabular-nums">구매비(원)</th>
+                <th className="h-11 text-center text-emerald-700 bg-emerald-50/50 px-0.5 whitespace-nowrap border-r border-slate-200 tabular-nums">월렌탈/구독비(원)</th>
                 <th className="h-11 text-center text-black bg-blue-50/50 px-0.5">입고일</th>
                 <th className="h-11 text-center text-black bg-blue-50/50 px-0.5">계약종료</th>
                 <th className="h-11 text-center text-black bg-blue-50/50 px-0.5">첫회청구</th>
@@ -2544,10 +2623,17 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                     <span className="absolute -top-1 left-1/2 h-2 w-2 -translate-x-1/2 rotate-45 bg-slate-900" />
                   </span>
                 </th>
-                <th className="h-11 px-1.5 text-black border-r border-slate-200 bg-blue-50/50">메모</th>
+                <th className="h-11 text-center text-black bg-blue-50/50 px-0.5 whitespace-nowrap relative group cursor-help">
+                  <span>사용 연장(유예)</span>
+                  <span className="pointer-events-none absolute left-1/2 top-full z-40 mt-1.5 -translate-x-1/2 whitespace-nowrap rounded-lg bg-slate-900 px-2.5 py-1.5 text-[10px] font-bold text-white opacity-0 shadow-lg transition-opacity group-hover:opacity-100">
+                    체크 시 교체 D-30·D-Day·D+ 필터·알람 제외
+                    <span className="absolute -top-1 left-1/2 h-2 w-2 -translate-x-1/2 rotate-45 bg-slate-900" />
+                  </span>
+                </th>
+                <th className="h-11 px-1.5 text-left text-black border-r border-slate-200 bg-blue-50/50">메모</th>
                 <th className="h-11 text-center border-l border-slate-200 px-0.5">실사/정보수정</th>
-                <th className="h-11 text-center text-blue-700 px-0.5">의견/요청</th>
-                <th className="h-11 text-center text-purple-700 pl-0.5 pr-2">QR</th>
+                <th className="h-11 text-center text-blue-700 px-0.5 whitespace-nowrap">의견/요청</th>
+                <th className="h-11 text-center text-purple-700 pl-0.5 pr-2 whitespace-nowrap">QR</th>
                 <th className="h-11 text-center border-l border-slate-200 whitespace-nowrap pl-3 pr-2">관리액션(Edit)</th>
               </tr>
             </thead>
@@ -2579,7 +2665,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                   <tr key={a.id} className={`transition-colors h-12 ${baseBg} ${hoverBg}`}>
                     <td className={`px-0.5 sticky left-0 z-20 ${baseBg} text-center`}><input type="checkbox" checked={selectedIds.has(a.id)} onChange={() => { const next = new Set(selectedIds); next.has(a.id) ? next.delete(a.id) : next.add(a.id); setSelectedIds(next); }} className="accent-slate-800 cursor-pointer w-3 h-3" /></td>
                     <td className={`px-0.5 sticky left-[36px] z-20 ${baseBg} text-center text-slate-500 font-mono tabular-nums`}>{(currentPage-1)*itemsPerPage + idx + 1}</td>
-                    <td className={`px-0.5 sticky left-[76px] z-20 ${baseBg} text-center truncate`} title={a.dept || '-'}>
+                    <td className={`px-0.5 sticky left-[76px] z-20 ${baseBg} text-left truncate`} title={a.dept || '-'}>
                       {isEditing ? (
                         <select
                           value={sortedOrgs.some((o) => o.unit_name === a.dept) ? a.dept : ''}
@@ -2600,7 +2686,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                         <span className="text-slate-900">{a.dept || '-'}</span>
                       )}
                     </td>
-                    <td className={`px-0.5 sticky left-[164px] z-20 ${baseBg} text-center truncate`} title={a.user || '-'}>
+                    <td className={`px-0.5 sticky left-[164px] z-20 ${baseBg} text-left truncate`} title={a.user || '-'}>
                       {isEditing ? (
                         <select
                           value={resolveSelectedUserId(a, a.dept)}
@@ -2611,6 +2697,11 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                           <option value="">
                             {!a.dept || a.dept === '-' ? '부서 먼저 선택' : '사용자 선택'}
                           </option>
+                          {!!a.dept && a.dept !== '-' && (
+                            <option value={SHARED_USER_SELECT_VALUE}>
+                              {SHARED_USER_LABEL} (부서 공용)
+                            </option>
+                          )}
                           {usersOfDept(a.dept).map((u) => (
                             <option key={u.id} value={u.id} title={u.email || u.name}>
                               {formatUserOptionLabel(u)}
@@ -2618,7 +2709,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                           ))}
                           {!!a.user &&
                             a.user !== '-' &&
-                            a.user !== '공용' &&
+                            a.user !== SHARED_USER_LABEL &&
                             !resolveSelectedUserId(a, a.dept) && (
                             <option value="">
                               {formatUserOptionLabel({ name: a.user, email: a.user_email })} (목록 외)
@@ -2627,18 +2718,22 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                         </select>
                       ) : (
                         <span className="text-slate-900">
-                          {!a.user || a.user === '공용' ? '-' : a.user}
+                          {!a.user || a.user === '-'
+                            ? '-'
+                            : a.user === SHARED_USER_LABEL
+                              ? SHARED_USER_LABEL
+                              : a.user}
                         </span>
                       )}
                     </td>
                     <td
-                      className={`px-0.5 sticky left-[236px] z-20 ${baseBg} text-center truncate text-slate-600`}
+                      className={`px-0.5 sticky left-[236px] z-20 ${baseBg} text-left truncate text-slate-600`}
                       title={a.user_email || '-'}
                     >
                       {emailLocalPart(a.user_email) || '-'}
                     </td>
-                    <td className={`px-0.5 sticky left-[308px] z-20 ${baseBg} text-center text-slate-700 truncate`} title={a.category}>{isEditing ? <select value={a.category} onChange={e => handleFieldChange(a.id, 'category', e.target.value)} className={inputClass}>{masterFilters.categories.map(c=><option key={c} value={c}>{c}</option>)}</select> : a.category}</td>
-                    <td className={`px-0.5 sticky left-[360px] z-20 ${baseBg} border-r-2 border-slate-200 text-center text-indigo-700 font-black truncate`} title={a.it_type}>{isEditing ? <select value={a.it_type} onChange={e => handleFieldChange(a.id, 'it_type', e.target.value)} className={inputClass}>{masterFilters.types.map(c=><option key={c} value={c}>{c}</option>)}</select> : a.it_type}</td>
+                    <td className={`px-0.5 sticky left-[308px] z-20 ${baseBg} text-left text-slate-700 truncate`} title={a.category}>{isEditing ? <select value={a.category} onChange={e => handleFieldChange(a.id, 'category', e.target.value)} className={inputClass}>{masterFilters.categories.map(c=><option key={c} value={c}>{c}</option>)}</select> : a.category}</td>
+                    <td className={`px-0.5 sticky left-[360px] z-20 ${baseBg} border-r-2 border-slate-200 text-left text-indigo-700 font-black truncate`} title={a.it_type}>{isEditing ? <select value={a.it_type} onChange={e => handleFieldChange(a.id, 'it_type', e.target.value)} className={inputClass}>{masterFilters.types.map(c=><option key={c} value={c}>{c}</option>)}</select> : a.it_type}</td>
                     
                     <td className="px-1 font-mono font-black text-slate-900 truncate">
                       {isEditing ? <input type="text" value={a.code} onChange={e => handleFieldChange(a.id, 'code', e.target.value)} className={inputClass} /> : 
@@ -2724,7 +2819,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                     })()}</td>
                     
                     <td className="px-0.5 text-center bg-emerald-50/10 truncate">{isEditing ? <select value={a.is_rental} onChange={e => handleFieldChange(a.id, 'is_rental', e.target.value)} className={inputClass}>{masterFilters.rentals.map(r=><option key={r} value={r}>{r}</option>)}</select> : a.is_rental}</td>
-                    <td className="px-0.5 text-right text-emerald-600 bg-emerald-50/10 tabular-nums">
+                    <td className="px-0.5 text-center text-emerald-600 bg-emerald-50/10 tabular-nums">
                       {isEditing ? (
                         <input
                           type="number"
@@ -2736,7 +2831,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                         />
                       ) : (a.purchase_price ? formatNumber(a.purchase_price) : '-')}
                     </td>
-                    <td className="px-0.5 text-right text-emerald-700 bg-emerald-50/10 tabular-nums border-r border-slate-100">
+                    <td className="px-0.5 text-center text-emerald-700 bg-emerald-50/10 tabular-nums border-r border-slate-100">
                       {isEditing ? (
                         <input
                           type="number"
@@ -2795,7 +2890,21 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                         )}
                       </div>
                     </td>
-                    <td className="px-1 text-black truncate bg-blue-50/10 border-r border-slate-100" title={a.memo || ''}>{isEditing ? <input type="text" value={a.memo} onChange={e => handleFieldChange(a.id, 'memo', e.target.value)} className={inputClass} /> : (a.memo || '-')}</td>
+                    <td className="px-0.5 text-center bg-blue-50/10" onClick={(e) => e.stopPropagation()}>
+                      <input
+                        type="checkbox"
+                        checked={!!a.replace_deferred}
+                        disabled={!isEditing}
+                        title={
+                          isEditing
+                            ? '사용 연장(유예) — 저장 시 반영. 체크 시 교체 D-30/D+/알람 제외'
+                            : '관리액션의 수정 후에만 변경할 수 있습니다'
+                        }
+                        onChange={(e) => handleFieldChange(a.id, 'replace_deferred', e.target.checked)}
+                        className="w-3.5 h-3.5 accent-slate-700 cursor-pointer disabled:cursor-not-allowed disabled:opacity-40"
+                      />
+                    </td>
+                    <td className="px-1 text-left text-black truncate bg-blue-50/10 border-r border-slate-100" title={a.memo || ''}>{isEditing ? <input type="text" value={a.memo} onChange={e => handleFieldChange(a.id, 'memo', e.target.value)} className={inputClass} /> : (a.memo || '-')}</td>
                     
                     <td className="px-0.5 text-center border-l border-slate-100">
                       {isEditing ? (

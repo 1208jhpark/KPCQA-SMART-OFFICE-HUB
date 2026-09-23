@@ -224,6 +224,21 @@ const pendingAlwaysApprovals = useMemo(() => {
     });
     return groups;
   }, [users]);
+
+  /** admin/units 와 동일 — unitsList(sort_order asc) 순으로 부서 나열 */
+  const orderedDeptEntries = useMemo(() => {
+    const orderIndex = new Map<string, number>();
+    unitsList.forEach((u: any, idx: number) => {
+      const name = String(u.unit_name || '').trim();
+      if (name && !orderIndex.has(name)) orderIndex.set(name, idx);
+    });
+    return Object.entries(groupedUsers).sort(([a], [b]) => {
+      const ai = orderIndex.has(a) ? orderIndex.get(a)! : Number.MAX_SAFE_INTEGER;
+      const bi = orderIndex.has(b) ? orderIndex.get(b)! : Number.MAX_SAFE_INTEGER;
+      if (ai !== bi) return ai - bi;
+      return a.localeCompare(b, 'ko');
+    });
+  }, [groupedUsers, unitsList]);
      
   const toggleDept = (dept: string) => { const next = new Set(collapsedDepts); next.has(dept) ? next.delete(dept) : next.add(dept); setCollapsedDepts(next); };
   const collapseAll = () => setCollapsedDepts(new Set(Object.keys(groupedUsers)));
@@ -300,15 +315,36 @@ const pendingAlwaysApprovals = useMemo(() => {
   };
      
   const handleStatusChange = async (id: string, action: 'UP' | 'DOWN' | 'ARCHIVE' | 'FORCE_COMPLETE') => {
-    if (!requireEdit()) return;
+    // 중단(DOWN)만 Edit 없이 Access로 긴급 허용
+    if (action !== 'DOWN' && !requireEdit()) return;
     const survey = surveys.find(s => s.id === id);
     if (!survey) return;
+
+    if (action === 'DOWN') {
+      try {
+        const res = await fetch('/api/survey/delivery', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'PAUSE', id, menuPath: pathname }),
+        });
+        if (res.ok) {
+          const savedSurvey = await res.json();
+          setSurveys(prev => prev.map(s => s.id === id ? savedSurvey : s));
+        } else {
+          const err = await res.json().catch(() => ({}));
+          alert(err.error || '❌ 중단 처리 중 오류가 발생했습니다.');
+        }
+      } catch (e) {
+        console.error("Status Change Error:", e);
+        alert('❌ 네트워크 오류가 발생했습니다.');
+      }
+      return;
+    }
      
     // 🚀 이 변수 선언이 지워져서 에러가 났던 것입니다! 복구 완료.
     let updatedSurvey = { ...survey };
     
     if (action === 'UP') updatedSurvey = { ...updatedSurvey, status: '진행중', postDate: todayStr, hasBeenPublished: true };
-    if (action === 'DOWN') updatedSurvey = { ...updatedSurvey, status: '게시중단' };
     if (action === 'FORCE_COMPLETE') {
       if (!confirm("이 공고를 즉시 마감 처리하시겠습니까?\n마감된 공고는 즉시 이력 보관함으로 이동됩니다.")) return;
       updatedSurvey = { ...updatedSurvey, status: '완료' };
@@ -889,7 +925,12 @@ const handleDownloadZipAll = async () => {
       try {
         parsedQuestions = typeof survey.questions === 'string' ? JSON.parse(survey.questions) : (survey.questions || []);
       } catch (e) {}
-      const exportQuestions = parsedQuestions.filter((q: any) => q.type !== 'SECTION');
+      const exportQuestions = parsedQuestions.filter((q: any) => {
+        if (!q || q.type === 'SECTION') return false;
+        if (typeof q.allowAnalysis === 'boolean') return q.allowAnalysis;
+        // 구 데이터: 선택·만족도만 분석 (주소·이름 등 개인정보 제외)
+        return q.type === 'CHOICE_SINGLE' || q.type === 'CHOICE_MULTI' || q.type === 'SCALE';
+      });
       if (exportQuestions.length === 0) return;
 
       const safeTitle = String(survey.title || survey.code || '배달').replace(/[/\\?%*:|"<>]/g, '-');
@@ -976,7 +1017,9 @@ const handleDownloadZipAll = async () => {
       XLSX.utils.book_append_sheet(wb, ws, uniqueSheetName(`통계_${safeTitle}`));
     });
 
-    if (wb.SheetNames.length === 0) return alert('분석할 문항이 없습니다.');
+    if (wb.SheetNames.length === 0) {
+      return alert('분석 허용된 문항이 없습니다.\n빌더에서 문항별 「분석 허용」을 켠 뒤 다시 시도해주세요.');
+    }
     XLSX.writeFile(wb, `[결과분석]_${todayStr}.xlsx`);
   };
      
@@ -1117,7 +1160,7 @@ const handleDownloadZipAll = async () => {
             onClick={handleAddSurvey}
             disabled={!canEdit}
             className={`px-4 py-2 rounded-xl font-black text-[10px] shadow-sm transition-all ${canEdit ? 'bg-teal-600 text-white hover:bg-teal-500' : 'bg-slate-300 text-slate-500 cursor-not-allowed'}`}
-          >+ 공지 추가(Edit)</button>
+          >+ 새로운 조사 목록 생성(Edit)</button>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-left font-medium min-w-[1450px]">
@@ -1129,15 +1172,15 @@ const handleDownloadZipAll = async () => {
               <th className="py-3 px-2 w-16 text-center text-teal-500">신청분류</th>
               <th className="py-3 px-2 w-16 text-center text-indigo-500">게시번호</th>
               <th className="py-3 px-2 w-20 text-center">게시일</th>
-              <th className="py-3 px-2 w-[280px]">공고명</th>
+              <th className="py-3 px-2 w-[200px]">공고명</th>
               <th className="py-3 px-2 w-24 text-center">대상 범위</th>
               <th className="py-3 px-2 w-[140px] text-center">운영 신청 기간</th>
-              <th className="py-3 px-2 w-16 text-center border-l bg-slate-100/50">참여율</th>
-              <th className="py-3 px-2 w-16 text-center bg-blue-50/50 text-blue-600">접수완료</th>
-              <th className="py-3 px-2 w-[150px] text-center bg-red-50/50 text-red-600 border-r">미접수인원</th>
+              <th className="py-3 px-2 w-14 text-center border-l bg-slate-100/50 whitespace-nowrap">참여율</th>
+              <th className="py-3 px-2 w-[72px] text-center bg-blue-50/50 text-blue-600 whitespace-nowrap">접수완료</th>
+              <th className="py-3 px-2 w-[200px] text-center bg-red-50/50 text-red-600 border-r whitespace-nowrap">미접수인원</th>
               <th className="py-3 px-2 w-16 text-center">공고상태</th>
-              <th className="py-3 px-2 w-[145px] text-center border-l border-slate-200 bg-slate-100/30 text-teal-600">게시 제어</th>
-              <th className="py-3 pr-4 w-[145px] text-center bg-slate-100/30 text-slate-500">명세 관리</th>
+              <th className="py-3 px-2 w-[145px] text-center border-l border-slate-200 bg-slate-100/30 text-teal-600">게시제어(Edit)</th>
+              <th className="py-3 pr-4 w-[145px] text-center bg-slate-100/30 text-slate-500">관리액션(Edit)</th>
             </tr>
           </thead>
           
@@ -1183,16 +1226,27 @@ const handleDownloadZipAll = async () => {
                     <div className={isTimeOver ? 'text-red-500 font-black' : ''}>{s.endDate} <span className="text-[8px]">({s.endTime || '23:59'})</span></div>
                   </td>
                   
-                  <td className="py-2 px-2 text-center font-black text-slate-700 border-l bg-slate-50/30 align-middle">{rate}%</td>
-                  <td className="py-2 px-2 text-center bg-blue-50/30 align-middle">
-                    <button onClick={() => handleMatrixFilter(s.id, 'DONE')} className="text-blue-600 font-black hover:underline">{done}명</button>
+                  <td className="py-2 px-2 text-center font-black text-slate-700 border-l bg-slate-50/30 align-middle whitespace-nowrap">{rate}%</td>
+                  <td className="py-2 px-2 text-center bg-blue-50/30 align-middle whitespace-nowrap">
+                    <button onClick={() => handleMatrixFilter(s.id, 'DONE')} className="text-blue-600 font-black hover:underline whitespace-nowrap">{done}명</button>
                   </td>
                   <td className="py-2 px-2 text-center bg-red-50/30 border-r align-middle">
-                    <div className="flex items-center justify-center gap-2 w-full flex-wrap">
+                    <div className="flex items-center justify-center gap-2 w-full flex-nowrap whitespace-nowrap">
                       <button onClick={() => handleMatrixFilter(s.id, 'NOT_DONE')} className="text-red-500 font-black hover:underline shrink-0 whitespace-nowrap">{notDone}명</button>
                       {s.status === '진행중' && notDone > 0 && (
                         <div className="flex items-center gap-1 shrink-0">
-                          <button onClick={() => handleNudge(s.id)} className="px-1.5 py-0.5 bg-white border border-red-200 text-red-600 rounded text-[9px] font-black hover:bg-red-50 transition-colors shadow-sm whitespace-nowrap">🔔독촉</button>
+                          <button
+                            type="button"
+                            onClick={() => handleNudge(s.id)}
+                            disabled={!canEdit}
+                            className={`px-1.5 py-0.5 border rounded text-[9px] font-black transition-colors shadow-sm whitespace-nowrap ${
+                              canEdit
+                                ? 'bg-white border-red-200 text-red-600 hover:bg-red-50'
+                                : 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'
+                            }`}
+                          >
+                            🔔독촉
+                          </button>
                           <button onClick={() => handleCopyUnsubmittedEmails(s)} className="px-1.5 py-0.5 bg-white border border-slate-200 text-slate-600 rounded text-[9px] font-black hover:bg-slate-50 transition-colors shadow-sm whitespace-nowrap">📧메일추출</button>
                         </div>
                       )}
@@ -1209,14 +1263,14 @@ const handleDownloadZipAll = async () => {
                   <td className="py-2 px-2 align-middle border-l border-slate-200 bg-slate-50/50">
                     <div className="flex items-center justify-center gap-1 w-full">
                       <button onClick={() => handleStatusChange(s.id, 'UP')} disabled={!canEdit || s.status === '진행중' || s.status === '완료'} className={`flex-1 py-1.5 rounded text-[9px] font-black whitespace-nowrap transition-all shadow-sm border ${canEdit && (s.status === '게시전' || s.status === '게시중단') ? 'bg-indigo-600 text-white border-indigo-600 hover:bg-indigo-700' : 'bg-slate-50 border-slate-200 text-slate-300 cursor-not-allowed'}`}>게시</button>
-                      <button onClick={() => handleStatusChange(s.id, 'DOWN')} disabled={!canEdit || s.status !== '진행중'} className={`flex-1 py-1.5 rounded text-[9px] font-black whitespace-nowrap transition-all shadow-sm border ${canEdit && s.status === '진행중' ? 'bg-white border-slate-300 text-slate-700 hover:bg-slate-100' : 'bg-slate-50 border-slate-200 text-slate-300 cursor-not-allowed'}`}>중단</button>
+                      <button onClick={() => handleStatusChange(s.id, 'DOWN')} disabled={s.status !== '진행중'} className={`flex-1 py-1.5 rounded text-[9px] font-black whitespace-nowrap transition-all shadow-sm border ${s.status === '진행중' ? 'bg-white border-slate-300 text-slate-700 hover:bg-slate-100' : 'bg-slate-50 border-slate-200 text-slate-300 cursor-not-allowed'}`}>중단</button>
                       <button onClick={() => handleStatusChange(s.id, 'FORCE_COMPLETE')} disabled={!canEdit || s.status !== '진행중'} className={`flex-1 py-1.5 rounded text-[9px] font-black whitespace-nowrap transition-all shadow-sm border ${canEdit && s.status === '진행중' ? (isTimeOver ? 'bg-red-600 text-white border-red-600 hover:bg-red-700 animate-bounce' : 'bg-emerald-600 text-white border-emerald-600 hover:bg-emerald-700') : 'bg-slate-50 border-slate-200 text-slate-300 cursor-not-allowed'}`}>마감</button>
                     </div>
                   </td>
                   <td className="py-2 pr-4 align-middle bg-slate-50/50">
                     <div className="flex items-center justify-center gap-1 w-full">
-                      <button onClick={() => { if (!requireEdit()) return; setEditModal(s); }} disabled={!canEdit || s.status === '진행중' || s.status === '완료'} className={`flex-1 py-1.5 rounded text-[9px] font-black whitespace-nowrap transition-all shadow-sm border ${canEdit && (s.status === '게시전' || s.status === '게시중단') ? 'bg-white border-slate-300 text-slate-700 hover:bg-slate-100' : 'bg-slate-50 border-slate-200 text-slate-300 cursor-not-allowed'}`}>수정(Edit)</button>
-                      <button onClick={() => handleDeleteSurvey(s.id)} disabled={!canEdit || s.hasBeenPublished} className={`flex-1 py-1.5 rounded text-[9px] font-black whitespace-nowrap transition-all shadow-sm border ${canEdit && !s.hasBeenPublished ? 'bg-white border-red-200 text-red-500 hover:bg-red-50' : 'bg-slate-50 border-slate-200 text-slate-300 cursor-not-allowed'}`}>삭제(Edit)</button>
+                      <button onClick={() => { if (!requireEdit()) return; setEditModal(s); }} disabled={!canEdit || s.status === '진행중' || s.status === '완료'} className={`flex-1 py-1.5 rounded text-[9px] font-black whitespace-nowrap transition-all shadow-sm border ${canEdit && (s.status === '게시전' || s.status === '게시중단') ? 'bg-white border-slate-300 text-slate-700 hover:bg-slate-100' : 'bg-slate-50 border-slate-200 text-slate-300 cursor-not-allowed'}`}>수정</button>
+                      <button onClick={() => handleDeleteSurvey(s.id)} disabled={!canEdit || s.hasBeenPublished} className={`flex-1 py-1.5 rounded text-[9px] font-black whitespace-nowrap transition-all shadow-sm border ${canEdit && !s.hasBeenPublished ? 'bg-white border-red-200 text-red-500 hover:bg-red-50' : 'bg-slate-50 border-slate-200 text-slate-300 cursor-not-allowed'}`}>삭제</button>
                       <button onClick={() => handleStatusChange(s.id, 'ARCHIVE')} disabled={!canEdit || s.status !== '완료'} className={`flex-1 py-1.5 rounded text-[9px] font-black whitespace-nowrap transition-all shadow-sm border ${canEdit && s.status === '완료' ? 'bg-slate-800 text-white border-slate-800 hover:bg-slate-900' : 'bg-slate-50 border-slate-200 text-slate-300 cursor-not-allowed'}`}>보관함이동</button>
                     </div>
                   </td>
@@ -1245,10 +1299,10 @@ const handleDownloadZipAll = async () => {
      
             <div className="flex gap-2 items-center">
               <button onClick={handleDownloadZipAll} disabled={!canEdit} className={`px-4 py-2 rounded-lg text-[10px] font-black shadow-sm transition-all flex items-center gap-1.5 ${canEdit ? 'bg-indigo-600 hover:bg-indigo-500' : 'bg-slate-500 cursor-not-allowed opacity-60'}`}>
-                <span>📥</span> 선택 ZIP 다운로드
+                <span>📥</span> 선택 ZIP 다운로드(Edit)
               </button>
               <button onClick={handleExportAnalysisAll} disabled={!canEdit} className={`px-4 py-2 rounded-lg text-[10px] font-black shadow-sm transition-all flex items-center gap-1.5 ${canEdit ? 'bg-emerald-600 hover:bg-emerald-500' : 'bg-slate-500 cursor-not-allowed opacity-60'}`}>
-                <span>📈</span> 선택 Excel 다운로드
+                <span>📈</span> 선택 Excel 다운로드(Edit)
               </button>
               <div className="w-px h-6 bg-white/20 mx-0.5" />
               <button
@@ -1257,7 +1311,7 @@ const handleDownloadZipAll = async () => {
                 className={`px-4 py-2 rounded-lg text-[10px] font-black shadow-sm transition-all flex items-center gap-1.5 ${canEdit ? 'bg-amber-500 hover:bg-amber-400 text-slate-900' : 'bg-slate-500 cursor-not-allowed opacity-60 text-white'}`}
                 title="단일·다중·만족도 통계 + 그 외 유형 안내"
               >
-                <span>📊</span> 결과 분석 다운로드
+                <span>📊</span> 결과 분석 다운로드(Edit)
               </button>
             </div>
           </div>
@@ -1301,16 +1355,16 @@ const handleDownloadZipAll = async () => {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {Object.entries(groupedUsers).map(([dept, deptUsers]) => (
+                {orderedDeptEntries.map(([dept, deptUsers]) => (
                   <Fragment key={dept}>
-                    <tr className="bg-slate-50/80 cursor-pointer hover:bg-slate-100 border-b border-white" onClick={() => toggleDept(dept)}>
-                      <td className="py-2 pl-6 font-black text-slate-700 flex items-center gap-2 text-[11px]"><span className="text-[8px] opacity-60">{collapsedDepts.has(dept) ? '▶' : '▼'}</span>{dept} <span className="text-[9px] text-slate-400 ml-1">{deptUsers.length}명</span></td>
+                    <tr className="bg-blue-100 cursor-pointer hover:bg-blue-200/80 border-b border-blue-200" onClick={() => toggleDept(dept)}>
+                      <td className="py-2 pl-6 font-black text-blue-900 flex items-center gap-2 text-[11px]"><span className="text-[8px] opacity-70 text-blue-700">{collapsedDepts.has(dept) ? '▶' : '▼'}</span>{dept} <span className="text-[9px] text-blue-600/80 ml-1">{deptUsers.length}명</span></td>
                       {filteredSurveys.map(s => {
                         const targetDepts = s.target.split(',').map((t: string) => t.trim());
-                        if (!isOrgAllowed(targetDepts, dept)) return <td key={`ds-${s.id}`} className="py-2 border-l border-slate-200 text-center bg-slate-100/30 text-[10px] font-black text-slate-300">-</td>;
+                        if (!isOrgAllowed(targetDepts, dept)) return <td key={`ds-${s.id}`} className="py-2 border-l border-blue-200 text-center bg-blue-50/80 text-[10px] font-black text-blue-300">-</td>;
                         const dDone = deptUsers.filter(u => responses[`${s.id}_${u.email}`]?.isDone).length;
                         const dTotal = deptUsers.length;
-                        return <td key={`ds-${s.id}`} className="py-2 border-l border-slate-200 text-center bg-slate-100/30"><div className="text-[9px] font-bold text-slate-600"><span className="text-teal-600 font-black">{dDone}명</span> / {dTotal}명</div></td>
+                        return <td key={`ds-${s.id}`} className="py-2 border-l border-blue-200 text-center bg-blue-50/80"><div className="text-[9px] font-bold text-blue-800"><span className="text-blue-700 font-black">{dDone}명</span> / {dTotal}명</div></td>
                       })}
                     </tr>
                     {!collapsedDepts.has(dept) && deptUsers.map(user => {
@@ -1662,9 +1716,14 @@ const handleDownloadZipAll = async () => {
                 </div>
               </div>
               
-              <div className="pt-4 flex gap-2 mt-2 border-t border-slate-200">
-                <button type="button" onClick={() => setEditModal(null)} className="flex-1 py-2.5 bg-white border rounded-xl font-black text-slate-600 hover:bg-slate-50">취소</button>
-                <button type="submit" className="flex-1 py-2.5 bg-teal-600 text-white rounded-xl font-black shadow-md hover:bg-teal-700">정보 저장하기</button>
+              <div className="pt-4 mt-2 border-t border-slate-200 space-y-2.5">
+                <p className="text-[11px] font-bold text-teal-700 bg-teal-50 border border-teal-100 rounded-xl px-3 py-2 leading-relaxed">
+                  생성된 목록을 클릭하여 조사지 내용 상세 작성바랍니다.
+                </p>
+                <div className="flex gap-2">
+                  <button type="button" onClick={() => setEditModal(null)} className="flex-1 py-2.5 bg-white border rounded-xl font-black text-slate-600 hover:bg-slate-50">취소</button>
+                  <button type="submit" className="flex-1 py-2.5 bg-teal-600 text-white rounded-xl font-black shadow-md hover:bg-teal-700">정보 저장하기</button>
+                </div>
               </div>
             </form>
           </div>
@@ -1960,9 +2019,9 @@ const handleDownloadZipAll = async () => {
         
               <div><label className="text-[10px] font-black text-slate-500">신청 안내 문구</label><textarea value={previewModal.description} readOnly={!canEdit} onChange={e => canEdit && setPreviewModal({ ...previewModal, description: e.target.value })} className={`w-full p-2 border rounded text-xs outline-none min-h-[80px] ${canEdit ? 'focus:border-teal-500' : 'bg-slate-100 text-slate-600 cursor-default'}`} /></div>
               {canEdit ? (
-                <button onClick={handleSavePreview} className="w-full py-3 bg-slate-900 text-white rounded-xl text-xs font-black shadow-md hover:bg-black transition-all">💾 기본 정보 저장하기</button>
+                <button type="button" onClick={handleSavePreview} className="w-full py-3 bg-slate-900 text-white rounded-xl text-xs font-black shadow-md hover:bg-black transition-all">제목 및 설명 수정(edit)</button>
               ) : (
-                <p className="text-[10px] text-center font-bold text-slate-400 py-2">읽기 전용 — 기본 정보 수정·저장 권한이 없습니다.</p>
+                <button type="button" disabled className="w-full py-3 bg-slate-200 text-slate-400 rounded-xl text-xs font-black cursor-not-allowed">제목 및 설명 수정(edit)</button>
               )}
               
               <div className="text-center p-5 border-2 border-dashed border-teal-200 bg-teal-50 rounded-xl">

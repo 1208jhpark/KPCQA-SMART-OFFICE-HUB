@@ -15,6 +15,10 @@
     "db:seed:production:sync": "tsx scripts/seed-production-masters.ts --sync",
     "db:seed:businesscard": "tsx scripts/seed-businesscard-masters.ts",
     "db:seed:businesscard:sync": "tsx scripts/seed-businesscard-masters.ts --sync",
+    "db:seed:equipment": "tsx scripts/seed-equipment-performance.ts",
+    "db:seed:equipment:sync": "tsx scripts/seed-equipment-performance.ts --sync",
+    "db:seed:marketing-clients": "tsx scripts/seed-marketing-clients.ts",
+    "db:seed:marketing-clients:sync": "tsx scripts/seed-marketing-clients.ts --sync",
     "db:studio": "prisma studio"
   },
   "dependencies": {

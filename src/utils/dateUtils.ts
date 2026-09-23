@@ -114,6 +114,19 @@ export const formatKSTDateTime = (dateInput: Date | string | number | null | und
 };
 
 /**
+ * 목록 표시용: `YYYY-MM-DD HH:mm` (KST, 초 생략)
+ */
+export const formatKSTDateTimeMinute = (
+  dateInput: Date | string | number | null | undefined
+) => {
+  const full = formatKSTDateTime(dateInput);
+  if (!full || full === '-') return '-';
+  // 이미 HH:mm 이거나 문자열에 초가 있으면 앞 16자(YYYY-MM-DD HH:mm)만
+  const m = full.match(/^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2})/);
+  return m ? m[1] : full;
+};
+
+/**
  * 스레드/목록 표시용.
  * 날짜만(YYYY-MM-DD)이면 날짜만, 시각이 있으면 KST DateTime.
  */

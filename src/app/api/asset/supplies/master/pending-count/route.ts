@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import prisma from '@/lib/prisma';
 import { authorizeAnyMenuPaths, authErrorToResponse } from '@/lib/server-auth-guard';
+import { SUPPLY_REQUEST_PENDING_STATUSES } from '@/utils/supplyRequestStatus';
 
 export const dynamic = 'force-dynamic';
 
@@ -13,8 +14,6 @@ const MASTER_MENU_PATHS = [
   '/asset/supplies/master/archive',
 ];
 
-const PENDING_STATUSES = ['PENDING', '대기중', '대기'];
-
 /**
  * [GET] 신청 대기 건수 (네비 배지용)
  * - 전체 requests 목록을 받지 않음
@@ -25,7 +24,7 @@ export async function GET() {
     await authorizeAnyMenuPaths(MASTER_MENU_PATHS);
 
     const pendingCount = await prisma.supplyRequest.count({
-      where: { status: { in: PENDING_STATUSES } },
+      where: { status: { in: [...SUPPLY_REQUEST_PENDING_STATUSES] } },
     });
 
     return NextResponse.json({ pendingCount });

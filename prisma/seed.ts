@@ -2,6 +2,8 @@ import { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 import { seedBusinessCardMasters } from './seed-businesscard-masters';
 import { seedProductionMasters } from './seed-production-masters';
+import { seedEquipmentPerformance } from './seed-equipment-performance';
+import { seedMarketingClients } from './seed-marketing-clients';
 import {
   DEFAULT_USER_DUTY_OPTIONS,
   DEFAULT_USER_GRADE_OPTIONS,
@@ -204,8 +206,9 @@ async function main() {
     { 
       id: 'GRP_CLIENT_CATEGORY', name: '고객사 업무범주', sort_order: 30,
       codes: [
-        { label: '건물 인증 관련', value: 'VAL_1' }, { label: 'ISO 인증 관련', value: 'VAL_2' }, { label: '지속가능 인증 관련', value: 'VAL_3' }, 
-        { label: 'ESG 인증 관련', value: 'VAL_4' }, { label: '용역', value: 'VAL_5' }, { label: '행사', value: 'VAL_6' }, { label: '기타', value: 'VAL_7' }
+        { label: '건물 인증 관련', value: 'VAL_1' }, { label: 'ISO 인증 관련', value: 'VAL_2' }, { label: '지속가능 인증 관련', value: 'VAL_3' },
+        { label: 'ESG 인증 관련', value: 'VAL_4' }, { label: '협력사', value: 'VAL_8' }, { label: '용역', value: 'VAL_5' },
+        { label: '행사', value: 'VAL_6' }, { label: '기타', value: 'VAL_7' }
       ] 
     },
     { 
@@ -264,6 +267,13 @@ async function main() {
 
   // 6.5 명함 전용 마스터 — 자격사항 표준단어 (국/영문)
   await seedBusinessCardMasters(prisma, 'sync');
+
+  // 6.6 장비 시드 — safety / performance / airtightness(창호·기밀) 전체
+  // fill: 없는 자산번호만 추가 (폐기·아카이브 건은 유지)
+  await seedEquipmentPerformance(prisma, 'fill');
+
+  // 6.7 마케팅 고객사 시드 — 컨설팅사 정리.xlsx (건물 인증 관련)
+  await seedMarketingClients(prisma, 'fill');
 
 // 🚀 7. 인터페이스 메뉴 거버넌스 복구
 // menu-backup.json 은 구 스키마 필드가 섞일 수 있음 → 현재 InterfaceConfig 컬럼만 반영

@@ -279,14 +279,10 @@ export default function AssetIntegratedDashboard() {
             Resource Command Center
           </p>
           <h1 className="text-4xl md:text-5xl font-extrabold text-white tracking-tight">
-            경영기획센터 관리자산 대시보드
+            전사 경영·업무자산 대시보드
           </h1>
-          <p className="text-slate-400 mt-4 font-medium max-w-2xl leading-relaxed">
-            KPCQA 전사가 신청가능한 비품 현황,
-            <br />
-            IT 업무용 자산 대장, 명함신청, 외주 제작 진행을 통합 관제합니다.
-            <br />
-          
+          <p className="text-slate-400 mt-4 font-medium leading-relaxed md:whitespace-nowrap">
+            사내 공통 소모품부터 부서별 IT S/W·장비, 맞춤 제작물까지 전사 업무 자원을 통합 관리합니다.
           </p>
         </div>
       </div>

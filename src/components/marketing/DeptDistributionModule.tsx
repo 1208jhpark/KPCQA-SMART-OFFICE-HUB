@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useMemo, useRef, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import * as XLSX from 'xlsx';
-import { getKSTDateString, getKSTYearMonth, getKSTNowYearMonth } from '@/utils/dateUtils';
+import { getKSTDateString, getKSTTimeString, getKSTYearMonth, getKSTNowYearMonth } from '@/utils/dateUtils';
 import { resolveTopOrgName, getChildUnitNames, isGlobalMgmtOrgMember, canEditTopOrgMarketingAsset } from '@/utils/orgUnits';
 import { resolveInterfaceEditState, isSystemLv1User } from '@/lib/permission-utils';
 import LoadingState from '@/components/common/LoadingState';
@@ -22,6 +22,31 @@ const HeaderLight = ({ title, count, children }: { title: string, count: number,
 
 function getDistBusinessDate(d: { dist_date?: string | Date | null; createdAt?: string | Date | null }) {
   return d.dist_date || d.createdAt || null;
+}
+
+/** 승인대기: 신청 시각 오름차순(먼저 신청한 건이 위) */
+function sortPendingApprovalsOldestFirst(list: any[]) {
+  return [...list].sort((a, b) => {
+    const ta = new Date(a?.createdAt || 0).getTime();
+    const tb = new Date(b?.createdAt || 0).getTime();
+    return ta - tb;
+  });
+}
+
+/** 실재고 = 카탈로그(선차감) 재고 + 해당 물품 승인대기 신청수량 합 */
+function getPendingActualStock(
+  row: { item_id?: string | null; item?: { id?: string | null; current_stock?: number | null } | null },
+  pendingList: any[]
+) {
+  const itemId = String(row.item_id || row.item?.id || '').trim();
+  if (!itemId) return null;
+  const reserved = pendingList.reduce((sum, d) => {
+    const id = String(d.item_id || d.item?.id || '').trim();
+    if (id !== itemId) return sum;
+    return sum + (Number(d.qty) || 0);
+  }, 0);
+  const catalogStock = Number(row.item?.current_stock ?? 0);
+  return catalogStock + reserved;
 }
 
 /** 승인 완료 후 3일(KST) 이내 — 최근 승인 하이라이트 */
@@ -55,36 +80,6 @@ function normalizeRoles(roles: unknown): string[] {
     const m = s.match(/(\d+)/);
     return m ? `LV_${m[1]}` : s;
   });
-}
-
-function emailsEqual(a?: string | null, b?: string | null) {
-  return !!(a && b && a.trim().toLowerCase() === b.trim().toLowerCase());
-}
-
-/** 본인 지급 — 이메일 우선, sender_unit_id, 레거시(이메일 없음)는 이름+부서 */
-function isOwnDistribution(
-  d: {
-    sender_email?: string | null;
-    sender_name?: string | null;
-    sender_dept?: string | null;
-    sender_unit_id?: string | null;
-  },
-  user: {
-    email?: string | null;
-    name?: string | null;
-    unit_id?: string | null;
-    unit?: { id?: string | null; unit_name?: string | null } | null;
-  } | null
-) {
-  if (!user) return false;
-  if (d.sender_email) return emailsEqual(d.sender_email, user.email);
-  const myUnitId = String(user.unit_id || user.unit?.id || '').trim();
-  const distUnitId = String(d.sender_unit_id || '').trim();
-  if (myUnitId && distUnitId && myUnitId === distUnitId && d.sender_name === user.name) {
-    return true;
-  }
-  const myDept = user.unit?.unit_name || '';
-  return !!d.sender_name && d.sender_name === user.name && !!d.sender_dept && d.sender_dept === myDept;
 }
 
 /** 종료 탭: 종료처리자(archived_by) 우선 — 마감 버튼을 누른 사람. 레거시만 creator fallback */
@@ -200,12 +195,16 @@ function DeptDistributionContent() {
   const [distOwnerFilter, setDistOwnerFilter] = useState<string>('ALL');
   const [distSenderFilter, setDistSenderFilter] = useState<string>('ALL');
   const [selectedClientFilter, setSelectedClientFilter] = useState<string | null>(null);
+  const [otherClientsOpen, setOtherClientsOpen] = useState(false);
+  const otherClientsRef = useRef<HTMLDivElement>(null);
   /** GLOBAL_MGMT: Organization 풀 승인대기 */
   const [pendingApprovals, setPendingApprovals] = useState<any[]>([]);
   const [approvalModalOpen, setApprovalModalOpen] = useState(false);
   const [approvalBusyId, setApprovalBusyId] = useState<string | null>(null);
   const [rejectTarget, setRejectTarget] = useState<any | null>(null);
   const [rejectReason, setRejectReason] = useState('');
+  const [approvalPage, setApprovalPage] = useState(1);
+  const APPROVAL_PAGE_SIZE = 10;
   const [currentPage, setCurrentPage] = useState(1);
 
   useEffect(() => {
@@ -327,7 +326,9 @@ function DeptDistributionContent() {
     const res = await fetch(`/api/marketing/distributions?${qs}`);
     if (res.ok) {
       const list = await res.json();
-      setPendingApprovals(Array.isArray(list) ? list : []);
+      setPendingApprovals(
+        sortPendingApprovalsOldestFirst(Array.isArray(list) ? list : [])
+      );
     } else {
       setPendingApprovals([]);
     }
@@ -489,49 +490,22 @@ function DeptDistributionContent() {
     return false;
   };
 
-  /** 타인 건 철회: LV_1·메뉴 마스터만. 그 외는 본인 건만. 반려는 LV_1 삭제만. */
-  const isMenuMaster =
-    isLv1 || (!!currentUser?.id && interfaceConfig?.master_editor_id === currentUser.id);
-  /** 확정·지급대기(본인/마스터) 철회 — 승인자가 처리하는 PENDING은 제외 */
-  const canCancelDist = (d: any) => {
-    if (!d || d.status === 'REJECTED') return false;
-    if (d.status === 'PENDING') {
-      // 승인 가능자는 대장에서 승인/반려 — 철회 버튼 숨김
-      return false;
-    }
-    return isOwnDistribution(d, currentUser) || isMenuMaster;
-  };
-  /** 지급대기: 본인만 신청철회 (승인 권한 없을 때) */
-  const canWithdrawPending = (d: any) =>
-    d?.status === 'PENDING' && isOwnDistribution(d, currentUser);
-  /** 반려 이력 삭제: LV_1 전용 */
+  /** 반려 이력 삭제: LV_1 전용 (신청철회는 나의지급대장에서 처리) */
   const canDeleteRejected = (d: any) => d?.status === 'REJECTED' && isLv1;
 
-  const handleDelete = async (id: string, mode: 'withdraw' | 'rejectPurge' = 'withdraw') => {
+  const handleDelete = async (id: string) => {
     const dist = distributions.find((d) => d.id === id);
-    if (mode === 'rejectPurge') {
-      if (!dist || !canDeleteRejected(dist)) {
-        return alert('❌ 반려 이력 삭제는 최고 관리자(LV_1)만 가능합니다.');
-      }
-      if (!confirm('이 반려 이력을 영구 삭제하시겠습니까?\n(재고는 이미 복구된 상태이며, 이력만 삭제됩니다.)')) return;
-    } else {
-      if (!dist || !(canCancelDist(dist) || canWithdrawPending(dist))) {
-        return alert('❌ 본인 신청만 철회할 수 있습니다. (타인 건은 LV_1·마스터만 가능)');
-      }
-      if (!confirm('정말 지급 신청을 철회하시겠습니까?\n(철회 시 카탈로그 재고가 자동으로 복구됩니다.)')) return;
+    if (!dist || !canDeleteRejected(dist)) {
+      return alert('❌ 반려 이력 삭제는 최고 관리자(LV_1)만 가능합니다.');
     }
+    if (!confirm('이 반려 이력을 영구 삭제하시겠습니까?\n(재고는 이미 복구된 상태이며, 이력만 삭제됩니다.)')) return;
     const res = await fetch(`/api/marketing/distributions?id=${id}`, { method: 'DELETE' });
     if (res.ok) {
       setDistributions((prev) => prev.filter((d) => d.id !== id));
-      if (mode === 'rejectPurge') {
-        alert('반려 이력이 삭제되었습니다.');
-      } else {
-        setPendingApprovals((prev) => prev.filter((d) => d.id !== id));
-        alert('지급 신청이 정상적으로 철회되었습니다.');
-      }
+      alert('반려 이력이 삭제되었습니다.');
       fetchData();
     } else {
-      alert(await readApiError(res, mode === 'rejectPurge' ? '삭제에 실패했습니다.' : '철회에 실패했습니다.'));
+      alert(await readApiError(res, '삭제에 실패했습니다.'));
     }
   };
 
@@ -577,8 +551,42 @@ function DeptDistributionContent() {
     else alert(await readApiError(res, '영구 삭제에 실패했습니다.'));
   };
 
+  const syncPendingStockForItem = async (itemId: string) => {
+    const id = String(itemId || '').trim();
+    if (!id) return;
+    try {
+      const res = await fetch(`/api/marketing/items?raw=1&t=${Date.now()}`, { cache: 'no-store' });
+      if (!res.ok) return;
+      const list = await res.json();
+      const item = Array.isArray(list) ? list.find((row: any) => row.id === id) : null;
+      if (!item || item.current_stock == null) return;
+      const nextStock = Number(item.current_stock);
+      setPendingApprovals((prev) =>
+        prev.map((d) => {
+          const rowItemId = String(d.item_id || d.item?.id || '').trim();
+          if (rowItemId !== id) return d;
+          return {
+            ...d,
+            item: d.item
+              ? { ...d.item, current_stock: nextStock }
+              : { id, current_stock: nextStock, unit: item.unit, name: item.name },
+          };
+        })
+      );
+      setItems((prev) =>
+        Array.isArray(prev)
+          ? prev.map((row) => (row.id === id ? { ...row, current_stock: nextStock } : row))
+          : prev
+      );
+    } catch {
+      /* ignore refresh errors */
+    }
+  };
+
   const handleApprovePending = async (id: string) => {
-    if (!confirm('이 승인 요청을 승인하시겠습니까?\n지급일자가 오늘로 확정됩니다.')) return;
+    if (!confirm('이 승인 요청을 승인하시겠습니까?\n지급일자가 오늘로 확정됩니다.\n(재고는 신청 시 이미 예약되어 있습니다.)')) return;
+    const target = pendingApprovals.find((d) => d.id === id);
+    const itemId = String(target?.item_id || target?.item?.id || '').trim();
     setApprovalBusyId(id);
     try {
       const res = await fetch('/api/marketing/distributions', {
@@ -595,6 +603,8 @@ function DeptDistributionContent() {
         return;
       }
       setPendingApprovals((prev) => prev.filter((d) => d.id !== id));
+      // 실재고는 신청 시 예약분 — 승인으로 숫자 변하지 않음. 동기화만.
+      if (itemId) await syncPendingStockForItem(itemId);
       await loadDistributions(currentUser, units, systemConfig, distViewMode);
     } finally {
       setApprovalBusyId(null);
@@ -609,6 +619,8 @@ function DeptDistributionContent() {
       return;
     }
     const id = rejectTarget.id as string;
+    const itemId = String(rejectTarget.item_id || rejectTarget.item?.id || '').trim();
+    const rejectQty = Number(rejectTarget.qty) || 0;
     setApprovalBusyId(id);
     try {
       const res = await fetch('/api/marketing/distributions', {
@@ -620,12 +632,44 @@ function DeptDistributionContent() {
         alert(await readApiError(res, '반려 실패'));
         return;
       }
-      setPendingApprovals((prev) => prev.filter((d) => d.id !== id));
+      const updated = await res.json().catch(() => null);
+      const nextStock =
+        updated?.item?.current_stock != null ? Number(updated.item.current_stock) : null;
+
+      setPendingApprovals((prev) => {
+        const rest = prev.filter((d) => d.id !== id);
+        if (!itemId) return rest;
+        return rest.map((d) => {
+          const rowItemId = String(d.item_id || d.item?.id || '').trim();
+          if (rowItemId !== itemId) return d;
+          const stock =
+            nextStock != null
+              ? nextStock
+              : Number(d.item?.current_stock ?? 0) + rejectQty;
+          return {
+            ...d,
+            item: d.item
+              ? { ...d.item, current_stock: stock }
+              : { id: itemId, current_stock: stock },
+          };
+        });
+      });
       setRejectTarget(null);
       setRejectReason('');
+      if (itemId) {
+        if (nextStock != null) {
+          setItems((prev) =>
+            Array.isArray(prev)
+              ? prev.map((row) =>
+                  row.id === itemId ? { ...row, current_stock: nextStock } : row
+                )
+              : prev
+          );
+        } else {
+          await syncPendingStockForItem(itemId);
+        }
+      }
       await loadDistributions(currentUser, units, systemConfig, distViewMode);
-      const iRes = await fetch('/api/marketing/items?raw=1&t=' + Date.now());
-      if (iRes.ok) setItems(await iRes.json());
     } finally {
       setApprovalBusyId(null);
     }
@@ -647,6 +691,20 @@ const isMgmtTree = isGlobalMgmtOrgMember({
 const canSeeApprovalInbox = isLv1 || isMgmtTree;
 /** 승인/반려 처리: LV_1 또는 (mgmt 트리 + 메뉴 편집권) — 열람만이면 버튼 숨김 */
 const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
+
+  const approvalTotalPages = Math.max(1, Math.ceil(pendingApprovals.length / APPROVAL_PAGE_SIZE));
+  const paginatedPendingApprovals = useMemo(() => {
+    const start = (approvalPage - 1) * APPROVAL_PAGE_SIZE;
+    return pendingApprovals.slice(start, start + APPROVAL_PAGE_SIZE);
+  }, [pendingApprovals, approvalPage, APPROVAL_PAGE_SIZE]);
+
+  useEffect(() => {
+    if (approvalModalOpen) setApprovalPage(1);
+  }, [approvalModalOpen]);
+
+  useEffect(() => {
+    if (approvalPage > approvalTotalPages) setApprovalPage(approvalTotalPages);
+  }, [approvalPage, approvalTotalPages]);
   
   // ==========================================
   // [탭 1] 지급 이력 연계 필터
@@ -799,6 +857,35 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
       }))
       .sort((a, b) => b.price - a.price);
   }, [baseFilteredList, totalAmountForYear]);
+
+  /** TOP 4 + 기타(N개사) — 카드 슬롯 고정 (register와 동일) */
+  const CLIENT_TOP_N = 4;
+  const topClientStats = useMemo(() => clientStats.slice(0, CLIENT_TOP_N), [clientStats]);
+  const otherClientStats = useMemo(() => clientStats.slice(CLIENT_TOP_N), [clientStats]);
+  const otherClientAgg = useMemo(() => {
+    const price = otherClientStats.reduce((sum, s) => sum + s.price, 0);
+    const count = otherClientStats.reduce((sum, s) => sum + s.count, 0);
+    return {
+      price,
+      count,
+      percent: totalAmountForYear > 0 ? ((price / totalAmountForYear) * 100).toFixed(1) : '0.0',
+    };
+  }, [otherClientStats, totalAmountForYear]);
+  const isOtherClientSelected =
+    !!selectedClientFilter && otherClientStats.some((s) => s.name === selectedClientFilter);
+
+  useEffect(() => {
+    if (!otherClientsOpen) return;
+    const onDoc = (e: MouseEvent) => {
+      if (!otherClientsRef.current?.contains(e.target as Node)) setOtherClientsOpen(false);
+    };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [otherClientsOpen]);
+
+  useEffect(() => {
+    setOtherClientsOpen(false);
+  }, [selectedYear, selectedMonth, distOwnerFilter, distSenderFilter, searchItemQuery, searchClientQuery]);
 
   const finalFilteredList = useMemo(() => {
     // 칩 미선택: 전체 이력(대기·반려 포함). 칩 선택: 칩 집계와 동일하게 확정만
@@ -1276,15 +1363,15 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
         <div className="absolute left-1/4 bottom-0 w-48 h-48 bg-slate-500/10 rounded-full blur-3xl translate-y-1/2 pointer-events-none" />
         <div className="relative z-10">
           <h3 className="text-[10px] font-black uppercase tracking-widest text-indigo-400 mb-2.5">
-            DEPARTMENT DISTRIBUTION STATUS
+          DEPARTMENT GIFT MANAGEMENT
           </h3>
           <h1 className="text-2xl tracking-tight leading-none">
             <span className="text-indigo-400 font-normal">{myDeptName || '소속 부서'}</span>
             <span className="text-white/30 font-normal mx-2.5">|</span>
-            <span className="text-white font-extrabold">지급 현황 마스터 대장</span>
+            <span className="text-white font-extrabold">부서 지급 관리 대장</span>
           </h1>
           <p className="text-slate-400 text-xs mt-3 leading-relaxed">
-            부서원 지급·입고·종료 이력을 모니터링합니다.
+           부서 관리 물품 및 부서원의 지급·입고 이력을 통합 관리합니다.
           </p>
           {permissionSummary && isSystemLv1User(currentUser) && (
             <div className="flex flex-wrap items-center gap-2 mt-4 pt-3 border-t border-white/15">
@@ -1394,8 +1481,8 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
                 >
                   {pendingApprovals.length > 0
                     ? canProcessApprovals
-                      ? '전사(Organization) 풀 지급 승인 요청 · 클릭하여 확인'
-                      : '전사(Organization) 풀 지급 승인 요청 · 열람만 가능 (편집 권한 없음)'
+                      ? '전사(KPCQA) 물품 지급 승인 요청 · 클릭하여 확인'
+                      : '전사(KPCQA) 물품 지급 승인 요청 · 열람만 가능 (편집 권한 없음)'
                     : '대기 중인 요청이 없습니다 · 클릭하여 확인'}
                 </p>
               </div>
@@ -1447,7 +1534,7 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
               <p className="text-[10px] font-bold text-slate-400 leading-snug max-w-xl">
                 {distViewMode === 'OWNER'
                   ? isMgmtTree || isLv1
-                    ? '내 조직·하위센터 재고 + 전사(Organization) 풀 소모 내역'
+                    ? '내 조직·하위센터 재고 + 전사(KPCQA) 물품 소모 내역'
                     : '내 조직·하위센터 재고가 나간 내역 (예산/재고 관점)'
                   : '우리·하위 조직원이 신청한 내역'}
               </p>
@@ -1623,31 +1710,165 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
               
               <div className="lg:col-span-9 bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
                 <span className="text-[9px] font-black text-slate-400 uppercase tracking-wider mb-2 block">
-                고객사별 지급액 비중 요약 (클릭하여 해당 내역만 필터링)
+                  고객사별 지급금액 비중 요약 (금액 기준) · TOP {CLIENT_TOP_N}
+                  {otherClientStats.length > 0 ? ` + 기타 ${otherClientStats.length}개사` : ''}
+                  {' '}
+                  (클릭하여 해당 내역만 필터링)
                 </span>
-                <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-hide max-h-[64px]">
-                  {clientStats.length === 0 ? (
-                    <span className="text-xs text-slate-400 font-bold py-2">지급 통계 데이터가 존재하지 않습니다.</span>
-                  ) : clientStats.map(stat => {
-                    const isSelected = selectedClientFilter === stat.name;
-                    return (
-                      <div 
-                        key={stat.name} 
-                        onClick={() => setSelectedClientFilter(prev => prev === stat.name ? null : stat.name)}
-                        className={`shrink-0 border rounded-xl px-3 py-1.5 flex flex-col justify-center text-right min-w-[120px] max-w-[180px] cursor-pointer transition-colors ${
-                          isSelected ? 'bg-indigo-100 border-indigo-300 shadow-sm' : 'bg-slate-50 border-slate-200 hover:bg-white hover:border-slate-300 hover:shadow-sm'
-                        }`}
-                      >
-                        <span className={`text-[10px] font-black truncate text-left ${isSelected ? 'text-indigo-900' : 'text-slate-700'}`}>{stat.name}</span>
-                        <span className="text-[11px] font-mono font-black text-indigo-600 mt-0.5">
-                          {stat.price.toLocaleString()}원
-                          <span className="text-slate-400 font-sans font-bold">/{stat.count}건</span>
-                          <strong className={`text-[10px] ml-1 ${isSelected ? 'text-indigo-600' : 'text-emerald-500'}`}>({stat.percent}%)</strong>
-                        </span>
+                {clientStats.length === 0 ? (
+                  <span className="text-xs text-slate-400 font-bold py-2">
+                    지급 통계 데이터가 존재하지 않습니다.
+                  </span>
+                ) : (
+                  <div
+                    className={`grid gap-2 ${
+                      otherClientStats.length > 0
+                        ? 'grid-cols-2 sm:grid-cols-3 lg:grid-cols-5'
+                        : topClientStats.length >= 4
+                          ? 'grid-cols-2 sm:grid-cols-4'
+                          : topClientStats.length === 3
+                            ? 'grid-cols-3'
+                            : topClientStats.length === 2
+                              ? 'grid-cols-2'
+                              : 'grid-cols-1'
+                    }`}
+                  >
+                    {topClientStats.map((stat, idx) => {
+                      const isSelected = selectedClientFilter === stat.name;
+                      return (
+                        <button
+                          key={stat.name}
+                          type="button"
+                          onClick={() => {
+                            setOtherClientsOpen(false);
+                            setSelectedClientFilter((prev) => (prev === stat.name ? null : stat.name));
+                          }}
+                          className={`border rounded-xl px-3 py-2 flex flex-col justify-center text-right min-w-0 transition-colors ${
+                            isSelected
+                              ? 'bg-indigo-100 border-indigo-300 shadow-sm'
+                              : 'bg-slate-50 border-slate-200 hover:bg-white hover:border-slate-300 hover:shadow-sm'
+                          }`}
+                        >
+                          <span
+                            className={`text-[10px] font-black truncate text-left flex items-center gap-1 ${
+                              isSelected ? 'text-indigo-900' : 'text-slate-700'
+                            }`}
+                          >
+                            <span
+                              className={`shrink-0 inline-flex items-center justify-center w-4 h-4 rounded text-[9px] font-black ${
+                                idx === 0
+                                  ? 'bg-amber-400 text-amber-950'
+                                  : idx === 1
+                                    ? 'bg-slate-300 text-slate-700'
+                                    : idx === 2
+                                      ? 'bg-orange-300 text-orange-900'
+                                      : 'bg-slate-200 text-slate-600'
+                              }`}
+                            >
+                              {idx + 1}
+                            </span>
+                            <span className="truncate">{stat.name}</span>
+                          </span>
+                          <span className="text-[11px] font-mono font-black text-indigo-600 mt-0.5">
+                            {stat.price.toLocaleString()}원
+                            <span className="text-slate-400 font-sans font-bold">/{stat.count}건</span>
+                            <strong
+                              className={`text-[10px] ml-1 ${
+                                isSelected ? 'text-indigo-600' : 'text-emerald-500'
+                              }`}
+                            >
+                              ({stat.percent}%)
+                            </strong>
+                          </span>
+                        </button>
+                      );
+                    })}
+
+                    {otherClientStats.length > 0 && (
+                      <div className="relative min-w-0" ref={otherClientsRef}>
+                        <button
+                          type="button"
+                          onClick={() => setOtherClientsOpen((v) => !v)}
+                          className={`w-full h-full border rounded-xl px-3 py-2 flex flex-col justify-center text-right transition-colors ${
+                            isOtherClientSelected || otherClientsOpen
+                              ? 'bg-indigo-100 border-indigo-300 shadow-sm'
+                              : 'bg-slate-50 border-slate-200 hover:bg-white hover:border-slate-300 hover:shadow-sm'
+                          }`}
+                        >
+                          <span
+                            className={`text-[10px] font-black truncate text-left ${
+                              isOtherClientSelected || otherClientsOpen
+                                ? 'text-indigo-900'
+                                : 'text-slate-700'
+                            }`}
+                          >
+                            기타
+                            <span className="text-slate-400 font-bold">
+                              {' '}
+                              (+{otherClientStats.length}개사)
+                            </span>
+                            <span className="ml-0.5 text-slate-400">{otherClientsOpen ? '▴' : '▾'}</span>
+                          </span>
+                          <span className="text-[11px] font-mono font-black text-indigo-600 mt-0.5">
+                            {otherClientAgg.price.toLocaleString()}원
+                            <span className="text-slate-400 font-sans font-bold">
+                              /{otherClientAgg.count}건
+                            </span>
+                            <strong
+                              className={`text-[10px] ml-1 ${
+                                isOtherClientSelected ? 'text-indigo-600' : 'text-emerald-500'
+                              }`}
+                            >
+                              ({otherClientAgg.percent}%)
+                            </strong>
+                          </span>
+                          {isOtherClientSelected && (
+                            <span className="text-[9px] font-black text-indigo-700 truncate text-left mt-0.5">
+                              {selectedClientFilter}
+                            </span>
+                          )}
+                        </button>
+
+                        {otherClientsOpen && (
+                          <div className="absolute right-0 left-0 top-full mt-1 z-30 max-h-56 overflow-y-auto rounded-xl border border-slate-200 bg-white shadow-xl py-1">
+                            {otherClientStats.map((stat, i) => {
+                              const isSelected = selectedClientFilter === stat.name;
+                              return (
+                                <button
+                                  key={stat.name}
+                                  type="button"
+                                  onClick={() => {
+                                    setSelectedClientFilter((prev) =>
+                                      prev === stat.name ? null : stat.name
+                                    );
+                                    setOtherClientsOpen(false);
+                                  }}
+                                  className={`w-full px-3 py-2 flex items-center justify-between gap-2 text-left transition-colors ${
+                                    isSelected
+                                      ? 'bg-indigo-50 text-indigo-900'
+                                      : 'hover:bg-slate-50 text-slate-700'
+                                  }`}
+                                >
+                                  <span className="min-w-0 flex items-center gap-1.5">
+                                    <span className="shrink-0 text-[9px] font-black text-slate-400 w-5">
+                                      {CLIENT_TOP_N + i + 1}
+                                    </span>
+                                    <span className="text-[11px] font-black truncate">{stat.name}</span>
+                                  </span>
+                                  <span className="shrink-0 text-[10px] font-mono font-black text-indigo-600">
+                                    {stat.price.toLocaleString()}원
+                                    <span className="text-slate-400 font-sans">/{stat.count}</span>
+                                    <span className="text-emerald-500 ml-1">({stat.percent}%)</span>
+                                  </span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )}
                       </div>
-                    )
-                  })}
-                </div>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
       
@@ -1661,17 +1882,17 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
                     <th className="h-12 px-2 w-10 text-center">NO</th>
                     <th className="h-12 px-2 w-[88px] text-center whitespace-nowrap">재고신청일</th>
                     <th className="h-12 px-2 w-[88px] text-center whitespace-nowrap">지급일자</th>
-                    <th className="h-12 px-2 w-28">고객사</th>
-                    <th className="h-12 px-2 w-24">고객사부서</th>
-                    <th className="h-12 px-2 w-24 text-center whitespace-nowrap">물품소속</th>
-                    <th className="h-12 px-2 w-36 text-indigo-600">물품명</th>
+                    <th className="h-12 px-2 w-28 text-left">고객사</th>
+                    <th className="h-12 px-2 w-24 text-left">고객사부서</th>
+                    <th className="h-12 px-2 w-24 text-left whitespace-nowrap">물품소속</th>
+                    <th className="h-12 px-2 w-36 text-left text-indigo-600">물품명</th>
                     <th className="h-12 px-2 w-[72px] text-center whitespace-nowrap">단가(원)</th>
                     <th className="h-12 px-2 w-14 text-center whitespace-nowrap">수량</th>
                     <th className="h-12 px-2 w-[88px] text-center text-indigo-600 whitespace-nowrap">총금액(원)</th>
                     <th className="h-12 px-2 w-28 text-left">지급목적</th>
-                    <th className="h-12 px-2 w-32 text-center whitespace-nowrap">신청자(소속)</th>
-                    <th className="h-12 px-2 w-28 text-center whitespace-nowrap">이메일</th>
-                    <th className="h-12 pr-4 text-center w-24 whitespace-nowrap">관리기능</th>
+                    <th className="h-12 px-2 w-32 text-left whitespace-nowrap">신청자(소속)</th>
+                    <th className="h-12 px-2 w-28 text-left whitespace-nowrap">이메일</th>
+                    <th className="h-12 pr-4 text-center w-28 whitespace-nowrap">관리액션(Edit)</th>
                   </tr>
                 </thead>
                 <tbody className="bg-white divide-y divide-slate-100 text-[11px] font-bold text-slate-700">
@@ -1685,7 +1906,6 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
                     const reqDate = getKSTDateString(d.createdAt);
                     const distDate = getKSTDateString(d.dist_date || d.createdAt);
                     const reverseNo = finalFilteredList.length - ((currentPage - 1) * itemsPerPage + idx);
-                    const canCancel = canCancelDist(d);
                     
                     return (
                       <tr
@@ -1699,13 +1919,9 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
                               ? isSelected
                                 ? 'bg-amber-100/90'
                                 : 'bg-amber-50 hover:bg-amber-100/80'
-                              : isRecentApproved
-                                ? isSelected
-                                  ? 'bg-emerald-100/90'
-                                  : 'bg-emerald-50 hover:bg-emerald-100/80'
-                                : isSelected
-                                  ? 'bg-indigo-50/50'
-                                  : 'hover:bg-slate-50/50'
+                              : isSelected
+                                ? 'bg-indigo-50/50'
+                                : 'hover:bg-slate-50/50'
                         }`}
                       >
                         <td className="pl-4 text-center" onClick={(e)=>e.stopPropagation()}>
@@ -1729,21 +1945,16 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
                             <span className="inline-block font-black text-amber-600 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded text-[10px]">
                               지급대기
                             </span>
-                          ) : isRecentApproved ? (
-                            <span className="inline-flex flex-col items-center leading-tight">
-                              <span className="text-slate-800 tabular-nums">{distDate}</span>
-                              <span className="text-[9px] font-black text-emerald-600">승인완료</span>
-                            </span>
                           ) : (
                             <span className="text-slate-800 tabular-nums">{distDate}</span>
                           )}
                         </td>
-                        <td className={`px-2 truncate max-w-[112px] ${isRejected ? '' : 'text-slate-800'}`} title={d.client_name}>{d.client_name}</td>
-                        <td className={`px-2 truncate max-w-[96px] ${isRejected ? '' : 'text-slate-700'}`} title={d.client_dept || ''}>{d.client_dept || '-'}</td>
-                        <td className="px-2 text-center">
+                        <td className={`px-2 text-left truncate max-w-[112px] ${isRejected ? '' : 'text-slate-800'}`} title={d.client_name}>{d.client_name}</td>
+                        <td className={`px-2 text-left truncate max-w-[96px] ${isRejected ? '' : 'text-slate-700'}`} title={d.client_dept || ''}>{d.client_dept || '-'}</td>
+                        <td className="px-2 text-left">
                           <span className={`inline-block border px-1.5 py-0.5 rounded text-[10px] font-bold whitespace-nowrap ${isRejected ? 'bg-transparent border-red-200 text-red-500' : 'bg-slate-100 text-slate-700 border-slate-200'}`}>{d.item?.owner_dept || '-'}</span>
                         </td>
-                        <td className={`px-2 truncate max-w-[144px] ${isRejected ? '' : 'text-indigo-700'}`} title={d.item?.name || ''}>{d.item?.name || '(삭제됨)'}</td>
+                        <td className={`px-2 text-left truncate max-w-[144px] ${isRejected ? '' : 'text-indigo-700'}`} title={d.item?.name || ''}>{d.item?.name || '(삭제됨)'}</td>
                         <td className={`px-2 text-center font-mono whitespace-nowrap tabular-nums ${isRejected ? '' : 'text-slate-700'}`}>{d.item?.unit_price?.toLocaleString()}</td>
                         <td className={`px-2 text-center font-mono whitespace-nowrap tabular-nums ${isRejected ? '' : 'text-slate-700'}`}>
                           {d.qty}
@@ -1752,11 +1963,11 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
                         <td className={`px-2 text-center font-mono whitespace-nowrap tabular-nums ${isRejected ? '' : 'text-indigo-600'}`}>
                           {isRejected ? '-' : ((d.item?.unit_price || 0) * d.qty).toLocaleString()}
                         </td>
-                        <td className={`px-2 truncate max-w-[112px] ${isRejected ? '' : 'text-slate-700'}`} title={isRejected && d.reject_reason ? `${d.purpose || ''} / 반려: ${d.reject_reason}` : d.purpose}>
+                        <td className={`px-2 text-left truncate max-w-[112px] ${isRejected ? '' : 'text-slate-700'}`} title={isRejected && d.reject_reason ? `${d.purpose || ''} / 반려: ${d.reject_reason}` : d.purpose}>
                           {d.purpose}
                         </td>
-                        <td className={`px-2 text-center ${isRejected ? '' : 'text-slate-700'}`}>
-                          <div className="flex flex-col items-center justify-center leading-tight min-w-[7rem]">
+                        <td className={`px-2 text-left ${isRejected ? '' : 'text-slate-700'}`}>
+                          <div className="flex flex-col items-start justify-center leading-tight min-w-[7rem]">
                             <span className="truncate max-w-[120px]" title={d.sender_name || ''}>
                               {d.sender_name || '-'}
                             </span>
@@ -1765,54 +1976,18 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
                             </span>
                           </div>
                         </td>
-                        <td className={`px-2 text-center truncate max-w-[120px] ${isRejected ? '' : 'text-slate-700'}`} title={d.sender_email || ''}>{d.sender_email || '-'}</td>
+                        <td className={`px-2 text-left truncate max-w-[120px] ${isRejected ? '' : 'text-slate-700'}`} title={d.sender_email || ''}>{d.sender_email || '-'}</td>
                         <td className="pr-4 text-center no-underline" style={isRejected ? { textDecoration: 'none' } : undefined} onClick={(e)=>e.stopPropagation()}>
-                          {isPending && canProcessApprovals ? (
-                            <div className="flex gap-1 justify-center">
-                              <button
-                                type="button"
-                                disabled={approvalBusyId === d.id}
-                                onClick={() => handleApprovePending(d.id)}
-                                className="px-2 py-1.5 rounded-md text-[10px] font-black bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-40 whitespace-nowrap"
-                              >
-                                승인
-                              </button>
-                              <button
-                                type="button"
-                                disabled={approvalBusyId === d.id}
-                                onClick={() => {
-                                  setRejectReason('');
-                                  setRejectTarget(d);
-                                }}
-                                className="px-2 py-1.5 rounded-md text-[10px] font-black bg-white border border-red-200 text-red-500 hover:bg-red-500 hover:text-white disabled:opacity-40 whitespace-nowrap"
-                              >
-                                반려
-                              </button>
-                            </div>
-                          ) : isPending && canWithdrawPending(d) ? (
+                          {canDeleteRejected(d) ? (
                             <button
                               type="button"
-                              onClick={() => handleDelete(d.id, 'withdraw')}
-                              className="w-full py-1.5 bg-red-50 text-red-500 border border-red-100 rounded-md text-[10px] font-black hover:bg-red-500 hover:text-white transition-colors shadow-sm whitespace-nowrap"
-                            >
-                              신청철회
-                            </button>
-                          ) : canDeleteRejected(d) ? (
-                            <button
-                              type="button"
-                              onClick={() => handleDelete(d.id, 'rejectPurge')}
+                              onClick={() => handleDelete(d.id)}
                               className="w-full py-1.5 bg-slate-800 text-white border border-slate-700 rounded-md text-[10px] font-black hover:bg-red-600 transition-colors shadow-sm whitespace-nowrap"
                             >
                               삭제(LV_1)
                             </button>
-                          ) : canCancel ? (
-                            <button
-                              type="button"
-                              onClick={() => handleDelete(d.id, 'withdraw')}
-                              className="w-full py-1.5 bg-red-50 text-red-500 border border-red-100 rounded-md text-[10px] font-black hover:bg-red-500 hover:text-white transition-colors shadow-sm whitespace-nowrap"
-                            >
-                              신청철회
-                            </button>
+                          ) : isRecentApproved ? (
+                            <span className="text-[10px] font-black text-emerald-600 whitespace-nowrap">승인완료</span>
                           ) : (
                             <span className="text-[10px] text-slate-300 font-bold no-underline" style={{ textDecoration: 'none' }}>-</span>
                           )}
@@ -2007,16 +2182,16 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
                   </th>
                   <th className="h-12 px-2 w-10 text-center">NO</th>
                   <th className="h-12 px-2 w-[88px] text-center whitespace-nowrap">입고일자</th>
-                  <th className="h-12 px-2 w-24 text-center whitespace-nowrap">물품소속</th>
-                  <th className="h-12 px-2 w-40 text-emerald-600">물품명</th>
+                  <th className="h-12 px-2 w-24 text-left whitespace-nowrap">물품소속</th>
+                  <th className="h-12 px-2 w-40 text-left text-emerald-600">물품명</th>
                   <th className="h-12 px-2 w-[72px] text-center whitespace-nowrap">단가(원)</th>
                   <th className="h-12 px-2 w-14 text-center whitespace-nowrap">수량</th>
                   <th className="h-12 px-2 w-[88px] text-center whitespace-nowrap">부대비용(원)</th>
                   <th className="h-12 px-2 w-[88px] text-center text-emerald-600 whitespace-nowrap">총금액(원)</th>
-                  <th className="h-12 px-2 w-32">구매/공급처</th>
-                  <th className="h-12 px-2 w-32 text-center whitespace-nowrap">등록자(소속)</th>
-                  <th className="h-12 px-2 w-28 text-center whitespace-nowrap">이메일</th>
-                  <th className="h-12 pr-4 text-center w-24 whitespace-nowrap">관리기능</th>
+                  <th className="h-12 px-2 w-32 text-left">구매/공급처</th>
+                  <th className="h-12 px-2 w-32 text-left whitespace-nowrap">등록자(소속)</th>
+                  <th className="h-12 px-2 w-28 text-left whitespace-nowrap">이메일</th>
+                  <th className="h-12 pr-4 text-center w-28 whitespace-nowrap">관리액션(Edit)</th>
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-slate-100 text-[11px] font-bold text-slate-700">
@@ -2042,10 +2217,10 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
                       </td>
                       <td className="px-2 text-center font-mono text-slate-500 tabular-nums">{reverseNo}</td>
                       <td className="px-2 text-center text-slate-800 whitespace-nowrap tabular-nums">{pDate}</td>
-                      <td className="px-2 text-center">
+                      <td className="px-2 text-left">
                         <span className="inline-block bg-slate-100 text-slate-700 border border-slate-200 px-1.5 py-0.5 rounded text-[10px] font-bold whitespace-nowrap">{p.item?.owner_dept || '-'}</span>
                       </td>
-                      <td className="px-2 text-emerald-700 truncate max-w-[160px]" title={p.item?.name || ''}>{p.item?.name || '(삭제됨)'}</td>
+                      <td className="px-2 text-left text-emerald-700 truncate max-w-[160px]" title={p.item?.name || ''}>{p.item?.name || '(삭제됨)'}</td>
                       <td className="px-2 text-center font-mono text-slate-700 whitespace-nowrap tabular-nums">{p.unit_price?.toLocaleString()}</td>
                       <td className="px-2 text-center font-mono text-slate-700 whitespace-nowrap tabular-nums">
                         {p.qty}
@@ -2053,9 +2228,9 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
                       </td>
                       <td className="px-2 text-center font-mono text-slate-700 whitespace-nowrap tabular-nums">{extraCost.toLocaleString()}</td>
                       <td className="px-2 text-center font-mono text-emerald-600 whitespace-nowrap tabular-nums">{(p.total_price || 0).toLocaleString()}</td>
-                      <td className="px-2 text-slate-800 truncate max-w-[130px]" title={vendorLabel}>{vendorLabel}</td>
-                      <td className="px-2 text-center text-slate-700">
-                        <div className="flex flex-col items-center justify-center leading-tight min-w-[7rem]">
+                      <td className="px-2 text-left text-slate-800 truncate max-w-[130px]" title={vendorLabel}>{vendorLabel}</td>
+                      <td className="px-2 text-left text-slate-700">
+                        <div className="flex flex-col items-start justify-center leading-tight min-w-[7rem]">
                           <span className="truncate max-w-[120px]" title={p.purchaser_name || ''}>
                             {p.purchaser_name || '-'}
                           </span>
@@ -2064,7 +2239,7 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
                           </span>
                         </div>
                       </td>
-                      <td className="px-2 text-center text-slate-700 truncate max-w-[120px]" title={p.purchaser_email || ''}>{p.purchaser_email || '-'}</td>
+                      <td className="px-2 text-left text-slate-700 truncate max-w-[120px]" title={p.purchaser_email || ''}>{p.purchaser_email || '-'}</td>
                       <td className="pr-4 text-center" onClick={(e)=>e.stopPropagation()}>
                         {checkEditPermission(p.item?.owner_dept, p.item?.owner_unit_id) ? (
                           <button onClick={() => handleCancelPurchase(p.id, p.item?.owner_dept, p.item?.owner_unit_id)} className="w-full py-1.5 bg-red-50 text-red-500 border border-red-100 rounded-md text-[10px] font-black hover:bg-red-500 hover:text-white transition-colors shadow-sm whitespace-nowrap">
@@ -2200,13 +2375,13 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
                   </th>
                   <th className="h-12 px-2 w-10 text-center">NO</th>
                   <th className="h-12 px-2 w-[88px] text-center whitespace-nowrap">종료일자</th>
-                  <th className="h-12 px-2 w-24 text-center whitespace-nowrap">물품소속</th>
-                  <th className="h-12 px-2 w-48">물품명</th>
+                  <th className="h-12 px-2 w-24 text-left whitespace-nowrap">물품소속</th>
+                  <th className="h-12 px-2 w-48 text-left">물품명</th>
                   <th className="h-12 px-2 w-[72px] text-center whitespace-nowrap">단가(원)</th>
                   <th className="h-12 px-2 w-14 text-center whitespace-nowrap">재고수량</th>
-                  <th className="h-12 px-2 w-32 text-center whitespace-nowrap">종료처리자(소속)</th>
-                  <th className="h-12 px-2 w-28 text-center whitespace-nowrap">이메일</th>
-                  <th className="h-12 pr-4 text-center w-36 whitespace-nowrap">관리액션</th>
+                  <th className="h-12 px-2 w-32 text-left whitespace-nowrap">종료처리자(소속)</th>
+                  <th className="h-12 px-2 w-28 text-left whitespace-nowrap">이메일</th>
+                  <th className="h-12 pr-4 text-center w-36 whitespace-nowrap">관리액션(Edit)</th>
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-slate-100 text-[11px] font-bold text-slate-700">
@@ -2225,22 +2400,22 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
                         </td>
                         <td className="px-2 text-center font-mono text-slate-500 tabular-nums">{reverseNo}</td>
                         <td className="px-2 text-center text-slate-800 whitespace-nowrap tabular-nums">{endDate}</td>
-                        <td className="px-2 text-center">
+                        <td className="px-2 text-left">
                           <span className="inline-block bg-slate-100 text-slate-700 border border-slate-200 px-1.5 py-0.5 rounded text-[10px] font-bold whitespace-nowrap">{item.owner_dept || '-'}</span>
                         </td>
-                        <td className="px-2 text-slate-800 truncate max-w-[200px]" title={item.name}>{item.name}</td>
+                        <td className="px-2 text-left text-slate-800 truncate max-w-[200px]" title={item.name}>{item.name}</td>
                         <td className="px-2 text-center font-mono text-slate-700 whitespace-nowrap tabular-nums">{item.unit_price?.toLocaleString()}</td>
                         <td className="px-2 text-center font-mono text-slate-700 whitespace-nowrap tabular-nums">
                           {item.current_stock}
                           <span className="text-[10px] text-slate-500 font-sans ml-0.5">{item.unit || 'EA'}</span>
                         </td>
-                        <td className="px-2 text-center text-slate-700">
-                          <div className="flex flex-col items-center justify-center leading-tight min-w-[7rem]">
+                        <td className="px-2 text-left text-slate-700">
+                          <div className="flex flex-col items-start justify-center leading-tight min-w-[7rem]">
                             <span className="truncate max-w-[120px]" title={regName}>{regName}</span>
                             <span className="text-[10px] text-slate-500 truncate max-w-[120px]" title={regDept}>({regDept})</span>
                           </div>
                         </td>
-                        <td className="px-2 text-center text-slate-700 truncate max-w-[120px]" title={regEmail}>
+                        <td className="px-2 text-left text-slate-700 truncate max-w-[120px]" title={regEmail}>
                           {regEmail || '-'}
                         </td>
                         <td className="pr-4 text-center">
@@ -2305,7 +2480,7 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
                     pendingApprovals.length > 0 ? 'text-amber-700/80' : 'text-slate-500'
                   }`}
                 >
-                  전사(Organization) 풀 · {pendingApprovals.length.toLocaleString()}건
+                  전사(KPCQA) 물풀 · {pendingApprovals.length.toLocaleString()}건
                   {!canProcessApprovals ? ' · 열람 전용' : ''}
                 </p>
               </div>
@@ -2326,25 +2501,36 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
               {pendingApprovals.length === 0 ? (
                 <p className="py-16 text-center text-sm font-bold text-slate-400">대기 중인 요청이 없습니다.</p>
               ) : (
-                <table className="w-full text-left border-collapse min-w-[720px]">
-                  <thead className="bg-amber-50/80 text-[10px] font-black text-amber-800/70 uppercase sticky top-0">
+                <>
+                <table className="w-full text-left border-collapse min-w-[860px] bg-white rounded-xl overflow-hidden border border-slate-200">
+                  <thead className="bg-slate-100 text-[10px] font-black text-slate-600 uppercase tracking-wider sticky top-0 border-b border-slate-200">
                     <tr>
-                      <th className="py-2.5 px-2">신청일</th>
-                      <th className="py-2.5 px-2">신청자</th>
-                      <th className="py-2.5 px-2">고객사</th>
-                      <th className="py-2.5 px-2">물품</th>
-                      <th className="py-2.5 px-2 text-center">수량</th>
-                      <th className="py-2.5 px-2">목적</th>
+                      <th className="py-2.5 px-2 text-center w-10">NO</th>
+                      <th className="py-2.5 px-2 text-center whitespace-nowrap">신청일</th>
+                      <th className="py-2.5 px-2 text-left">신청자</th>
+                      <th className="py-2.5 px-2 text-left">고객사</th>
+                      <th className="py-2.5 px-2 text-left">물품</th>
+                      <th className="py-2.5 px-2 text-center whitespace-nowrap">신청수량</th>
+                      <th className="py-2.5 px-2 text-center whitespace-nowrap">실재고</th>
+                      <th className="py-2.5 px-2 text-left">목적</th>
                       <th className="py-2.5 px-2 text-center w-40">처리</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-amber-100 text-[11px] font-bold text-slate-700">
-                    {pendingApprovals.map((d) => (
-                      <tr key={d.id} className="bg-amber-50/40 hover:bg-amber-50">
-                        <td className="py-3 px-2 font-mono text-slate-500 whitespace-nowrap">
-                          {getKSTDateString(d.createdAt)}
+                  <tbody className="divide-y divide-slate-200 text-[11px] font-bold text-slate-700 bg-white">
+                    {paginatedPendingApprovals.map((d, idx) => {
+                      const rowNo = (approvalPage - 1) * APPROVAL_PAGE_SIZE + idx + 1;
+                      const reqDate = getKSTDateString(d.createdAt);
+                      const reqTime = getKSTTimeString(d.createdAt).slice(0, 5);
+                      return (
+                      <tr key={d.id} className="bg-white hover:bg-slate-50">
+                        <td className="py-3 px-2 text-center font-mono text-slate-400 tabular-nums">{rowNo}</td>
+                        <td className="py-3 px-2 text-center font-mono text-slate-500 whitespace-nowrap tabular-nums">
+                          <div className="leading-tight">
+                            <p className="tabular-nums">{reqDate}</p>
+                            <p className="text-[10px] text-slate-400 tabular-nums">{reqTime}</p>
+                          </div>
                         </td>
-                        <td className="py-3 px-2">
+                        <td className="py-3 px-2 text-left">
                           <div className="leading-tight">
                             <p className="truncate max-w-[100px]" title={d.sender_name}>
                               {d.sender_name}
@@ -2354,7 +2540,7 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
                             </p>
                           </div>
                         </td>
-                        <td className="py-3 px-2">
+                        <td className="py-3 px-2 text-left">
                           <div className="leading-tight">
                             <p className="truncate max-w-[120px]" title={d.client_name}>
                               {d.client_name}
@@ -2364,14 +2550,33 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
                             </p>
                           </div>
                         </td>
-                        <td className="py-3 px-2 text-indigo-700 truncate max-w-[140px]" title={d.item?.name}>
+                        <td className="py-3 px-2 text-left text-indigo-700 truncate max-w-[140px]" title={d.item?.name}>
                           {d.item?.name || '(삭제됨)'}
                         </td>
-                        <td className="py-3 px-2 text-center font-mono">{d.qty}</td>
-                        <td className="py-3 px-2 text-slate-500 truncate max-w-[140px]" title={d.purpose}>
+                        <td className="py-3 px-2 text-center font-mono whitespace-nowrap tabular-nums">
+                          {d.qty}
+                          <span className="text-[10px] font-sans text-slate-500 ml-0.5">
+                            {d.item?.unit || 'EA'}
+                          </span>
+                        </td>
+                        <td className="py-3 px-2 text-center font-mono whitespace-nowrap tabular-nums text-slate-700">
+                          {(() => {
+                            const actual = getPendingActualStock(d, pendingApprovals);
+                            if (actual == null) return '-';
+                            return (
+                              <>
+                                {actual}
+                                <span className="text-[10px] font-sans text-slate-500 ml-0.5">
+                                  {d.item?.unit || 'EA'}
+                                </span>
+                              </>
+                            );
+                          })()}
+                        </td>
+                        <td className="py-3 px-2 text-left text-slate-500 truncate max-w-[140px]" title={d.purpose}>
                           {d.purpose || '-'}
                         </td>
-                        <td className="py-3 px-2">
+                        <td className="py-3 px-2 text-center">
                           {canProcessApprovals ? (
                             <div className="flex gap-1.5 justify-center">
                               <button
@@ -2399,9 +2604,45 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
                           )}
                         </td>
                       </tr>
-                    ))}
+                      );
+                    })}
                   </tbody>
                 </table>
+                {pendingApprovals.length > APPROVAL_PAGE_SIZE && (
+                  <div className="flex justify-center items-center gap-1.5 pt-4">
+                    <button
+                      type="button"
+                      disabled={approvalPage === 1}
+                      onClick={() => setApprovalPage((p) => p - 1)}
+                      className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors"
+                    >
+                      이전
+                    </button>
+                    {Array.from({ length: approvalTotalPages }).map((_, i) => (
+                      <button
+                        key={i}
+                        type="button"
+                        onClick={() => setApprovalPage(i + 1)}
+                        className={`w-8 h-8 rounded-xl font-black text-xs transition-all ${
+                          approvalPage === i + 1
+                            ? 'bg-slate-800 text-white shadow-sm scale-105'
+                            : 'bg-white border border-slate-200 text-slate-500 hover:bg-slate-50'
+                        }`}
+                      >
+                        {i + 1}
+                      </button>
+                    ))}
+                    <button
+                      type="button"
+                      disabled={approvalPage === approvalTotalPages}
+                      onClick={() => setApprovalPage((p) => p + 1)}
+                      className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors"
+                    >
+                      다음
+                    </button>
+                  </div>
+                )}
+                </>
               )}
             </div>
           </div>
@@ -2417,7 +2658,7 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
             <div className="px-5 py-4 border-b border-red-100 bg-red-50/70">
               <h3 className="text-sm font-black text-red-800">반려 사유 입력</h3>
               <p className="text-[11px] font-bold text-red-600/80 mt-0.5">
-                재고는 복구되고, 이력대장에는 반려로 남습니다. (수량 집계 제외)
+                이력대장에는 반려로 남으며, 신청 시 예약된 재고가 복구됩니다. (수량 집계 제외)
               </p>
             </div>
             <div className="p-5 space-y-3">

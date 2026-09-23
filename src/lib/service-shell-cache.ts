@@ -49,6 +49,27 @@ export function writeServiceShellCache(payload: Omit<ServiceShellCache, 'savedAt
   writeJson(SHELL_KEY, { ...payload, savedAt: Date.now() });
 }
 
+export function clearServiceShellCache() {
+  if (typeof window === 'undefined') return;
+  try {
+    sessionStorage.removeItem(SHELL_KEY);
+    sessionStorage.removeItem(HOME_CONFIG_KEY);
+  } catch {
+    /* private mode */
+  }
+}
+
+/** 비밀번호 변경 직후 등 — 캐시 user 필드만 안전하게 갱신 */
+export function patchServiceShellUser(patch: Record<string, unknown>) {
+  const cached = readServiceShellCache();
+  if (!cached?.user) return;
+  writeServiceShellCache({
+    menus: cached.menus,
+    units: cached.units,
+    user: { ...cached.user, ...patch },
+  });
+}
+
 export function readHomeConfigCache(): HomeConfigCache | null {
   const data = readJson<HomeConfigCache>(HOME_CONFIG_KEY);
   if (!data?.config || !Array.isArray(data.menus)) return null;

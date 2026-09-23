@@ -7,6 +7,7 @@ import Link from 'next/link';
 import { getKSTDateString } from '@/utils/dateUtils';
 import { resolveInterfaceEditState, isSystemLv1User } from '@/lib/permission-utils';
 import { parseSupplyOwnerDepts, parseSupplyOwnerUnitIds, resolveTopOrgName } from '@/utils/orgUnits';
+import { isSupplyDirectStockLocked, withSupplyStockLocked } from '@/utils/supplyStockLock';
 import LoadingState from '@/components/common/LoadingState';
 import {
   SUPPLIES_MASTER_TABS,
@@ -219,25 +220,27 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
       ? String(ownerDeptUnits.find((u: any) => u.unit_name === defaultOwner)?.id || '').trim()
       : '';
     setEditModal({
-      isNew: true, 
-      id: '', 
-      name: supplyOptions[0]?.label || '', 
-      current_stock: 0, 
-      alert_qty: 5, 
+      isNew: true,
+      id: '',
+      name: supplyOptions[0]?.label || '',
+      current_stock: 0,
+      alert_qty: 0,
       r_unit: unitOptions[0]?.label || 'EA',
       owner_depts: defaultOwner ? [defaultOwner] : [],
       owner_unit_ids: defaultId ? [defaultId] : [],
       note: '',
       publish_note: '',
-      image_url: ''
+      image_url: '',
+      canEditStock: true,
+      stockLocked: false,
     });
   };
 
   const handleRestoreSeedItems = async () => {
-    if (!isLv1) return alertNoLv1Permission();
+    if (!canEdit) return alertNoEditPermission();
     if (
       !confirm(
-        '시드 기본 품목 중 없거나 보관(비활성)된 항목만 추가/재활성합니다.\n이미 활성인 품목의 단위·비고·재고는 그대로 둡니다. 계속할까요?'
+        '시드 기본 품목 중 없거나 보관(비활성)된 항목만 추가/재활성합니다.\n신규 추가 시 현재고·안전재고는 0이며 게시(올리기) 전 수정에서 현재고를 설정할 수 있습니다.\n이미 활성인 품목의 단위·비고·재고는 그대로 둡니다. 계속할까요?'
       )
     ) {
       return;
@@ -261,18 +264,24 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
      
   const handleEditClick = (item: any) => {
     if (!canEdit) return alertNoEditPermission();
-    const ext = item.description ? JSON.parse(item.description) : {};
+    let ext: Record<string, any> = {};
+    try {
+      ext = item.description ? JSON.parse(item.description) : {};
+    } catch {
+      ext = {};
+    }
     const owners = parseSupplyOwnerDepts(item.owner_dept);
     const ownerIds = parseSupplyOwnerUnitIds(item.owner_unit_ids);
+    const stockLocked = isSupplyDirectStockLocked(item);
     setEditModal({
-      isNew: false, 
-      id: item.id, 
-      name: item.name, 
-      current_stock: Number(item.current_stock), 
+      isNew: false,
+      id: item.id,
+      name: item.name,
+      current_stock: Number(item.current_stock),
       alert_qty: (() => {
         const aq = Number(item.alert_qty);
         return Number.isFinite(aq) ? aq : 0;
-      })(), 
+      })(),
       r_unit: ext.s_unit || ext.r_unit || 'EA',
       owner_depts: owners.length ? owners : (topOrgName ? [topOrgName] : []),
       owner_unit_ids: ownerIds.length
@@ -284,7 +293,10 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
             .filter(Boolean),
       note: ext.note || '',
       publish_note: ext.publish_note || '',
-      image_url: item.image_url || ''
+      image_url: item.image_url || '',
+      // 최초 게시 전(올리기 상태)·이력 없음 → 현재고 직접 설정 허용 / 게시 후·LV_1 제외 잠금
+      canEditStock: isLv1 || !stockLocked,
+      stockLocked,
     });
   };
      
@@ -308,13 +320,12 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
       ? editModal.owner_depts.map((n: string) => String(n).trim()).filter(Boolean)
       : [];
     if (!ownerDepts.length) return alert('물품소속(조직)을 1개 이상 선택해주세요.');
+    const canEditStock = Boolean(editModal.isNew || editModal.canEditStock || isLv1);
     const payload = {
       ...(editModal.isNew ? {} : { id: editModal.id.trim() }),
       name: editModal.name,
-      // 수정 시 현재고는 기본 미전송 — LV_1만 초기재고 강제 보정 허용
-      ...(editModal.isNew || isLv1
-        ? { current_stock: Number(editModal.current_stock) || 0 }
-        : {}),
+      // 신규·최초게시 전·LV_1만 현재고 전송 (잠금 후 평소는 입고 API)
+      ...(canEditStock ? { current_stock: Number(editModal.current_stock) || 0 } : {}),
       alert_qty: Number(editModal.alert_qty) || 0,
       category: '소모품',
       owner_depts: ownerDepts,
@@ -405,23 +416,34 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
     if (!canEdit) return alertNoEditPermission();
     const nextStatus = !currentStatus;
     if (!confirm(nextStatus ? '해당 물품을 사용자 앱에 [게시올리기] 하시겠습니까?' : '사용자 앱에서 [게시내리기] 처리하시겠습니까?')) return;
-    
-    setItems(prev => prev.map(item => item.id === id ? { ...item, is_published: nextStatus } : item));
-     
+
+    // 최초 게시 올리기 → stock_locked 영구 (이후 내리기해도 현재고 직접수정 불가)
+    setItems((prev) =>
+      prev.map((item) => {
+        if (item.id !== id) return item;
+        if (!nextStatus) return { ...item, is_published: false };
+        return {
+          ...item,
+          is_published: true,
+          description: withSupplyStockLocked(item.description),
+        };
+      })
+    );
+
     try {
       const res = await fetch('/api/asset/supplies/master/dashboard', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id, is_published: nextStatus })
+        body: JSON.stringify({ id, is_published: nextStatus }),
       });
       if (res.ok) {
         fetchDashboardData();
       } else {
-        alert("상태 변경 실패. 서버 오류입니다.");
-        fetchDashboardData(); 
+        alert('상태 변경 실패. 서버 오류입니다.');
+        fetchDashboardData();
       }
-    } catch (e) { 
-      alert("상태 변경 통신 실패");
+    } catch (e) {
+      alert('상태 변경 통신 실패');
       fetchDashboardData();
     }
   };
@@ -605,17 +627,17 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
               type="button"
               onClick={handleRestoreSeedItems}
               title={
-                isLv1
-                  ? '시드 기본 품목 중 없거나 비활성인 항목만 추가/재활성 (LV_1)'
-                  : 'LV_1 권한 필요'
+                canEdit
+                  ? '시드 기본 품목 중 없거나 비활성인 항목만 추가/재활성 (Edit)'
+                  : '편집 권한 필요'
               }
               className={
-                isLv1
+                canEdit
                   ? 'px-3 py-2 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-lg text-[11px] font-black hover:bg-emerald-100 transition-all shadow-sm'
                   : 'px-3 py-2 bg-slate-100 text-slate-400 border border-slate-200 rounded-lg text-[11px] font-black cursor-not-allowed opacity-70'
               }
             >
-              시드 항목 복구(LV_1)
+              시드 항목 복구(Edit)
             </button>
             <button
               type="button"
@@ -715,7 +737,7 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
                       <td className="pl-3 text-center font-mono text-slate-500 tabular-nums">
                         {idx + 1}
                       </td>
-                      <td className="px-3 min-w-0">
+                      <td className="px-3 min-w-0 text-left">
                         <div className="flex items-center gap-2.5 min-w-0">
                           <div className="w-8 h-8 rounded-lg border border-slate-200 overflow-hidden flex-shrink-0 bg-slate-100 flex justify-center items-center">
                             {item.image_url ? (
@@ -762,7 +784,7 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
                           {isOut ? '품절' : isDanger ? '재고부족' : '정상운용'}
                         </span>
                       </td>
-                      <td className="px-2 truncate text-slate-700 bg-blue-50/20" title={note}>
+                      <td className="px-2 text-left truncate text-slate-700 bg-blue-50/20" title={note}>
                         {note}
                       </td>
                       <td className="px-2 text-center text-amber-600 whitespace-nowrap border-l border-slate-200 bg-amber-50/20">
@@ -786,7 +808,7 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
                           {isPublished ? '내리기' : '올리기'}
                         </button>
                       </td>
-                      <td className="px-3 border-l border-slate-200">
+                      <td className="px-3 text-center border-l border-slate-200">
                         <div className="flex w-full items-center justify-center gap-2 whitespace-nowrap">
                           <button
                             type="button"
@@ -995,19 +1017,31 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
                   <div>
                     <label className="text-[10px] font-black text-blue-600 uppercase tracking-widest block mb-1.5">
                       현재고 <span className="text-slate-400 normal-case tracking-normal">({editModal.r_unit || '지급단위'})</span>
-                      {!editModal.isNew && isLv1 && (
+                      {!editModal.isNew && isLv1 && editModal.stockLocked && (
                         <span className="ml-1 text-amber-600 normal-case tracking-normal">(LV_1 강제보정)</span>
                       )}
+                      {!editModal.isNew && editModal.canEditStock && !isLv1 && (
+                        <span className="ml-1 text-emerald-600 normal-case tracking-normal">(게시 전 초기설정)</span>
+                      )}
                     </label>
-                    {editModal.isNew || isLv1 ? (
+                    {editModal.isNew || editModal.canEditStock || isLv1 ? (
                       <>
-                        <input 
-                          type="number" min="0" required value={editModal.current_stock} onChange={(e) => setEditModal({...editModal, current_stock: e.target.value})}
+                        <input
+                          type="number"
+                          min="0"
+                          required
+                          value={editModal.current_stock}
+                          onChange={(e) => setEditModal({ ...editModal, current_stock: e.target.value })}
                           className="w-full p-2.5 bg-white border border-blue-200 rounded-xl text-xs font-black text-blue-600 outline-none focus:border-blue-500 shadow-sm text-right"
                         />
-                        {!editModal.isNew && isLv1 && (
+                        {!editModal.isNew && isLv1 && editModal.stockLocked && (
                           <p className="text-[9px] text-amber-700/90 font-bold mt-1.5 leading-tight">
                             배포 초기재고·보정용 · 평소 재고는 입고 / 신청 선차감으로만 변경하세요.
+                          </p>
+                        )}
+                        {!editModal.isNew && editModal.canEditStock && !editModal.stockLocked && (
+                          <p className="text-[9px] text-emerald-700/90 font-bold mt-1.5 leading-tight">
+                            최초 게시(올리기) 전 · 초기 현재고를 설정할 수 있습니다. 게시 후에는 입고로만 채워집니다.
                           </p>
                         )}
                       </>

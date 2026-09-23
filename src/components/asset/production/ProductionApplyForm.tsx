@@ -23,6 +23,7 @@ type CompanyAddressRow = {
   label: string;
   zipCode: string;
   addressKo: string;
+  addressDetailKo?: string;
   addressEn?: string;
   fax?: string;
   faxEn?: string;
@@ -714,6 +715,7 @@ const [signData, setSignData] = useState({
             ...prev,
             shippingZipCode: data.zonecode,
             shippingAddressRoad: data.roadAddress || data.address,
+            shippingAddressDetail: '',
           }));
         },
       }).open();
@@ -729,10 +731,49 @@ const [signData, setSignData] = useState({
     if (!target) return;
     setSignData((prev) => ({
       ...prev,
-      shippingZipCode: target.zipCode,
-      shippingAddressRoad: target.addressKo,
-      shippingAddressDetail: '',
+      shippingZipCode: target.zipCode || '',
+      shippingAddressRoad: target.addressKo || '',
+      shippingAddressDetail: String(target.addressDetailKo || '').trim(),
     }));
+    setShowCompanyAddrPicker(false);
+  };
+
+  const openMarketingClientPicker = async () => {
+    setShowMarketingClientPicker(true);
+    setMarketingClientSearch('');
+    setMarketingClientsLoading(true);
+    try {
+      const res = await fetch(`/api/marketing/clients?lite=1&t=${Date.now()}`, { cache: 'no-store' });
+      if (!res.ok) {
+        setMarketingClients([]);
+        alert('마케팅 고객사 목록을 불러오지 못했습니다. 메뉴 권한을 확인해 주세요.');
+        return;
+      }
+      setMarketingClients(await res.json());
+    } catch {
+      setMarketingClients([]);
+      alert('마케팅 고객사 목록을 불러오지 못했습니다.');
+    } finally {
+      setMarketingClientsLoading(false);
+    }
+  };
+
+  const applyMarketingClientAddress = (client: any) => {
+    const zip = String(client?.zip_code || '').trim();
+    const road = String(client?.address_road || '').trim();
+    const detail = String(client?.address_detail || '').trim();
+    const legacy = String(client?.location || '').trim();
+    if (!zip && !road && !detail && !legacy) {
+      return alert('선택한 고객사에 등록된 주소가 없습니다.');
+    }
+    setSelectedCompanyAddressId('');
+    setSignData((prev) => ({
+      ...prev,
+      shippingZipCode: zip,
+      shippingAddressRoad: road || (!zip && !detail ? legacy : road),
+      shippingAddressDetail: detail,
+    }));
+    setShowMarketingClientPicker(false);
   };
 
   const persistCert = async (payload: {
@@ -872,12 +913,25 @@ const formattedValidPeriod = useMemo(() => {
   const [customRequests, setCustomRequests] = useState<CustomRequestRow[]>([]);
   const [companyAddresses, setCompanyAddresses] = useState<CompanyAddressRow[]>([]);
   const [selectedCompanyAddressId, setSelectedCompanyAddressId] = useState('');
+  const [showCompanyAddrPicker, setShowCompanyAddrPicker] = useState(false);
+  const [showMarketingClientPicker, setShowMarketingClientPicker] = useState(false);
+  const [marketingClients, setMarketingClients] = useState<any[]>([]);
+  const [marketingClientSearch, setMarketingClientSearch] = useState('');
+  const [marketingClientsLoading, setMarketingClientsLoading] = useState(false);
   /** 실배송지 모드: 고객사 직발송 | 인증원 수령(부서 대장에서 입력) */
   const [deliveryMode, setDeliveryMode] = useState<'CUSTOMER_DIRECT' | 'HQ_RECEIVE'>('CUSTOMER_DIRECT');
   /** 제본 레거시 호환 — HQ_RECEIVE 와 동기 */
   const jebonBatchShipping = deliveryMode === 'HQ_RECEIVE';
   const setJebonBatchShipping = (checked: boolean) =>
     setDeliveryMode(checked ? 'HQ_RECEIVE' : 'CUSTOMER_DIRECT');
+
+  const filteredMarketingClients = useMemo(() => {
+    const q = marketingClientSearch.trim().toLowerCase();
+    if (!q) return [];
+    return marketingClients
+      .filter((c) => String(c.name || '').toLowerCase().includes(q))
+      .slice(0, 80);
+  }, [marketingClients, marketingClientSearch]);
 
   const currentSelectedInfo = useMemo(() => {
     const target = plateMasterList.find(p => p.code === signData.plateType);
@@ -1310,7 +1364,7 @@ const formattedValidPeriod = useMemo(() => {
     if (!canEdit) return alertNoEditPermission();
     if (
       !confirm(
-        '시드 기본 외주업체(아트로릭·한생미디어·드림디포) 중 없거나 삭제된 항목만 다시 채웁니다.\n이미 있는 업체의 명칭·연락처·품목·우선연결은 변경되지 않습니다. 계속할까요?'
+        '시드 기본 외주업체(아트로릭·한생미디어 3종·드림디포) 중 없거나 삭제된 항목만 다시 채웁니다.\n이미 있는 업체의 명칭·연락처·품목·우선연결은 변경되지 않습니다. 계속할까요?'
       )
     ) {
       return;
@@ -1553,10 +1607,7 @@ if (activeTab === 'SIGN') {
     return alert('프로젝트명/건물명/경영시스템 조직명을 입력해 주세요.');
   }
 } else if (activeTab === 'JEBON') {
-    // 📚 jebonProjectName 대신 신설된 jebonFormTitle로 필수값 체크!
-    if (!signData.jebonFormTitle.trim() && !signData.jebonBuildingName.trim() && !signData.coverName.trim()) {
-      return alert("관리용 제목 또는 프로젝트명/건물명/표지제목 중 최소 하나는 반드시 입력하셔야 합니다.");
-    }
+    if (!signData.jebonFormTitle.trim()) return alert("관리용 제목을 입력해 주세요.");
   } else if (activeTab === 'PRINT') {
     // 📜 printProjectName 대신 신설된 printFormTitle로 필수값 체크!
     if (!signData.printFormTitle.trim()) return alert("관리용 제목을 입력해 주세요.");
@@ -1579,7 +1630,7 @@ if (activeTab === 'SIGN') {
       return alert('수령인 성명과 연락처를 입력해 주세요.');
     }
     if (!signData.shippingZipCode.trim() || !signData.shippingAddressRoad.trim()) {
-      return alert('배송지 우편번호 검색 또는 전사 공통 주소 불러오기를 이용해 주세요.');
+      return alert('배송지 우편번호 검색 또는 주소 불러오기를 이용해 주세요.');
     }
     if (!signData.shippingAddressDetail.trim()) {
       return alert('배송지 상세주소(동·호수 등)를 입력해 주세요.');
@@ -1603,10 +1654,10 @@ if (activeTab === 'SIGN') {
   const payload = {
     category: activeTab,
     projectName: 
-      activeTab === 'SIGN'            ? signData.signFormTitle :
-      activeTab === 'JEBON'           ? (signData.jebonFormTitle || signData.jebonBuildingName || signData.coverName) :
-      activeTab === 'PRINT'           ? signData.printFormTitle : 
-                                        signData.suppliesProjectName,
+      activeTab === 'SIGN'            ? signData.signFormTitle.trim() :
+      activeTab === 'JEBON'           ? signData.jebonFormTitle.trim() :
+      activeTab === 'PRINT'           ? signData.printFormTitle.trim() : 
+                                        signData.suppliesProjectName.trim(),
     quantity: activeTab === 'OFFICE_SUPPLIES' ? 1 : signData.quantity,
     estimatedPrice: activeTab === 'OFFICE_SUPPLIES' ? 0 : estimatedPrice,
     options: {
@@ -2835,7 +2886,9 @@ return (
           <div className="space-y-4 pt-2 animate-fade-in">
             <div className="grid grid-cols-1 md:grid-cols-12 gap-4 items-start">
               <div className="md:col-span-2">
-                <label className="block text-[10px] font-black text-slate-500 tracking-widest mb-2">수령인 성명</label>
+                <label className="block text-[10px] font-black text-slate-500 tracking-widest mb-2">
+                  수령인 성명 <span className="text-red-500">*</span>
+                </label>
                 <input 
                   type="text" 
                   placeholder="수령인 성명" 
@@ -2845,7 +2898,9 @@ return (
                 />
               </div>
               <div className="md:col-span-3">
-                <label className="block text-[10px] font-black text-slate-500 tracking-widest mb-2">수령인 연락처</label>
+                <label className="block text-[10px] font-black text-slate-500 tracking-widest mb-2">
+                  수령인 연락처 <span className="text-red-500">*</span>
+                </label>
                 <input 
                   type="text" 
                   placeholder="수령인 연락처" 
@@ -2856,39 +2911,64 @@ return (
               </div>
               <div className="md:col-span-7">
                 <label className="block text-[10px] font-black text-slate-500 tracking-widest mb-2">
-                  전사 공통 주소 불러오기
+                  배송지 주소 불러오기
                 </label>
-                <select
-                  value={selectedCompanyAddressId}
-                  onChange={(e) => applyCompanyAddress(e.target.value)}
-                  className="w-full bg-white border border-slate-200 rounded-xl px-4 py-3 text-xs font-bold text-slate-700 focus:ring-2 focus:ring-blue-500 outline-none cursor-pointer"
-                >
-                  <option value="">직접 입력 / 주소 검색</option>
-                  {companyAddresses
-                    .filter((a) => a.isActive !== false)
-                    .map((a) => (
-                      <option key={a.id} value={a.id}>
-                        🏢 {a.label} — {a.addressKo}
-                      </option>
-                    ))}
-                </select>
-                <p className="text-[9px] text-slate-400 font-bold mt-1.5">
-                  명함 마스터에 등록된 본사·센터 주소입니다. 선택 시 우편번호·도로명이 자동 입력됩니다.
-                </p>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const active = companyAddresses.filter((a) => a.isActive !== false);
+                      if (active.length === 0) {
+                        return alert('명함에 등록된 전사 공통 주소가 없습니다.');
+                      }
+                      if (active.length === 1) {
+                        applyCompanyAddress(active[0].id);
+                        return;
+                      }
+                      setShowCompanyAddrPicker(true);
+                    }}
+                    className="w-full px-2 py-2.5 bg-white border border-slate-200 rounded-xl text-[11px] font-black text-slate-700 hover:border-blue-400 hover:bg-blue-50 transition-colors shadow-sm"
+                  >
+                    전사 공통주소 불러오기
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void openMarketingClientPicker()}
+                    className="w-full px-2 py-2.5 bg-white border border-slate-200 rounded-xl text-[11px] font-black text-slate-700 hover:border-emerald-400 hover:bg-emerald-50 transition-colors shadow-sm"
+                  >
+                    고객사 통합관리 불러오기
+                  </button>
+                  <button
+                    type="button"
+                    onClick={openProductionPostcode}
+                    className="w-full px-2 py-2.5 bg-slate-900 text-white rounded-xl text-[11px] font-black hover:bg-slate-800 transition-colors shadow-sm"
+                  >
+                    신규 검색하기
+                  </button>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mt-1.5">
+                  <p className="text-[9px] text-slate-400 font-bold text-center sm:text-left">(명함 등록 주소)</p>
+                  <p className="text-[9px] text-slate-400 font-bold text-center sm:text-left">
+                    (마케팅 등록 주소){' '}
+                    <span className="text-amber-600">*실배송지 확인 필수</span>
+                  </p>
+                  <p className="text-[9px] text-slate-400 font-bold text-center sm:text-left">(우편번호 검색)</p>
+                </div>
+                {selectedCompanyAddressId && (
+                  <p className="text-[9px] text-blue-600 font-bold mt-1">
+                    선택됨:{' '}
+                    {companyAddresses.find((a) => a.id === selectedCompanyAddressId)?.label || '-'}
+                  </p>
+                )}
               </div>
             </div>
 
             <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-3 space-y-2">
               <div className="flex flex-wrap items-stretch gap-2">
-                <button
-                  type="button"
-                  onClick={openProductionPostcode}
-                  className="shrink-0 px-3 h-10 bg-slate-900 text-white rounded-xl text-[11px] font-black shadow-sm hover:bg-slate-800 transition-all active:scale-95"
-                >
-                  🔍 주소 검색
-                </button>
                 <div className="flex items-center gap-1.5 shrink-0 bg-white border border-slate-200 rounded-xl px-2.5 h-10">
-                  <span className="text-[9px] font-black text-slate-400">우편</span>
+                  <span className="text-[9px] font-black text-slate-400">
+                    우편 <span className="text-red-500">*</span>
+                  </span>
                   <input
                     type="text"
                     readOnly
@@ -2897,15 +2977,22 @@ return (
                     className="w-14 font-mono text-center text-xs font-black text-blue-600 bg-transparent outline-none"
                   />
                 </div>
-                <input
-                  type="text"
-                  readOnly
-                  value={signData.shippingAddressRoad}
-                  placeholder="도로명 주소 (검색 또는 전사 주소)"
-                  className="flex-[2] min-w-[12rem] h-10 px-3 border border-slate-200 rounded-xl bg-white text-slate-700 text-xs font-bold outline-none"
-                />
+                <div className="flex-[2] min-w-[12rem] h-10 px-3 border border-slate-200 rounded-xl bg-white flex items-center gap-1.5">
+                  <span className="text-[9px] font-black text-slate-400 shrink-0 whitespace-nowrap">
+                    도로명 <span className="text-red-500">*</span>
+                  </span>
+                  <input
+                    type="text"
+                    readOnly
+                    value={signData.shippingAddressRoad}
+                    placeholder="불러오기 또는 신규 검색"
+                    className="min-w-0 flex-1 text-slate-700 text-xs font-bold outline-none bg-transparent"
+                  />
+                </div>
                 <div className="flex items-center gap-1.5 flex-[1.2] min-w-[12rem] max-w-[22rem] bg-white border border-slate-200 rounded-xl px-2.5 h-10">
-                  <span className="text-[9px] font-black text-blue-600 shrink-0">상세</span>
+                  <span className="text-[9px] font-black text-blue-600 shrink-0">
+                    상세 <span className="text-red-500">*</span>
+                  </span>
                   <input
                     type="text"
                     value={signData.shippingAddressDetail}
@@ -3230,7 +3317,7 @@ return (
                   <div>
                     <h4 className="text-sm font-black text-slate-800">🏢 외주 제작사 등록 관리</h4>
                     <p className="text-xs text-slate-400 mt-1">
-                      DB 공통 마스터입니다. 등록은 누구나 가능하며, 수정은 Edit, 시드 3사(아트로릭·한생미디어·드림디포) 삭제는 LV_1만 가능합니다.
+                      DB 공통 마스터입니다. 등록은 누구나 가능하며, 수정은 Edit, 시드 업체(아트로릭·한생미디어 3종·드림디포) 삭제는 LV_1만 가능합니다.
                     </p>
                     <p className="text-[10px] text-slate-400 mt-1.5 leading-relaxed">
                       등록한 업체는 신청서 <span className="font-bold text-slate-500">외주 업체 · 제출 전 확인</span> 선택란에 반영됩니다.
@@ -3549,7 +3636,7 @@ return (
 
                 <div className="flex flex-wrap items-center justify-between gap-2 pt-3 border-t border-slate-100">
                   <p className="text-[10px] text-slate-400 font-medium leading-relaxed max-w-xl">
-                    ※ 시드 3사(아트로릭·한생미디어·드림디포) 삭제는 LV_1만 가능합니다. 「시드 항목 복구(Edit)」는 누락·삭제분만 다시 채우며 기존 값은 유지합니다.
+                    ※ 시드 업체(아트로릭·한생미디어 3종·드림디포) 삭제는 LV_1만 가능합니다. 「시드 항목 복구(Edit)」는 누락·삭제분만 다시 채우며 기존 값은 유지합니다.
                   </p>
                   <button
                     type="button"
@@ -5409,6 +5496,117 @@ return (
               )}
 
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showCompanyAddrPicker && (
+        <div
+          className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-[80] flex items-center justify-center p-4"
+          onClick={() => setShowCompanyAddrPicker(false)}
+        >
+          <div
+            className="bg-white w-full max-w-lg rounded-2xl border border-slate-200 shadow-2xl p-5"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-sm font-black text-slate-800">전사 공통주소 선택</h3>
+              <button
+                type="button"
+                onClick={() => setShowCompanyAddrPicker(false)}
+                className="w-8 h-8 rounded-full bg-slate-100 text-slate-500 font-black text-sm hover:bg-slate-200"
+              >
+                ✕
+              </button>
+            </div>
+            <p className="text-[10px] text-slate-400 font-bold mb-3">(명함 등록 주소)</p>
+            <div className="max-h-[50vh] overflow-y-auto space-y-2">
+              {companyAddresses
+                .filter((a) => a.isActive !== false)
+                .map((a) => (
+                  <button
+                    key={a.id}
+                    type="button"
+                    onClick={() => applyCompanyAddress(a.id)}
+                    className="w-full text-left px-3 py-2.5 rounded-xl border border-slate-200 hover:border-blue-400 hover:bg-blue-50 transition-colors"
+                  >
+                    <div className="text-[12px] font-black text-slate-800">🏢 {a.label}</div>
+                    <div className="text-[10px] font-bold text-slate-500 mt-0.5">
+                      [{a.zipCode}] {[a.addressKo, a.addressDetailKo].filter(Boolean).join(' ')}
+                    </div>
+                  </button>
+                ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showMarketingClientPicker && (
+        <div
+          className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-[80] flex items-center justify-center p-4"
+          onClick={() => setShowMarketingClientPicker(false)}
+        >
+          <div
+            className="bg-white w-full max-w-xl rounded-2xl border border-slate-200 shadow-2xl p-5 flex flex-col max-h-[80vh]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between mb-3 shrink-0">
+              <h3 className="text-sm font-black text-slate-800">고객사 통합관리 주소 불러오기</h3>
+              <button
+                type="button"
+                onClick={() => setShowMarketingClientPicker(false)}
+                className="w-8 h-8 rounded-full bg-slate-100 text-slate-500 font-black text-sm hover:bg-slate-200"
+              >
+                ✕
+              </button>
+            </div>
+            <p className="text-[10px] text-slate-400 font-bold mb-2 shrink-0">
+              (마케팅 등록 주소){' '}
+              <span className="text-amber-600">*실배송지 확인 필수</span>
+            </p>
+            <input
+              type="text"
+              value={marketingClientSearch}
+              onChange={(e) => setMarketingClientSearch(e.target.value)}
+              placeholder="회사명 검색..."
+              className="w-full mb-3 px-3 py-2.5 rounded-xl border border-slate-200 text-xs font-bold outline-none focus:border-emerald-400 shrink-0"
+            />
+            <div className="flex-1 min-h-0 overflow-y-auto space-y-1.5">
+              {marketingClientsLoading ? (
+                <div className="py-10 text-center text-[11px] font-bold text-slate-400 animate-pulse">
+                  고객사 불러오는 중...
+                </div>
+              ) : filteredMarketingClients.length === 0 ? (
+                <div className="py-10 text-center text-[11px] font-bold text-slate-300">
+                  {marketingClientSearch.trim()
+                    ? '검색 결과가 없습니다.'
+                    : '회사명 키워드를 입력하면 관련 고객사만 표시됩니다.'}
+                </div>
+              ) : (
+                filteredMarketingClients.map((c) => {
+                  const zip = c.zip_code || '';
+                  const road = c.address_road || '';
+                  const detail = c.address_detail || '';
+                  const loc =
+                    [zip && `[${zip}]`, road, detail].filter(Boolean).join(' ') ||
+                    c.location ||
+                    '주소 없음';
+                  return (
+                    <button
+                      key={c.id}
+                      type="button"
+                      onClick={() => applyMarketingClientAddress(c)}
+                      className="w-full text-left px-3 py-2.5 rounded-xl border border-slate-200 hover:border-emerald-400 hover:bg-emerald-50 transition-colors"
+                    >
+                      <div className="text-[12px] font-black text-slate-800 truncate">{c.name}</div>
+                      <div className="text-[10px] font-bold text-slate-500 mt-0.5 truncate" title={loc}>
+                        {loc}
+                      </div>
+                    </button>
+                  );
+                })
+              )}
             </div>
           </div>
         </div>

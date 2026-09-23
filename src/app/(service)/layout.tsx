@@ -8,6 +8,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import { checkMenuPermission } from '@/lib/permission-utils';
 import { resolveEntryHref } from '@/lib/resolve-entry-href';
 import LoadingState from '@/components/common/LoadingState';
+import AlarmBell from '@/components/common/AlarmBell';
 import {
   readServiceShellCache,
   writeServiceShellCache,
@@ -23,6 +24,8 @@ export default function ServiceLayout({ children }: { children: React.ReactNode 
   /** 캐시 복원 전 1프레임 — Smart Office Hub 스플래시 대신 빈 화면 */
   const [bootReady, setBootReady] = useState(false);
   const [loading, setLoading] = useState(true);
+  /** /api/auth/me 확정 전엔 캐시 must_reset_password 로 강제 리다이렉트하지 않음 */
+  const [sessionVerified, setSessionVerified] = useState(false);
   const [accessError, setAccessError] = useState<string | null>(null);
   /** URL 직접 진입 시 중간 화면 깜빡임 방지 */
   const [entryJumpPending, setEntryJumpPending] = useState(false);
@@ -66,6 +69,7 @@ export default function ServiceLayout({ children }: { children: React.ReactNode 
         userData.unit = myUnit || { unit_name: '소속없음' };
         setUser(userData);
         writeServiceShellCache({ menus: menuData, user: userData, units: fetchedUnits });
+        setSessionVerified(true);
       } else {
         router.push('/login');
       }
@@ -89,13 +93,13 @@ export default function ServiceLayout({ children }: { children: React.ReactNode 
     fetchInitialData();
   }, []);
 
-  // 관리자 초기화 후: 비밀번호 변경 강제
+  // 관리자 초기화 후: 비밀번호 변경 강제 (서버 me 응답 확정 후에만)
   useEffect(() => {
-    if (loading || !user) return;
+    if (!sessionVerified || !user) return;
     if (user.must_reset_password && !pathname.startsWith('/account/password')) {
       router.replace('/account/password?forced=1');
     }
-  }, [loading, user?.must_reset_password, pathname, router]);
+  }, [sessionVerified, user?.must_reset_password, pathname, router]);
 
   // 경로 변경 즉시 이전 인덱스 잔상 제거 (async 메뉴 재조회 완료 전 1~2초 깜빡임 방지)
   useEffect(() => {
@@ -325,7 +329,8 @@ export default function ServiceLayout({ children }: { children: React.ReactNode 
           </nav>
         </div>
   
-        <div className="relative" ref={userMenuRef}>
+        <div className="relative flex items-center gap-3" ref={userMenuRef}>
+          <AlarmBell userKey={String(user?.email || '')} />
           <button
             type="button"
             onClick={() => setUserMenuOpen((open) => !open)}

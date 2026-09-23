@@ -149,7 +149,7 @@ export default function ProductionRequestDetailModal({
   const [detailDraft, setDetailDraft] = useState<any>(null);
   const [detailSaving, setDetailSaving] = useState(false);
   const [companyAddresses, setCompanyAddresses] = useState<
-    { id: string; label: string; zipCode: string; addressKo: string; isActive?: boolean }[]
+    { id: string; label: string; zipCode: string; addressKo: string; addressDetailKo?: string; isActive?: boolean }[]
   >([]);
   const [vendorOptions, setVendorOptions] = useState<{ id: string; label: string }[]>([]);
   const [plateOptions, setPlateOptions] = useState<
@@ -427,8 +427,12 @@ export default function ProductionRequestDetailModal({
           companyAddressLabel: target.label,
           shippingZipCode: target.zipCode || '',
           shippingAddressRoad: target.addressKo || '',
-          shippingAddressDetail: '',
-          shippingAddress: [target.zipCode && `[${target.zipCode}]`, target.addressKo]
+          shippingAddressDetail: String(target.addressDetailKo || '').trim(),
+          shippingAddress: [
+            target.zipCode && `[${target.zipCode}]`,
+            target.addressKo,
+            target.addressDetailKo,
+          ]
             .filter(Boolean)
             .join(' '),
         },
@@ -1551,7 +1555,7 @@ export default function ProductionRequestDetailModal({
                                 .filter((a) => a.isActive !== false)
                                 .map((a) => (
                                   <option key={a.id} value={a.id}>
-                                    🏢 {a.label} — {a.addressKo}
+                                    🏢 {a.label} — {[a.addressKo, a.addressDetailKo].filter(Boolean).join(' ')}
                                   </option>
                                 ))}
                             </select>

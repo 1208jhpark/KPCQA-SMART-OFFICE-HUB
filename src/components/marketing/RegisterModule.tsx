@@ -1,7 +1,7 @@
 'use client';
 
-import React, { useState, useEffect, useMemo, Suspense } from 'react';
-import { useSearchParams, useRouter } from 'next/navigation';
+import React, { useState, useEffect, useMemo, useRef, Suspense } from 'react';
+import { useSearchParams } from 'next/navigation';
 import * as XLSX from 'xlsx';
 import { getKSTDateString, getKSTYearMonth, getKSTNowYearMonth } from '@/utils/dateUtils';
 import { resolveTopOrgName, canDistributeMarketingOwnerDept, canApplyViaViewRoles } from '@/utils/orgUnits';
@@ -57,10 +57,13 @@ function normalizeRoles(roles: unknown): string[] {
 
 const DEFAULT_GROUPWARE_SHORTCUT_URL =
   'https://ep.kpcqa.or.kr/ea/edoc/eapproval/docCommonDrafWrite.do?template_key=8';
-const GROUPWARE_SHORTCUT_STORAGE_KEY = 'mkt_groupware_shortcut_url';
+const GROUPWARE_SHORTCUT_STORAGE_KEY_PREFIX = 'mkt_groupware_shortcut_url:';
+
+function groupwareStorageKey(userKey: string) {
+  return `${GROUPWARE_SHORTCUT_STORAGE_KEY_PREFIX}${String(userKey || 'anon').trim().toLowerCase()}`;
+}
 
 function RegisterContent() {
-  const router = useRouter();
   const searchParams = useSearchParams();
   const itemIdFromUrl = searchParams.get('itemId');
 
@@ -103,6 +106,8 @@ function RegisterContent() {
   const [selectedMonth, setSelectedMonth] = useState('ALL'); 
   const [itemOwnerFilter, setItemOwnerFilter] = useState('ALL');
   const [selectedClientFilter, setSelectedClientFilter] = useState<string | null>(null);
+  const [otherClientsOpen, setOtherClientsOpen] = useState(false);
+  const otherClientsRef = useRef<HTMLDivElement>(null);
   const [groupwareShortcutUrl, setGroupwareShortcutUrl] = useState(DEFAULT_GROUPWARE_SHORTCUT_URL);
   const [groupwareShortcutEditor, setGroupwareShortcutEditor] = useState<string | null>(null);
 
@@ -174,19 +179,75 @@ function RegisterContent() {
   }, []);
 
   useEffect(() => {
+    const userKey = String(currentUser?.email || '').trim().toLowerCase();
+    if (!userKey) return;
+
     try {
-      const stored = localStorage.getItem(GROUPWARE_SHORTCUT_STORAGE_KEY);
+      const stored = localStorage.getItem(groupwareStorageKey(userKey));
       if (stored) setGroupwareShortcutUrl(stored);
     } catch {}
+
     fetch(`/api/marketing/settings?t=${Date.now()}`, { cache: 'no-store' })
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
         const url = String(data?.groupwareShortcutUrl || '').trim();
         if (!url) return;
         setGroupwareShortcutUrl(url);
-        try { localStorage.setItem(GROUPWARE_SHORTCUT_STORAGE_KEY, url); } catch {}
+        try {
+          localStorage.setItem(groupwareStorageKey(userKey), url);
+        } catch {}
       })
       .catch(() => {});
+  }, [currentUser?.email]);
+
+  /** 신규등록 팝업에서 고객사 생성 시 → 검색 목록 즉시 갱신 */
+  const refreshClientsLite = async (preferName?: string) => {
+    try {
+      const res = await fetch(`/api/marketing/clients?lite=1&t=${Date.now()}`);
+      if (!res.ok) return;
+      const list = await res.json();
+      setClients(list);
+      if (preferName) {
+        setClientSearch(preferName);
+        setShowClientModal(true);
+      }
+    } catch {
+      /* ignore */
+    }
+  };
+
+  useEffect(() => {
+    const applyCreated = (raw: unknown) => {
+      try {
+        const data = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        if (!data || data.type !== 'client-created') return;
+        void refreshClientsLite(String(data.name || '').trim() || undefined);
+      } catch {
+        /* ignore */
+      }
+    };
+
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === 'mkt_client_created' && e.newValue) applyCreated(e.newValue);
+    };
+    window.addEventListener('storage', onStorage);
+
+    let bc: BroadcastChannel | null = null;
+    try {
+      bc = new BroadcastChannel('mkt-clients');
+      bc.onmessage = (ev) => applyCreated(ev.data);
+    } catch {
+      /* ignore */
+    }
+
+    return () => {
+      window.removeEventListener('storage', onStorage);
+      try {
+        bc?.close();
+      } catch {
+        /* ignore */
+      }
+    };
   }, []);
 
   const topOrgName = useMemo(() => resolveTopOrgName(units), [units]);
@@ -194,7 +255,7 @@ function RegisterContent() {
   const isLv1 = myRoles.includes('LV_1');
 
   /**
-   * Catalog 윗줄「신청가능」과 동일 + 타부서 열람LV·신청허용 물품
+   * Catalog 윗줄「신청가능」과 동일 + 타부서 열람·신청 LV 지정 물품
    * Center → 본인+상위HQ+최상위 / HQ → 본인+하위Center+최상위 / Organization → 최상위만
    * LV_1만 전체
    */
@@ -221,7 +282,7 @@ function RegisterContent() {
     return canApplyViaViewRoles(item, currentUser.roles);
   };
 
-  /** Catalog와 동일: Organization 풀 · 열람LV 신청허용(타부서만) → 승인 요청 */
+  /** Catalog와 동일: Organization 풀 · 타부서 열람·신청 LV(타부서만) → 승인 요청 */
   const itemNeedsApprovalRequest = (item: {
     owner_dept?: string | null;
     owner_unit_id?: string | null;
@@ -416,28 +477,16 @@ function RegisterContent() {
     closeClientModal();
   };
 
-  /** 폼 입력값 → 그룹웨어 결재용 텍스트 복사 */
-  const handleCopyFormForApproval = async () => {
-    if (!selectedItemData || !formData.client_name.trim() || !formData.purpose.trim()) {
-      return alert('물품·고객사·지급목적을 먼저 입력한 뒤 복사해 주세요.');
-    }
-    const distDateLabel = needsApprovalRequest ? '지급대기' : formData.dist_date;
-    const clientDeptStr = formData.client_dept ? ` ${formData.client_dept}` : '';
-    const clientInfo = `${formData.client_name}${clientDeptStr} (성함 직급)`;
-    const textToCopy = `[선물명] ${selectedItemData.name}\n[지급목적] ${formData.purpose}\n[지급일자] ${distDateLabel}\n[업체명] ${clientInfo}\n[신청개수] ${formData.qty || 1}개`;
-    try {
-      await navigator.clipboard.writeText(textToCopy);
-      alert('✅ 결재용 텍스트가 복사되었습니다!\n\n업체명의 (성함 직급) 부분을 실제 담당자 정보로 수정 후 그룹웨어에 붙여넣으세요.');
-    } catch {
-      alert('복사에 실패했습니다.');
-    }
-  };
-
   const handleSaveGroupwareShortcut = async () => {
     if (groupwareShortcutEditor == null) return;
     const next = groupwareShortcutEditor.trim() || DEFAULT_GROUPWARE_SHORTCUT_URL;
+    const userKey = String(currentUser?.email || '').trim().toLowerCase();
     setGroupwareShortcutUrl(next);
-    try { localStorage.setItem(GROUPWARE_SHORTCUT_STORAGE_KEY, next); } catch {}
+    if (userKey) {
+      try {
+        localStorage.setItem(groupwareStorageKey(userKey), next);
+      } catch {}
+    }
     try {
       const res = await fetch('/api/marketing/settings', {
         method: 'PUT',
@@ -480,7 +529,7 @@ function RegisterContent() {
       if (res.ok) {
         alert(
           needsApprovalRequest
-            ? '✅ 승인 요청이 등록되었습니다. (관리자 승인 후 지급이 확정됩니다.)'
+            ? '✅ 승인 요청이 등록되었습니다.\n재고는 즉시 예약(차감)되며, 관리자 승인 후 지급이 확정됩니다.'
             : '✅ 성공적으로 등록되었으며, 재고가 차감되었습니다.'
         );
         setFormData({ ...initialForm, dist_date: getKSTDateString() });
@@ -498,15 +547,15 @@ function RegisterContent() {
   };
 
   const handleDelete = async (id: string) => {
-    if (!confirm('정말 지급 신청을 철회하시겠습니까?\n(철회 시 카탈로그 재고가 원래대로 복구됩니다.)')) return;
+    if (!confirm('정말 재고 예약을 취소하시겠습니까?\n(취소 시 카탈로그 재고가 원래대로 복구됩니다.)')) return;
     const res = await fetch(`/api/marketing/distributions?id=${id}`, { method: 'DELETE' });
     if (res.ok) {
-      alert('지급 신청이 정상적으로 철회되었습니다.');
+      alert('재고 예약이 정상적으로 취소되었습니다.');
       setDistributions((prev) => prev.filter((d) => d.id !== id));
       const iRes = await fetch('/api/marketing/items?t=' + Date.now());
       if (iRes.ok) setItems(await iRes.json());
     } else {
-      alert(await readApiError(res, '철회 실패'));
+      alert(await readApiError(res, '예약 취소 실패'));
     }
   };
 
@@ -586,6 +635,35 @@ function RegisterContent() {
       }))
       .sort((a, b) => b.price - a.price);
   }, [baseFilteredList, totalAmountForYear]);
+
+  /** TOP 4 + 기타(N개사) — 카드 슬롯 고정 */
+  const CLIENT_TOP_N = 4;
+  const topClientStats = useMemo(() => clientStats.slice(0, CLIENT_TOP_N), [clientStats]);
+  const otherClientStats = useMemo(() => clientStats.slice(CLIENT_TOP_N), [clientStats]);
+  const otherClientAgg = useMemo(() => {
+    const price = otherClientStats.reduce((sum, s) => sum + s.price, 0);
+    const count = otherClientStats.reduce((sum, s) => sum + s.count, 0);
+    return {
+      price,
+      count,
+      percent: totalAmountForYear > 0 ? ((price / totalAmountForYear) * 100).toFixed(1) : '0.0',
+    };
+  }, [otherClientStats, totalAmountForYear]);
+  const isOtherClientSelected =
+    !!selectedClientFilter && otherClientStats.some((s) => s.name === selectedClientFilter);
+
+  useEffect(() => {
+    if (!otherClientsOpen) return;
+    const onDoc = (e: MouseEvent) => {
+      if (!otherClientsRef.current?.contains(e.target as Node)) setOtherClientsOpen(false);
+    };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [otherClientsOpen]);
+
+  useEffect(() => {
+    setOtherClientsOpen(false);
+  }, [selectedYear, selectedMonth, itemOwnerFilter, searchItemQuery, searchClientQuery]);
 
   const finalFilteredList = useMemo(() => {
     // 칩 미선택: 전체 이력(대기·반려 포함). 칩 선택: 칩 집계와 동일하게 확정만
@@ -675,10 +753,10 @@ function RegisterContent() {
             <h1 className="text-2xl tracking-tight leading-none">
               <span className="text-indigo-400 font-normal">{currentUser?.name || '임직원'} 님</span>
               <span className="text-white/30 font-normal mx-2.5">|</span>
-              <span className="text-white font-extrabold">기념품 지급 신청/재고 확보</span>
+              <span className="text-white font-extrabold">기념품 재고 예약 및 내역</span>
             </h1>
             <p className="text-slate-400 text-xs mt-3 leading-relaxed">
-              센터·본부 재고 내에서 고객사 기념품 지급을 등록·관리합니다.
+            고객사 및 대외 업무용 기념품 재고를 예약하고, 개인별 누적 지급 이력을 관리합니다.
             </p>
           </div>
         </div>
@@ -697,25 +775,29 @@ function RegisterContent() {
         </div>
       )}
 
-      <div className="bg-white border border-slate-200 rounded-[2.5rem] shadow-sm p-6">
-        <div className="flex items-center gap-2 mb-4 px-2">
-          <span className="w-6 h-6 bg-indigo-600 text-white rounded-md flex items-center justify-center text-xs font-black">
+      <div
+        className="rounded-xl border border-amber-200 shadow-sm p-6"
+        style={{ backgroundColor: '#FFFDF7' }}
+      >
+        <div className="flex items-center gap-2 mb-5 px-1">
+          <span className="w-6 h-6 bg-amber-400/90 text-white rounded-md flex items-center justify-center text-xs font-black">
             🎁
           </span>
-          <h3 className="text-sm font-black text-slate-900 tracking-tight">
-            기념품 지급 신청
+          <h3 className="text-sm font-black text-slate-800 tracking-tight">
+            기념품 재고 예약 등록
           </h3>
         </div>
-        <form onSubmit={handleSubmit} className="bg-slate-50 p-4 rounded-2xl border border-slate-100 shadow-inner flex flex-col gap-4">
+        <form onSubmit={handleSubmit} className="flex flex-col gap-3">
+          {/* Row 1 · 12칸 정렬: 4 | 2 | 2 | 2 | 2 */}
           <div className="grid grid-cols-2 lg:grid-cols-12 gap-3 items-end">
-            <div className="lg:col-span-3 space-y-1">
+            <div className="col-span-2 lg:col-span-4 min-w-0 space-y-1">
               <label className="text-[10px] font-black text-indigo-600 uppercase ml-1">물품 선택 *</label>
               <div className="relative group/item">
                 <select
                   required
                   value={formData.item_id}
                   onChange={(e) => setFormData({ ...formData, item_id: e.target.value })}
-                  className={`w-full p-2.5 bg-white border border-slate-200 rounded-xl text-xs font-bold outline-none focus:ring-2 shadow-sm cursor-pointer ${
+                  className={`w-full h-10 px-2.5 bg-white border border-slate-200 rounded-xl text-xs font-bold outline-none focus:ring-2 shadow-sm cursor-pointer ${
                     !formData.item_id
                       ? 'text-slate-700 focus:ring-indigo-500'
                       : needsApprovalRequest
@@ -753,13 +835,13 @@ function RegisterContent() {
                 </div>
               </div>
             </div>
-            <div className="lg:col-span-2 space-y-1">
-              <label className="text-[10px] font-black text-slate-400 uppercase ml-1">단가 정보</label>
-              <div className="w-full p-2.5 bg-white border border-slate-200 rounded-xl text-xs font-mono font-black text-slate-500 text-center shadow-sm">
+            <div className="col-span-1 lg:col-span-2 min-w-0 space-y-1">
+              <label className="text-[10px] font-black text-slate-400 uppercase ml-1">단가 정보(연동)</label>
+              <div className="w-full h-10 px-2.5 flex items-center justify-center bg-slate-50 border border-slate-200 rounded-xl text-xs font-mono font-bold text-slate-400 shadow-inner cursor-not-allowed">
                 {selectedItemData ? `${selectedItemData.unit_price.toLocaleString()} 원` : '-'}
               </div>
             </div>
-            <div className="lg:col-span-2 space-y-1">
+            <div className="col-span-1 lg:col-span-2 min-w-0 space-y-1">
               <label className="text-[10px] font-black text-indigo-600 uppercase ml-1">지급 개수 *</label>
               <div className="relative">
                 <input
@@ -769,7 +851,7 @@ function RegisterContent() {
                   required
                   value={formData.qty}
                   onChange={(e) => setFormData({ ...formData, qty: Number(e.target.value) })}
-                  className="w-full p-2.5 bg-white border border-slate-200 rounded-xl text-xs font-bold outline-none focus:ring-2 ring-indigo-500 shadow-sm pr-12"
+                  className="w-full h-10 px-2.5 bg-white border border-slate-200 rounded-xl text-xs font-bold outline-none focus:ring-2 ring-indigo-500 shadow-sm pr-12"
                   placeholder="수량"
                 />
                 <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[9px] font-black text-slate-400">
@@ -777,27 +859,28 @@ function RegisterContent() {
                 </span>
               </div>
             </div>
-            <div className="lg:col-span-2 space-y-1">
-              <label className="text-[10px] font-black text-slate-400 uppercase ml-1">총 금액 (단가 × 수량)</label>
-              <div className="w-full p-2.5 bg-white border border-slate-200 rounded-xl text-xs font-mono font-black text-slate-500 text-right pr-4 shadow-sm">
+            <div className="col-span-1 lg:col-span-2 min-w-0 space-y-1">
+              <label className="text-[10px] font-black text-slate-400 uppercase ml-1">총 금액</label>
+              <div className="w-full h-10 px-2.5 flex items-center justify-end bg-slate-50 border border-slate-200 rounded-xl text-xs font-mono font-bold text-slate-400 shadow-inner cursor-not-allowed">
                 {totalPrice > 0 ? `${totalPrice.toLocaleString()} 원` : '-'}
               </div>
             </div>
-            <div className="lg:col-span-3 space-y-1">
+            <div className="col-span-1 lg:col-span-2 min-w-0 space-y-1">
               <label className="text-[10px] font-black text-indigo-600 uppercase ml-1">지급 목적 *</label>
               <input
                 type="text"
                 required
                 value={formData.purpose}
                 onChange={(e) => setFormData({ ...formData, purpose: e.target.value })}
-                className="w-full p-2.5 bg-white border border-slate-200 rounded-xl text-xs font-bold outline-none focus:ring-2 ring-indigo-500 shadow-sm text-slate-700"
+                className="w-full h-10 px-2.5 bg-white border border-slate-200 rounded-xl text-xs font-bold outline-none focus:ring-2 ring-indigo-500 shadow-sm text-slate-700"
                 placeholder="예: 미팅 참석 기념품 제공"
               />
             </div>
           </div>
 
-          <div className="grid grid-cols-2 lg:grid-cols-12 gap-2 items-end">
-            <div className="col-span-2 lg:col-span-3 space-y-1 relative">
+          {/* Row 2 · 동일 12칸: 4 | 2 | 2 | 2 | 2 */}
+          <div className="grid grid-cols-2 lg:grid-cols-12 gap-3 items-end">
+            <div className="col-span-2 lg:col-span-4 min-w-0 space-y-1 relative">
               <label className="text-[10px] font-black text-indigo-600 uppercase ml-1">고객사(회사명) *</label>
               <div className="flex gap-1.5">
                 <input
@@ -805,28 +888,28 @@ function RegisterContent() {
                   readOnly
                   required
                   value={formData.client_name}
-                  className="min-w-0 flex-1 p-2.5 bg-white border border-slate-200 rounded-xl text-xs font-bold shadow-sm outline-none cursor-pointer text-slate-700"
+                  className="min-w-0 flex-1 h-10 px-2.5 bg-white border border-slate-200 rounded-xl text-xs font-bold shadow-sm outline-none cursor-pointer text-slate-700"
                   placeholder="검색"
                   onClick={openClientModal}
                 />
                 <button
                   type="button"
                   onClick={openClientModal}
-                  className="px-2.5 shrink-0 bg-indigo-100 text-indigo-700 font-black text-[10px] rounded-xl border border-indigo-200 hover:bg-indigo-600 hover:text-white transition-colors shadow-sm"
+                  className="h-10 px-3 shrink-0 bg-indigo-100 text-indigo-700 font-black text-[10px] rounded-xl border border-indigo-200 hover:bg-indigo-600 hover:text-white transition-colors shadow-sm"
                 >
                   검색
                 </button>
               </div>
             </div>
 
-            <div className="col-span-2 lg:col-span-3 space-y-1">
+            <div className="col-span-2 lg:col-span-2 min-w-0 space-y-1">
               <label className="text-[10px] font-black text-slate-400 uppercase ml-1">고객사 부서명</label>
               <input
                 type="text"
                 list="dept-list"
                 value={formData.client_dept}
                 onChange={(e) => setFormData({ ...formData, client_dept: e.target.value })}
-                className="w-full p-2.5 bg-white border border-slate-200 rounded-xl text-xs font-bold outline-none focus:ring-2 ring-indigo-500 shadow-sm text-slate-700"
+                className="w-full h-10 px-2.5 bg-white border border-slate-200 rounded-xl text-xs font-bold outline-none focus:ring-2 ring-indigo-500 shadow-sm text-slate-700"
                 placeholder="부서"
               />
               <datalist id="dept-list">
@@ -839,22 +922,22 @@ function RegisterContent() {
               </datalist>
             </div>
 
-            <div className="col-span-1 lg:col-span-1 space-y-1">
+            <div className="col-span-1 lg:col-span-2 min-w-0 space-y-1">
               <label className="text-[10px] font-black text-slate-400 uppercase ml-1">재고신청일</label>
               <input
                 type="text"
                 readOnly
                 value={todayStr}
-                className="w-full min-w-0 p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-[11px] font-bold text-slate-400 shadow-inner outline-none cursor-not-allowed text-center tabular-nums"
+                className="w-full h-10 px-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-400 shadow-inner outline-none cursor-not-allowed text-center tabular-nums"
               />
             </div>
 
-            <div className="col-span-1 lg:col-span-1 space-y-1">
+            <div className="col-span-1 lg:col-span-2 min-w-0 space-y-1">
               <label className="text-[10px] font-black text-indigo-600 uppercase ml-1">
                 지급일자 *
               </label>
               {needsApprovalRequest ? (
-                <div className="w-full min-w-0 p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-[11px] font-bold text-slate-500 shadow-inner outline-none cursor-not-allowed text-center">
+                <div className="w-full h-10 px-2.5 flex items-center justify-center bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-500 shadow-inner cursor-not-allowed">
                   지급대기
                 </div>
               ) : (
@@ -863,58 +946,23 @@ function RegisterContent() {
                   required
                   value={formData.dist_date}
                   onChange={(e) => setFormData({ ...formData, dist_date: e.target.value })}
-                  className="w-full min-w-0 p-2 bg-white border border-slate-200 rounded-xl text-[11px] font-bold text-slate-700 shadow-sm outline-none focus:ring-2 ring-indigo-500"
+                  className="w-full h-10 px-2.5 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-700 shadow-sm outline-none focus:ring-2 ring-indigo-500"
                 />
               )}
             </div>
 
-            {/* 복사 → 재고확보/승인요청 → 그룹웨어 */}
-            <div className="col-span-2 lg:col-span-4 space-y-1">
-              <label className="text-[10px] font-black text-indigo-600 uppercase ml-1">
-                다음 순서{' '}
-                <span className="normal-case tracking-normal text-slate-400 font-bold">
-                  {needsApprovalRequest
-                    ? '(복사 → 승인요청 → 그룹웨어 결재)'
-                    : '(복사 → 재고확보 → 그룹웨어 결재)'}
-                </span>
-              </label>
-              <div className="flex items-end gap-1.5">
-                <button
-                  type="button"
-                  onClick={handleCopyFormForApproval}
-                  className="flex-1 h-10 px-2 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-xl font-black text-[12px] hover:bg-indigo-600 hover:text-white transition-all shadow-sm whitespace-nowrap"
-                >
-                  1. 결재용 복사
-                </button>
-                <button
-                  type="submit"
-                  className={`flex-1 h-10 px-2 text-white rounded-xl font-black text-[12px] shadow-md active:scale-95 transition-all whitespace-nowrap ${
-                    needsApprovalRequest
-                      ? 'bg-amber-500 hover:bg-amber-600'
-                      : 'bg-indigo-600 hover:bg-indigo-700'
-                  }`}
-                >
-                  {needsApprovalRequest ? '2. 승인요청 등록' : '2. 재고 확보 신청등록'}
-                </button>
-                <div className="flex-1 flex flex-col items-stretch gap-1">
-                  <button
-                    type="button"
-                    onClick={() => setGroupwareShortcutEditor(groupwareShortcutUrl)}
-                    title="그룹웨어 바로가기 경로 설정(Edit)"
-                    className="self-end w-auto min-w-[7rem] h-7 px-2 inline-flex items-center justify-center rounded-lg bg-slate-100 text-slate-600 text-[10px] font-black hover:bg-slate-200 border border-slate-200"
-                  >
-                    ⚙ 설정(Edit)
-                  </button>
-                  <a
-                    href={groupwareShortcutUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="h-10 px-2 inline-flex items-center justify-center bg-slate-700 text-slate-100 rounded-xl font-black text-[12px] shadow-md hover:bg-slate-800 transition-all whitespace-nowrap"
-                  >
-                    3. 그룹웨어 바로가기 ↗
-                  </a>
-                </div>
-              </div>
+            <div className="col-span-2 lg:col-span-2 min-w-0 space-y-1">
+              <label className="text-[10px] font-black text-indigo-600 uppercase ml-1 opacity-0 select-none">등록</label>
+              <button
+                type="submit"
+                className={`w-full h-10 px-2 text-white rounded-xl font-black text-[12px] shadow-md active:scale-95 transition-all whitespace-nowrap ${
+                  needsApprovalRequest
+                    ? 'bg-amber-500 hover:bg-amber-600'
+                    : 'bg-indigo-600 hover:bg-indigo-700'
+                }`}
+              >
+                재고 예약 등록
+              </button>
             </div>
           </div>
         </form>
@@ -923,12 +971,12 @@ function RegisterContent() {
       <div className="mt-6 bg-white border border-slate-200 rounded-[2.5rem] shadow-sm overflow-hidden">
         <HeaderLight title="나의 지급 이력 대장" count={finalFilteredList.length}>
           <div className="flex items-center gap-2 flex-wrap">
-            <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm">
+            <div className="flex items-center gap-2 h-8 bg-white px-3 rounded-lg border border-slate-200 shadow-sm box-border">
               <span className="text-[10px] font-black text-slate-400 uppercase">물품소속</span>
               <select
                 value={itemOwnerFilter}
                 onChange={(e) => setItemOwnerFilter(e.target.value)}
-                className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent max-w-[140px]"
+                className="h-full text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent max-w-[140px]"
               >
                 <option value="ALL">전체</option>
                 {availableItemOwners.map((o) => (
@@ -942,7 +990,7 @@ function RegisterContent() {
               <select
                 value={selectedYear}
                 onChange={(e) => setSelectedYear(e.target.value)}
-                className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent"
+                className="h-full text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent"
               >
                 <option value="ALL">전체</option>
                 {availableYears.map((y) => (
@@ -956,7 +1004,7 @@ function RegisterContent() {
               <select
                 value={selectedMonth}
                 onChange={(e) => setSelectedMonth(e.target.value)}
-                className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent"
+                className="h-full text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent"
               >
                 <option value="ALL">전체</option>
                 {Array.from({ length: 12 }, (_, i) => String(i + 1).padStart(2, '0')).map((m) => (
@@ -967,36 +1015,56 @@ function RegisterContent() {
 
             <div className="flex items-center gap-2">
               <div className="relative w-40">
-                <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-[10px]">📦</span>
+                <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-[10px] pointer-events-none">📦</span>
                 <input
                   type="text"
                   placeholder="물품명 검색..."
                   value={searchItemQuery}
                   onChange={(e) => setSearchItemQuery(e.target.value)}
-                  className="w-full pl-7 pr-3 py-1.5 bg-white border border-slate-200 rounded-lg text-[11px] font-bold outline-none focus:border-indigo-500 shadow-sm transition-colors"
+                  className="w-full h-8 box-border pl-7 pr-3 bg-white border border-slate-200 rounded-lg text-[11px] font-bold outline-none focus:border-indigo-500 shadow-sm transition-colors"
                 />
               </div>
               <div className="relative w-36">
-                <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-[10px]">🏢</span>
+                <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-[10px] pointer-events-none">🏢</span>
                 <input
                   type="text"
                   placeholder="고객사 검색..."
                   value={searchClientQuery}
                   onChange={(e) => setSearchClientQuery(e.target.value)}
-                  className="w-full pl-7 pr-3 py-1.5 bg-white border border-slate-200 rounded-lg text-[11px] font-bold outline-none focus:border-indigo-500 shadow-sm transition-colors"
+                  className="w-full h-8 box-border pl-7 pr-3 bg-white border border-slate-200 rounded-lg text-[11px] font-bold outline-none focus:border-indigo-500 shadow-sm transition-colors"
                 />
               </div>
             </div>
 
-            <button
-              type="button"
-              onClick={handleDownloadExcel}
-              className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-[10px] font-black shadow-sm hover:bg-emerald-700 transition-all whitespace-nowrap"
-            >
-              {selectedIds.size > 0
-                ? `선택 EXCEL 다운로드(${selectedIds.size})`
-                : '화면 목록 EXCEL 다운로드'}
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleDownloadExcel}
+                className="h-8 box-border px-3 inline-flex items-center bg-emerald-600 text-white rounded-lg text-[11px] font-black shadow-sm hover:bg-emerald-700 transition-all whitespace-nowrap leading-none"
+              >
+                {selectedIds.size > 0
+                  ? `선택 EXCEL 다운로드(${selectedIds.size})`
+                  : '화면 목록 EXCEL 다운로드'}
+              </button>
+              <div className="inline-flex items-stretch h-8 box-border rounded-lg overflow-hidden border border-slate-600 shadow-sm">
+                <a
+                  href={groupwareShortcutUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="h-full px-3 bg-slate-700 text-white text-[11px] font-black hover:bg-slate-800 transition-colors whitespace-nowrap inline-flex items-center leading-none"
+                >
+                  그룹웨어 결재 바로가기 ↗
+                </a>
+                <button
+                  type="button"
+                  onClick={() => setGroupwareShortcutEditor(groupwareShortcutUrl)}
+                  title="그룹웨어 바로가기 경로 설정"
+                  className="h-full px-2.5 bg-slate-600 text-slate-100 text-[11px] font-black border-l border-slate-500 hover:bg-slate-500 transition-colors whitespace-nowrap inline-flex items-center leading-none"
+                >
+                  ⚙
+                </button>
+              </div>
+            </div>
           </div>
         </HeaderLight>
 
@@ -1016,34 +1084,64 @@ function RegisterContent() {
 
           <div className="lg:col-span-9 bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
             <span className="text-[9px] font-black text-slate-400 uppercase tracking-wider mb-2 block">
-              고객사별 지급액 비중 요약 (클릭하여 해당 내역만 필터링)
+              고객사별 지급금액 비중 요약 (금액 기준) · TOP {CLIENT_TOP_N}
+              {otherClientStats.length > 0 ? ` + 기타 ${otherClientStats.length}개사` : ''}
+              {' '}
+              (클릭하여 해당 내역만 필터링)
             </span>
-            <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-hide max-h-[64px]">
-              {clientStats.length === 0 ? (
-                <span className="text-xs text-slate-400 font-bold py-2">
-                  지급 통계 데이터가 존재하지 않습니다.
-                </span>
-              ) : (
-                clientStats.map((stat) => {
+            {clientStats.length === 0 ? (
+              <span className="text-xs text-slate-400 font-bold py-2">
+                지급 통계 데이터가 존재하지 않습니다.
+              </span>
+            ) : (
+              <div
+                className={`grid gap-2 ${
+                  otherClientStats.length > 0
+                    ? 'grid-cols-2 sm:grid-cols-3 lg:grid-cols-5'
+                    : topClientStats.length >= 4
+                      ? 'grid-cols-2 sm:grid-cols-4'
+                      : topClientStats.length === 3
+                        ? 'grid-cols-3'
+                        : topClientStats.length === 2
+                          ? 'grid-cols-2'
+                          : 'grid-cols-1'
+                }`}
+              >
+                {topClientStats.map((stat, idx) => {
                   const isSelected = selectedClientFilter === stat.name;
                   return (
-                    <div
+                    <button
                       key={stat.name}
-                      onClick={() =>
-                        setSelectedClientFilter((prev) => (prev === stat.name ? null : stat.name))
-                      }
-                      className={`shrink-0 border rounded-xl px-3 py-1.5 flex flex-col justify-center text-right min-w-[120px] cursor-pointer transition-colors ${
+                      type="button"
+                      onClick={() => {
+                        setOtherClientsOpen(false);
+                        setSelectedClientFilter((prev) => (prev === stat.name ? null : stat.name));
+                      }}
+                      className={`border rounded-xl px-3 py-2 flex flex-col justify-center text-right min-w-0 transition-colors ${
                         isSelected
                           ? 'bg-indigo-100 border-indigo-300 shadow-sm'
                           : 'bg-slate-50 border-slate-200 hover:bg-white hover:border-slate-300 hover:shadow-sm'
                       }`}
                     >
                       <span
-                        className={`text-[10px] font-black truncate text-left ${
+                        className={`text-[10px] font-black truncate text-left flex items-center gap-1 ${
                           isSelected ? 'text-indigo-900' : 'text-slate-700'
                         }`}
                       >
-                        {stat.name}
+                        <span
+                          className={`shrink-0 inline-flex items-center justify-center w-4 h-4 rounded text-[9px] font-black ${
+                            idx === 0
+                              ? 'bg-amber-400 text-amber-950'
+                              : idx === 1
+                                ? 'bg-slate-300 text-slate-700'
+                                : idx === 2
+                                  ? 'bg-orange-300 text-orange-900'
+                                  : 'bg-slate-200 text-slate-600'
+                          }`}
+                        >
+                          {idx + 1}
+                        </span>
+                        <span className="truncate">{stat.name}</span>
                       </span>
                       <span className="text-[11px] font-mono font-black text-indigo-600 mt-0.5">
                         {stat.price.toLocaleString()}원
@@ -1056,11 +1154,95 @@ function RegisterContent() {
                           ({stat.percent}%)
                         </strong>
                       </span>
-                    </div>
+                    </button>
                   );
-                })
-              )}
-            </div>
+                })}
+
+                {otherClientStats.length > 0 && (
+                  <div className="relative min-w-0" ref={otherClientsRef}>
+                    <button
+                      type="button"
+                      onClick={() => setOtherClientsOpen((v) => !v)}
+                      className={`w-full h-full border rounded-xl px-3 py-2 flex flex-col justify-center text-right transition-colors ${
+                        isOtherClientSelected || otherClientsOpen
+                          ? 'bg-indigo-100 border-indigo-300 shadow-sm'
+                          : 'bg-slate-50 border-slate-200 hover:bg-white hover:border-slate-300 hover:shadow-sm'
+                      }`}
+                    >
+                      <span
+                        className={`text-[10px] font-black truncate text-left ${
+                          isOtherClientSelected || otherClientsOpen
+                            ? 'text-indigo-900'
+                            : 'text-slate-700'
+                        }`}
+                      >
+                        기타
+                        <span className="text-slate-400 font-bold">
+                          {' '}
+                          (+{otherClientStats.length}개사)
+                        </span>
+                        <span className="ml-0.5 text-slate-400">{otherClientsOpen ? '▴' : '▾'}</span>
+                      </span>
+                      <span className="text-[11px] font-mono font-black text-indigo-600 mt-0.5">
+                        {otherClientAgg.price.toLocaleString()}원
+                        <span className="text-slate-400 font-sans font-bold">
+                          /{otherClientAgg.count}건
+                        </span>
+                        <strong
+                          className={`text-[10px] ml-1 ${
+                            isOtherClientSelected ? 'text-indigo-600' : 'text-emerald-500'
+                          }`}
+                        >
+                          ({otherClientAgg.percent}%)
+                        </strong>
+                      </span>
+                      {isOtherClientSelected && (
+                        <span className="text-[9px] font-black text-indigo-700 truncate text-left mt-0.5">
+                          {selectedClientFilter}
+                        </span>
+                      )}
+                    </button>
+
+                    {otherClientsOpen && (
+                      <div className="absolute right-0 left-0 top-full mt-1 z-30 max-h-56 overflow-y-auto rounded-xl border border-slate-200 bg-white shadow-xl py-1">
+                        {otherClientStats.map((stat, i) => {
+                          const isSelected = selectedClientFilter === stat.name;
+                          return (
+                            <button
+                              key={stat.name}
+                              type="button"
+                              onClick={() => {
+                                setSelectedClientFilter((prev) =>
+                                  prev === stat.name ? null : stat.name
+                                );
+                                setOtherClientsOpen(false);
+                              }}
+                              className={`w-full px-3 py-2 flex items-center justify-between gap-2 text-left transition-colors ${
+                                isSelected
+                                  ? 'bg-indigo-50 text-indigo-900'
+                                  : 'hover:bg-slate-50 text-slate-700'
+                              }`}
+                            >
+                              <span className="min-w-0 flex items-center gap-1.5">
+                                <span className="shrink-0 text-[9px] font-black text-slate-400 w-5">
+                                  {CLIENT_TOP_N + i + 1}
+                                </span>
+                                <span className="text-[11px] font-black truncate">{stat.name}</span>
+                              </span>
+                              <span className="shrink-0 text-[10px] font-mono font-black text-indigo-600">
+                                {stat.price.toLocaleString()}원
+                                <span className="text-slate-400 font-sans">/{stat.count}</span>
+                                <span className="text-emerald-500 ml-1">({stat.percent}%)</span>
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </div>
 
@@ -1082,16 +1264,16 @@ function RegisterContent() {
                 <th className="h-12 px-2 w-10 text-center">NO</th>
                 <th className="h-12 px-2 w-[88px] text-center whitespace-nowrap">재고신청일</th>
                 <th className="h-12 px-2 w-[88px] text-center whitespace-nowrap">지급일자</th>
-                <th className="h-12 px-2 w-28">고객사</th>
-                <th className="h-12 px-2 w-24">고객사부서</th>
-                <th className="h-12 px-2 w-24 text-center whitespace-nowrap">물품소속</th>
-                <th className="h-12 px-2 w-36 text-indigo-600">물품명</th>
+                <th className="h-12 px-2 w-28 text-left">고객사</th>
+                <th className="h-12 px-2 w-24 text-left">고객사부서</th>
+                <th className="h-12 px-2 w-24 text-left whitespace-nowrap">물품소속</th>
+                <th className="h-12 px-2 w-36 text-left text-indigo-600">물품명</th>
                 <th className="h-12 px-2 w-[72px] text-center whitespace-nowrap">단가(원)</th>
                 <th className="h-12 px-2 w-14 text-center whitespace-nowrap">수량</th>
                 <th className="h-12 px-2 w-[88px] text-center text-indigo-600 whitespace-nowrap">총금액(원)</th>
                 <th className="h-12 px-2 w-28 text-left">지급목적</th>
-                <th className="h-12 px-2 w-32 text-center whitespace-nowrap">신청자(소속)</th>
-                <th className="h-12 pr-4 text-center w-28 whitespace-nowrap">관리기능</th>
+                <th className="h-12 px-2 w-32 text-left whitespace-nowrap">신청자(소속)</th>
+                <th className="h-12 pr-4 text-center w-36 whitespace-nowrap">관리기능</th>
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-slate-100 text-[11px] font-bold text-slate-700">
@@ -1179,18 +1361,18 @@ function RegisterContent() {
                           <span className="text-slate-800 tabular-nums">{distDate}</span>
                         )}
                       </td>
-                      <td className={`px-2 truncate max-w-[112px] ${isRejected ? '' : 'text-slate-800'}`} title={d.client_name}>
+                      <td className={`px-2 text-left truncate max-w-[112px] ${isRejected ? '' : 'text-slate-800'}`} title={d.client_name}>
                         {d.client_name}
                       </td>
-                      <td className={`px-2 truncate max-w-[96px] ${isRejected ? '' : 'text-slate-700'}`} title={d.client_dept || ''}>
+                      <td className={`px-2 text-left truncate max-w-[96px] ${isRejected ? '' : 'text-slate-700'}`} title={d.client_dept || ''}>
                         {d.client_dept || '-'}
                       </td>
-                      <td className="px-2 text-center">
+                      <td className="px-2 text-left">
                         <span className={`inline-block border px-1.5 py-0.5 rounded text-[10px] font-bold whitespace-nowrap ${isRejected ? 'bg-transparent border-red-200 text-red-500' : 'bg-slate-100 text-slate-700 border-slate-200'}`}>
                           {d.item?.owner_dept || '-'}
                         </span>
                       </td>
-                      <td className={`px-2 truncate max-w-[144px] ${isRejected ? '' : 'text-indigo-700'}`} title={d.item?.name || ''}>
+                      <td className={`px-2 text-left truncate max-w-[144px] ${isRejected ? '' : 'text-indigo-700'}`} title={d.item?.name || ''}>
                         {d.item?.name || '(삭제됨)'}
                       </td>
                       <td className={`px-2 text-center font-mono whitespace-nowrap tabular-nums ${isRejected ? '' : 'text-slate-700'}`}>
@@ -1204,12 +1386,12 @@ function RegisterContent() {
                         {isRejected ? '-' : ((d.item?.unit_price || 0) * d.qty).toLocaleString()}
                       </td>
                       <td
-                        className={`px-2 truncate max-w-[112px] ${isRejected ? '' : 'text-slate-700'}`}
+                        className={`px-2 text-left truncate max-w-[112px] ${isRejected ? '' : 'text-slate-700'}`}
                         title={isRejected && d.reject_reason ? `${d.purpose || ''} / 반려: ${d.reject_reason}` : d.purpose}
                       >
                         {d.purpose}
                       </td>
-                      <td className={`px-2 text-center ${isRejected ? '' : 'text-slate-700'}`}>
+                      <td className={`px-2 text-left ${isRejected ? '' : 'text-slate-700'}`}>
                         <div className="flex flex-col items-center justify-center leading-tight min-w-[7rem]">
                           <span className="truncate max-w-[120px]" title={d.sender_name || ''}>
                             {d.sender_name || '-'}
@@ -1220,7 +1402,7 @@ function RegisterContent() {
                         </div>
                       </td>
 
-                      {/* 🚀 복사 & 철회 듀얼 버튼 */}
+                      {/* 결재용 복사 & 예약 취소 */}
                       <td
                         className="pr-4 text-center !text-slate-700 !no-underline"
                         style={isRejected ? { textDecoration: 'none', color: 'inherit' } : undefined}
@@ -1250,7 +1432,7 @@ function RegisterContent() {
                               }}
                               className="flex-1 py-1.5 bg-indigo-50 text-indigo-600 border border-indigo-200 rounded-md text-[10px] font-black hover:bg-indigo-600 hover:text-white transition-colors shadow-sm whitespace-nowrap"
                             >
-                              복사
+                              결재용 복사
                             </button>
                             {canCancel ? (
                               <button
@@ -1258,7 +1440,7 @@ function RegisterContent() {
                                 onClick={() => handleDelete(d.id)}
                                 className="flex-1 py-1.5 bg-red-50 text-red-500 border border-red-100 rounded-md text-[10px] font-black hover:bg-red-500 hover:text-white transition-colors shadow-sm whitespace-nowrap"
                               >
-                                철회
+                                예약 취소
                               </button>
                             ) : (
                               <span className="flex-1 text-[10px] text-slate-300 font-bold">-</span>
@@ -1459,11 +1641,11 @@ function RegisterContent() {
                         <thead className="bg-slate-50 text-[10px] text-slate-400 font-black uppercase sticky top-0 border-b border-slate-200">
                           <tr>
                             <th className="py-2.5 pl-3 w-10 text-center">NO</th>
-                            <th className="py-2.5">지급일자</th>
-                            <th className="py-2.5 text-indigo-600">물품명</th>
+                            <th className="py-2.5 text-center">지급일자</th>
+                            <th className="py-2.5 text-left text-indigo-600">물품명</th>
                             <th className="py-2.5 text-center">수량</th>
-                            <th className="py-2.5">지급 목적</th>
-                            <th className="py-2.5 text-center">신청부서</th>
+                            <th className="py-2.5 text-left">지급 목적</th>
+                            <th className="py-2.5 text-left">신청부서</th>
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100 text-[11px] font-bold text-slate-700">
@@ -1473,27 +1655,27 @@ function RegisterContent() {
                               ((modalHistoryPage - 1) * modalHistoryPerPage + idx);
                             return (
                               <tr key={d.id || idx} className="h-10">
-                                <td className="py-2 pl-3 text-center text-slate-400 font-black">
+                                <td className="py-2 pl-3 text-center text-slate-400 font-black tabular-nums">
                                   {no}
                                 </td>
-                              <td className="py-2 font-mono text-slate-400">
+                              <td className="py-2 text-center font-mono text-slate-400 tabular-nums">
                                 {d.status === 'PENDING' ? (
                                   <span className="font-black text-amber-600">지급대기</span>
                                 ) : (
                                   getKSTDateString(getDistBusinessDate(d) as string)
                                 )}
                               </td>
-                                <td className="py-2 text-indigo-700 truncate max-w-[140px]">
+                                <td className="py-2 text-left text-indigo-700 truncate max-w-[140px]">
                                   {d.item?.name || '(삭제됨)'}
                                 </td>
-                                <td className="py-2 text-center">{d.qty}</td>
+                                <td className="py-2 text-center tabular-nums">{d.qty}</td>
                                 <td
-                                  className="py-2 text-slate-500 truncate max-w-[160px]"
+                                  className="py-2 text-left text-slate-500 truncate max-w-[160px]"
                                   title={d.purpose}
                                 >
                                   {d.purpose}
                                 </td>
-                                <td className="py-2 text-center text-[10px] text-slate-500">
+                                <td className="py-2 text-left text-[10px] text-slate-500">
                                   {d.sender_dept || '-'}
                                 </td>
                               </tr>
@@ -1538,16 +1720,34 @@ function RegisterContent() {
             </div>
 
             <div className="shrink-0 mt-4 pt-4 border-t border-slate-100 flex flex-col sm:flex-row gap-2 sm:items-center sm:justify-between">
-              <button
-                type="button"
-                onClick={() => {
-                  closeClientModal();
-                  router.push('/marketing/distribution/client-search');
-                }}
-                className="px-4 py-2.5 text-[11px] font-black text-indigo-600 bg-indigo-50 border border-indigo-100 rounded-xl hover:bg-indigo-100 transition-colors"
-              >
-                고객사 통합 관리(신규등록)
-              </button>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    window.open(
+                      '/marketing/distribution/client-search?new=1',
+                      'mktClientNew',
+                      'noopener,noreferrer,width=720,height=820'
+                    );
+                  }}
+                  className="px-4 py-2.5 text-[11px] font-black text-indigo-600 bg-indigo-50 border border-indigo-100 rounded-xl hover:bg-indigo-100 transition-colors"
+                >
+                  고객사 신규등록(빠른 등록)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    window.open(
+                      '/marketing/distribution/client-search',
+                      'mktClientSearch',
+                      'noopener,noreferrer'
+                    );
+                  }}
+                  className="px-4 py-2.5 text-[11px] font-black text-slate-600 bg-slate-50 border border-slate-200 rounded-xl hover:bg-slate-100 transition-colors"
+                >
+                  고객사별 수령 현황 자세히 보기
+                </button>
+              </div>
               <div className="flex gap-2">
                 <button
                   type="button"
@@ -1572,9 +1772,9 @@ function RegisterContent() {
     {groupwareShortcutEditor != null && (
       <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-900/50 p-4">
         <div className="w-full max-w-lg rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl">
-          <h3 className="text-base font-black text-slate-900">메일 바로가기 경로 설정</h3>
+          <h3 className="text-base font-black text-slate-900">그룹웨어 바로가기 경로 설정</h3>
           <p className="mt-2 text-[11px] font-bold leading-relaxed text-slate-500">
-            그룹웨어 결재 작성 화면 주소를 붙여넣으세요. 경로가 바뀌면 여기만 수정하면 됩니다.
+            본인 계정에만 저장됩니다. 다른 사용자와 공유되지 않으며, Edit 권한 없이도 설정할 수 있습니다.
           </p>
           <input
             type="text"

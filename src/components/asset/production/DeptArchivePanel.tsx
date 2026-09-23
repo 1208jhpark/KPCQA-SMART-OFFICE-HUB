@@ -253,7 +253,7 @@ function renderPersonTwoLine(person: PersonLabel | null) {
   const title = [person.deptName, person.userName].filter(Boolean).join(' ');
   return (
     <span
-      className="inline-flex flex-col items-center gap-0.5 leading-tight"
+      className="inline-flex flex-col items-start gap-0.5 leading-tight"
       title={title}
     >
       <span className="text-[10px] font-bold text-slate-500 whitespace-nowrap">
@@ -1620,7 +1620,8 @@ export default function DeptArchivePanel({ variant = 'dept' }: DeptArchivePanelP
         {/* 거래명세표 등록·목록 — 정산 화면만 (정산완료 보관함/아카이브 제외) */}
         {!isSettledArchiveView && (
         <div className="rounded-2xl border border-indigo-100 bg-gradient-to-r from-indigo-50/80 via-white to-indigo-50/50 p-4 shadow-sm flex flex-col gap-3">
-          <div className="flex flex-wrap items-center justify-between gap-3">
+          {/* 헤더: 그리드 고정 — 분류 탭 전환·메모 유무에 레이아웃이 흔들리지 않음 */}
+          <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(16rem,22rem)_auto] gap-3 items-stretch">
             <div className="flex items-center gap-2.5 min-w-0">
               <span className="text-xl shrink-0">📑</span>
               <div className="min-w-0">
@@ -1643,7 +1644,7 @@ export default function DeptArchivePanel({ variant = 'dept' }: DeptArchivePanelP
                       : '등록 명세표 없음'}
                   </span>
                 </div>
-                <p className="text-[11px] font-bold text-slate-500 mt-0.5">
+                <p className="text-[11px] font-bold text-slate-500 mt-0.5 line-clamp-2">
                   {isMasterDashboard
                     ? `[${CATEGORY_LABEL[activeCategory] || activeCategory}] 코너의 외주사별 명세표(PDF/Excel)를 등록하면 부서 및 관리자 페이지 명세 대조에 즉시 연동됩니다.`
                     : `[${CATEGORY_LABEL[activeCategory] || activeCategory}] 코너에 관리자가 등록한 외주 거래명세표 목록입니다.`}
@@ -1651,124 +1652,147 @@ export default function DeptArchivePanel({ variant = 'dept' }: DeptArchivePanelP
               </div>
             </div>
 
-            {/* 확인 완료 기한 · 전달사항 — 여백에 표시 (부서 정산·마스터 공통) */}
-            {confirmRequest && (
-              <div className="flex-1 min-w-[220px] max-w-xl mx-auto px-3 py-2 rounded-xl bg-amber-50 border border-amber-200 shadow-sm">
-                <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-                  <span className="text-[10px] font-black text-amber-800 tracking-wide">
+            {/* 확인 완료 기한 · 전달사항 — 높이 고정 슬롯(분류마다 메모 길이가 달라도 영역 유지) */}
+            <div
+              className={`w-full h-[4.75rem] px-3 py-2 rounded-xl border shadow-sm flex flex-col overflow-hidden ${
+                confirmRequest
+                  ? 'bg-amber-50 border-amber-200'
+                  : 'bg-slate-50/80 border-dashed border-slate-200'
+              }`}
+            >
+              {confirmRequest ? (
+                <>
+                  <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 shrink-0">
+                    <span className="text-[10px] font-black text-amber-800 tracking-wide">
+                      확인 완료 기한
+                    </span>
+                    <span className="text-[12px] font-black text-amber-950 font-mono tabular-nums">
+                      {formatConfirmRequestLabel(confirmRequest.requestedAt)}
+                    </span>
+                    {confirmRequest.updatedBy ? (
+                      <span className="text-[10px] font-bold text-amber-700/80 truncate max-w-[8rem]">
+                        · {confirmRequest.updatedBy}
+                      </span>
+                    ) : null}
+                  </div>
+                  {confirmRequest.memo ? (
+                    <p
+                      className="mt-1 flex-1 min-h-0 overflow-y-auto text-[11px] font-bold text-amber-900/90 whitespace-pre-wrap break-words leading-snug"
+                      title={confirmRequest.memo}
+                    >
+                      📝 {confirmRequest.memo}
+                    </p>
+                  ) : (
+                    <p className="mt-0.5 text-[10px] font-bold text-amber-700/60">전달사항 없음</p>
+                  )}
+                </>
+              ) : (
+                <div className="flex flex-1 flex-col justify-center">
+                  <span className="text-[10px] font-black text-slate-400 tracking-wide">
                     확인 완료 기한
                   </span>
-                  <span className="text-[12px] font-black text-amber-950 font-mono tabular-nums">
-                    {formatConfirmRequestLabel(confirmRequest.requestedAt)}
-                  </span>
-                  {confirmRequest.updatedBy ? (
-                    <span className="text-[10px] font-bold text-amber-700/80">
-                      · {confirmRequest.updatedBy}
-                    </span>
-                  ) : null}
-                </div>
-                {confirmRequest.memo ? (
-                  <p className="mt-1 text-[11px] font-bold text-amber-900/90 whitespace-pre-wrap break-words leading-snug">
-                    📝 {confirmRequest.memo}
+                  <p className="mt-0.5 text-[11px] font-bold text-slate-400">
+                    이 분류에 등록된 기한·메모 없음
                   </p>
-                ) : (
-                  <p className="mt-0.5 text-[10px] font-bold text-amber-700/60">전달사항 없음</p>
-                )}
-              </div>
-            )}
+                </div>
+              )}
+            </div>
 
-            {isMasterDashboard && (
-              <div className="flex items-center gap-2 shrink-0 flex-wrap justify-end">
-                <button
-                  type="button"
-                  disabled={!canEdit}
-                  onClick={handleOpenConfirmModal}
-                  title={!canEdit ? '편집 권한(Edit) 필요' : undefined}
-                  className={`px-3.5 py-1.5 rounded-xl text-xs font-black shadow-sm transition-colors flex items-center gap-1.5 ${
-                    canEdit
-                      ? 'bg-amber-500 hover:bg-amber-600 text-white'
-                      : DISABLED_ACTION_BTN
-                  }`}
-                >
-                  <span>➕ 확인 완료 기한 등록(Edit)</span>
-                </button>
-                <button
-                  type="button"
-                  disabled={!canEdit}
-                  onClick={handleOpenUploadModal}
-                  title={!canEdit ? '편집 권한(Edit) 필요' : undefined}
-                  className={`px-3.5 py-1.5 rounded-xl text-xs font-black shadow-sm transition-colors flex items-center gap-1.5 ${
-                    canEdit
-                      ? 'bg-indigo-600 hover:bg-indigo-700 text-white'
-                      : DISABLED_ACTION_BTN
-                  }`}
-                >
-                  <span>
-                    ➕ {CATEGORY_LABEL[activeCategory] || activeCategory} 명세표 등록(Edit)
-                  </span>
-                </button>
-                <div className="inline-flex items-center gap-1.5 shrink-0">
-                  <span
-                    className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-[11px] font-black border shadow-sm ${
-                      statementPublished
-                        ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
-                        : 'bg-slate-100 text-slate-500 border-slate-200'
-                    }`}
-                    title={
-                      statementPublished
-                        ? '부서 정산 화면에 명세표가 공개된 상태입니다'
-                        : '부서 정산 화면에서 명세표가 숨겨진 상태입니다'
-                    }
-                  >
-                    <span
-                      className={`w-1.5 h-1.5 rounded-full ${
-                        statementPublished ? 'bg-emerald-500' : 'bg-slate-400'
-                      }`}
-                    />
-                    {statementPublished ? '게시중' : '숨김'}
-                  </span>
+            <div className="flex items-center gap-2 shrink-0 flex-wrap justify-end lg:justify-self-end self-center">
+              {isMasterDashboard && (
+                <>
                   <button
                     type="button"
-                    disabled={!canEdit || publishBusy}
-                    onClick={() => handleSetStatementPublish(!statementPublished)}
-                    className={`px-3.5 py-1.5 rounded-xl text-xs font-black shadow-sm transition-colors ${
-                      !canEdit || publishBusy
-                        ? DISABLED_ACTION_BTN
-                        : statementPublished
-                          ? 'bg-white text-slate-700 border border-slate-300 hover:bg-slate-50'
-                          : 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                    disabled={!canEdit}
+                    onClick={handleOpenConfirmModal}
+                    title={!canEdit ? '편집 권한(Edit) 필요' : undefined}
+                    className={`px-3.5 py-1.5 rounded-xl text-xs font-black shadow-sm transition-colors flex items-center gap-1.5 ${
+                      canEdit
+                        ? 'bg-amber-500 hover:bg-amber-600 text-white'
+                        : DISABLED_ACTION_BTN
                     }`}
-                    title={
-                      !canEdit
-                        ? '편집 권한(Edit) 필요'
-                        : statementPublished
-                          ? '부서 화면에서 명세표 숨기기 · 검수/대조 비활성'
-                          : '부서 화면에 명세표 게시하기 · 검수/대조 활성'
-                    }
                   >
-                    {publishBusy
-                      ? '처리 중…'
-                      : statementPublished
-                        ? '숨기기(Edit)'
-                        : '게시하기(Edit)'}
+                    <span>➕ 확인 완료 기한 등록(Edit)</span>
                   </button>
+                  <button
+                    type="button"
+                    disabled={!canEdit}
+                    onClick={handleOpenUploadModal}
+                    title={!canEdit ? '편집 권한(Edit) 필요' : undefined}
+                    className={`px-3.5 py-1.5 rounded-xl text-xs font-black shadow-sm transition-colors flex items-center gap-1.5 ${
+                      canEdit
+                        ? 'bg-indigo-600 hover:bg-indigo-700 text-white'
+                        : DISABLED_ACTION_BTN
+                    }`}
+                  >
+                    <span>
+                      ➕ {CATEGORY_LABEL[activeCategory] || activeCategory} 명세표 등록(Edit)
+                    </span>
+                  </button>
+                  <div className="inline-flex items-center gap-1.5 shrink-0">
+                    <span
+                      className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-[11px] font-black border shadow-sm ${
+                        statementPublished
+                          ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                          : 'bg-slate-100 text-slate-500 border-slate-200'
+                      }`}
+                      title={
+                        statementPublished
+                          ? '부서 정산 화면에 명세표가 공개된 상태입니다'
+                          : '부서 정산 화면에서 명세표가 숨겨진 상태입니다'
+                      }
+                    >
+                      <span
+                        className={`w-1.5 h-1.5 rounded-full ${
+                          statementPublished ? 'bg-emerald-500' : 'bg-slate-400'
+                        }`}
+                      />
+                      {statementPublished ? '게시중' : '숨김'}
+                    </span>
+                    <button
+                      type="button"
+                      disabled={!canEdit || publishBusy}
+                      onClick={() => handleSetStatementPublish(!statementPublished)}
+                      className={`px-3.5 py-1.5 rounded-xl text-xs font-black shadow-sm transition-colors ${
+                        !canEdit || publishBusy
+                          ? DISABLED_ACTION_BTN
+                          : statementPublished
+                            ? 'bg-white text-slate-700 border border-slate-300 hover:bg-slate-50'
+                            : 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                      }`}
+                      title={
+                        !canEdit
+                          ? '편집 권한(Edit) 필요'
+                          : statementPublished
+                            ? '부서 화면에서 명세표 숨기기 · 검수/대조 비활성'
+                            : '부서 화면에 명세표 게시하기 · 검수/대조 활성'
+                      }
+                    >
+                      {publishBusy
+                        ? '처리 중…'
+                        : statementPublished
+                          ? '숨기기(Edit)'
+                          : '게시하기(Edit)'}
+                    </button>
+                  </div>
+                </>
+              )}
+              {isDeptSettlement && (
+                <div
+                  className={`shrink-0 px-2.5 py-1 rounded-lg text-[10px] font-black border ${
+                    statementPublished
+                      ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                      : 'bg-slate-100 text-slate-500 border-slate-200'
+                  }`}
+                >
+                  {statementPublished ? '명세표 게시중' : '명세표 미게시 (마스터 대기)'}
                 </div>
-              </div>
-            )}
-            {isDeptSettlement && (
-              <div
-                className={`shrink-0 px-2.5 py-1 rounded-lg text-[10px] font-black border ${
-                  statementPublished
-                    ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
-                    : 'bg-slate-100 text-slate-500 border-slate-200'
-                }`}
-              >
-                {statementPublished ? '명세표 게시중' : '명세표 미게시 (마스터 대기)'}
-              </div>
-            )}
+              )}
+            </div>
           </div>
 
-          {/* 현재 코너에 등록된 외주사별 명세표 카드 리스트 */}
+          {/* 현재 코너에 등록된 외주사별 명세표 카드 리스트 — 최소 높이 고정 */}
+          <div className="min-h-[5.5rem]">
           {isDeptSettlement && !statementPublished ? (
             <div className="py-2.5 px-3 bg-slate-50/70 rounded-xl border border-dashed border-slate-200 text-center">
               <span className="text-[11px] font-bold text-slate-400">
@@ -1840,6 +1864,7 @@ export default function DeptArchivePanel({ variant = 'dept' }: DeptArchivePanelP
               </span>
             </div>
           )}
+          </div>
         </div>
         )}
 
@@ -2271,7 +2296,7 @@ export default function DeptArchivePanel({ variant = 'dept' }: DeptArchivePanelP
                     <th
                       className={`h-12 ${
                         useArchiveLedgerTable || showGroupedSettlementTable
-                          ? 'px-1 text-center'
+                          ? 'px-1 text-left'
                           : 'min-w-[140px] px-4 text-left'
                       }`}
                     >
@@ -2311,7 +2336,7 @@ export default function DeptArchivePanel({ variant = 'dept' }: DeptArchivePanelP
                     </th>
                     {(showGroupedSettlementTable || useArchiveLedgerTable) && (
                       <th
-                        className={`h-12 text-center px-1 ${
+                        className={`h-12 text-left px-1 ${
                           showGroupedSettlementTable && !useArchiveLedgerTable
                             ? 'border-r border-slate-300'
                             : ''
@@ -2330,7 +2355,7 @@ export default function DeptArchivePanel({ variant = 'dept' }: DeptArchivePanelP
                             </span>
                           </div>
                         </th>
-                        <th className="h-12 px-1 text-center">처리자</th>
+                        <th className="h-12 px-1 text-left">처리자</th>
                         <th className="h-12 w-28 px-1 text-center">마감일자</th>
                       </>
                     )}
@@ -2475,7 +2500,7 @@ export default function DeptArchivePanel({ variant = 'dept' }: DeptArchivePanelP
                             <td
                               className={`text-slate-700 truncate ${
                                 ledgerCell
-                                  ? 'px-1 text-center'
+                                  ? 'px-1 text-left'
                                   : 'px-4 max-w-[160px] text-left'
                               }`}
                               title={(batch.vendors || []).join(', ') || ''}
@@ -2516,7 +2541,7 @@ export default function DeptArchivePanel({ variant = 'dept' }: DeptArchivePanelP
                             </td>
                             {(showGroupedSettlementTable || useArchiveLedgerTable) && (
                               <td
-                                className={`text-center px-1 ${
+                                className={`text-left px-1 ${
                                   showGroupedSettlementTable && !useArchiveLedgerTable
                                     ? 'border-r border-slate-200'
                                     : ''
@@ -2547,7 +2572,7 @@ export default function DeptArchivePanel({ variant = 'dept' }: DeptArchivePanelP
                                     );
                                   })()}
                                 </td>
-                                <td className="px-1 text-center">
+                                <td className="px-1 text-left">
                                   {renderPersonTwoLine(getBatchProcessor(batch))}
                                 </td>
                                 <td className="w-28 px-1 text-center font-mono text-slate-800 tabular-nums whitespace-nowrap text-[11px]">
@@ -2691,7 +2716,7 @@ export default function DeptArchivePanel({ variant = 'dept' }: DeptArchivePanelP
                                     <th className="h-10 px-2 text-left truncate whitespace-nowrap bg-transparent">
                                       소속 부서
                                     </th>
-                                    <th className="h-10 px-2 text-center whitespace-nowrap bg-transparent">대상자</th>
+                                    <th className="h-10 px-2 text-left whitespace-nowrap bg-transparent">대상자</th>
                                     <th className="h-10 px-1 text-center whitespace-nowrap bg-transparent">
                                       분류
                                     </th>
@@ -2751,14 +2776,14 @@ export default function DeptArchivePanel({ variant = 'dept' }: DeptArchivePanelP
                                             {getKSTDateString(item.createdAt)}
                                           </td>
                                           <td
-                                            className="px-2 truncate text-slate-700 bg-transparent"
+                                            className="px-2 text-left truncate text-slate-700 bg-transparent"
                                             title={item.deptName || ''}
                                           >
                                             {item.deptName || (
                                               <span className="text-slate-300">-</span>
                                             )}
                                           </td>
-                                          <td className="px-2 text-center text-slate-800 truncate bg-transparent" title={item.userName || ''}>
+                                          <td className="px-2 text-left text-slate-800 truncate bg-transparent" title={item.userName || ''}>
                                             {item.userName || '-'}
                                           </td>
                                           <td className="px-1 text-center whitespace-nowrap bg-transparent">
@@ -2768,7 +2793,7 @@ export default function DeptArchivePanel({ variant = 'dept' }: DeptArchivePanelP
                                               {CATEGORY_LABEL[item.category] || item.category}
                                             </span>
                                           </td>
-                                          <td className="px-2 text-slate-800 bg-transparent">
+                                          <td className="px-2 text-left text-slate-800 bg-transparent">
                                             {editing ? (
                                               <input
                                                 type="text"
@@ -2945,14 +2970,14 @@ export default function DeptArchivePanel({ variant = 'dept' }: DeptArchivePanelP
                                         {getKSTDateString(item.createdAt)}
                                       </td>
                                       <td
-                                        className="px-2 truncate text-slate-700 bg-transparent"
+                                        className="px-2 text-left truncate text-slate-700 bg-transparent"
                                         title={item.deptName || ''}
                                       >
                                         {item.deptName || (
                                           <span className="text-slate-300">-</span>
                                         )}
                                       </td>
-                                      <td className="px-2 text-center text-slate-800 truncate bg-transparent" title={item.userName || ''}>
+                                      <td className="px-2 text-left text-slate-800 truncate bg-transparent" title={item.userName || ''}>
                                         {item.userName || '-'}
                                       </td>
                                       <td className="px-1 text-center whitespace-nowrap bg-transparent">
@@ -2963,7 +2988,7 @@ export default function DeptArchivePanel({ variant = 'dept' }: DeptArchivePanelP
                                         </span>
                                       </td>
                                       <td
-                                        className="px-2 text-slate-800 truncate bg-transparent"
+                                        className="px-2 text-left text-slate-800 truncate bg-transparent"
                                         title={item.title || ''}
                                       >
                                         {item.title || '-'}
@@ -3117,18 +3142,18 @@ export default function DeptArchivePanel({ variant = 'dept' }: DeptArchivePanelP
               <table className="w-full text-left text-xs">
                 <thead className="bg-slate-50 text-slate-600 font-black border-b border-slate-200 text-[10px]">
                   <tr>
-                    <th className="h-10 px-2">관리번호</th>
+                    <th className="h-10 px-2 text-center">관리번호</th>
                     {useOfficeLines ? (
                       <>
-                        <th className="h-10 px-2">No</th>
-                        <th className="h-10 px-2">제품명</th>
+                        <th className="h-10 px-2 text-center">No</th>
+                        <th className="h-10 px-2 text-left">제품명</th>
                         <th className="h-10 px-2 text-center">수량</th>
                         <th className="h-10 px-2 text-right w-[140px]">정산금액(원)</th>
                       </>
                     ) : (
                       <>
-                        <th className="h-10 px-2">대상자</th>
-                        <th className="h-10 px-2">제목</th>
+                        <th className="h-10 px-2 text-left">대상자</th>
+                        <th className="h-10 px-2 text-left">제목</th>
                         <th className="h-10 px-2 text-center">수량</th>
                         <th className="h-10 px-2 text-right w-[140px]">정산단가(원)</th>
                       </>
@@ -3139,12 +3164,12 @@ export default function DeptArchivePanel({ variant = 'dept' }: DeptArchivePanelP
                   {useOfficeLines
                     ? officeRows.map(({ key, item, line }) => (
                         <tr key={key} className="h-12">
-                          <td className="px-2 font-mono text-[11px]">{item.postNumber}</td>
-                          <td className="px-2 text-[11px] font-mono text-slate-500">{line.lineNo}</td>
-                          <td className="px-2 text-[11px] truncate max-w-[280px]" title={line.productName}>
+                          <td className="px-2 text-center font-mono text-[11px] tabular-nums">{item.postNumber}</td>
+                          <td className="px-2 text-center text-[11px] font-mono text-slate-500 tabular-nums">{line.lineNo}</td>
+                          <td className="px-2 text-left text-[11px] truncate max-w-[280px]" title={line.productName}>
                             {line.productName}
                           </td>
-                          <td className="px-2 text-center text-[11px]">
+                          <td className="px-2 text-center text-[11px] tabular-nums">
                             {line.qty}개
                           </td>
                           <td className="px-2 text-right">
@@ -3189,12 +3214,12 @@ export default function DeptArchivePanel({ variant = 'dept' }: DeptArchivePanelP
                       ))
                     : (statementBatch.items || []).map((item) => (
                     <tr key={item.id} className="h-12">
-                      <td className="px-2 font-mono text-[11px]">{item.postNumber}</td>
-                      <td className="px-2 text-[11px]">{item.userName}</td>
-                      <td className="px-2 text-[11px] truncate max-w-[200px]" title={item.title}>
+                      <td className="px-2 text-center font-mono text-[11px] tabular-nums">{item.postNumber}</td>
+                      <td className="px-2 text-left text-[11px]">{item.userName}</td>
+                      <td className="px-2 text-left text-[11px] truncate max-w-[200px]" title={item.title}>
                         {item.title || '-'}
                       </td>
-                      <td className="px-2 text-center text-[11px]">
+                      <td className="px-2 text-center text-[11px] tabular-nums">
                         {item.quantity}
                         {formatQuantityUnit(item)}
                       </td>

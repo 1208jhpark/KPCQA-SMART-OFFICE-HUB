@@ -7,6 +7,7 @@ import {
   extractEmailLocalPart,
   resolveCompanyEmail,
 } from '@/utils/companyEmail';
+import { clearServiceShellCache } from '@/lib/service-shell-cache';
 
 const DEFAULT_BRANDING = {
   main_headline: 'KPCQA WISE',
@@ -76,6 +77,8 @@ function LoginForm() {
 
     if (res.ok) {
       const data = await res.json().catch(() => ({}));
+      // 이전 세션 셸 캐시(must_reset_password 등)가 남아 강제 변경 루프에 빠지지 않도록 초기화
+      clearServiceShellCache();
       if (data.mustReset) {
         router.push('/account/password?forced=1');
       } else {

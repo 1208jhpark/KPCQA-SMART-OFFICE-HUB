@@ -1,0 +1,2 @@
+-- AlterTable
+ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "alarm_snoozes" JSONB NOT NULL DEFAULT '{}';

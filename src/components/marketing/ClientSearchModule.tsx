@@ -1,9 +1,11 @@
 'use client';
   
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, Suspense } from 'react';
+import { useSearchParams } from 'next/navigation';
 import * as XLSX from 'xlsx';
 import { getKSTDateString, getKSTYearMonth, getKSTNowYearMonth, getDistBusinessDate } from '@/utils/dateUtils';
 import { resolveInterfaceEditState, isSystemLv1User } from '@/lib/permission-utils';
+import { formatMarketingClientLocation } from '@/lib/marketing-client-address';
 import LoadingState from '@/components/common/LoadingState';
 
 // 🚀 [UI 표준] 공통 HeaderLight 컴포넌트
@@ -38,6 +40,18 @@ async function readApiError(res: Response, fallback: string) {
 }
   
 export default function ClientSearchModule() {
+  return (
+    <Suspense fallback={<LoadingState />}>
+      <ClientSearchContent />
+    </Suspense>
+  );
+}
+
+function ClientSearchContent() {
+  const searchParams = useSearchParams();
+  /** 예약등록 등에서 ?new=1 로 열면 신규등록 폼만 표시 */
+  const isNewOnly = searchParams.get('new') === '1';
+
   const [clients, setClients] = useState<any[]>([]);
   const [masterCategories, setMasterCategories] = useState<string[]>([]);
   const [systemConfig, setSystemConfig] = useState<any>(null);
@@ -45,6 +59,10 @@ export default function ClientSearchModule() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [searchNameQuery, setSearchNameQuery] = useState('');
   const [searchLocationQuery, setSearchLocationQuery] = useState('');
+  /** ALL | STALE_6M(6개월+ 미지급) | NO_HISTORY(이력 없음) */
+  const [quickFilter, setQuickFilter] = useState<'ALL' | 'STALE_6M' | 'NO_HISTORY'>('ALL');
+  /** 최근 지급일 정렬 — 기본: 오래된 순(경과일 긴 순) */
+  const [lastDistSort, setLastDistSort] = useState<'oldest' | 'newest'>('oldest');
   
   // 🚀 [추가] 탭 상태 관리 (운영중 / 보관함)
   const [activeTab, setActiveTab] = useState<'ACTIVE' | 'ARCHIVED'>('ACTIVE');
@@ -77,7 +95,13 @@ export default function ClientSearchModule() {
   
   const [showModal, setShowModal] = useState(false);
   const [editClient, setEditClient] = useState<any>(null);
-  const [formData, setFormData] = useState({ name: '', location: '', category: '' });
+  const [formData, setFormData] = useState({
+    name: '',
+    zip_code: '',
+    address_road: '',
+    address_detail: '',
+    category: '',
+  });
      
   const [deptModal, setDeptModal] = useState<{ isOpen: boolean; client: any; deptIndex: number | null; name: string }>({
     isOpen: false, client: null, deptIndex: null, name: ''
@@ -101,9 +125,26 @@ export default function ClientSearchModule() {
     editLevel: string;
 
   } | null>(null);
+  const [restoringSeeds, setRestoringSeeds] = useState(false);
   const MENU_PATH = '/marketing/distribution/client-search';
+  const emptyClientForm = { name: '', zip_code: '', address_road: '', address_detail: '', category: '' };
      
   useEffect(() => { fetchClients(); }, []);
+
+  useEffect(() => {
+    if (!isNewOnly || loading) return;
+    setEditClient(null);
+    setFormData(emptyClientForm);
+    setShowModal(true);
+  }, [isNewOnly, loading]);
+
+  const closeNewOnlyWindow = () => {
+    window.close();
+    // 팝업이 닫히지 않으면 일반 목록으로
+    window.setTimeout(() => {
+      window.location.href = MENU_PATH;
+    }, 150);
+  };
      
   const fetchClients = async () => {
     setLoadError(null);
@@ -188,29 +229,82 @@ export default function ClientSearchModule() {
     const categories = clients.map(c => c.category).filter(Boolean);
     return Array.from(new Set(categories)).sort();
   }, [clients]);
-     
-  // 🚀 필터링 시 Active 탭과 Archived 탭 구분 — 최신 등록이 위, No는 등록순(최신=큰 번호)
-  const filteredClients = useMemo(() => {
+
+  const STALE_DAYS = 180;
+
+  const getLastDistMeta = (c: any) => {
+    const raw = c?.lastDistDate ? String(c.lastDistDate).trim() : '';
+    if (!raw) {
+      return { dateStr: null as string | null, daysAgo: null as number | null, hasHistory: Number(c?.distCount ?? 0) > 0 };
+    }
+    const t = new Date(`${raw}T12:00:00+09:00`).getTime();
+    if (Number.isNaN(t)) {
+      return { dateStr: raw, daysAgo: null as number | null, hasHistory: true };
+    }
+    const today = new Date(`${getKSTDateString()}T12:00:00+09:00`).getTime();
+    const daysAgo = Math.max(0, Math.floor((today - t) / 86400000));
+    return { dateStr: raw, daysAgo, hasHistory: true };
+  };
+
+  const isNoHistory = (c: any) => !c?.lastDistDate;
+  const isStale6m = (c: any) => {
+    if (isNoHistory(c)) return false;
+    const { daysAgo } = getLastDistMeta(c);
+    return daysAgo != null && daysAgo >= STALE_DAYS;
+  };
+
+  // 탭 + 검색/범주 기준(퀵필터 전) — 칩 건수용
+  const baseFilteredClients = useMemo(() => {
     const baseList = clients.filter(c => activeTab === 'ACTIVE' ? !c.is_archived : c.is_archived);
     const nameQ = searchNameQuery.trim().toLowerCase();
     const locQ = searchLocationQuery.trim().toLowerCase();
-    return baseList
-      .filter((c) => {
-        const matchCategory = selectedCategory === 'ALL' || c.category === selectedCategory;
-        const matchName = !nameQ || (c.name || '').toLowerCase().includes(nameQ);
-        const matchLocation = !locQ || (c.location || '').toLowerCase().includes(locQ);
-        return matchCategory && matchName && matchLocation;
-      })
-      .sort((a, b) => {
+    return baseList.filter((c) => {
+      const matchCategory = selectedCategory === 'ALL' || c.category === selectedCategory;
+      const matchName = !nameQ || (c.name || '').toLowerCase().includes(nameQ);
+      const locText = formatMarketingClientLocation(c);
+      const matchLocation = !locQ || locText.toLowerCase().includes(locQ);
+      return matchCategory && matchName && matchLocation;
+    });
+  }, [clients, searchNameQuery, searchLocationQuery, selectedCategory, activeTab]);
+
+  const quickFilterCounts = useMemo(() => {
+    let stale = 0;
+    let none = 0;
+    for (const c of baseFilteredClients) {
+      if (isNoHistory(c)) none += 1;
+      else if (isStale6m(c)) stale += 1;
+    }
+    return { all: baseFilteredClients.length, stale, none };
+  }, [baseFilteredClients]);
+
+  // 퀵필터 + 최근지급일 정렬
+  const filteredClients = useMemo(() => {
+    const list = baseFilteredClients.filter((c) => {
+      if (quickFilter === 'NO_HISTORY') return isNoHistory(c);
+      if (quickFilter === 'STALE_6M') return isStale6m(c);
+      return true;
+    });
+
+    return [...list].sort((a, b) => {
+      const ma = getLastDistMeta(a);
+      const mb = getLastDistMeta(b);
+      const da = ma.daysAgo;
+      const db = mb.daysAgo;
+      // 이력 없음: 오래된 순에서는 맨 앞, 최신 순에서는 맨 뒤
+      if (da == null && db == null) {
         const ta = new Date(a.createdAt || 0).getTime();
         const tb = new Date(b.createdAt || 0).getTime();
-        if (tb !== ta) return tb - ta;
-        return String(b.id || '').localeCompare(String(a.id || ''));
-      });
-  }, [clients, searchNameQuery, searchLocationQuery, selectedCategory, activeTab]);
+        return tb - ta;
+      }
+      if (da == null) return lastDistSort === 'oldest' ? -1 : 1;
+      if (db == null) return lastDistSort === 'oldest' ? 1 : -1;
+      if (lastDistSort === 'oldest') return db - da; // 경과일 긴 순
+      return da - db; // 최근 순
+    });
+  }, [baseFilteredClients, quickFilter, lastDistSort]);
      
   // 🚀 탭이나 필터가 변경되면 1페이지로 리셋
-  useEffect(() => { setCurrentPage(1); setSelectedClientIds(new Set()); }, [searchNameQuery, searchLocationQuery, selectedCategory, activeTab]);
+  useEffect(() => { setCurrentPage(1); setSelectedClientIds(new Set()); }, [searchNameQuery, searchLocationQuery, selectedCategory, activeTab, quickFilter, lastDistSort]);
      
   const totalPages = Math.max(1, Math.ceil(filteredClients.length / itemsPerPage));
   const paginatedClients = filteredClients.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
@@ -445,12 +539,19 @@ export default function ClientSearchModule() {
       return {
         '고객사명': c.name,
         '업무범주': c.category || '-',
-        '소재지': c.location || '-',
+        '소재지': formatMarketingClientLocation(c) || '-',
+        '우편번호': c.zip_code || '-',
+        '기본(도로명)주소': c.address_road || '-',
+        '상세주소': c.address_detail || '-',
+        '최근 지급일': c.lastDistDate || '이력 없음',
+        '경과 일수': (() => {
+          const m = getLastDistMeta(c);
+          return m.daysAgo == null ? '-' : m.daysAgo;
+        })(),
+        '올해 지급 건수': Number(c.yearDistCount ?? 0),
+        '올해 누적 수량': Number(c.yearQty ?? 0),
         '상태': c.is_archived ? '보관됨' : '운영중',
         '등록된 하위부서 수': getNormalizedSortedDepts(c.departments).filter((d: any) => !d.is_hidden).length,
-        '이번달 지급 수량': Number(c.monthQty ?? 0),
-        '올해 누적 지급 수량': Number(c.yearQty ?? 0),
-        '올해 지급 건수': Number(c.yearDistCount ?? 0),
       };
     });
 
@@ -476,12 +577,18 @@ export default function ClientSearchModule() {
     let oldName = '';
     if (deptIndex !== null) {
       oldName = depts[deptIndex].name;
+      if (oldName === '전사') {
+        return alert("기본 부서 '전사'는 이름을 수정할 수 없습니다.");
+      }
       if (oldName === name) {
         setDeptModal({ ...deptModal, isOpen: false });
         return;
       }
       depts[deptIndex].name = name;
     } else {
+      if (name === '전사') {
+        return alert("기본 부서 '전사'는 이미 자동 생성됩니다. 다른 부서명을 입력해 주세요.");
+      }
       depts.push({ name, is_hidden: false });
     }
     const res = await fetch('/api/marketing/clients', {
@@ -549,13 +656,64 @@ export default function ClientSearchModule() {
       body: JSON.stringify(payload)
     });
     if (res.ok) {
+      const created = await res.json().catch(() => null);
       alert(editClient ? '수정되었습니다.' : '등록되었습니다.');
       setShowModal(false);
       setEditClient(null);
-      setFormData({ name: '', location: '', category: '' });
+      setFormData(emptyClientForm);
+      if (isNewOnly) {
+        try {
+          const payload = {
+            type: 'client-created',
+            name: clientName,
+            id: created?.id || null,
+            t: Date.now(),
+          };
+          localStorage.setItem('mkt_client_created', JSON.stringify(payload));
+          const bc = new BroadcastChannel('mkt-clients');
+          bc.postMessage(payload);
+          bc.close();
+        } catch {
+          /* ignore */
+        }
+        closeNewOnlyWindow();
+        return;
+      }
       fetchClients();
     } else {
       alert(await readApiError(res, editClient ? '수정에 실패했습니다.' : '등록에 실패했습니다.'));
+    }
+  };
+
+  const handleRestoreSeeds = async () => {
+    if (!canHardDeleteClient()) {
+      return alert('시드 고객사 복구는 최고 관리자(LV_1)만 가능합니다.');
+    }
+    if (
+      !confirm(
+        '시드 고객사 중 아직 없는 회사명만 추가합니다.\n이미 등록된 회사명은 덮어쓰지 않습니다. 계속할까요?'
+      )
+    ) {
+      return;
+    }
+    setRestoringSeeds(true);
+    try {
+      const res = await fetch('/api/marketing/clients/restore-seeds', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'restore-seeds' }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(data.error || data.message || '시드 고객사 복구 실패');
+        return;
+      }
+      alert(data.message || '시드 고객사 복구 완료');
+      await fetchClients();
+    } catch {
+      alert('시드 고객사 복구 중 오류가 발생했습니다.');
+    } finally {
+      setRestoringSeeds(false);
     }
   };
      
@@ -621,6 +779,118 @@ export default function ClientSearchModule() {
   const showSelection = canEditMaster;
   const tableColCount = (showSelection ? 1 : 0) + (activeTab === 'ARCHIVED' ? 11 : 9);
 
+  const clientMasterForm = (
+            <form onSubmit={handleSubmit} className="space-y-6">
+              <div className="space-y-1.5">
+                <label className="text-[12px] font-black text-slate-600 tracking-tight">고객사 공식 회사명 *</label>
+                <input required type="text" value={formData.name} onChange={e=>setFormData({...formData, name: e.target.value})} className="w-full p-3.5 bg-slate-50 border border-slate-200 rounded-xl text-[13px] font-bold outline-none focus:border-indigo-500 focus:bg-white transition-all shadow-sm placeholder:text-slate-400" placeholder="회사명 풀명칭 입력" />
+                {editClient && (
+                  <p className="text-[9px] text-indigo-500 mt-1 font-bold">※ 수정 시 과거 지급 내역의 회사명도 일괄 업데이트됩니다.</p>
+                )}
+              </div>
+              
+              <div className="space-y-1.5">
+                <label className="text-[12px] font-black text-slate-600 tracking-tight">업무 범주 (CATEGORY) *</label>
+                {masterCategories.length > 0 ? (
+                  <select 
+                    required 
+                    value={formData.category} 
+                    onChange={e=>setFormData({...formData, category: e.target.value})} 
+                    className="w-full p-3.5 bg-slate-50 border border-slate-200 rounded-xl text-[13px] font-bold outline-none focus:border-indigo-500 focus:bg-white transition-all shadow-sm cursor-pointer text-slate-700"
+                  >
+                    <option value="">범주 선택</option>
+                    {masterCategories.map(cat => (
+                      <option key={cat} value={cat}>{cat}</option>
+                    ))}
+                  </select>
+                ) : (
+                  <div className="relative">
+                    <input 
+                      required type="text" value={formData.category} onChange={e=>setFormData({...formData, category: e.target.value})} 
+                      className="w-full p-3.5 bg-red-50 border border-red-200 rounded-xl text-[13px] font-bold outline-none focus:border-red-500 transition-all shadow-sm text-red-700 placeholder:text-red-300" 
+                      placeholder="어드민 설정에서 마스터 그룹을 매핑해주세요!" 
+                    />
+                    <p className="text-[9px] text-red-500 font-bold mt-1 ml-1">※ 현재 매핑된 마스터 그룹이 없어 직접 입력 모드입니다.</p>
+                  </div>
+                )}
+              </div>
+     
+              <div className="space-y-3">
+                <div className="space-y-1.5">
+                  <label className="text-[12px] font-black text-slate-600 tracking-tight">우편번호</label>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    maxLength={5}
+                    value={formData.zip_code}
+                    onChange={(e) =>
+                      setFormData({ ...formData, zip_code: e.target.value.replace(/[^\d]/g, '').slice(0, 5) })
+                    }
+                    className="w-full p-3.5 bg-slate-50 border border-slate-200 rounded-xl text-[13px] font-bold outline-none focus:border-indigo-500 focus:bg-white transition-all shadow-sm placeholder:text-slate-400 font-mono"
+                    placeholder="5자리 우편번호"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-[12px] font-black text-slate-600 tracking-tight">기본(도로명) 주소</label>
+                  <input
+                    type="text"
+                    value={formData.address_road}
+                    onChange={(e) => setFormData({ ...formData, address_road: e.target.value })}
+                    className="w-full p-3.5 bg-slate-50 border border-slate-200 rounded-xl text-[13px] font-bold outline-none focus:border-indigo-500 focus:bg-white transition-all shadow-sm placeholder:text-slate-400"
+                    placeholder="도로명 주소"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-[12px] font-black text-slate-600 tracking-tight">상세주소</label>
+                  <input
+                    type="text"
+                    value={formData.address_detail}
+                    onChange={(e) => setFormData({ ...formData, address_detail: e.target.value })}
+                    className="w-full p-3.5 bg-slate-50 border border-slate-200 rounded-xl text-[13px] font-bold outline-none focus:border-indigo-500 focus:bg-white transition-all shadow-sm placeholder:text-slate-400"
+                    placeholder="동·호수·층 등"
+                  />
+                  <p className="text-[10px] text-slate-400 font-bold">
+                    목록·검색에는 「우편번호 + 기본 + 상세」가 합쳐져 보입니다. 현판(명판) 신청 시 분리값으로 가져올 수 있습니다.
+                  </p>
+                </div>
+              </div>
+     
+              {!editClient && (
+                <div className="bg-indigo-50/50 p-4 rounded-2xl border border-dashed border-indigo-200">
+                  <p className="text-[11px] text-slate-500 leading-relaxed font-medium">💡 <strong>기본 부서(전사)</strong>가 자동으로 생성됩니다.</p>
+                </div>
+              )}
+              
+              <div className="flex gap-2.5 pt-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (isNewOnly) closeNewOnlyWindow();
+                    else setShowModal(false);
+                  }}
+                  className="flex-1 py-4 bg-slate-100 text-slate-500 rounded-xl font-black text-[12px] hover:bg-slate-200 transition-colors"
+                >
+                  취소
+                </button>
+                <button type="submit" className="flex-[2] py-4 bg-indigo-600 text-white rounded-xl font-black text-[12px] shadow-lg hover:bg-indigo-700 transition-colors">{editClient ? '수정 완료' : '등록 완료'}</button>
+              </div>
+            </form>
+  );
+
+  if (isNewOnly) {
+    return (
+      <div className="min-h-[70vh] flex items-center justify-center p-4 bg-slate-100/80">
+        <div className="bg-white w-full max-w-[420px] p-8 rounded-[2rem] shadow-2xl flex flex-col border border-slate-200">
+          <h3 className="font-black text-lg text-slate-900 border-b border-slate-100 pb-4 mb-6 flex items-center gap-2">
+            <span>✨</span>
+            고객사 마스터 신규 등록
+          </h3>
+          {clientMasterForm}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="w-full max-w-[1600px] mx-auto space-y-6 p-8 font-sans text-slate-900 pb-24 animate-fade-in">
 
@@ -649,7 +919,7 @@ export default function ClientSearchModule() {
             고객사 통합 관리
           </h1>
           <p className="text-emerald-100/90 text-xs mt-3 leading-relaxed">
-            고객사를 (각 부서 관리 가능) 신규 등록할 수 있습니다. 등록된 고객사와 각 부서별 물품 지급 내역을 확인합니다.
+          신규 고객사를 등록하고 부서별로 매핑하여, 고객사별 물품 지급 이력을 통합 관리합니다.
           </p>
           {permissionSummary && isSystemLv1User(currentUser) && (
             <div className="flex flex-wrap items-center gap-2 mt-4 pt-3 border-t border-white/15">
@@ -705,7 +975,7 @@ export default function ClientSearchModule() {
                   : 'text-slate-500 hover:text-slate-800'
               }`}
             >
-              <span>🛑 보관함</span>
+              <span>🛑 보관함 (Edit)</span>
               <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono ${
                 activeTab === 'ARCHIVED' ? 'bg-slate-200 text-slate-700 font-bold' : 'bg-slate-200 text-slate-600'
               }`}>
@@ -769,6 +1039,54 @@ export default function ClientSearchModule() {
               </div>
             </div>
 
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <button
+                type="button"
+                onClick={() => setQuickFilter('ALL')}
+                className={`px-2.5 py-1.5 rounded-lg text-[10px] font-black border transition-all whitespace-nowrap ${
+                  quickFilter === 'ALL'
+                    ? 'bg-slate-800 text-white border-slate-800 shadow-sm'
+                    : 'bg-white text-slate-600 border-slate-200 hover:border-slate-300'
+                }`}
+              >
+                전체 {quickFilterCounts.all}건
+              </button>
+              <button
+                type="button"
+                onClick={() => setQuickFilter('STALE_6M')}
+                className={`px-2.5 py-1.5 rounded-lg text-[10px] font-black border transition-all whitespace-nowrap ${
+                  quickFilter === 'STALE_6M'
+                    ? 'bg-amber-500 text-white border-amber-500 shadow-sm'
+                    : 'bg-amber-50 text-amber-700 border-amber-200 hover:border-amber-300'
+                }`}
+              >
+                ⚠️ 6개월 이상 미지급 ({quickFilterCounts.stale}건)
+              </button>
+              <button
+                type="button"
+                onClick={() => setQuickFilter('NO_HISTORY')}
+                className={`px-2.5 py-1.5 rounded-lg text-[10px] font-black border transition-all whitespace-nowrap ${
+                  quickFilter === 'NO_HISTORY'
+                    ? 'bg-slate-500 text-white border-slate-500 shadow-sm'
+                    : 'bg-slate-50 text-slate-500 border-slate-200 hover:border-slate-300'
+                }`}
+              >
+                ⏳ 지급 이력 없음 ({quickFilterCounts.none}건)
+              </button>
+            </div>
+
+            <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm">
+              <span className="text-[10px] font-black text-slate-400 uppercase whitespace-nowrap">최근지급일</span>
+              <select
+                value={lastDistSort}
+                onChange={(e) => setLastDistSort(e.target.value as 'oldest' | 'newest')}
+                className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent"
+              >
+                <option value="oldest">오래된 순</option>
+                <option value="newest">최신 순</option>
+              </select>
+            </div>
+
             {canEditMaster && (
               <button
                 type="button"
@@ -781,15 +1099,19 @@ export default function ClientSearchModule() {
                 className="px-3 py-1.5 rounded-lg text-[10px] font-black shadow-sm whitespace-nowrap transition-all bg-emerald-600 text-white hover:bg-emerald-700"
               >
                 {selectedClientIds.size > 0
-                  ? `선택 EXCEL 다운로드(${selectedClientIds.size})`
-                  : '화면 목록 EXCEL 다운로드'}
+                  ? `선택 EXCEL 다운로드(${selectedClientIds.size})(Edit)`
+                  : '화면 목록 EXCEL 다운로드(Edit)'}
               </button>
             )}
 
             {activeTab === 'ACTIVE' && (
               <button
                 type="button"
-                onClick={() => { setEditClient(null); setFormData({ name: '', location: '', category: '' }); setShowModal(true); }}
+                onClick={() => {
+                  setEditClient(null);
+                  setFormData(emptyClientForm);
+                  setShowModal(true);
+                }}
                 className="px-3 py-1.5 bg-slate-900 text-white rounded-lg text-[10px] font-black shadow-sm hover:bg-indigo-600 transition-all whitespace-nowrap"
               >
                 + 신규 등록
@@ -808,17 +1130,17 @@ export default function ClientSearchModule() {
                   </th>
                 )}
                 <th className="h-12 text-center w-[50px]">NO</th>
-                <th className="h-12 pl-2 w-[280px]">회사명 (클릭 상세보기)</th>
+                <th className="h-12 pl-2 w-[280px] text-left">회사명 (클릭 상세보기)</th>
                 <th className="h-12 text-center w-[220px]">부서관리(Edit)</th>
-                <th className="h-12 px-3 text-center w-[120px]">업무범주</th>
-                <th className="h-12 px-3 w-[260px] text-center">소재지 (주소)</th>
-                <th className="h-12 px-3 w-[100px] text-right whitespace-nowrap">이번 달 지급 수량</th>
-                <th className="h-12 px-3 w-[110px] text-right whitespace-nowrap">올해 누적 지급 수량</th>
-                <th className="h-12 text-center w-[100px]">지급 이력</th>
+                <th className="h-12 px-3 text-left w-[120px]">업무범주</th>
+                <th className="h-12 px-3 w-[280px] text-left">소재지 주소</th>
+                <th className="h-12 px-3 w-[160px] text-center whitespace-nowrap">최근 지급일 (경과일)</th>
+                <th className="h-12 px-3 w-[130px] text-center whitespace-nowrap">올해 누적이력</th>
+                <th className="h-12 text-center w-[100px]">지급이력</th>
                 {activeTab === 'ARCHIVED' && (
                   <>
                     <th className="h-12 px-2 text-center w-[96px] whitespace-nowrap">보관함처리일</th>
-                    <th className="h-12 px-2 text-center w-[120px] whitespace-nowrap">처리자(소속)</th>
+                    <th className="h-12 px-2 text-left w-[120px] whitespace-nowrap">처리자(소속)</th>
                   </>
                 )}
                 <th className="h-12 pr-4 text-center w-[160px] whitespace-nowrap">관리액션(Edit)</th>
@@ -859,8 +1181,11 @@ export default function ClientSearchModule() {
                 const archivedAt = client.archived_at ? getKSTDateString(client.archived_at) : '-';
                 const archiverName = client.archived_by_name || '-';
                 const archiverDept = client.archived_by_dept || '-';
-                const monthQty = Number(client.monthQty ?? 0);
                 const yearQty = Number(client.yearQty ?? 0);
+                const yearDistCount = Number(client.yearDistCount ?? 0);
+                const lastMeta = getLastDistMeta(client);
+                const noHistory = isNoHistory(client);
+                const stale6m = isStale6m(client);
      
                 return (
                   <React.Fragment key={client.id}>
@@ -877,8 +1202,8 @@ export default function ClientSearchModule() {
                           <input type="checkbox" checked={selectedClientIds.has(client.id)} onChange={(e) => handleSelectOne(client.id, e.target.checked)} className="w-3 h-3 accent-indigo-600 cursor-pointer" />
                         </td>
                       )}
-                      <td className={`text-center font-black ${isExpanded ? 'text-indigo-500' : 'text-slate-400'}`}>{filteredClients.length - ((currentPage - 1) * itemsPerPage + idx)}</td>
-                      <td className="pl-2 truncate pr-2">
+                      <td className={`text-center font-black tabular-nums ${isExpanded ? 'text-indigo-500' : 'text-slate-400'}`}>{filteredClients.length - ((currentPage - 1) * itemsPerPage + idx)}</td>
+                      <td className="pl-2 truncate pr-2 text-left">
                         <div className="flex items-center gap-2">
                           <span className={`text-[10px] transition-transform ${isExpanded ? 'rotate-90 text-indigo-500' : 'text-slate-400'}`}>▶</span>
                           <span className={`font-black text-[13px] truncate ${isExpanded ? 'text-indigo-900' : 'text-slate-900'}`} title={client.name}>{client.name}</span>
@@ -901,14 +1226,41 @@ export default function ClientSearchModule() {
                           )}
                         </div>
                       </td>
-                      <td className="px-3 text-center text-indigo-600 font-black text-[11px] truncate" title={client.category}>{client.category || '-'}</td>
-                      <td className="px-3 text-center text-slate-500 text-[11px] truncate" title={client.location}>{client.location || '-'}</td>
-                      
-                      <td className="px-3 border-l border-slate-100 text-right font-mono text-[13px] text-slate-800 whitespace-nowrap">
-                        {monthQty.toLocaleString()}
+                      <td className="px-3 text-left text-indigo-600 font-black text-[11px] truncate" title={client.category}>{client.category || '-'}</td>
+                      <td
+                        className="px-3 text-left text-slate-500 text-[11px] truncate"
+                        title={formatMarketingClientLocation(client) || '-'}
+                      >
+                        {formatMarketingClientLocation(client) || '-'}
                       </td>
-                      <td className="px-3 border-l border-slate-100 text-right font-mono text-[13px] text-slate-800 whitespace-nowrap">
-                        {yearQty.toLocaleString()}
+                      
+                      <td className="px-3 border-l border-slate-100 text-center whitespace-nowrap">
+                        {noHistory ? (
+                          <span className="text-[11px] font-bold text-slate-400">
+                            이력 없음
+                          </span>
+                        ) : (
+                          <div className="flex flex-col items-center gap-0.5">
+                            <span className={`text-[11px] font-bold tabular-nums ${stale6m ? 'text-amber-600' : 'text-slate-500'}`}>
+                              {lastMeta.dateStr}
+                              {lastMeta.daysAgo != null && (
+                                <span className={stale6m ? 'text-amber-500/80' : 'text-slate-400'}>
+                                  {` (${lastMeta.daysAgo}일 전)`}
+                                </span>
+                              )}
+                            </span>
+                            {stale6m && (
+                              <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[8px] font-bold bg-amber-50 text-amber-600 border border-amber-200">
+                                미지급 6개월+
+                              </span>
+                            )}
+                          </div>
+                        )}
+                      </td>
+                      <td className="px-3 border-l border-slate-100 text-center whitespace-nowrap tabular-nums">
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-black bg-slate-50 text-slate-600 border border-slate-200">
+                          {yearDistCount.toLocaleString()}건 (총 {yearQty.toLocaleString()}EA)
+                        </span>
                       </td>
                       
                       <td className="text-center border-l border-slate-100" onClick={(e) => e.stopPropagation()}>
@@ -917,16 +1269,16 @@ export default function ClientSearchModule() {
                           onClick={() => openHistory(client.id, client.name)}
                           className="px-2.5 py-1 rounded-lg text-[9px] font-black text-indigo-600 bg-indigo-50 border border-indigo-100 hover:bg-indigo-600 hover:text-white transition-colors shadow-sm whitespace-nowrap"
                         >
-                          지급 이력
+                          상세보기
                         </button>
                       </td>
 
                       {activeTab === 'ARCHIVED' && (
                         <>
-                          <td className="px-2 text-center font-mono text-[10px] text-slate-700 border-l border-slate-100 whitespace-nowrap">
+                          <td className="px-2 text-center font-mono text-[10px] text-slate-700 border-l border-slate-100 whitespace-nowrap tabular-nums">
                             {archivedAt}
                           </td>
-                          <td className="px-2 text-center text-slate-800 border-l border-slate-100">
+                          <td className="px-2 text-left text-slate-800 border-l border-slate-100">
                             <div className="flex flex-col items-center justify-center leading-tight min-w-[6.5rem]">
                               <span className="text-[11px] font-bold truncate max-w-[110px]" title={archiverName}>{archiverName}</span>
                               <span className="text-[9px] text-slate-600 truncate max-w-[110px]" title={archiverDept}>({archiverDept})</span>
@@ -940,7 +1292,22 @@ export default function ClientSearchModule() {
                           <div className="flex justify-center items-center gap-1 flex-nowrap">
                             {canEditMaster && (
                               <>
-                                <button onClick={() => { setEditClient(client); setFormData({name:client.name, location:client.location||'', category:client.category||''}); setShowModal(true); }} className="px-3 py-1 bg-white border border-slate-200 text-slate-600 rounded-lg text-[9px] font-black hover:bg-slate-50 transition-colors shadow-sm whitespace-nowrap">수정</button>
+                                <button
+                                  onClick={() => {
+                                    setEditClient(client);
+                                    setFormData({
+                                      name: client.name,
+                                      zip_code: client.zip_code || '',
+                                      address_road: client.address_road || '',
+                                      address_detail: client.address_detail || '',
+                                      category: client.category || '',
+                                    });
+                                    setShowModal(true);
+                                  }}
+                                  className="px-3 py-1 bg-white border border-slate-200 text-slate-600 rounded-lg text-[9px] font-black hover:bg-slate-50 transition-colors shadow-sm whitespace-nowrap"
+                                >
+                                  수정
+                                </button>
                                 <button onClick={() => handleArchiveClient(client.id)} className="px-3 py-1 bg-slate-50 border border-slate-200 text-slate-400 rounded-lg text-[9px] font-black hover:bg-slate-200 transition-colors shadow-sm whitespace-nowrap">보관함</button>
                               </>
                             )}
@@ -1004,7 +1371,7 @@ export default function ClientSearchModule() {
                       return (
                         <tr key={`${client.id}-${dept.name}`} className={`bg-indigo-50/40 border-t border-dashed border-indigo-200 h-12 ${dept.is_hidden ? 'opacity-50 grayscale' : ''}`}>
                           <td colSpan={showSelection ? 2 : 1} className="text-center border-r border-slate-100"></td>
-                          <td className="pl-6 text-slate-600 text-[11px] font-bold border-r border-slate-100">
+                          <td className="pl-6 text-left text-slate-600 text-[11px] font-bold border-r border-slate-100">
                             <div className="flex items-center gap-2">
                                 <span className="text-slate-300">└</span> 
                                 <span className={`${dept.is_hidden ? 'line-through text-slate-400' : ''} ${dept.is_orphan ? 'text-slate-400' : ''} truncate max-w-[160px]`} title={dept.name}>
@@ -1022,13 +1389,23 @@ export default function ClientSearchModule() {
                               </span>
                             ) : canEditMaster && activeTab === 'ACTIVE' ? (
                               <div className="flex flex-wrap justify-center gap-1">
-                                  <button
-                                    type="button"
-                                    onClick={() => setDeptModal({ isOpen: true, client, deptIndex: originalIndex, name: dept.name })}
-                                    className="px-1.5 py-1 bg-white border border-slate-200 rounded text-[9px] font-black text-slate-500 hover:bg-indigo-600 hover:text-white shadow-sm transition-colors whitespace-nowrap"
-                                  >
-                                    부서명수정
-                                  </button>
+                                  {dept.name !== "전사" && (
+                                    <button
+                                      type="button"
+                                      onClick={() => setDeptModal({ isOpen: true, client, deptIndex: originalIndex, name: dept.name })}
+                                      className="px-1.5 py-1 bg-white border border-slate-200 rounded text-[9px] font-black text-slate-500 hover:bg-indigo-600 hover:text-white shadow-sm transition-colors whitespace-nowrap"
+                                    >
+                                      부서명수정
+                                    </button>
+                                  )}
+                                  {dept.name === "전사" && (
+                                    <span
+                                      className="px-1.5 py-1 text-[9px] font-black text-slate-400 border border-slate-200 rounded bg-slate-50 whitespace-nowrap"
+                                      title="기본 부서 '전사'는 이름을 수정할 수 없습니다."
+                                    >
+                                      기본부서
+                                    </span>
+                                  )}
                                   {(dept.name !== "전사" || dept.is_hidden) && (
                                     <button
                                       type="button"
@@ -1056,11 +1433,13 @@ export default function ClientSearchModule() {
                           </td>
                           <td className="border-r border-slate-100"></td>
                           <td className="border-r border-slate-100"></td>
-                          <td className="px-3 border-r border-slate-100 text-right font-mono text-[12px] text-slate-700 whitespace-nowrap">
-                            {Number(stats.monthQty ?? 0).toLocaleString()}
+                          <td className="px-3 border-r border-slate-100 text-center text-[10px] text-slate-400 whitespace-nowrap">
+                            —
                           </td>
-                          <td className="px-3 border-r border-slate-100 text-right font-mono text-[12px] text-slate-700 whitespace-nowrap">
-                            {Number(stats.yearQty ?? 0).toLocaleString()}
+                          <td className="px-3 border-r border-slate-100 text-center whitespace-nowrap">
+                            <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[9px] font-black bg-slate-50 text-slate-500 border border-slate-200">
+                              {Number(stats.yearQty ?? 0).toLocaleString()}EA
+                            </span>
                           </td>
                           <td className="text-center border-l border-slate-100">
                             <button
@@ -1068,7 +1447,7 @@ export default function ClientSearchModule() {
                               onClick={() => openHistory(client.id, client.name, dept.name)}
                               className="px-2.5 py-1 rounded-lg text-[9px] font-black text-indigo-600 bg-indigo-50 border border-indigo-100 hover:bg-indigo-600 hover:text-white transition-colors shadow-sm whitespace-nowrap"
                             >
-                              지급 이력
+                              상세보기
                             </button>
                           </td>
                           <td colSpan={activeTab === 'ARCHIVED' ? 3 : 1}></td>
@@ -1117,6 +1496,20 @@ export default function ClientSearchModule() {
           </div>
         )}
       </div>
+
+      {canHardDeleteClient() && activeTab === 'ACTIVE' && (
+        <div className="flex justify-start px-1">
+          <button
+            type="button"
+            onClick={handleRestoreSeeds}
+            disabled={restoringSeeds}
+            title="LV_1 전용 · 시드에 없는 회사명만 추가(영구삭제된 시드 복구)"
+            className="px-3 py-1.5 rounded-lg text-[10px] font-black shadow-sm whitespace-nowrap transition-all bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {restoringSeeds ? '시드 복구 중…' : '시드 복구하기(LV_1)'}
+          </button>
+        </div>
+      )}
      
       {/* 지급 이력 조회 모달 (회사 전체 / 부서) */}
       {historyModal.isOpen && (
@@ -1132,9 +1525,6 @@ export default function ClientSearchModule() {
                     <> - <span className="text-indigo-600">전체</span></>
                   )}
                 </h3>
-                <p className="text-xs font-bold text-slate-400 mt-1 uppercase tracking-widest">
-                  {historyModal.deptName === '전체' ? 'CLIENT DISTRIBUTION HISTORY' : 'DEPARTMENT DISTRIBUTION HISTORY'}
-                </p>
               </div>
               <button type="button" onClick={closeHistoryModal} className="w-10 h-10 shrink-0 flex items-center justify-center bg-slate-100 text-slate-400 rounded-full hover:bg-slate-900 hover:text-white transition-all text-xl">✕</button>
             </div>
@@ -1211,8 +1601,8 @@ export default function ClientSearchModule() {
                   <thead className="bg-slate-50 text-[10px] text-slate-400 font-black uppercase sticky top-0 border-b border-slate-200 z-10">
                     <tr>
                       <th className="py-3 pl-3 w-12 text-center">NO</th>
-                      <th className="py-3">지급일자</th>
-                      <th className="py-3 text-indigo-600">
+                      <th className="py-3 text-center">지급일자</th>
+                      <th className="py-3 text-left text-indigo-600">
                         <div className="relative inline-flex items-center gap-1">
                           <span>물품명{historyItemFilter ? ` · ${historyItemFilter}` : ''}</span>
                           <button
@@ -1265,14 +1655,13 @@ export default function ClientSearchModule() {
                         </div>
                       </th>
                       <th className="py-3 text-center">수량</th>
-                      <th className="py-3">지급 목적</th>
-                      <th className="py-3 text-center">신청부서</th>
+                      <th className="py-3 text-left">신청부서</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 text-[11px] font-bold text-slate-700">
                     {filteredHistoryList.length === 0 ? (
                       <tr>
-                        <td colSpan={6} className="py-16 text-center text-slate-300 font-bold">
+                        <td colSpan={5} className="py-16 text-center text-slate-300 font-bold">
                           {historyItemFilter
                             ? `'${historyItemFilter}' 이력이 없습니다.`
                             : '표시할 이력이 없습니다.'}
@@ -1283,20 +1672,19 @@ export default function ClientSearchModule() {
                         const no = filteredHistoryList.length - ((historyPage - 1) * historyPerPage + idx);
                         return (
                           <tr key={d.id || idx} className="hover:bg-indigo-50/30 transition-colors h-12">
-                            <td className="py-3 pl-3 text-center text-slate-400 font-black">{no}</td>
-                            <td className="py-3 font-mono text-slate-400">
+                            <td className="py-3 pl-3 text-center text-slate-400 font-black tabular-nums">{no}</td>
+                            <td className="py-3 text-center font-mono text-slate-400 tabular-nums">
                               {d.status === 'PENDING' ? (
                                 <span className="font-black text-amber-600">지급대기</span>
                               ) : (
                                 getKSTDateString(getDistBusinessDate(d) as string)
                               )}
                             </td>
-                            <td className="py-3 text-indigo-700">{d.item?.name || '(삭제됨)'}</td>
-                            <td className="py-3 text-center bg-slate-50/50">
+                            <td className="py-3 text-left text-indigo-700">{d.item?.name || '(삭제됨)'}</td>
+                            <td className="py-3 text-center tabular-nums">
                               {d.qty} EA
                             </td>
-                            <td className="py-3 text-slate-500 truncate max-w-[200px]" title={d.purpose}>{d.purpose}</td>
-                            <td className="py-3 text-center text-[10px] text-slate-500">{d.sender_dept || '-'}</td>
+                            <td className="py-3 text-left text-[10px] text-slate-500">{d.sender_dept || '-'}</td>
                           </tr>
                         );
                       })
@@ -1374,57 +1762,7 @@ export default function ClientSearchModule() {
               <span>{editClient ? '✏️' : '✨'}</span>
               고객사 마스터 {editClient ? '정보 수정' : '신규 등록'}
             </h3>
-            <form onSubmit={handleSubmit} className="space-y-6">
-              <div className="space-y-1.5">
-                <label className="text-[12px] font-black text-slate-600 tracking-tight">고객사 공식 회사명 *</label>
-                <input required type="text" value={formData.name} onChange={e=>setFormData({...formData, name: e.target.value})} className="w-full p-3.5 bg-slate-50 border border-slate-200 rounded-xl text-[13px] font-bold outline-none focus:border-indigo-500 focus:bg-white transition-all shadow-sm placeholder:text-slate-400" placeholder="회사명 풀명칭 입력" />
-                {editClient && (
-                  <p className="text-[9px] text-indigo-500 mt-1 font-bold">※ 수정 시 과거 지급 내역의 회사명도 일괄 업데이트됩니다.</p>
-                )}
-              </div>
-              
-              <div className="space-y-1.5">
-                <label className="text-[12px] font-black text-slate-600 tracking-tight">업무 범주 (CATEGORY) *</label>
-                {masterCategories.length > 0 ? (
-                  <select 
-                    required 
-                    value={formData.category} 
-                    onChange={e=>setFormData({...formData, category: e.target.value})} 
-                    className="w-full p-3.5 bg-slate-50 border border-slate-200 rounded-xl text-[13px] font-bold outline-none focus:border-indigo-500 focus:bg-white transition-all shadow-sm cursor-pointer text-slate-700"
-                  >
-                    <option value="">범주 선택</option>
-                    {masterCategories.map(cat => (
-                      <option key={cat} value={cat}>{cat}</option>
-                    ))}
-                  </select>
-                ) : (
-                  <div className="relative">
-                    <input 
-                      required type="text" value={formData.category} onChange={e=>setFormData({...formData, category: e.target.value})} 
-                      className="w-full p-3.5 bg-red-50 border border-red-200 rounded-xl text-[13px] font-bold outline-none focus:border-red-500 transition-all shadow-sm text-red-700 placeholder:text-red-300" 
-                      placeholder="어드민 설정에서 마스터 그룹을 매핑해주세요!" 
-                    />
-                    <p className="text-[9px] text-red-500 font-bold mt-1 ml-1">※ 현재 매핑된 마스터 그룹이 없어 직접 입력 모드입니다.</p>
-                  </div>
-                )}
-              </div>
-     
-              <div className="space-y-1.5">
-                <label className="text-[12px] font-black text-slate-600 tracking-tight">소재지 주소</label>
-                <input type="text" value={formData.location} onChange={e=>setFormData({...formData, location: e.target.value})} className="w-full p-3.5 bg-slate-50 border border-slate-200 rounded-xl text-[13px] font-bold outline-none focus:border-indigo-500 focus:bg-white transition-all shadow-sm placeholder:text-slate-400" placeholder="풀주소 입력" />
-              </div>
-     
-              {!editClient && (
-                <div className="bg-indigo-50/50 p-4 rounded-2xl border border-dashed border-indigo-200">
-                  <p className="text-[11px] text-slate-500 leading-relaxed font-medium">💡 <strong>기본 부서(전사)</strong>가 자동으로 생성됩니다.</p>
-                </div>
-              )}
-              
-              <div className="flex gap-2.5 pt-2">
-                <button type="button" onClick={() => setShowModal(false)} className="flex-1 py-4 bg-slate-100 text-slate-500 rounded-xl font-black text-[12px] hover:bg-slate-200 transition-colors">취소</button>
-                <button type="submit" className="flex-[2] py-4 bg-indigo-600 text-white rounded-xl font-black text-[12px] shadow-lg hover:bg-indigo-700 transition-colors">{editClient ? '수정 완료' : '등록 완료'}</button>
-              </div>
-            </form>
+            {clientMasterForm}
           </div>
         </div>
       )}

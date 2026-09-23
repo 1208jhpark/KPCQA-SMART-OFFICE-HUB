@@ -1033,7 +1033,7 @@ function ITMasterRequestContent() {
           />
         </td>
         <td className="px-2 text-center font-mono text-slate-500 tabular-nums">{opts.rowNo}</td>
-        <td className="px-2 text-center">
+        <td className="px-2 text-left">
           {userLabel ? (
             <span className="text-slate-800 truncate block" title={userLabel}>{userLabel}</span>
           ) : (
@@ -1065,7 +1065,7 @@ function ITMasterRequestContent() {
             <span className={counterpartClass}>{counterpartLabel}</span>
           )}
         </td>
-        <td className="px-2 text-center">
+        <td className="px-2 text-left">
           {adminLabel ? (
             <span className="text-slate-800 truncate block" title={adminLabel}>{adminLabel}</span>
           ) : (
@@ -1322,13 +1322,13 @@ function ITMasterRequestContent() {
                 <th rowSpan={2} className="h-10 px-2 text-center align-middle whitespace-nowrap">진행상태</th>
               </tr>
               <tr>
-                <th className="h-10 px-2 text-center whitespace-nowrap">부서 / 사용자</th>
+                <th className="h-10 px-2 text-left whitespace-nowrap">부서 / 사용자</th>
                 <th className="h-10 px-2 text-center whitespace-nowrap">자산 분류</th>
                 <th className="h-10 px-2">자산번호</th>
                 <th className="h-10 px-2">모델명</th>
                 <th className="h-10 px-2">사용자 요청/답변</th>
                 <th className="h-10 px-2 border-l border-slate-200 bg-blue-50/40 text-blue-800">관리자 요청/답변</th>
-                <th className="h-10 px-2 text-center whitespace-nowrap bg-blue-50/40 text-blue-800">부서 / 관리자</th>
+                <th className="h-10 px-2 text-left whitespace-nowrap bg-blue-50/40 text-blue-800">부서 / 관리자</th>
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-slate-100 text-[11px] font-bold text-slate-700">

@@ -79,7 +79,7 @@ function canSetItemViewRoles(auth: MarketingAuth) {
  * 열람 판정
  * - 신청가능 범위·본인 소속·GLOBAL_MGMT 계정 → 항상 노출
  * - Organization / GLOBAL_MGMT 지정 부서 소유: 기존 정책(미지정=타부서 숨김, 지정 LV만 열람)
- * - 그외 부서 소유: 예전처럼 타부서도 열람 가능(신청은 view_allow_apply·소속 범위로 제어)
+ * - 그외 부서 소유: 예전처럼 타부서도 열람 가능(신청은 view_role_ids·소속 범위로 제어)
  */
 function canViewMarketingItem(
   item: { owner_dept?: string | null; owner_unit_id?: string | null; view_role_ids?: unknown },
@@ -236,19 +236,17 @@ export async function POST(req: Request) {
       body.view_role_ids !== undefined || body.view_allow_apply !== undefined;
     if (wantsViewRoles) {
       const parsed = parseViewRoleIds(body.view_role_ids);
-      const allow = !!body.view_allow_apply && parsed.length > 0;
-      // 빈 기본값([])만 온 경우는 일반 등록 — GLOBAL_MGMT 불필요
-      const isMeaningful =
-        parsed.length > 0 || !!body.view_allow_apply;
+      // 열람 LV 지정 = 열람+신청 동일 (view_allow_apply는 호환용으로 roles 유무에 맞춤)
+      const isMeaningful = parsed.length > 0 || !!body.view_allow_apply;
       if (isMeaningful && !canSetItemViewRoles(auth)) {
         return NextResponse.json(
-          { error: '열람 레벨은 GLOBAL_MGMT 지정 부서(및 직속 하위)만 설정할 수 있습니다.' },
+          { error: '열람·신청 레벨은 GLOBAL_MGMT 지정 부서(및 직속 하위)만 설정할 수 있습니다.' },
           { status: 403 }
         );
       }
-      if (isMeaningful) {
+      if (isMeaningful || body.view_role_ids !== undefined) {
         viewRoleIds = parsed;
-        viewAllowApply = allow;
+        viewAllowApply = parsed.length > 0;
       }
     }
 
@@ -416,24 +414,28 @@ export async function PATCH(req: Request) {
           : parseViewRoleIds((existing as typeof existing & ItemViewFields).view_role_ids);
       const meaningfulChange =
         (view_role_ids !== undefined && nextRoles.length > 0) ||
-        !!view_allow_apply ||
         (view_role_ids !== undefined &&
           parseViewRoleIds((existing as typeof existing & ItemViewFields).view_role_ids)
             .length > 0);
 
       if (meaningfulChange && !canSetItemViewRoles(auth)) {
         return NextResponse.json(
-          { error: '열람 레벨은 GLOBAL_MGMT 지정 부서(및 직속 하위)만 설정할 수 있습니다.' },
+          { error: '열람·신청 레벨은 GLOBAL_MGMT 지정 부서(및 직속 하위)만 설정할 수 있습니다.' },
           { status: 403 }
         );
       }
 
       if (canSetItemViewRoles(auth)) {
-        if (view_role_ids !== undefined) data.view_role_ids = nextRoles;
-        if (view_allow_apply !== undefined) {
-          data.view_allow_apply = !!view_allow_apply && nextRoles.length > 0;
-        } else if (view_role_ids !== undefined && nextRoles.length === 0) {
-          data.view_allow_apply = false;
+        if (view_role_ids !== undefined) {
+          data.view_role_ids = nextRoles;
+          // 지정 LV = 열람+신청 (별도 신청허용 플래그 폐기)
+          data.view_allow_apply = nextRoles.length > 0;
+        } else if (view_allow_apply !== undefined) {
+          // 레거시 클라이언트 호환: 신청허용만 오면 roles 유무에 맞춤
+          data.view_allow_apply =
+            !!view_allow_apply &&
+            parseViewRoleIds((existing as typeof existing & ItemViewFields).view_role_ids).length >
+              0;
         }
       }
       // 비-GLOBAL_MGMT + 빈 기본값만 온 경우 → 열람 필드 무시하고 나머지 필드만 저장

@@ -122,13 +122,20 @@ export default function AdminSurveyHistoryModule() {
   
   const filteredHistory = useMemo(() => {
     const q = searchTitleQuery.trim().toLowerCase();
-    return archivedSurveys.filter((h) => {
+    const list = archivedSurveys.filter((h) => {
       const dateStr = String(h.endDate || h.postDate || '');
       const [y = '', m = ''] = dateStr.split('-');
       const yearMatch = selectedYear === 'ALL' || y === selectedYear;
       const monthMatch = selectedMonth === 'ALL' || m === selectedMonth;
       const titleMatch = !q || String(h.title || '').toLowerCase().includes(q);
       return yearMatch && monthMatch && titleMatch;
+    });
+    // 최신 보관/갱신 건이 맨 위 (NO도 큰 수 → 상단)
+    return list.sort((a, b) => {
+      const at = new Date(a.updatedAt || a.endDate || a.postDate || 0).getTime();
+      const bt = new Date(b.updatedAt || b.endDate || b.postDate || 0).getTime();
+      if (bt !== at) return bt - at;
+      return (Number(b.postNumber) || 0) - (Number(a.postNumber) || 0);
     });
   }, [archivedSurveys, selectedYear, selectedMonth, searchTitleQuery]);
 
@@ -176,6 +183,307 @@ export default function AdminSurveyHistoryModule() {
     if (canEdit) return true;
     alert('편집·다운로드 권한이 없습니다.\n(interface: Task Editor 또는 Editor Level)');
     return false;
+  };
+
+  const questionTypeLabel = (type: string) => {
+    if (type === 'CHOICE_SINGLE') return '단일선택';
+    if (type === 'CHOICE_MULTI') return '다중선택';
+    if (type === 'SCALE') return '만족도';
+    if (type === 'TEXT_SHORT') return '단답형';
+    if (type === 'TEXT_LONG') return '장문형';
+    if (type === 'FILE') return '파일첨부';
+    if (type === 'SEARCH_ADDRESS') return '주소검색';
+    if (type === 'CALENDAR') return '캘린더';
+    if (type === 'SECTION') return '섹션';
+    return type || '-';
+  };
+
+  /** 조사원문 — 원문텍스트 시트만 (빌더 질문·옵션) */
+  const handleDownloadQuestionnaireOriginal = async (survey: any) => {
+    if (!requireEdit()) return;
+
+    let fresh = survey;
+    try {
+      const res = await fetch(`/api/survey/general?t=${Date.now()}`, { cache: 'no-store' });
+      if (res.ok) {
+        const all = await res.json();
+        const found = Array.isArray(all) ? all.find((s: any) => s.id === survey.id) : null;
+        if (found) fresh = found;
+      }
+    } catch {
+      /* 목록 객체로 폴백 */
+    }
+
+    let questions: any[] = [];
+    try {
+      const raw = fresh.questions;
+      if (typeof raw === 'string') questions = JSON.parse(raw || '[]');
+      else if (Array.isArray(raw)) questions = raw;
+      else if (raw && typeof raw === 'object') questions = [raw];
+    } catch {
+      questions = [];
+    }
+    if (!Array.isArray(questions) || questions.length === 0) {
+      return alert('빌더에 저장된 조사 문항이 없습니다.\n현황판 → 빌더에서 문항을 저장한 뒤 다시 시도해주세요.');
+    }
+
+    const hasImage = (v: unknown) => {
+      const s = String(v || '').trim();
+      return !!s && (s.startsWith('data:image') || s.startsWith('http') || s.startsWith('/') || s.startsWith('blob:'));
+    };
+
+    const qCount = questions.filter((q) => q.type !== 'SECTION').length;
+    const textLines: string[] = [
+      `■ 게시명: ${fresh.title || ''}`,
+      `■ 식별코드: ${fresh.code || ''}`,
+      `■ 게시번호: ${fresh.postNumber ?? ''}`,
+      `■ 익명여부: ${fresh.isAnonymous ? '익명' : '기명'}`,
+      `■ 대상: ${fresh.target || ''}`,
+      `■ 기간: ${`${fresh.startDate || ''} ~ ${fresh.endDate || ''} ${fresh.endTime || ''}`.trim()}`,
+      `■ 문항수: ${qCount}`,
+      '',
+      '========== 조사 원문 (빌더 문항) ==========',
+      '',
+    ];
+
+    let qNo = 0;
+    questions.forEach((q: any) => {
+      const isSection = q.type === 'SECTION';
+      if (!isSection) qNo += 1;
+      const required = q.isRequired === true || q.required === true;
+      const title = String(q.title || '').trim() || '(제목 없음)';
+      const desc = String(q.description || '').trim();
+      const typeLabel = questionTypeLabel(q.type);
+      const opts = Array.isArray(q.options) ? q.options : [];
+
+      if (isSection) {
+        textLines.push(`[섹션] ${title}`);
+        if (desc) textLines.push(`  설명: ${desc}`);
+        if (hasImage(q.questionImageUrl) || hasImage(q.imageUrl)) textLines.push('  (이미지첨부됨)');
+        textLines.push('');
+        return;
+      }
+
+      textLines.push(`Q${qNo}. [${typeLabel}] ${required ? '(필수) ' : ''}${title}`);
+      if (desc) textLines.push(`  설명: ${desc}`);
+      if (hasImage(q.questionImageUrl) || hasImage(q.imageUrl) || hasImage(q.templateFileData)) {
+        textLines.push('  (이미지첨부됨)');
+      }
+      if (q.type === 'FILE' && q.templateFileName) {
+        textLines.push(`  서식파일: ${q.templateFileName}`);
+      }
+      if (q.type === 'SCALE') {
+        textLines.push(`  척도: 1 ~ ${q.scaleMax || 5}`);
+      } else if (opts.length === 0) {
+        if (q.type === 'CHOICE_SINGLE' || q.type === 'CHOICE_MULTI') {
+          textLines.push('  (선택지 없음)');
+        }
+      } else {
+        opts.forEach((o: any, oi: number) => {
+          const label = String(o?.label ?? o ?? '').trim() || `(옵션 ${oi + 1})`;
+          const stock = o?.stockLimit != null && String(o.stockLimit).trim() !== '' ? String(o.stockLimit) : '';
+          const link = o?.referenceLink ? String(o.referenceLink) : '';
+          const imgNote = hasImage(o?.imageUrl) ? ' (이미지첨부됨)' : '';
+          textLines.push(
+            `  ${oi + 1}) ${label}${stock ? ` [재고:${stock}]` : ''}${link ? ` [링크:${link}]` : ''}${imgNote}`
+          );
+        });
+      }
+      textLines.push('');
+    });
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(
+      wb,
+      XLSX.utils.aoa_to_sheet(textLines.map((line) => [line])),
+      '원문텍스트'
+    );
+    const safeTitle = String(fresh.title || 'survey').replace(/[/\\?%*:|"<>]/g, '-').substring(0, 30);
+    XLSX.writeFile(wb, `[조사원문]_${safeTitle}.xlsx`);
+  };
+
+  const makePctBar = (pct: number) => {
+    const clamped = Math.max(0, Math.min(100, pct));
+    const filled = Math.round(clamped / 5);
+    return `${'█'.repeat(filled)}${'░'.repeat(20 - filled)}`;
+  };
+
+  /** 단일 설문 결과 분석(빈도·비율) — active-surveys 결과 분석과 동일 포맷 */
+  const handleDownloadResultAnalysis = (survey: any) => {
+    if (!requireEdit()) return;
+
+    let parsedQuestions: any[] = [];
+    try {
+      parsedQuestions =
+        typeof survey.questions === 'string' ? JSON.parse(survey.questions) : survey.questions || [];
+    } catch {
+      parsedQuestions = [];
+    }
+
+    const GUIDE_MSG = 'ZIP 또는 Excel을 다운받아 확인바랍니다.';
+    const targetUsers = getTargetUsers(survey.target || '');
+    const submittedUsers = targetUsers.filter((u) => responses[`${survey.id}_${u.email}`]?.isDone);
+
+    const answerSources = survey.isAnonymous
+      ? listAnonymousContentRows(responses, survey.id).map((r) => ({
+          date: r.date,
+          answers: r.answers,
+          dept: '익명조직',
+          name: '',
+        }))
+      : submittedUsers.map((u) => ({
+          date: responses[`${survey.id}_${u.email}`]?.date || '-',
+          answers: responses[`${survey.id}_${u.email}`]?.answers || {},
+          dept: u.dept,
+          name: u.name,
+        }));
+
+    if (answerSources.length === 0) {
+      return alert('본 설문에 제출된 응답이 없습니다.');
+    }
+
+    const exportQuestions = parsedQuestions.filter((q: any) => {
+      if (!q || q.type === 'SECTION') return false;
+      if (typeof q.allowAnalysis === 'boolean') return q.allowAnalysis;
+      // 구 데이터: 선택·만족도만 분석 (주소·이름 등 개인정보 제외)
+      return q.type === 'CHOICE_SINGLE' || q.type === 'CHOICE_MULTI' || q.type === 'SCALE';
+    });
+    if (exportQuestions.length === 0) {
+      return alert('분석 허용된 문항이 없습니다.\n빌더에서 문항별 「분석 허용」을 켠 뒤 다시 시도해주세요.');
+    }
+
+    const pushStatRows = (
+      rows: (string | number)[][],
+      title: string,
+      typeLabel: string,
+      detailRows: (string | number)[][]
+    ) => {
+      detailRows.forEach((cols, i) => {
+        rows.push([
+          i === 0 ? title : '',
+          i === 0 ? typeLabel : '',
+          cols[0] ?? '',
+          cols[1] ?? '',
+          cols[2] ?? '',
+          cols[3] ?? '',
+        ]);
+      });
+      rows.push([]);
+    };
+
+    const rows: (string | number)[][] = [
+      ['설문명', survey.title],
+      ['응답 인원', answerSources.length],
+      [],
+      ['문항', '유형', '보기/점수', '응답수', '비율(%)', '그래프'],
+    ];
+
+    exportQuestions.forEach((q: any) => {
+      const typeLabel = questionTypeLabel(q.type);
+
+      if (q.type === 'CHOICE_SINGLE' || q.type === 'CHOICE_MULTI') {
+        const counts: Record<string, number> = {};
+        (q.options || []).forEach((opt: any) => {
+          counts[String(opt.label)] = 0;
+        });
+        let answered = 0;
+        answerSources.forEach((src) => {
+          const ans = src.answers?.[q.id];
+          if (ans === null || ans === undefined || ans === '') return;
+          answered += 1;
+          if (q.type === 'CHOICE_MULTI') {
+            const list = Array.isArray(ans) ? ans : [ans];
+            list.forEach((label: unknown) => {
+              const key = String(label);
+              counts[key] = (counts[key] || 0) + 1;
+            });
+          } else {
+            const key = String(ans);
+            counts[key] = (counts[key] || 0) + 1;
+          }
+        });
+        const denom = answered || 1;
+        const labels =
+          Object.keys(counts).length > 0
+            ? Object.keys(counts)
+            : (q.options || []).map((o: any) => String(o.label));
+        const detailRows: (string | number)[][] = labels.map((label: string) => {
+          const count = counts[label] || 0;
+          const pct = Math.round((count / denom) * 1000) / 10;
+          return [label, count, pct, makePctBar(pct)];
+        });
+        detailRows.push(['(응답자 수)', answered, '', '']);
+        pushStatRows(rows, q.title, typeLabel, detailRows);
+        return;
+      }
+
+      if (q.type === 'SCALE') {
+        const max = Number(q.scaleMax) || 5;
+        const counts: Record<number, number> = {};
+        for (let n = 1; n <= max; n++) counts[n] = 0;
+        let sum = 0;
+        let answered = 0;
+        answerSources.forEach((src) => {
+          const ans = src.answers?.[q.id];
+          if (ans === null || ans === undefined || ans === '') return;
+          const n = Number(ans);
+          if (!Number.isFinite(n)) return;
+          answered += 1;
+          sum += n;
+          counts[n] = (counts[n] || 0) + 1;
+        });
+        const detailRows: (string | number)[][] = [];
+        for (let n = 1; n <= max; n++) {
+          const count = counts[n] || 0;
+          const pct = answered ? Math.round((count / answered) * 1000) / 10 : 0;
+          detailRows.push([`${n}점`, count, pct, makePctBar(pct)]);
+        }
+        detailRows.push(['평균', answered ? Math.round((sum / answered) * 100) / 100 : '-', '', '']);
+        detailRows.push(['(응답자 수)', answered, '', '']);
+        pushStatRows(rows, q.title, typeLabel, detailRows);
+        return;
+      }
+
+      rows.push([q.title, typeLabel, GUIDE_MSG, '', '', '']);
+      rows.push([]);
+    });
+
+    const wb = XLSX.utils.book_new();
+    const safeTitle = String(survey.title || survey.code || '설문').replace(/[/\\?%*:|"<>]/g, '-');
+    const ws = XLSX.utils.aoa_to_sheet(rows);
+    ws['!cols'] = [
+      { wch: 36 },
+      { wch: 10 },
+      { wch: 42 },
+      { wch: 10 },
+      { wch: 10 },
+      { wch: 22 },
+    ];
+    const sheetBase = `통계_${safeTitle}`.substring(0, 31);
+    XLSX.utils.book_append_sheet(wb, ws, sheetBase);
+
+    const textQuestions = exportQuestions.filter(
+      (q: any) => q.type === 'TEXT_SHORT' || q.type === 'TEXT_LONG'
+    );
+    if (textQuestions.length > 0) {
+      const header = [
+        '제출조직',
+        '제출자',
+        '제출일',
+        ...textQuestions.map((q: any) => `[${questionTypeLabel(q.type)}] ${q.title}`),
+      ];
+      const body = answerSources.map((src, i) => [
+        survey.isAnonymous ? '익명조직' : src.dept,
+        survey.isAnonymous ? `익명응답자 ${i + 1}` : src.name,
+        src.date || '-',
+        ...textQuestions.map((q: any) => formatAnswerForExport(src.answers?.[q.id])),
+      ]);
+      const textWs = XLSX.utils.aoa_to_sheet([header, ...body]);
+      const textSheet = `서술_${safeTitle}`.substring(0, 31);
+      XLSX.utils.book_append_sheet(wb, textWs, textSheet === sheetBase ? '서술응답' : textSheet);
+    }
+
+    XLSX.writeFile(wb, `[분석결과]_${safeTitle.substring(0, 30)}.xlsx`);
   };
 
   const handleRestore = async (id: string) => {
@@ -519,19 +827,19 @@ export default function AdminSurveyHistoryModule() {
                   />
                 </th>
                 <th className="py-3 px-2 w-10 text-center">NO</th>
-                <th className="py-3 px-2 w-20">식별코드</th>
-                <th className="py-3 px-2 w-16 text-center text-indigo-500">게시번호</th>
+                <th className="py-3 px-2 w-20 text-left">식별코드</th>
+                <th className="py-3 px-2 w-16 text-center text-slate-800">게시번호</th>
                 <th className="py-3 px-2 w-20 text-center">게시일</th>
-                <th className="py-3 px-2 w-[220px]">게시명 / 유형</th>
-                <th className="py-3 px-2 w-14 text-center text-indigo-500">익명여부</th>
+                <th className="py-3 px-2 w-[220px] text-left">게시명</th>
+                <th className="py-3 px-2 w-14 text-center text-slate-800">익명여부</th>
                 <th className="py-3 px-2 w-24 text-center">대상</th>
                 <th className="py-3 px-2 w-32 text-center">기간</th>
                 <th className="py-3 px-2 w-12 text-center border-l bg-slate-100/50">참여율</th>
                 <th className="py-3 px-2 w-12 text-center bg-blue-50/50 text-blue-600">참여</th>
                 <th className="py-3 px-2 w-14 text-center bg-red-50/50 text-red-600 border-r">미참여</th>
                 <th className="py-3 px-2 w-16 text-center">상태</th>
-                <th className="py-3 px-2 w-20 text-center border-l border-slate-200">운영복원</th>
-                <th className="py-3 px-2 w-36 text-center">응답 관리</th>
+                <th className="py-3 px-2 w-20 text-center border-l border-slate-200 whitespace-nowrap">복원(Edit)</th>
+                <th className="py-3 px-2 w-56 text-center">응답 관리(Edit)</th>
                 {isLv1 && <th className="py-3 pr-4 w-24 text-center text-red-500">삭제(LV_1)</th>}
               </tr>
             </thead>
@@ -565,13 +873,12 @@ export default function AdminSurveyHistoryModule() {
                         className="accent-indigo-600 cursor-pointer w-3.5 h-3.5"
                       />
                     </td>
-                    <td className="py-2 text-center text-slate-400 font-bold align-middle">{filteredHistory.length - ((currentPage - 1) * itemsPerPage + i)}</td>
-                    <td className="py-2 px-2 font-mono font-black text-slate-600 tracking-tighter align-middle">{s.code}</td>
-                    <td className="py-2 px-2 font-black text-center text-indigo-600 text-[12px] align-middle">{s.postNumber}</td>
-                    <td className="py-2 px-2 font-mono text-center text-slate-500 whitespace-nowrap align-middle">{s.postDate || '-'}</td>
-                    <td className="py-2 px-2 align-middle">
+                    <td className="py-2 text-center text-slate-400 font-bold align-middle tabular-nums">{filteredHistory.length - ((currentPage - 1) * itemsPerPage + i)}</td>
+                    <td className="py-2 px-2 text-left font-mono font-black text-slate-600 tracking-tighter align-middle">{s.code}</td>
+                    <td className="py-2 px-2 font-black text-center text-slate-800 text-[12px] align-middle tabular-nums">{s.postNumber}</td>
+                    <td className="py-2 px-2 font-mono text-center text-slate-500 whitespace-nowrap align-middle tabular-nums">{s.postDate || '-'}</td>
+                    <td className="py-2 px-2 text-left align-middle">
                       <div className="font-black text-slate-800 text-[11px] line-clamp-1">{s.title}</div>
-                      <div className="text-[9px] text-slate-400 mt-0.5">{s.type}</div>
                     </td>
                     <td className="py-2 px-2 text-center align-middle">
                       {s.isAnonymous ? (
@@ -586,21 +893,39 @@ export default function AdminSurveyHistoryModule() {
                       </div>
                     </td>
                     <td className="py-2 px-2 text-slate-500 tracking-tighter text-center text-[9px] whitespace-nowrap align-middle"><div>{s.startDate} ~</div><div>{s.endDate}</div></td>
-                    <td className="py-2 px-2 text-center font-black text-slate-700 border-l bg-slate-50/30 align-middle">{rate}%</td>
-                    <td className="py-2 px-2 text-center text-blue-600 font-black bg-blue-50/30 align-middle">{done}명</td>
-                    <td className="py-2 px-2 text-center text-red-500 font-black bg-red-50/30 border-r align-middle">{notDone}명</td>
+                    <td className="py-2 px-2 text-center font-black text-slate-700 border-l bg-slate-50/30 align-middle tabular-nums">{rate}%</td>
+                    <td className="py-2 px-2 text-center text-blue-600 font-black bg-blue-50/30 align-middle tabular-nums">{done}명</td>
+                    <td className="py-2 px-2 text-center text-red-500 font-black bg-red-50/30 border-r align-middle tabular-nums">{notDone}명</td>
                     <td className="py-2 px-2 text-center align-middle"><span className="px-2 py-0.5 rounded font-black text-[9px] bg-slate-200 text-slate-600">{s.status}</span></td>
 
                     <td className="py-2 px-2 text-center align-middle border-l border-slate-200">
-                      <button onClick={() => handleRestore(s.id)} disabled={!canEdit} className={`w-full py-1.5 border rounded transition-all font-black text-[9px] whitespace-nowrap shadow-sm ${canEdit ? 'border-slate-300 bg-white text-slate-700 hover:bg-slate-900 hover:text-white' : 'border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed'}`}>🔄 복원(Edit)</button>
+                      <button onClick={() => handleRestore(s.id)} disabled={!canEdit} className={`w-full py-1.5 border rounded transition-all font-black text-[9px] whitespace-nowrap shadow-sm ${canEdit ? 'border-slate-300 bg-white text-slate-700 hover:bg-slate-900 hover:text-white' : 'border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed'}`}>🔄 복원</button>
                     </td>
                     <td className="py-2 px-2 align-middle">
-                      <div className="flex items-center justify-center gap-1.5 max-w-[120px] mx-auto">
-                        <button onClick={() => handleDownloadZip(s)} disabled={!canEdit} className={`flex-1 py-1.5 rounded-lg shadow-sm transition-all font-black text-[9px] whitespace-nowrap flex items-center justify-center gap-1 border ${canEdit ? 'bg-indigo-50 border-indigo-200 text-indigo-700 hover:bg-indigo-600 hover:text-white' : 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'}`}>
-                          <span>📥</span> ZIP
+                      <div className="flex items-center justify-center gap-1 max-w-[220px] mx-auto">
+                        <button onClick={() => handleDownloadZip(s)} disabled={!canEdit} className={`flex-1 py-1.5 rounded-lg shadow-sm transition-all font-black text-[9px] whitespace-nowrap flex items-center justify-center gap-0.5 border ${canEdit ? 'bg-indigo-50 border-indigo-200 text-indigo-700 hover:bg-indigo-600 hover:text-white' : 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'}`}>
+                          ZIP
                         </button>
-                        <button onClick={() => handleDownloadSingleExcel(s)} disabled={!canEdit} className={`flex-1 py-1.5 rounded-lg shadow-sm transition-all font-black text-[9px] whitespace-nowrap flex items-center justify-center gap-1 border ${canEdit ? 'bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-600 hover:text-white' : 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'}`}>
-                          <span>📈</span> 엑셀
+                        <button onClick={() => handleDownloadSingleExcel(s)} disabled={!canEdit} className={`flex-1 py-1.5 rounded-lg shadow-sm transition-all font-black text-[9px] whitespace-nowrap flex items-center justify-center gap-0.5 border ${canEdit ? 'bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-600 hover:text-white' : 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'}`}>
+                          Excel
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDownloadQuestionnaireOriginal(s)}
+                          disabled={!canEdit}
+                          title="질문·선택지·유형 등 조사지 원문"
+                          className={`flex-1 py-1.5 rounded-lg shadow-sm transition-all font-black text-[9px] whitespace-nowrap flex items-center justify-center border ${canEdit ? 'bg-amber-50 border-amber-200 text-amber-800 hover:bg-amber-500 hover:text-white' : 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'}`}
+                        >
+                          조사원문
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDownloadResultAnalysis(s)}
+                          disabled={!canEdit}
+                          title="선택·만족도 빈도·비율 분석 엑셀"
+                          className={`flex-1 py-1.5 rounded-lg shadow-sm transition-all font-black text-[9px] whitespace-nowrap flex items-center justify-center border ${canEdit ? 'bg-slate-50 border-slate-300 text-slate-700 hover:bg-slate-800 hover:text-white' : 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'}`}
+                        >
+                          분석결과
                         </button>
                       </div>
                     </td>

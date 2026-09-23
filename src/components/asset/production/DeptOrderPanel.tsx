@@ -783,15 +783,15 @@ export default function DeptOrderPanel() {
                   <th className="h-12 px-2 text-center">No</th>
                   <th className="h-12 px-2 text-center whitespace-nowrap">관리번호</th>
                   <th className="h-12 px-2 text-center whitespace-nowrap">신청일</th>
-                  <th className="h-12 px-2">소속 부서</th>
-                  <th className="h-12 px-2">신청자</th>
+                  <th className="h-12 px-2 text-left">소속 부서</th>
+                  <th className="h-12 px-2 text-left">신청자</th>
                   <th className="h-12 px-2 text-center whitespace-nowrap">분류</th>
-                  <th className="h-12 px-2">관리용 제목</th>
+                  <th className="h-12 px-2 text-left">관리용 제목</th>
                   <th className="h-12 px-2 text-center whitespace-nowrap">신청내역</th>
                   <th className="h-12 px-2 text-center whitespace-nowrap">
                     {activeCategory === 'OFFICE_SUPPLIES' ? '건' : '수량'}
                   </th>
-                  <th className="h-12 px-2 text-center whitespace-nowrap">외주업체</th>
+                  <th className="h-12 px-2 text-left whitespace-nowrap">외주업체</th>
                   <th className="h-12 px-2 text-center whitespace-nowrap">공정상태</th>
                   <th className="h-12 px-2 text-center whitespace-nowrap">관리액션(Edit)</th>
                 </tr>
@@ -835,10 +835,10 @@ export default function DeptOrderPanel() {
                         <td className="px-2 text-center whitespace-nowrap tabular-nums text-slate-800">
                           {getKSTDateString(item.createdAt)}
                         </td>
-                        <td className="px-2 truncate" title={item.deptName || ''}>
+                        <td className="px-2 text-left truncate" title={item.deptName || ''}>
                           {item.deptName || <span className="text-slate-300">-</span>}
                         </td>
-                        <td className="px-2 text-slate-800 truncate">{item.userName || '-'}</td>
+                        <td className="px-2 text-left text-slate-800 truncate">{item.userName || '-'}</td>
                         <td className="px-2 text-center">
                           <span
                             className={`px-2.5 py-1 rounded text-[10px] font-bold tracking-tight border ${getProductionCategoryBadgeClass(item.category)}`}
@@ -846,7 +846,7 @@ export default function DeptOrderPanel() {
                             {getCategoryLabel(item.category)}
                           </span>
                         </td>
-                        <td className="px-2 text-slate-800 truncate" title={item.title || ''}>
+                        <td className="px-2 text-left text-slate-800 truncate" title={item.title || ''}>
                           {item.title || '-'}
                         </td>
                         <td className="px-2 text-center">
@@ -874,7 +874,7 @@ export default function DeptOrderPanel() {
                             {formatQuantityUnit(item)}
                           </span>
                         </td>
-                        <td className="px-2 text-center text-slate-800 truncate">
+                        <td className="px-2 text-left text-slate-800 truncate">
                           {(item.options as any)?.vendor || '-'}
                         </td>
                         <td className="px-2 text-center">

@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { formatBusinessCardEnNumber, stripBusinessCardEnPlus } from '@/lib/businesscard-phone';
+import { formatCompanyAddressKo } from '@/lib/businesscard-seed-addresses';
 
 interface UnitItem {
   id: string;
@@ -101,7 +102,7 @@ const emptyForm = (addr?: any) => ({
   emailEn: '',
   addressId: addr?.id || '',
   zipCode: addr?.zipCode || '',
-  addressKo: addr?.addressKo || '',
+  addressKo: formatCompanyAddressKo(addr || {}),
   addressEn: addr?.addressEn || '',
   quantity: 1,
 });
@@ -222,7 +223,7 @@ export default function BusinessCardAdminApplyModal({
       titleEn: useDuty ? dutyEn : gradeEn,
       addressId: addr?.id || p.addressId,
       zipCode: addr?.zipCode || p.zipCode,
-      addressKo: addr?.addressKo || p.addressKo,
+      addressKo: addr ? formatCompanyAddressKo(addr) : p.addressKo,
       addressEn: addr?.addressEn || p.addressEn,
       fax: addr?.fax || p.fax,
       faxEn: addr?.faxEn || p.faxEn,
@@ -327,7 +328,7 @@ export default function BusinessCardAdminApplyModal({
       ...p,
       addressId: addrId,
       zipCode: target.zipCode,
-      addressKo: target.addressKo,
+      addressKo: formatCompanyAddressKo(target),
       addressEn: target.addressEn,
       fax: target.fax,
       faxEn: target.faxEn,

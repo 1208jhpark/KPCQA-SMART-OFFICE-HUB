@@ -21,7 +21,8 @@ export async function GET(req: Request) {
     const { searchParams } = new URL(req.url);
     const scope = searchParams.get('scope') || 'OWN';
 
-    let whereClause: any = { isArchived: false };
+    // 신청자 이력: 명세대조(보관) 이동 후에도 목록에 유지 (알람만 isArchived로 제외)
+    let whereClause: any = {};
 
     if (scope === 'OWN') {
       whereClause.userEmail = auth.user.email;
@@ -42,7 +43,7 @@ export async function GET(req: Request) {
         if (emails.length > 0) {
           or.push({ AND: [{ unitId: null }, { userEmail: { in: emails } }] });
         }
-        whereClause = { isArchived: false, OR: or };
+        whereClause = { OR: or };
       } else if (unitName) {
         whereClause.deptName = unitName;
       } else {
@@ -66,7 +67,7 @@ export async function GET(req: Request) {
   }
 }
 
-/** 본인 신청 — cancel / revert-accept / confirm-receive / update — Access + 본인만 */
+/** 본인 신청 — cancel / revert-accept / update — Access + 본인만 */
 export async function PATCH(req: Request) {
   try {
     const auth = await authorizeAnyMenuPaths(READ_PATHS);
@@ -111,30 +112,13 @@ export async function PATCH(req: Request) {
     }
 
     if (action === 'confirm-receive') {
-      if (row.status !== 'ORDERED') {
-        return NextResponse.json(
-          { message: '발주 완료 상태의 건만 수령완료할 수 있습니다.' },
-          { status: 400 }
-        );
-      }
-      const opts =
-        row.options && typeof row.options === 'object' && !Array.isArray(row.options)
-          ? (row.options as Record<string, unknown>)
-          : {};
-      if (opts.vendorDispatched !== true) {
-        return NextResponse.json(
-          { message: '외주 발주가 완료된 후 수령완료 처리할 수 있습니다.' },
-          { status: 400 }
-        );
-      }
-      const updated = await prisma.productionRequest.update({
-        where: { id },
-        data: { status: 'VERIFIED' },
-      });
-      return NextResponse.json({
-        message: '수령완료 처리되었습니다.',
-        data: updated,
-      });
+      return NextResponse.json(
+        {
+          message:
+            '수령확정은 부서 마스터 「명세서 검수」 화면에서만 처리할 수 있습니다.',
+        },
+        { status: 403 }
+      );
     }
 
     if (action === 'update') {

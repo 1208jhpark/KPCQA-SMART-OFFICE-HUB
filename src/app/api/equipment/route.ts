@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import prisma from '@/lib/prisma';
-import { parseKSTDateOnly } from '@/utils/dateUtils';
+import { getKSTDateString, parseKSTDateOnly } from '@/utils/dateUtils';
 import {
   addMonthsToCalibYmd,
   getLatestCalibBaseYmd,
@@ -10,6 +10,7 @@ import {
   authorizeEquipmentApi,
   assertCanEditEquipmentDepartment,
   authErrorToResponse,
+  listAccessibleEquipmentCategoryCodes,
 } from '@/lib/server-auth-guard';
 import {
   buildArchiveEtcMemo,
@@ -53,11 +54,14 @@ const EQUIPMENT_UPDATE_WHITELIST = [
   'department',
   'unit_id',
   'qty',
+  'qty_unit',
   'purchase_date',
   'replace_cycle_mo',
+  'replace_applicable',
   'last_replace_date',
   'next_replace_date',
   'calib_cycle_mo',
+  'calib_applicable',
   'next_calib_date',
   'calib_memo',
   'status',
@@ -249,12 +253,19 @@ function pickEquipmentUpdate(body: Record<string, unknown>) {
       data[key] = val == null || val === '' ? null : Number(val);
       continue;
     }
+    if (key === 'replace_applicable' || key === 'calib_applicable') {
+      data[key] = val === false || val === 'false' || val === 0 || val === '0' ? false : true;
+      continue;
+    }
     if (key === 'unit_id') {
       data[key] = val == null || val === '' ? null : String(val);
       continue;
     }
     data[key] = val;
   }
+  // 대상 아님이면 예정일 비움 (알람·산정 잔존 방지)
+  if (data.replace_applicable === false) data.next_replace_date = null;
+  if (data.calib_applicable === false) data.next_calib_date = null;
   return data;
 }
 
@@ -422,14 +433,31 @@ export async function GET(req: Request) {
       return NextResponse.json(full ? equipment : slimEquipmentRow(equipment));
     }
 
+    let auth;
     try {
-      await authorizeEquipmentApi(categoryCode ? { categoryCode } : undefined);
+      auth = await authorizeEquipmentApi(categoryCode ? { categoryCode } : undefined);
     } catch (e) {
       return authErrorToResponse(e);
     }
 
     const where: Record<string, unknown> = {};
     if (categoryCode) where.category = categoryCode;
+    // 대시보드·목록용: 활성만 (폐기/반납·부분폐기·archived_at·미완성·TMP 제외)
+    if (searchParams.get('activeOnly') === '1') {
+      where.status = '정상';
+      where.archived_at = null;
+      where.AND = [
+        { NOT: { asset_no: { contains: '_ARC_' } } },
+        { NOT: { asset_no: { startsWith: 'TMP-' } } },
+        { name: { not: '' } },
+      ];
+      // 범주 미지정 조회: interface `/equipment/main/{code}` 메뉴 범주만
+      // (시드 이전 잔존 `기본`/`a`/`window` 등이 TOTAL Active에 섞이지 않도록)
+      if (!categoryCode) {
+        const accessible = listAccessibleEquipmentCategoryCodes(auth);
+        where.category = { in: accessible.length > 0 ? accessible : ['__none__'] };
+      }
+    }
 
     const equipments = await prisma.equipment.findMany({
       where,
@@ -507,6 +535,8 @@ export async function POST(req: Request) {
         serial_no: body.serial_no ? String(body.serial_no) : null,
         asset_no: assetNo,
         qty: Number(body.qty) || 1,
+        // 마스터 unit_category_group 기본값(VAL_1=EA)에 맞춤
+        qty_unit: String(body.qty_unit || '').trim() || 'VAL_1',
         spec_summary: body.spec_summary || '',
         purpose: body.purpose || null,
         full_spec: body.full_spec || null,
@@ -517,10 +547,18 @@ export async function POST(req: Request) {
           body.replace_cycle_mo != null && body.replace_cycle_mo !== ''
             ? Number(body.replace_cycle_mo)
             : null,
+        replace_applicable: body.replace_applicable === false ? false : true,
         last_replace_date: parseOptionalDate(body.last_replace_date) ?? null,
-        next_replace_date: parseOptionalDate(body.next_replace_date) ?? null,
+        next_replace_date:
+          body.replace_applicable === false
+            ? null
+            : parseOptionalDate(body.next_replace_date) ?? null,
         calib_cycle_mo: Number(body.calib_cycle_mo) || 12,
-        next_calib_date: parseOptionalDate(body.next_calib_date) ?? null,
+        calib_applicable: body.calib_applicable === false ? false : true,
+        next_calib_date:
+          body.calib_applicable === false
+            ? null
+            : parseOptionalDate(body.next_calib_date) ?? null,
         calib_memo: body.calib_memo || '',
         thumbnail_url: body.thumbnail_url || '',
         manual_url: body.manual_url || null,
@@ -586,7 +624,9 @@ export async function PATCH(req: Request) {
       }
 
       const remainingQty = existing.qty - archiveQty;
-      const today = parseOptionalDate(body.last_replace_date) ?? new Date();
+      const today =
+        parseOptionalDate(body.last_replace_date) ??
+        parseKSTDateOnly(getKSTDateString());
       const archiveMemo = buildArchiveEtcMemo({
         existingMemo: existing.etc_memo,
         reason,
@@ -623,7 +663,9 @@ export async function PATCH(req: Request) {
             serial_no: existing.serial_no,
             asset_no: `${existing.asset_no}_ARC_${Date.now()}`,
             qty: archiveQty,
+            qty_unit: existing.qty_unit || 'VAL_1',
             department: existing.department,
+            unit_id: existing.unit_id,
             spec_summary: existing.spec_summary,
             purpose: existing.purpose,
             full_spec: existing.full_spec,
@@ -633,7 +675,9 @@ export async function PATCH(req: Request) {
             etc_url: existing.etc_url,
             purchase_date: existing.purchase_date,
             replace_cycle_mo: existing.replace_cycle_mo,
+            replace_applicable: existing.replace_applicable !== false,
             calib_cycle_mo: existing.calib_cycle_mo,
+            calib_applicable: existing.calib_applicable !== false,
             next_calib_date: existing.next_calib_date,
             calib_memo: existing.calib_memo,
             status: archiveStatus,

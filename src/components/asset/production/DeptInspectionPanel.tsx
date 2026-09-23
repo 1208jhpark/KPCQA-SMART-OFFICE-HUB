@@ -947,14 +947,13 @@ export default function DeptInspectionPanel() {
   const handleOpenMailShortcut = () => {
     const url = String(mailSettings.mailShortcutUrl || '').trim();
     if (!url) {
-      alert('메일 바로가기 경로가 비어 있습니다.\n⚙ 설정에서 그룹웨어 메일 작성 URL을 먼저 저장해 주세요.');
+      alert('메일 바로가기 경로가 비어 있습니다.\n⚙ 개인설정에서 그룹웨어 메일 작성 URL을 먼저 저장해 주세요.');
       return;
     }
     window.open(url, '_blank', 'noopener,noreferrer');
   };
 
   const handleSaveMailShortcut = async () => {
-    if (!canEdit) return alert('편집 권한(Edit)이 없습니다.');
     if (mailShortcutEditor == null) return;
     const next = mailShortcutEditor.trim();
     try {
@@ -972,13 +971,13 @@ export default function DeptInspectionPanel() {
         bodyTemplate: resolveProdMailBodyTemplate(data.bodyTemplate || prev.bodyTemplate),
       }));
       setMailShortcutEditor(null);
+      alert('개인 메일 바로가기 주소가 저장되었습니다.');
     } catch (error: any) {
       alert(`서버 저장에 실패했습니다.\n${error.message || ''}`);
     }
   };
 
   const handleSaveMailTemplates = async () => {
-    if (!canEdit) return alert('편집 권한(Edit)이 없습니다.');
     if (!mailTemplateEditor) return;
     try {
       const res = await fetch('/api/asset/production/dept-master/mail-settings', {
@@ -998,7 +997,7 @@ export default function DeptInspectionPanel() {
         bodyTemplate: resolveProdMailBodyTemplate(data.bodyTemplate),
       }));
       setMailTemplateEditor(null);
-      alert('부서 메일 양식이 저장되었습니다.');
+      alert('개인 메일 제목·본문 양식이 저장되었습니다.');
     } catch (error: any) {
       alert(`서버 저장에 실패했습니다.\n${error.message || ''}`);
     }
@@ -1270,7 +1269,7 @@ export default function DeptInspectionPanel() {
                   </th>
                 </tr>
                 <tr className="bg-indigo-100">
-                  <th className="h-12 px-2">
+                  <th className="h-12 px-2 text-center">
                     <input
                       type="checkbox"
                       onChange={handleSelectAllBatches}
@@ -1279,11 +1278,11 @@ export default function DeptInspectionPanel() {
                     />
                   </th>
                   <th className="h-12 px-1 text-center">NO</th>
-                  <th className="h-12 px-2 whitespace-nowrap">묶음 번호</th>
+                  <th className="h-12 px-2 text-left whitespace-nowrap">묶음 번호</th>
                   <th className="h-12 px-2 text-center whitespace-nowrap">발주 생성일</th>
-                  <th className="h-12 px-2 whitespace-nowrap">외주업체</th>
+                  <th className="h-12 px-2 text-left whitespace-nowrap">외주업체</th>
                   <th className="h-12 px-1 text-center whitespace-nowrap">총 수량</th>
-                  <th className="h-12 px-2 whitespace-nowrap border-r border-slate-300">신청 상세</th>
+                  <th className="h-12 px-2 text-center whitespace-nowrap border-r border-slate-300">신청 상세</th>
                   <th className="h-12 px-1 text-center whitespace-nowrap">발주서</th>
                   <th className="h-12 px-1 text-center">
                     <div className="flex flex-col items-center justify-center gap-0.5 leading-tight">
@@ -1359,7 +1358,7 @@ export default function DeptInspectionPanel() {
                           {rowNo}
                         </td>
                         <td
-                          className="px-2 font-mono text-indigo-600 cursor-pointer whitespace-nowrap tabular-nums truncate overflow-hidden"
+                          className="px-2 text-left font-mono text-indigo-600 cursor-pointer whitespace-nowrap tabular-nums truncate overflow-hidden"
                           title={formatBatchExcelBaseName(
                             batch.id,
                             batchLabelOpts(getBatchLabelKind(batch, activeCategory))
@@ -1375,7 +1374,7 @@ export default function DeptInspectionPanel() {
                           {batch.orderedAt ? getKSTDateString(batch.orderedAt) : '-'}
                         </td>
                         <td
-                          className="px-4 text-slate-700 truncate overflow-hidden"
+                          className="px-4 text-left text-slate-700 truncate overflow-hidden"
                           title={(batch.vendors || []).join(', ') || ''}
                         >
                           {(batch.vendors || []).join(', ') || '-'}
@@ -1384,7 +1383,7 @@ export default function DeptInspectionPanel() {
                           {batch.items?.length || 0} 건
                         </td>
                         <td
-                          className="px-4 cursor-pointer border-r border-slate-200"
+                          className="px-4 text-center cursor-pointer border-r border-slate-200"
                           onClick={() => toggleBatchExpand(batch.id)}
                         >
                           <span className="text-indigo-600 underline underline-offset-2">
@@ -1612,7 +1611,7 @@ export default function DeptInspectionPanel() {
                                     <th className="h-10 px-2 text-left truncate whitespace-nowrap bg-transparent">
                                       소속 부서
                                     </th>
-                                    <th className="h-10 px-2 text-center whitespace-nowrap bg-transparent">대상자</th>
+                                    <th className="h-10 px-2 text-left whitespace-nowrap bg-transparent">대상자</th>
                                     <th className="h-10 px-1 text-center whitespace-nowrap bg-transparent">분류</th>
                                     <th className="h-10 px-2 text-left whitespace-nowrap bg-transparent">
                                       {activeCategory === 'OFFICE_SUPPLIES'
@@ -1682,7 +1681,7 @@ export default function DeptInspectionPanel() {
                                               {getKSTDateString(item.createdAt)}
                                             </td>
                                             <td
-                                              className="px-2 truncate text-slate-700 bg-transparent"
+                                              className="px-2 text-left truncate text-slate-700 bg-transparent"
                                               title={item.deptName || ''}
                                             >
                                               {item.deptName || (
@@ -1690,7 +1689,7 @@ export default function DeptInspectionPanel() {
                                               )}
                                             </td>
                                             <td
-                                              className="px-2 text-center text-slate-800 truncate bg-transparent"
+                                              className="px-2 text-left text-slate-800 truncate bg-transparent"
                                               title={item.userName || ''}
                                             >
                                               {item.userName || '-'}
@@ -1702,7 +1701,7 @@ export default function DeptInspectionPanel() {
                                                 {CATEGORY_LABEL[item.category] || item.category}
                                               </span>
                                             </td>
-                                            <td className="px-2 text-slate-800 bg-transparent">
+                                            <td className="px-2 text-left text-slate-800 bg-transparent">
                                               {editing ? (
                                                 <input
                                                   type="text"
@@ -2024,7 +2023,7 @@ export default function DeptInspectionPanel() {
                                           {getKSTDateString(item.createdAt)}
                                         </td>
                                         <td
-                                          className="px-2 truncate text-slate-700 bg-transparent"
+                                          className="px-2 text-left truncate text-slate-700 bg-transparent"
                                           title={item.deptName || ''}
                                         >
                                           {item.deptName || (
@@ -2032,7 +2031,7 @@ export default function DeptInspectionPanel() {
                                           )}
                                         </td>
                                         <td
-                                          className="px-2 text-center text-slate-800 truncate bg-transparent"
+                                          className="px-2 text-left text-slate-800 truncate bg-transparent"
                                           title={item.userName || ''}
                                         >
                                           {item.userName || '-'}
@@ -2045,7 +2044,7 @@ export default function DeptInspectionPanel() {
                                           </span>
                                         </td>
                                         <td
-                                          className="px-2 text-slate-800 truncate bg-transparent"
+                                          className="px-2 text-left text-slate-800 truncate bg-transparent"
                                           title={item.title || ''}
                                         >
                                           {item.title || '-'}
@@ -2208,7 +2207,7 @@ export default function DeptInspectionPanel() {
                 <p className="text-xs text-slate-500 font-bold mt-2 leading-relaxed">
                   수신 업체를 선택하면 본문이 자동으로 변경됩니다.
                   <br />
-                  복사 후 그룹웨어에 붙여넣으세요. 제목·본문 양식은 부서 설정에서 수정할 수 있습니다.
+                  복사 후 그룹웨어에 붙여넣으세요. 제목·본문·바로가기 주소는 로그인 계정별 개인 설정입니다.
                 </p>
               </div>
               <div className="flex items-center gap-2 shrink-0">
@@ -2228,7 +2227,7 @@ export default function DeptInspectionPanel() {
                 <button
                   type="button"
                   disabled={!canEdit}
-                  title={!canEdit ? '편집 권한 필요' : undefined}
+                  title={!canEdit ? '편집 권한 필요' : '로그인 계정별 제목·본문 양식'}
                   onClick={() => {
                     if (!canEdit) return alert('편집 권한(Edit)이 없습니다.');
                     setMailTemplateEditor({
@@ -2242,7 +2241,7 @@ export default function DeptInspectionPanel() {
                       : DISABLED_ACTION_BTN
                   }`}
                 >
-                  ⚙️ 양식 설정(Edit)
+                  ⚙️ 개인 본문 설정(Edit)
                 </button>
                 <button
                   type="button"
@@ -2321,17 +2320,13 @@ export default function DeptInspectionPanel() {
                 </button>
                 <button
                   type="button"
-                  disabled={!canEdit}
-                  title={!canEdit ? '편집 권한 필요' : undefined}
+                  title="로그인 계정별 메일 바로가기 주소"
                   onClick={() => {
-                    if (!canEdit) return alert('편집 권한(Edit)이 없습니다.');
                     setMailShortcutEditor(mailSettings.mailShortcutUrl);
                   }}
-                  className={`px-3 py-2.5 font-black text-xs rounded-r-xl shadow-md border-l border-slate-600 ${
-                    canEdit ? 'bg-slate-700 text-white hover:bg-slate-600' : DISABLED_ACTION_BTN
-                  }`}
+                  className="px-3 py-2.5 font-black text-xs rounded-r-xl shadow-md border-l border-slate-600 bg-slate-700 text-white hover:bg-slate-600"
                 >
-                  ⚙ 설정(Edit)
+                  ⚙ 개인설정
                 </button>
               </div>
             </div>
@@ -2342,9 +2337,9 @@ export default function DeptInspectionPanel() {
       {mailShortcutEditor != null && (
         <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-900/50 p-4">
           <div className="w-full max-w-lg rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl">
-            <h3 className="text-base font-black text-slate-900">메일 바로가기 경로 설정</h3>
+            <h3 className="text-base font-black text-slate-900">개인 메일 바로가기 설정</h3>
             <p className="mt-2 text-[11px] font-bold leading-relaxed text-slate-500">
-              그룹웨어 메일 작성 화면 주소를 붙여넣으세요. 이 부서 설정으로 저장됩니다.
+              그룹웨어 메일 작성 화면 주소를 붙여넣으세요. 이 계정(로그인 사용자)에만 저장됩니다.
             </p>
             <input
               type="text"
@@ -2382,8 +2377,7 @@ export default function DeptInspectionPanel() {
                   ⚙️ 외주업체 마스터 데이터 관리
                 </h2>
                 <p className="text-xs text-slate-500 font-bold mt-1">
-                  제작물 외주 협력사 정보를 관리합니다. 시드 3사(아트로릭·한생미디어·드림디포) 삭제는 LV_1만
-                  가능하며, 발주 이력은 그대로 남습니다.
+                  제작물 외주 협력사 정보를 관리합니다.
                 </p>
               </div>
               {vendorForm.id && (
@@ -2476,15 +2470,15 @@ export default function DeptInspectionPanel() {
               </div>
             </div>
 
-            <div className="max-h-64 overflow-y-auto border border-slate-200 rounded-2xl">
+            <div className="max-h-80 overflow-y-auto border border-slate-200 rounded-2xl isolate">
               <table className="w-full text-left text-xs">
-                <thead className="bg-slate-100 text-slate-600 font-black tracking-widest sticky top-0">
+                <thead className="bg-slate-100 text-slate-600 font-black tracking-widest sticky top-0 z-10 shadow-[0_1px_0_0_rgb(226,232,240)]">
                   <tr>
-                    <th className="p-3 pl-4">업체명</th>
-                    <th className="p-3">담당자</th>
-                    <th className="p-3">이메일</th>
-                    <th className="p-3">비고</th>
-                    <th className="p-3 text-center pr-4">제어 기능</th>
+                    <th className="py-2 px-3 pl-4 bg-slate-100">업체명</th>
+                    <th className="py-2 px-3 bg-slate-100">담당자</th>
+                    <th className="py-2 px-3 bg-slate-100">이메일</th>
+                    <th className="py-2 px-3 bg-slate-100">비고</th>
+                    <th className="py-2 px-3 text-center pr-4 bg-slate-100">제어 기능</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 font-bold text-slate-700">
@@ -2493,16 +2487,16 @@ export default function DeptInspectionPanel() {
                       key={v.id}
                       className={`hover:bg-slate-50 ${vendorForm.id === v.id ? 'bg-amber-50/40' : ''}`}
                     >
-                      <td className="p-3 pl-4 font-black text-slate-900">{v.label}</td>
-                      <td className="p-3">{v.managerName || '-'}</td>
-                      <td className="p-3 font-mono text-slate-500">{v.email || '-'}</td>
+                      <td className="py-1.5 px-3 pl-4 font-black text-slate-900">{v.label}</td>
+                      <td className="py-1.5 px-3">{v.managerName || '-'}</td>
+                      <td className="py-1.5 px-3 font-mono text-slate-500">{v.email || '-'}</td>
                       <td
-                        className="p-3 text-slate-500 max-w-[180px] truncate"
+                        className="py-1.5 px-3 text-slate-500 max-w-[180px] truncate"
                         title={v.items || ''}
                       >
                         {v.items || <span className="text-slate-300">-</span>}
                       </td>
-                      <td className="p-3 pr-4 text-center">
+                      <td className="py-1.5 px-3 pr-4 text-center">
                         <div className="flex justify-center gap-1">
                           <button
                             type="button"
@@ -2571,7 +2565,7 @@ export default function DeptInspectionPanel() {
                   if (!canEdit) return alert('편집 권한(Edit)이 없습니다.');
                   if (
                     !confirm(
-                      '시드 기본 외주업체(아트로릭·한생미디어·드림디포) 중 없거나 삭제된 항목만 다시 채웁니다.\n이미 있는 업체 값은 변경되지 않습니다. 계속할까요?'
+                      '시드 기본 외주업체(아트로릭·한생미디어 3종·드림디포) 중 없거나 삭제된 항목만 다시 채웁니다.\n이미 있는 업체 값은 변경되지 않습니다. 계속할까요?'
                     )
                   ) {
                     return;
@@ -2617,9 +2611,10 @@ export default function DeptInspectionPanel() {
         <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-900/50 p-4">
           <div className="w-full max-w-2xl rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl space-y-4">
             <div>
-              <h3 className="text-base font-black text-slate-900">부서 메일 양식 설정</h3>
+              <h3 className="text-base font-black text-slate-900">개인 메일 본문 설정</h3>
               <p className="mt-2 text-[11px] font-bold leading-relaxed text-slate-500">
-                플레이스홀더: {'{{BATCH_NO}}'}(묶음번호), {'{{COUNT}}'}(건수),{' '}
+                제목·본문 양식은 로그인 계정별로 저장됩니다. 플레이스홀더:{' '}
+                {'{{BATCH_NO}}'}(묶음번호), {'{{COUNT}}'}(건수),{' '}
                 {'{{VENDOR_NAME}}'}(업체명), {'{{VENDOR_MANAGER}}'}(담당자)
               </p>
             </div>
@@ -2662,7 +2657,7 @@ export default function DeptInspectionPanel() {
                 }
                 className="rounded-xl bg-slate-100 px-4 py-2 text-xs font-black text-slate-600"
               >
-                기본값 불러오기(Edit)
+                기본값 불러오기
               </button>
               <div className="flex gap-2">
                 <button
