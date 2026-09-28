@@ -50,10 +50,8 @@ export async function GET() {
   } catch (error) {
     const authRes = authErrorToResponse(error);
     if (authRes.status !== 500) return authRes;
-    return NextResponse.json(
-      { groupwareShortcutUrl: DEFAULT_GROUPWARE_SHORTCUT_URL, isPersonal: false },
-      { status: 200 }
-    );
+    console.error('[marketing/settings GET]', error);
+    return NextResponse.json({ message: '설정 로드 실패' }, { status: 500 });
   }
 }
 

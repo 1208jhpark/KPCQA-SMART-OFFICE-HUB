@@ -109,18 +109,17 @@ export async function GET() {
   }
 }
 
-/** 3. 아카이브 영구 삭제 — LV_1 전용 */
+/**
+ * 3. 아카이브 삭제
+ * - purpose=restore + 단일 id: Edit 허용 (운영 복구 후 아카이브 잔여 정리).
+ *   동일 id 운영 자산이 다시 있을 때만 삭제.
+ * - 그 외(일괄·수동 영구삭제): LV_1 전용
+ */
 export async function DELETE(req: Request) {
   try {
     const auth = await authorizeAnyMenuPaths([...IT_ARCHIVE_WRITE], { requireEditor: true });
-    if (!isLv1(auth.user)) {
-      return NextResponse.json(
-        { message: '아카이브 영구 삭제는 LV_1만 가능합니다.' },
-        { status: 403 }
-      );
-    }
-
     const { searchParams } = new URL(req.url);
+    const purpose = String(searchParams.get('purpose') || '').trim().toLowerCase();
     const ids = [
       ...searchParams.getAll('id'),
       ...(searchParams.get('ids') || '').split(','),
@@ -128,6 +127,51 @@ export async function DELETE(req: Request) {
       .map((v) => String(v || '').trim())
       .filter(Boolean);
     if (ids.length === 0) return NextResponse.json({ message: 'ID required' }, { status: 400 });
+
+    const isRestoreCleanup = purpose === 'restore' && ids.length === 1;
+
+    if (isRestoreCleanup) {
+      const archiveId = ids[0];
+      const archived = await prisma.iTAssetArchive.findUnique({
+        where: { id: archiveId },
+        select: { id: true, code: true },
+      });
+      if (!archived) {
+        return NextResponse.json({ message: '아카이브 이력이 없습니다.' }, { status: 404 });
+      }
+      const code = String(archived.code || '').trim();
+      const activeById = await prisma.iTAsset.findUnique({
+        where: { id: archiveId },
+        select: { id: true, is_active: true },
+      });
+      const activeByCode =
+        !activeById && code
+          ? await prisma.iTAsset.findFirst({
+              where: { code, is_active: true },
+              select: { id: true },
+            })
+          : null;
+      const restoredOnDashboard =
+        (activeById && activeById.is_active !== false) || Boolean(activeByCode);
+      if (!restoredOnDashboard) {
+        return NextResponse.json(
+          {
+            message:
+              '운영 대장에 동일 자산이 없어 아카이브를 정리할 수 없습니다. 복구를 먼저 완료해 주세요.',
+          },
+          { status: 400 }
+        );
+      }
+      await prisma.iTAssetArchive.delete({ where: { id: archiveId } });
+      return NextResponse.json({ success: true, count: 1, purpose: 'restore' });
+    }
+
+    if (!isLv1(auth.user)) {
+      return NextResponse.json(
+        { message: '아카이브 영구 삭제는 LV_1만 가능합니다.' },
+        { status: 403 }
+      );
+    }
 
     if (ids.length === 1) {
       await prisma.iTAssetArchive.delete({ where: { id: ids[0] } });

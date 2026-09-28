@@ -61,7 +61,7 @@ export default function SurveyDashboardContent() {
           const myUnit = unitsData.find((u: any) => u.id === userData.dept_id);
           userData.unit = myUnit || { unit_name: '소속없음' };
           setCurrentUser(userData);
-          setCurrentUserEmail(userData.email || 'user@kpcqa.or.kr');
+          setCurrentUserEmail(String(userData.email || '').trim());
         }
      
        // 🚀 1. 내 제출 내역 전용 호출 (보안 격리됨)
@@ -87,7 +87,11 @@ export default function SurveyDashboardContent() {
         const nextMyRes: Record<string, any> = {};
         
         myDbResponses.forEach((r: any) => {
-          if (userData && r.userEmail === userData.email) {
+          if (
+            userData &&
+            String(r.userEmail || '').trim().toLowerCase() ===
+              String(userData.email || '').trim().toLowerCase()
+          ) {
             const formattedDate = r.submittedAt 
               ? formatKSTDateTime(r.submittedAt) 
               : '-';

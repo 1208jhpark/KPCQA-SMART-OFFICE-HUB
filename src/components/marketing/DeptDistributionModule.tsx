@@ -543,12 +543,38 @@ function DeptDistributionContent() {
     else alert(await readApiError(res, '복원에 실패했습니다.'));
   };
 
-  const handlePermanentDeleteItem = async (id: string) => {
+  /** 종료 물품 영구삭제 — LV_1 전용, 체크박스 선택분 */
+  const handlePermanentDeleteSelected = async () => {
     if (!isLv1) return alert('❌ 영구 삭제는 최고 관리자(LV_1)만 가능합니다.');
-    if (!confirm('종료(아카이브) 물품을 영구 삭제합니다.\n지급·입고 이력도 함께 삭제되며 되돌릴 수 없습니다.\n계속할까요?')) return;
-    const res = await fetch(`/api/marketing/items?id=${id}&force=1`, { method: 'DELETE' });
-    if (res.ok) { alert('완전히 삭제되었습니다.'); fetchData(); }
-    else alert(await readApiError(res, '영구 삭제에 실패했습니다.'));
+    const ids = Array.from(selectedEndedIds);
+    if (ids.length === 0) {
+      return alert('삭제할 종료 물품을 체크박스로 선택해 주세요.');
+    }
+    if (
+      !confirm(
+        `선택한 종료(아카이브) 물품 ${ids.length}건을 영구 삭제합니다.\n지급·입고 이력도 함께 삭제되며 되돌릴 수 없습니다.\n계속할까요?`
+      )
+    ) {
+      return;
+    }
+
+    let ok = 0;
+    let failMsg = '';
+    for (const id of ids) {
+      const res = await fetch(`/api/marketing/items?id=${encodeURIComponent(id)}&force=1`, {
+        method: 'DELETE',
+      });
+      if (res.ok) ok += 1;
+      else if (!failMsg) failMsg = await readApiError(res, '영구 삭제에 실패했습니다.');
+    }
+
+    if (ok > 0) {
+      setSelectedEndedIds(new Set());
+      fetchData();
+    }
+    if (ok === ids.length) alert(`✅ ${ok}건이 완전히 삭제되었습니다.`);
+    else if (ok > 0) alert(`⚠️ ${ok}/${ids.length}건 삭제됨. ${failMsg || '일부 실패'}`);
+    else alert(failMsg || '영구 삭제에 실패했습니다.');
   };
 
   const syncPendingStockForItem = async (itemId: string) => {
@@ -2275,6 +2301,27 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
         <div className="bg-white border border-slate-200 rounded-[2.5rem] shadow-sm overflow-hidden animate-in fade-in slide-in-from-bottom-4 duration-500">
           <HeaderLight title="종료 물품 리스트" count={filteredEndedItems.length}>
             <div className="flex items-center gap-2 flex-wrap">
+              {isLv1 && (
+                <button
+                  type="button"
+                  disabled={selectedEndedIds.size === 0}
+                  onClick={handlePermanentDeleteSelected}
+                  title={
+                    selectedEndedIds.size === 0
+                      ? '체크박스로 삭제할 종료 물품을 선택해 주세요'
+                      : '체크한 종료 물품 영구 삭제 — LV_1 전용'
+                  }
+                  className={`px-3 py-1.5 rounded-lg text-[10px] font-black shadow-sm whitespace-nowrap border transition-all ${
+                    selectedEndedIds.size > 0
+                      ? 'bg-white text-rose-600 border-rose-200 hover:bg-rose-50'
+                      : 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed opacity-70'
+                  }`}
+                >
+                  {selectedEndedIds.size > 0
+                    ? `삭제(LV_1) ${selectedEndedIds.size}`
+                    : '삭제(LV_1)'}
+                </button>
+              )}
               <div className="relative group/filter flex items-center gap-2 bg-white px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm">
                 <span
                   role="tooltip"
@@ -2381,7 +2428,7 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
                   <th className="h-12 px-2 w-14 text-center whitespace-nowrap">재고수량</th>
                   <th className="h-12 px-2 w-32 text-left whitespace-nowrap">종료처리자(소속)</th>
                   <th className="h-12 px-2 w-28 text-left whitespace-nowrap">이메일</th>
-                  <th className="h-12 pr-4 text-center w-36 whitespace-nowrap">관리액션(Edit)</th>
+                  <th className="h-12 pr-4 text-center w-28 whitespace-nowrap">관리액션(Edit)</th>
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-slate-100 text-[11px] font-bold text-slate-700">
@@ -2419,20 +2466,13 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
                           {regEmail || '-'}
                         </td>
                         <td className="pr-4 text-center">
-                           <div className="flex flex-row gap-1.5 justify-center">
-                              {checkEditPermission(item.owner_dept, item.owner_unit_id) ? (
-                                <button onClick={() => handleRestoreItem(item.id, item.owner_dept, item.owner_unit_id)} className="flex-1 py-1.5 bg-white border border-slate-300 text-slate-600 rounded-md text-[10px] font-black hover:bg-slate-800 hover:text-white transition-colors shadow-sm whitespace-nowrap">
-                                  ↺ 복구(Edit)
-                                </button>
-                              ) : (
-                                <span className="text-[10px] text-slate-300 font-bold">열람만</span>
-                              )}
-                              {isLv1 && (
-                                <button onClick={() => handlePermanentDeleteItem(item.id)} className="flex-1 py-1.5 bg-red-50 text-red-500 border border-red-200 rounded-md text-[10px] font-black hover:bg-red-500 hover:text-white transition-colors whitespace-nowrap">
-                                  🗑️ 영구삭제(LV_1)
-                                </button>
-                              )}
-                           </div>
+                          {checkEditPermission(item.owner_dept, item.owner_unit_id) ? (
+                            <button onClick={() => handleRestoreItem(item.id, item.owner_dept, item.owner_unit_id)} className="px-2.5 py-1.5 bg-white border border-slate-300 text-slate-600 rounded-md text-[10px] font-black hover:bg-slate-800 hover:text-white transition-colors shadow-sm whitespace-nowrap">
+                              ↺ 복구(Edit)
+                            </button>
+                          ) : (
+                            <span className="text-[10px] text-slate-300 font-bold">열람만</span>
+                          )}
                         </td>
                       </tr>
                    )

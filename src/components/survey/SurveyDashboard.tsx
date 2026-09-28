@@ -64,7 +64,11 @@ export default function SurveyDashboard() {
 
         const myUnit = unitsList.find((u: any) => u.id === currentUser.dept_id || u.id === currentUser.unit_id);
         currentUser.unit = myUnit || { unit_name: '소속없음' };
-        const userEmail = currentUser.email || 'user@kpcqa.or.kr';
+        const userEmail = String(currentUser.email || '').trim();
+        if (!userEmail) {
+          setLoading(false);
+          return;
+        }
         const userUnitId = currentUser.unit_id || currentUser.dept_id || currentUser.unit?.id;
         const userDeptName = currentUser.unit?.unit_name;
         const isLv1 = Array.isArray(currentUser.roles) && currentUser.roles.includes('LV_1');
@@ -111,14 +115,19 @@ export default function SurveyDashboard() {
 
         // 내 참여 여부 판단용 해시맵 빌드
         const generalResponsesMap: Record<string, boolean> = {};
+        const emailKey = String(userEmail || '').trim().toLowerCase();
         dbGeneralResponses.forEach((r: any) => {
-          if (r.userEmail === userEmail) generalResponsesMap[r.surveyId] = true;
+          if (String(r.userEmail || '').trim().toLowerCase() === emailKey) {
+            generalResponsesMap[r.surveyId] = true;
+          }
         });
 
         const deliveryRows = Array.isArray(dbDeliveryResponses) ? dbDeliveryResponses : [];
         const deliveryResponsesMap: Record<string, boolean> = {};
         deliveryRows.forEach((r: any) => {
-          if (r.userEmail === userEmail) deliveryResponsesMap[r.surveyId] = true;
+          if (String(r.userEmail || '').trim().toLowerCase() === emailKey) {
+            deliveryResponsesMap[r.surveyId] = true;
+          }
         });
 
         const isSurveyOpen = (s: any) =>

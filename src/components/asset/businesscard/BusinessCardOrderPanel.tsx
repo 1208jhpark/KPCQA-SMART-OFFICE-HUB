@@ -1753,10 +1753,10 @@ return (
       BUSINESS CARD TOTAL GOVERNANCE
     </h3>
     <h1 className="text-2xl font-extrabold tracking-tight text-white leading-none">
-      전사 임직원 명함 발주 접수 통제 대장
+      전사 임직원 명함 통합 관리 대장
     </h1>
     <p className="text-emerald-100/90 text-xs mt-3 leading-relaxed">
-      묶음 발주는 신청현황의 [발주대기] 서류철에서 생성합니다. 여기서는 엑셀·메일·지급·명세 대조·보관함 이동을 처리합니다.
+      발주서 전송, 물품 수령·지급 확인 및 거래명세표 대조를 통합 관제하는 마스터 컨트롤 허브입니다.
     </p>
     {permissionSummary && isSystemLv1User(currentUser) && (
       <div className="flex flex-wrap items-center gap-2 mt-4 pt-3 border-t border-white/15">

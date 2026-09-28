@@ -1,7 +1,7 @@
 import prisma from "@/lib/prisma";
 import { notFound } from "next/navigation";
 import type { ReactNode } from "react";
-import { getKSTDateString, getKSTDaysUntil, parseKSTDateOnly } from "@/utils/dateUtils";
+import { getKSTDateString, getKSTDaysUntil } from "@/utils/dateUtils";
 import {
   addMonthsToCalibYmd,
   getLatestCalibBaseYmd,
@@ -163,11 +163,8 @@ export default async function PublicEquipmentVerifyPage({
   if (!replaceApplicable) {
     nextReplaceDate = "대상 아님";
   } else if (purchaseYmd && equipment.replace_cycle_mo) {
-    const d = parseKSTDateOnly(purchaseYmd);
-    if (!Number.isNaN(d.getTime())) {
-      d.setMonth(d.getMonth() + Number(equipment.replace_cycle_mo));
-      nextReplaceDate = getKSTDateString(d) || "-";
-    }
+    nextReplaceDate =
+      addMonthsToCalibYmd(purchaseYmd, equipment.replace_cycle_mo) || "-";
   }
 
   const dDay =

@@ -141,19 +141,8 @@ async function requestsVisibleToUser(userLike: { id?: string; name?: string; ema
   });
 }
 
-export async function GET(req: Request) {
+export async function GET() {
   try {
-    const { searchParams } = new URL(req.url);
-    const publicEmail = String(searchParams.get('email') || '').trim();
-    const session = await tryGetSessionUser();
-
-    if (!session && publicEmail) {
-      const u = await findUserByEmail(publicEmail);
-      if (!u) return NextResponse.json({ error: '가입된 정보가 없습니다.' }, { status: 403 });
-      const list = await requestsVisibleToUser(u);
-      return NextResponse.json(list);
-    }
-
     const auth = await authorizeAnyMenuPaths([...IT_REQ_READ_PATHS]);
     const masterVisible =
       IT_MASTER_REQ_PATHS.some((p) => hasMenuAccess(auth, p)) ||

@@ -663,7 +663,7 @@ export async function buildHomeAlarms(user: SessionUser): Promise<HomeAlarm[]> {
       });
     })(),
     (async () => {
-      // my-page 표시 「수령대기」중 사무실 수령 후(DB 수령완료)만 — 발주완료(외주 제작중)는 제외
+      // my-page 「수령대기」(사무실 도착·찾아가기)만 — 「제작중」(발주완료)은 제외
       const rows = await prisma.businessCardRequest.findMany({
         where: {
           isArchived: false,

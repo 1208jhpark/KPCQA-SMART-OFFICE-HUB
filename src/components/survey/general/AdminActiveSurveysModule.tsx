@@ -328,8 +328,11 @@ const formatAnswerForExport = (ans: any) => {
   };
      
   const handleDeleteSurvey = async (id: string) => {
-    if (!requireEdit()) return;
-    if (!confirm('이 설문을 삭제하시겠습니까?')) return;
+    if (!isSystemLv1User(currentUser)) {
+      alert('영구 삭제는 LV_1만 가능합니다.');
+      return;
+    }
+    if (!confirm('이 설문을 삭제하시겠습니까?\n(LV_1 전용 · 복구 불가)')) return;
     try {
       const res = await fetch(`/api/survey/general?id=${id}`, { method: 'DELETE' });
       if (res.ok) {
@@ -1078,7 +1081,28 @@ const formatAnswerForExport = (ans: any) => {
                         >
                           수정
                         </button>
-                        <button onClick={() => handleDeleteSurvey(s.id)} disabled={s.hasBeenPublished} className={`flex-1 py-1.5 rounded text-[9px] font-black whitespace-nowrap transition-all ${!s.hasBeenPublished ? 'bg-white border border-red-200 text-red-500 shadow-sm hover:bg-red-50' : 'bg-slate-200 text-slate-400 cursor-not-allowed border border-transparent'}`}>삭제</button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (!isSystemLv1User(currentUser) || s.hasBeenPublished) return;
+                            handleDeleteSurvey(s.id);
+                          }}
+                          disabled={!isSystemLv1User(currentUser) || s.hasBeenPublished}
+                          title={
+                            !isSystemLv1User(currentUser)
+                              ? '영구 삭제는 LV_1만 가능합니다.'
+                              : s.hasBeenPublished
+                                ? '게시된 설문은 현황판에서 삭제할 수 없습니다. 보관함에서 LV_1 삭제를 사용하세요.'
+                                : '영구 삭제 (LV_1)'
+                          }
+                          className={`flex-1 py-1.5 rounded text-[9px] font-black whitespace-nowrap transition-all ${
+                            isSystemLv1User(currentUser) && !s.hasBeenPublished
+                              ? 'bg-white border border-red-200 text-red-500 shadow-sm hover:bg-red-50'
+                              : 'bg-slate-200 text-slate-400 cursor-not-allowed border border-transparent'
+                          }`}
+                        >
+                          삭제(LV_1)
+                        </button>
                         <button onClick={() => handleStatusChange(s.id, 'ARCHIVE')} disabled={!canEdit || s.status !== '완료'} className={`flex-1 py-1.5 rounded text-[9px] font-black whitespace-nowrap transition-all ${canEdit && s.status === '완료' ? 'bg-slate-800 text-white shadow-sm hover:bg-slate-900' : 'bg-slate-200 text-slate-400 cursor-not-allowed border border-transparent'}`}>보관함이동</button>
                       </div>
                     </td>

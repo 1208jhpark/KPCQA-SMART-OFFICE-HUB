@@ -500,10 +500,10 @@ export default function BusinessCardArchivePanel() {
             BUSINESS CARD TOTAL GOVERNANCE
           </h3>
           <h1 className="text-2xl font-extrabold tracking-tight text-white leading-none">
-            전사 임직원 명함 발주 접수 통제 대장
+            전사 임직원 명함 통합 관리 대장
           </h1>
           <p className="text-emerald-100/90 text-xs mt-3 leading-relaxed">
-            임직원이 신청한 명함의 국/영문 원본 조판 텍스트 데이터를 검수하고 외주 조판 공정으로 이관 제어하는 마스터 컨트롤 허브입니다.
+            물품 지급 검수 및 거래명세표 대조가 완료된 명함 발주 건을 보관하고, 기간·조직별 누적 수량과 외주 정산 통계를 통합 조회하는 아카이브입니다.
           </p>
           {permissionSummary && isSystemLv1User(currentUser) && (
             <div className="flex flex-wrap items-center gap-2 mt-4 pt-3 border-t border-white/15">

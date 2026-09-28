@@ -18,6 +18,8 @@ const READ_PATHS = [
   '/asset/production/dept-master/inspection',
   '/asset/production/dept-master/settlement',
   '/asset/production/dept-master/archive',
+  '/asset/production/master/dashboard',
+  '/asset/production/master/archive',
 ];
 
 /** 시드 인증 — 삭제 시 시스템 LV_1만 (isSeedCertId) */

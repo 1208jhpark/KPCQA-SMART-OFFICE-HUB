@@ -125,7 +125,10 @@ export default function DeliveryMySubmissions() {
             const nextMyRes: Record<string, any> = {};
             
             myDbResponses.forEach((r: any) => {
-              if (r.userEmail === userData.email) {
+              if (
+                String(r.userEmail || '').trim().toLowerCase() ===
+                String(userData.email || '').trim().toLowerCase()
+              ) {
                 nextMyRes[r.surveyId] = {
                   submittedAt: r.submittedAt ? formatKSTDateTimeMinute(r.submittedAt) : '-',
                   submittedAtRaw: r.submittedAt || null,

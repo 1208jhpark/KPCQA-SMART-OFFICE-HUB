@@ -71,7 +71,7 @@ export default function ProductionMasterShell({
             PRODUCTION TOTAL GOVERNANCE
           </h3>
           <h1 className="text-2xl font-extrabold tracking-tight text-white leading-none">
-            전사 부서 맞춤 제작물 마스터 통제 대장
+            전사 부서 맞춤 제작물 통합 관리 대장
           </h1>
           <p className="text-emerald-100/90 text-xs mt-3 leading-relaxed">
             {pageHint ||

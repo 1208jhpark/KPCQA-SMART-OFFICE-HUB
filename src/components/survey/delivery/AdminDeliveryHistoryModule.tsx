@@ -14,6 +14,7 @@ import {
   useInterfaceStepTabs,
   SURVEY_DELIVERY_ADMIN_TABS,
 } from '@/lib/interface-step-tabs';
+import { userInSurveyTarget } from '@/lib/survey-target-match';
   
 export default function AdminDeliveryHistoryModule() {
   const pathname = usePathname();
@@ -178,6 +179,10 @@ export default function AdminDeliveryHistoryModule() {
      
  // 🚀 [LV_1 전용]: 보관함 내 테스트용 찌꺼기 완벽 소멸 엔진 (DB 연동)
  const handlePermanentDelete = async (id: string) => {
+  if (!isLv1) {
+    alert('영구 삭제는 LV_1만 가능합니다.');
+    return;
+  }
   if (!confirm('경고: 선택한 아카이브 배달 명세 정보를 영구 삭제하시겠습니까?\n이 작업은 데이터베이스 파기 처리이며 복구할 수 없습니다.')) return;
   
   try {
@@ -194,21 +199,16 @@ export default function AdminDeliveryHistoryModule() {
   }
 };
   
-  const isOrgAllowed = (targetDepts: string[], userDeptName: string) => {
-    if (targetDepts.includes('전사')) return true;
-    if (targetDepts.includes(userDeptName)) return true;
-    let currentUnit = unitsList.find(u => u.unit_name === userDeptName);
-    while (currentUnit && currentUnit.parent_id) {
-      const parentUnit = unitsList.find(u => u.id === currentUnit.parent_id);
-      if (parentUnit && targetDepts.includes(parentUnit.unit_name)) return true;
-      currentUnit = parentUnit;
-    }
-    return false;
-  };
-
-  const getTargetUsers = (target: string) => {
-    const targetDepts = target.split(',').map((t: string) => t.trim());
-    return users.filter(u => isOrgAllowed(targetDepts, u.dept));
+  const getTargetUsers = (survey: { target?: string | null; target_unit_ids?: unknown }) => {
+    return users.filter((u) =>
+      userInSurveyTarget({
+        userUnitId: u.unit_id,
+        userDeptName: u.dept,
+        target: survey?.target,
+        targetUnitIds: survey?.target_unit_ids,
+        units: unitsList,
+      })
+    );
   };
 
   const formatAddressAnswer = (q: any, ans: Record<string, any>) => {
@@ -387,7 +387,7 @@ export default function AdminDeliveryHistoryModule() {
       return alert('분석 허용된 문항이 없습니다.\n빌더에서 문항별 「분석 허용」을 켠 뒤 다시 시도해주세요.');
     }
 
-    const targetUsers = getTargetUsers(survey.target);
+    const targetUsers = getTargetUsers(survey);
     const submittedUsers = targetUsers.filter((u) => responses[`${survey.id}_${u.email}`]?.isDone);
     if (submittedUsers.length === 0) {
       return alert('본 공고에 제출된 응답이 없습니다.');
@@ -513,7 +513,7 @@ export default function AdminDeliveryHistoryModule() {
     } catch (e) { parsedQuestions = []; }
     const questions = parsedQuestions.length > 0 ? parsedQuestions : [{ id: 'dq1', title: '1. 상세 배송 주소지 정보 명세' }];
     
-    const targetUsers = getTargetUsers(survey.target);
+    const targetUsers = getTargetUsers(survey);
     const submittedUsers = targetUsers.filter(u => responses[`${survey.id}_${u.email}`]?.isDone);
     
     if (submittedUsers.length === 0) return alert("본 공고에 신청된 명세 완료 데이터가 없어 엑셀을 출력할 수 없습니다.");
@@ -553,7 +553,7 @@ export default function AdminDeliveryHistoryModule() {
   const handleDownloadZip = async (survey: any) => {
     if (!requireEdit()) return;
     const zip = new JSZip();
-    const targetUsers = getTargetUsers(survey.target);
+    const targetUsers = getTargetUsers(survey);
     const submittedUsers = targetUsers.filter(u => responses[`${survey.id}_${u.email}`]?.isDone);
   
     if (submittedUsers.length === 0) return alert("제출된 배송 명세 응답 내역이 없습니다.");
@@ -607,7 +607,7 @@ export default function AdminDeliveryHistoryModule() {
       : filteredHistory;
     if (target.length === 0) return alert('다운로드할 데이터가 없습니다.');
     const exportData = target.map((h, idx) => {
-      const targetUsers = getTargetUsers(h.target);
+      const targetUsers = getTargetUsers(h);
       const done = targetUsers.filter(u => responses[`${h.id}_${u.email}`]?.isDone).length;
       const total = targetUsers.length;
   
@@ -815,7 +815,7 @@ export default function AdminDeliveryHistoryModule() {
                   </td>
                 </tr>
               ) : currentHistory.map((s, i) => {
-                const targetUsers = getTargetUsers(s.target);
+                const targetUsers = getTargetUsers(s);
                 const done = targetUsers.filter(u => responses[`${s.id}_${u.email}`]?.isDone).length;
                 const total = targetUsers.length;
                 const notDone = total - done;

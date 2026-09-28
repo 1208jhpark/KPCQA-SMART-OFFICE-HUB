@@ -312,9 +312,10 @@ function MasterArchiveContent() {
             `❌ 운영 대장 복구 실패: ${msg}\n\n이미 대시보드에 동일 자산이 있다면, 아카이브에 남은 이력만 삭제할까요?`
           )
         ) {
-          const delOnly = await fetch(`/api/asset/it/archive?id=${encodeURIComponent(archiveId)}`, {
-            method: 'DELETE',
-          });
+          const delOnly = await fetch(
+            `/api/asset/it/archive?id=${encodeURIComponent(archiveId)}&purpose=restore`,
+            { method: 'DELETE' }
+          );
           if (delOnly.ok) {
             alert('✅ 아카이브 이력을 삭제했습니다.');
             setSelectedIds((prev) => {
@@ -330,10 +331,11 @@ function MasterArchiveContent() {
         return;
       }
 
-      // 운영 대장 복구 후 아카이브 이력 제거 (종료 이관의 역순)
-      const delRes = await fetch(`/api/asset/it/archive?id=${encodeURIComponent(archiveId)}`, {
-        method: 'DELETE',
-      });
+      // 운영 대장 복구 후 아카이브 이력 제거 (Edit 허용 · purpose=restore)
+      const delRes = await fetch(
+        `/api/asset/it/archive?id=${encodeURIComponent(archiveId)}&purpose=restore`,
+        { method: 'DELETE' }
+      );
       if (!delRes.ok) {
         alert('✅ 운영 대장에는 복구되었으나, 아카이브 이력 삭제에 실패했습니다. 새로고침 후 다시 확인해 주세요.');
         fetchArchiveData();

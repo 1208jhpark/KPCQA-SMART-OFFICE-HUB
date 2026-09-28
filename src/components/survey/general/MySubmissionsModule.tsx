@@ -112,7 +112,10 @@ export default function MySubmissionsModule() {
             const nextMyRes: Record<string, any> = {};
             
             dbResponses.forEach((r: any) => {
-              if (r.userEmail === userData.email) {
+              if (
+                String(r.userEmail || '').trim().toLowerCase() ===
+                String(userData.email || '').trim().toLowerCase()
+              ) {
                 nextMyRes[r.surveyId] = {
                   submittedAt: r.submittedAt ? formatKSTDateTimeMinute(r.submittedAt) : '-',
                   // 익명: 클라이언트에 답변 본문을 두지 않음 (열람·수정 차단)

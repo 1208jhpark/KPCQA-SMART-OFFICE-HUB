@@ -127,13 +127,14 @@ async function trySurveyManagerAuth(requireEditor = false) {
   }
 }
 
-/** 편집 권한은 요청 메뉴 1곳 기준 (형제 메뉴 OR 합산 금지) */
+/**
+ * 편집 권한은 “지금 보고 있는 메뉴 1곳” 기준만.
+ * menuPath 누락 시 active로 폴백하면 Master(active)가 빌더 편집까지 열어버림 → 폴백 금지
+ */
 async function trySurveyEditorOnPath(menuPath?: string | null) {
-  const path = isGeneralAdminPath(menuPath)
-    ? String(menuPath)
-    : '/survey/general/admin/active-surveys';
+  if (!isGeneralAdminPath(menuPath)) return null;
   try {
-    return await authorizeApi(path, { requireEditor: true });
+    return await authorizeApi(String(menuPath), { requireEditor: true });
   } catch {
     return null;
   }
@@ -141,11 +142,9 @@ async function trySurveyEditorOnPath(menuPath?: string | null) {
 
 /** Access(조회) 권한 — 긴급 게시중단 등 Edit 없이 허용할 때 */
 async function trySurveyAccessOnPath(menuPath?: string | null) {
-  const path = isGeneralAdminPath(menuPath)
-    ? String(menuPath)
-    : '/survey/general/admin/active-surveys';
+  if (!isGeneralAdminPath(menuPath)) return null;
   try {
-    return await authorizeApi(path);
+    return await authorizeApi(String(menuPath));
   } catch {
     return null;
   }
@@ -271,7 +270,7 @@ export async function POST(req: NextRequest) {
       const mgr = await trySurveyManagerAuth(false);
       if (!mgr) {
         const responses = await prisma.generalResponse.findMany({
-          where: { userEmail: auth.email! },
+          where: { userEmail: { equals: auth.email!, mode: 'insensitive' } },
           orderBy: { submittedAt: 'desc' },
         });
         // 본인 조회: 이메일 유지(목록 매칭), 익명 답변만 비움
@@ -442,7 +441,7 @@ if (action === 'GET_STATS') {
   return NextResponse.json({ stockUsage, participation, targetCounts });
 }
 
-    // 4. 설문 응답 제출 (서버 사이드 마감 검증)
+    // 4. 설문 응답 제출 (서버 사이드 마감·대상 검증)
     if (action === 'SUBMIT_RESPONSE') {
       if (!auth.isAuth || !auth.email) {
         return NextResponse.json({ error: '로그인 또는 본인 인증이 필요합니다.' }, { status: 401 });
@@ -453,11 +452,39 @@ if (action === 'GET_STATS') {
       
       const survey = await prisma.generalSurvey.findUnique({ where: { id: surveyId } });
       if (!survey) return NextResponse.json({ error: '존재하지 않는 설문입니다.' }, { status: 404 });
-      if (survey.status === '완료') return NextResponse.json({ error: '이미 마감 처리된 설문입니다.' }, { status: 403 });
+      if (survey.status !== '진행중') {
+        return NextResponse.json({ error: '진행 중인 설문만 제출할 수 있습니다.' }, { status: 403 });
+      }
       
       const deadline = parseKSTDeadline(survey.endDate, survey.endTime);
       if (Number.isNaN(deadline.getTime()) || Date.now() > deadline.getTime()) {
         return NextResponse.json({ error: '제출 기한이 만료되었습니다.' }, { status: 403 });
+      }
+
+      if (!auth.isAdmin) {
+        const [dbUser, units] = await Promise.all([
+          prisma.user.findFirst({
+            where: { email: { equals: secureEmail, mode: 'insensitive' } },
+            select: {
+              unit_id: true,
+              unit: { select: { id: true, unit_name: true, parent_id: true } },
+            },
+          }),
+          prisma.orgUnit.findMany({
+            where: { is_deleted: false, is_active: true },
+            select: { id: true, unit_name: true, parent_id: true },
+          }),
+        ]);
+        const allowed = userInSurveyTarget({
+          userUnitId: dbUser?.unit_id || dbUser?.unit?.id,
+          userDeptName: dbUser?.unit?.unit_name,
+          target: survey.target,
+          targetUnitIds: (survey as { target_unit_ids?: unknown }).target_unit_ids,
+          units,
+        });
+        if (!allowed) {
+          return NextResponse.json({ error: '설문 대상이 아닙니다.' }, { status: 403 });
+        }
       }
 
       const existing = await prisma.generalResponse.findUnique({

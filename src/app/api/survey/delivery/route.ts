@@ -299,7 +299,7 @@ export async function POST(req: NextRequest) {
       const mgr = await tryDeliveryManagerAuth(false);
       if (!mgr) {
         const responses = await prisma.deliveryResponse.findMany({
-          where: { userEmail: auth.email! },
+          where: { userEmail: { equals: auth.email!, mode: 'insensitive' } },
           orderBy: { submittedAt: 'desc' },
         });
         return NextResponse.json(responses);
@@ -495,7 +495,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ stockUsage, participation, targetCounts });
     }
 
-// 4. 배송 신청 응답 제출 (마감시간 서버 검증 및 수정 횟수 누적 반영)
+// 4. 배송 신청 응답 제출 (마감·대상 서버 검증 및 수정 횟수 누적 반영)
 if (action === 'SUBMIT_RESPONSE') {
   if (!auth.isAuth || !auth.email) {
     return NextResponse.json({ error: '로그인 또는 본인 인증이 필요합니다.' }, { status: 401 });
@@ -506,11 +506,39 @@ if (action === 'SUBMIT_RESPONSE') {
   
   const survey = await prisma.deliverySurvey.findUnique({ where: { id: surveyId } });
   if (!survey) return NextResponse.json({ error: '존재하지 않는 설문입니다.' }, { status: 404 });
-  if (survey.status === '완료') return NextResponse.json({ error: '이미 마감 처리된 설문입니다.' }, { status: 403 });
+  if (survey.status !== '진행중') {
+    return NextResponse.json({ error: '진행 중인 공고만 제출할 수 있습니다.' }, { status: 403 });
+  }
   
   const deadline = parseKSTDeadline(survey.endDate, survey.endTime);
   if (Number.isNaN(deadline.getTime()) || Date.now() > deadline.getTime()) {
     return NextResponse.json({ error: '제출 기한이 만료되었습니다.' }, { status: 403 });
+  }
+
+  if (!auth.isAdmin) {
+    const [dbUser, units] = await Promise.all([
+      prisma.user.findFirst({
+        where: { email: { equals: secureEmail, mode: 'insensitive' } },
+        select: {
+          unit_id: true,
+          unit: { select: { id: true, unit_name: true, parent_id: true } },
+        },
+      }),
+      prisma.orgUnit.findMany({
+        where: { is_deleted: false, is_active: true },
+        select: { id: true, unit_name: true, parent_id: true },
+      }),
+    ]);
+    const allowed = userInSurveyTarget({
+      userUnitId: dbUser?.unit_id || dbUser?.unit?.id,
+      userDeptName: dbUser?.unit?.unit_name,
+      target: survey.target,
+      targetUnitIds: (survey as { target_unit_ids?: unknown }).target_unit_ids,
+      units,
+    });
+    if (!allowed) {
+      return NextResponse.json({ error: '설문 대상이 아닙니다.' }, { status: 403 });
+    }
   }
 
   const existing = await prisma.deliveryResponse.findUnique({

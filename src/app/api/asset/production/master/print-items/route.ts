@@ -18,6 +18,8 @@ const READ_PATHS = [
   '/asset/production/dept-master/inspection',
   '/asset/production/dept-master/settlement',
   '/asset/production/dept-master/archive',
+  '/asset/production/master/dashboard',
+  '/asset/production/master/archive',
 ];
 
 type PrintItemRow = {

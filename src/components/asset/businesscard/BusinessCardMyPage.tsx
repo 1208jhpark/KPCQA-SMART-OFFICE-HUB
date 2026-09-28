@@ -1506,13 +1506,15 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
                       const statusClass =
                         row.adminStatus === '지급완료'
                           ? 'text-slate-900'
-                          : row.adminStatus === '수령완료' || row.adminStatus === '발주완료'
+                          : row.adminStatus === '수령완료'
                             ? 'text-emerald-600'
-                            : row.adminStatus === '접수완료'
-                              ? 'text-blue-600'
-                              : row.adminStatus === '반려'
-                                ? 'text-red-600'
-                                : 'text-orange-600';
+                            : row.adminStatus === '발주완료'
+                              ? 'text-indigo-600'
+                              : row.adminStatus === '접수완료'
+                                ? 'text-blue-600'
+                                : row.adminStatus === '반려'
+                                  ? 'text-red-600'
+                                  : 'text-orange-600';
 
                       return (
                         <tr key={row.id} className="hover:bg-slate-50/50 h-12 transition-colors">

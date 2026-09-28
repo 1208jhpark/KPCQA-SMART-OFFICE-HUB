@@ -162,6 +162,92 @@ function assertRowInDeptScope(
   return assertProductionRowInDeptScope(scope, row);
 }
 
+type InspectBatchInput = {
+  batchId: string;
+  inspectStatus: 'idle' | 'match' | 'mismatch';
+  inspectFileName?: string | null;
+  inspectResult?: unknown;
+};
+
+/** 명세 검수 결과 저장 — PUT / POST action=inspect 공통 */
+async function persistInspectBatches(
+  scope: NonNullable<ReturnType<typeof buildSettlementScope>>,
+  rows: InspectBatchInput[]
+): Promise<{ ok: true; count: number } | { ok: false; status: number; message: string }> {
+  if (rows.length === 0) {
+    return { ok: false, status: 400, message: '저장할 검수 묶음이 없습니다.' };
+  }
+
+  const scopeWhere = buildProductionDeptScopeWhere(scope);
+  let count = 0;
+
+  for (const row of rows) {
+    const batchId = String(row?.batchId || '').trim();
+    if (!batchId) continue;
+    const inspectStatus =
+      row.inspectStatus === 'match' || row.inspectStatus === 'mismatch'
+        ? row.inspectStatus
+        : 'idle';
+    const inspectFileName = row.inspectFileName
+      ? String(row.inspectFileName).slice(0, 255)
+      : null;
+    const inspectResult = row.inspectResult ?? null;
+    const inspectedAt = inspectStatus === 'idle' ? null : new Date().toISOString();
+
+    const items = await prisma.productionRequest.findMany({
+      where: {
+        AND: [
+          {
+            batchId,
+            isArchived: true,
+            status: 'VERIFIED',
+          },
+          ...(scopeWhere ? [scopeWhere] : []),
+        ],
+      },
+    });
+    if (items.length === 0) continue;
+
+    for (const item of items) {
+      if (isMasterSettledArchived(item.options)) continue;
+      const prevOpts = asOptionsRecord(item.options);
+      const resultObj =
+        inspectResult && typeof inspectResult === 'object'
+          ? (inspectResult as Record<string, any>)
+          : null;
+      const itemStatus = resultObj?.itemStatus?.[item.id] || inspectStatus;
+      const itemPrice = Number(resultObj?.itemPrice?.[item.id] || 0);
+
+      const nextOpts = {
+        ...prevOpts,
+        inspectStatus: itemStatus,
+        inspectFileName,
+        inspectResult,
+        inspectedAt,
+        ...(itemPrice > 0 ? { inspectMatchedPrice: itemPrice } : {}),
+      };
+
+      await prisma.productionRequest.update({
+        where: { id: item.id },
+        data: {
+          options: asInputJson(nextOpts),
+          ...(itemPrice > 0 ? { finalPrice: itemPrice } : {}),
+        },
+      });
+    }
+    count += 1;
+  }
+
+  if (count === 0) {
+    return {
+      ok: false,
+      status: 400,
+      message: '담당 부서 범위의 정산 대상 묶음이 없습니다.',
+    };
+  }
+  return { ok: true, count };
+}
+
 /** [GET] 정산 대기·확정 묶음 (마스터 보관함 이관 전) */
 export async function GET() {
   try {
@@ -320,82 +406,14 @@ export async function PUT(req: Request) {
         { status: 403 }
       );
     }
-    const scopeWhere = buildProductionDeptScopeWhere(scope);
 
     const body = await req.json().catch(() => ({}));
-    const rows: Array<{
-      batchId: string;
-      inspectStatus: 'idle' | 'match' | 'mismatch';
-      inspectFileName?: string | null;
-      inspectResult?: any;
-    }> = Array.isArray(body?.batches) ? body.batches : [];
-
-    if (rows.length === 0) {
-      return NextResponse.json({ message: '저장할 검수 묶음이 없습니다.' }, { status: 400 });
+    const rows: InspectBatchInput[] = Array.isArray(body?.batches) ? body.batches : [];
+    const result = await persistInspectBatches(scope, rows);
+    if (!result.ok) {
+      return NextResponse.json({ message: result.message }, { status: result.status });
     }
-
-    let count = 0;
-    for (const row of rows) {
-      const batchId = String(row?.batchId || '').trim();
-      if (!batchId) continue;
-      const inspectStatus =
-        row.inspectStatus === 'match' || row.inspectStatus === 'mismatch'
-          ? row.inspectStatus
-          : 'idle';
-      const inspectFileName = row.inspectFileName
-        ? String(row.inspectFileName).slice(0, 255)
-        : null;
-      const inspectResult = row.inspectResult ?? null;
-      const inspectedAt = inspectStatus === 'idle' ? null : new Date().toISOString();
-
-      const items = await prisma.productionRequest.findMany({
-        where: {
-          AND: [
-            {
-              batchId,
-              isArchived: true,
-              status: 'VERIFIED',
-            },
-            ...(scopeWhere ? [scopeWhere] : []),
-          ],
-        },
-      });
-      if (items.length === 0) continue;
-
-      for (const item of items) {
-        if (isMasterSettledArchived(item.options)) continue;
-        const prevOpts = asOptionsRecord(item.options);
-        const itemStatus = inspectResult?.itemStatus?.[item.id] || inspectStatus;
-        const itemPrice = Number(inspectResult?.itemPrice?.[item.id] || 0);
-
-        const nextOpts = {
-          ...prevOpts,
-          inspectStatus: itemStatus,
-          inspectFileName,
-          inspectResult,
-          inspectedAt,
-          ...(itemPrice > 0 ? { inspectMatchedPrice: itemPrice } : {}),
-        };
-
-        await prisma.productionRequest.update({
-          where: { id: item.id },
-          data: {
-            options: asInputJson(nextOpts),
-            ...(itemPrice > 0 ? { finalPrice: itemPrice } : {}),
-          },
-        });
-      }
-      count += 1;
-    }
-
-    if (count === 0) {
-      return NextResponse.json(
-        { message: '담당 부서 범위의 정산 대상 묶음이 없습니다.' },
-        { status: 400 }
-      );
-    }
-
-    return NextResponse.json({ success: true, count });
+    return NextResponse.json({ success: true, count: result.count });
   } catch (error: any) {
     const authRes = authErrorToResponse(error);
     if (authRes.status !== 500) return authRes;
@@ -414,7 +432,7 @@ export async function POST(req: Request) {
     const action = String(body.action || '').trim().toLowerCase();
 
     if (action === 'inspect') {
-      // body는 이미 파싱됨 — PUT(req) 재호출 시 본문 소실되므로 직접 처리
+      // UI는 PUT 사용. POST는 호환용 — 로직은 persistInspectBatches 한곳만.
       const auth = await authorizeApi(MENU_PATH, { requireEditor: true });
       const scope = buildSettlementScope(auth);
       if (!scope || isProductionScopeEmpty(scope)) {
@@ -423,77 +441,12 @@ export async function POST(req: Request) {
           { status: 403 }
         );
       }
-      const scopeWhere = buildProductionDeptScopeWhere(scope);
-      const rows: Array<{
-        batchId: string;
-        inspectStatus: 'idle' | 'match' | 'mismatch';
-        inspectFileName?: string | null;
-        inspectResult?: any;
-      }> = Array.isArray(body?.batches) ? body.batches : [];
-
-      if (rows.length === 0) {
-        return NextResponse.json({ message: '저장할 검수 묶음이 없습니다.' }, { status: 400 });
+      const rows: InspectBatchInput[] = Array.isArray(body?.batches) ? body.batches : [];
+      const result = await persistInspectBatches(scope, rows);
+      if (!result.ok) {
+        return NextResponse.json({ message: result.message }, { status: result.status });
       }
-
-      let count = 0;
-      for (const row of rows) {
-        const batchId = String(row?.batchId || '').trim();
-        if (!batchId) continue;
-        const inspectStatus =
-          row.inspectStatus === 'match' || row.inspectStatus === 'mismatch'
-            ? row.inspectStatus
-            : 'idle';
-        const inspectFileName = row.inspectFileName
-          ? String(row.inspectFileName).slice(0, 255)
-          : null;
-        const inspectResult = row.inspectResult ?? null;
-        const inspectedAt = inspectStatus === 'idle' ? null : new Date().toISOString();
-
-        const items = await prisma.productionRequest.findMany({
-          where: {
-            AND: [
-              {
-                batchId,
-                isArchived: true,
-                status: 'VERIFIED',
-              },
-              ...(scopeWhere ? [scopeWhere] : []),
-            ],
-          },
-        });
-        if (items.length === 0) continue;
-
-        for (const item of items) {
-          if (isMasterSettledArchived(item.options)) continue;
-          const prevOpts = asOptionsRecord(item.options);
-          const itemStatus = inspectResult?.itemStatus?.[item.id] || inspectStatus;
-          const itemPrice = Number(inspectResult?.itemPrice?.[item.id] || 0);
-          const nextOpts = {
-            ...prevOpts,
-            inspectStatus: itemStatus,
-            inspectFileName,
-            inspectResult,
-            inspectedAt,
-            ...(itemPrice > 0 ? { inspectMatchedPrice: itemPrice } : {}),
-          };
-          await prisma.productionRequest.update({
-            where: { id: item.id },
-            data: {
-              options: asInputJson(nextOpts),
-              ...(itemPrice > 0 ? { finalPrice: itemPrice } : {}),
-            },
-          });
-        }
-        count += 1;
-      }
-
-      if (count === 0) {
-        return NextResponse.json(
-          { message: '담당 부서 범위의 정산 대상 묶음이 없습니다.' },
-          { status: 400 }
-        );
-      }
-      return NextResponse.json({ success: true, count });
+      return NextResponse.json({ success: true, count: result.count });
     }
 
     if (action === 'statement-match') {
@@ -599,6 +552,18 @@ export async function POST(req: Request) {
       });
     }
 
+    // 정상 UI는 inspection `archive-batch` 사용.
+    // settlement에도 동일 action·메타를 맞춰 두면 경로가 갈라져도 이관자 기록이 비지 않음.
+    if (action !== 'archive-batch') {
+      return NextResponse.json(
+        {
+          message:
+            '지원하지 않는 요청입니다. (inspect | statement-match | archive-batch)',
+        },
+        { status: 400 }
+      );
+    }
+
     const auth = await authorizeApi(MENU_PATH, { requireEditor: true });
     const scope = buildSettlementScope(auth);
     if (!scope || isProductionScopeEmpty(scope)) {
@@ -609,36 +574,56 @@ export async function POST(req: Request) {
     }
 
     const batchId = String(body.batchId || '').trim();
-
     if (!batchId) {
       return NextResponse.json({ message: '묶음 번호가 필요합니다.' }, { status: 400 });
     }
 
     const scopeWhere = buildProductionDeptScopeWhere(scope);
-    const result = await prisma.productionRequest.updateMany({
+    const rows = await prisma.productionRequest.findMany({
       where: {
         AND: [
-          {
-            batchId,
-            status: 'VERIFIED',
-            isArchived: false,
-          },
+          { batchId, status: 'VERIFIED', isArchived: false },
           ...(scopeWhere ? [scopeWhere] : []),
         ],
       },
-      data: { isArchived: true },
     });
-
-    if (result.count === 0) {
+    if (rows.length === 0) {
       return NextResponse.json(
         { message: '담당 부서 범위의 수령완료(VERIFIED) 건만 보관함으로 이동할 수 있습니다.' },
         { status: 400 }
       );
     }
 
+    const { getKSTDateString } = await import('@/utils/dateUtils');
+    const settlementMovedBy = {
+      date: getKSTDateString(),
+      userName: String(auth.user?.name || '').trim() || '-',
+      deptName: String(
+        (auth.user as { unit?: { unit_name?: string | null } | null })?.unit?.unit_name || ''
+      ).trim(),
+    };
+    const settlementMovedAt = new Date().toISOString();
+
+    let updated = 0;
+    for (const row of rows) {
+      const prevOpts = asOptionsRecord(row.options);
+      await prisma.productionRequest.update({
+        where: { id: row.id },
+        data: {
+          isArchived: true,
+          options: asInputJson({
+            ...prevOpts,
+            settlementMovedBy,
+            settlementMovedAt,
+          }),
+        },
+      });
+      updated += 1;
+    }
+
     return NextResponse.json({
       message: '해당 발주 묶음이 성공적으로 보관함으로 이관되었습니다.',
-      count: result.count,
+      count: updated,
     });
   } catch (error) {
     const authRes = authErrorToResponse(error);

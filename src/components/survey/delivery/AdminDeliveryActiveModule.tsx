@@ -14,6 +14,7 @@ import {
   useInterfaceStepTabs,
   SURVEY_DELIVERY_ADMIN_TABS,
 } from '@/lib/interface-step-tabs';
+import { userInSurveyTarget } from '@/lib/survey-target-match';
      
 const getStatusBadge = (status: string) => {
   switch (status) {
@@ -143,17 +144,24 @@ export default function AdminDeliveryActiveModule() {
     fetchOrgData();
   }, [pathname]);
      
-// 🚀 1. 함수를 먼저 정의합니다! (여기로 이동 완료)
-const isOrgAllowed = (targetDepts: string[], userDeptName: string) => {
-  if (targetDepts.includes('전사')) return true;
-  if (targetDepts.includes(userDeptName)) return true;
-  let currentUnit = unitsList.find(u => u.unit_name === userDeptName);
-  while (currentUnit && currentUnit.parent_id) {
-    const parentUnit = unitsList.find(u => u.id === currentUnit.parent_id);
-    if (parentUnit && targetDepts.includes(parentUnit.unit_name)) return true;
-    currentUnit = parentUnit;
-  }
-  return false;
+const isOrgAllowed = (
+  targetDepts: string[],
+  userOrDept: string | { dept?: string; unit_id?: string | null },
+  opts?: { targetUnitIds?: unknown }
+) => {
+  const userDeptName =
+    typeof userOrDept === 'string' ? userOrDept : String(userOrDept?.dept || '');
+  const userUnitId =
+    typeof userOrDept === 'string'
+      ? String(unitsList.find((u: any) => u.unit_name === userOrDept)?.id || '').trim() || null
+      : userOrDept?.unit_id;
+  return userInSurveyTarget({
+    userUnitId,
+    userDeptName,
+    target: targetDepts.join(', '),
+    targetUnitIds: opts?.targetUnitIds,
+    units: unitsList,
+  });
 };
 
 /** 대기함: 제출됨·미승인 + (이번 제출 이후 보완요청이 아직 없음). 승인/보완 시 제외, 재제출 시 다시 포함 */
@@ -173,7 +181,7 @@ const pendingAlwaysApprovals = useMemo(() => {
     .forEach(survey => {
     const targetDepts = survey.target ? survey.target.split(',').map((t: string) => t.trim()) : ['전사'];
     users.forEach(user => {
-      if (isOrgAllowed(targetDepts, user.dept)) {
+      if (isOrgAllowed(targetDepts, user, { targetUnitIds: survey.target_unit_ids })) {
         const resp = responses[`${survey.id}_${user.email}`];
         if (isAwaitingAdminReview(resp)) pendings.push({ survey, user, resp });
       }
@@ -189,7 +197,7 @@ const pendingAlwaysApprovals = useMemo(() => {
       .forEach(survey => {
       const targetDepts = survey.target ? survey.target.split(',').map((t: string) => t.trim()) : ['전사'];
       users.forEach(user => {
-        if (isOrgAllowed(targetDepts, user.dept)) {
+        if (isOrgAllowed(targetDepts, user, { targetUnitIds: survey.target_unit_ids })) {
           const resp = responses[`${survey.id}_${user.email}`];
           if (isAwaitingAdminReview(resp)) pendings.push({ survey, user, resp });
         }
@@ -247,7 +255,9 @@ const pendingAlwaysApprovals = useMemo(() => {
      
   const handleCopyUnsubmittedEmails = (survey: any) => {
     const targetDepts = survey.target.split(',').map((t: string) => t.trim());
-    const targetUsers = users.filter(u => isOrgAllowed(targetDepts, u.dept));
+    const targetUsers = users.filter((u) =>
+      isOrgAllowed(targetDepts, u, { targetUnitIds: survey.target_unit_ids })
+    );
     const unsubmitted = targetUsers.filter(u => !responses[`${survey.id}_${u.email}`]?.isDone);
      
     if (unsubmitted.length === 0) return alert('현재 미참여자가 없습니다.');
@@ -299,8 +309,11 @@ const pendingAlwaysApprovals = useMemo(() => {
   };
      
   const handleDeleteSurvey = async (id: string) => {
-    if (!requireEdit()) return;
-    if (!confirm('이 배달 공고를 삭제하시겠습니까?\n이 데이터 복지 명세는 영구 소멸됩니다.')) return;
+    if (!isSystemLv1User(currentUser)) {
+      alert('영구 삭제는 LV_1만 가능합니다.');
+      return;
+    }
+    if (!confirm('이 배달 공고를 삭제하시겠습니까?\n(LV_1 전용 · 복구 불가)')) return;
     try {
       const res = await fetch(`/api/survey/delivery?id=${id}`, { method: 'DELETE' });
       if (res.ok) {
@@ -379,7 +392,9 @@ const pendingAlwaysApprovals = useMemo(() => {
     if (!requireEdit()) return;
     const survey = surveys.find(s => s.id === surveyId);
     const targetDepts = survey.target.split(',').map((t: string) => t.trim());
-    const targetUsers = users.filter(u => isOrgAllowed(targetDepts, u.dept));
+    const targetUsers = users.filter((u) =>
+      isOrgAllowed(targetDepts, u, { targetUnitIds: survey.target_unit_ids })
+    );
     const notDoneUsers = targetUsers.filter(u => !responses[`${surveyId}_${u.email}`]?.isDone);
      
     if (notDoneUsers.length === 0) return alert('모든 인원이 배달지 신청을 완료했습니다!');
@@ -770,7 +785,7 @@ const handleDownloadZipAll = async () => {
     }
    
     const targetUsers = users.filter(user => {
-      const isAllowed = isOrgAllowed(targetDepts, user.dept);
+      const isAllowed = isOrgAllowed(targetDepts, user, { targetUnitIds: survey.target_unit_ids });
       const isDone = responses[`${survey.id}_${user.email}`]?.isDone;
       const isSelected = selectedCellKeys.has(`${survey.id}_${user.email}`);
       return isAllowed && isDone && isSelected;
@@ -1030,7 +1045,7 @@ const handleDownloadZipAll = async () => {
      
     const targetDepts = survey.target.split(',').map((t: string) => t.trim());
     users.forEach(user => {
-      if (isOrgAllowed(targetDepts, user.dept)) {
+      if (isOrgAllowed(targetDepts, user, { targetUnitIds: survey.target_unit_ids })) {
         const cellKey = `${surveyId}_${user.email}`;
         if (responses[cellKey]?.isDone) {
           if (isChecked) next.add(cellKey);
@@ -1187,7 +1202,9 @@ const handleDownloadZipAll = async () => {
           <tbody className="divide-y divide-slate-100 text-[11px]">
             {filteredSurveys.map((s, idx) => {
               const targetDepts = s.target.split(',').map((t: string) => t.trim());
-              const targetUsers = users.filter(u => isOrgAllowed(targetDepts, u.dept));
+              const targetUsers = users.filter((u) =>
+                isOrgAllowed(targetDepts, u, { targetUnitIds: s.target_unit_ids })
+              );
               const done = targetUsers.filter(u => responses[`${s.id}_${u.email}`]?.isDone).length;
               const total = targetUsers.length;
               const notDone = total - done;
@@ -1270,7 +1287,28 @@ const handleDownloadZipAll = async () => {
                   <td className="py-2 pr-4 align-middle bg-slate-50/50">
                     <div className="flex items-center justify-center gap-1 w-full">
                       <button onClick={() => { if (!requireEdit()) return; setEditModal(s); }} disabled={!canEdit || s.status === '진행중' || s.status === '완료'} className={`flex-1 py-1.5 rounded text-[9px] font-black whitespace-nowrap transition-all shadow-sm border ${canEdit && (s.status === '게시전' || s.status === '게시중단') ? 'bg-white border-slate-300 text-slate-700 hover:bg-slate-100' : 'bg-slate-50 border-slate-200 text-slate-300 cursor-not-allowed'}`}>수정</button>
-                      <button onClick={() => handleDeleteSurvey(s.id)} disabled={!canEdit || s.hasBeenPublished} className={`flex-1 py-1.5 rounded text-[9px] font-black whitespace-nowrap transition-all shadow-sm border ${canEdit && !s.hasBeenPublished ? 'bg-white border-red-200 text-red-500 hover:bg-red-50' : 'bg-slate-50 border-slate-200 text-slate-300 cursor-not-allowed'}`}>삭제</button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (!isSystemLv1User(currentUser) || s.hasBeenPublished) return;
+                          handleDeleteSurvey(s.id);
+                        }}
+                        disabled={!isSystemLv1User(currentUser) || s.hasBeenPublished}
+                        title={
+                          !isSystemLv1User(currentUser)
+                            ? '영구 삭제는 LV_1만 가능합니다.'
+                            : s.hasBeenPublished
+                              ? '게시된 공고는 현황판에서 삭제할 수 없습니다. 보관함에서 LV_1 삭제를 사용하세요.'
+                              : '영구 삭제 (LV_1)'
+                        }
+                        className={`flex-1 py-1.5 rounded text-[9px] font-black whitespace-nowrap transition-all shadow-sm border ${
+                          isSystemLv1User(currentUser) && !s.hasBeenPublished
+                            ? 'bg-white border-red-200 text-red-500 hover:bg-red-50'
+                            : 'bg-slate-50 border-slate-200 text-slate-300 cursor-not-allowed'
+                        }`}
+                      >
+                        삭제(LV_1)
+                      </button>
                       <button onClick={() => handleStatusChange(s.id, 'ARCHIVE')} disabled={!canEdit || s.status !== '완료'} className={`flex-1 py-1.5 rounded text-[9px] font-black whitespace-nowrap transition-all shadow-sm border ${canEdit && s.status === '완료' ? 'bg-slate-800 text-white border-slate-800 hover:bg-slate-900' : 'bg-slate-50 border-slate-200 text-slate-300 cursor-not-allowed'}`}>보관함이동</button>
                     </div>
                   </td>
@@ -1328,7 +1366,11 @@ const handleDownloadZipAll = async () => {
                   </th>
                   {filteredSurveys.map(s => {
                     const targetDepts = s.target.split(',').map((t: string) => t.trim());
-                    const columnUsers = users.filter(u => isOrgAllowed(targetDepts, u.dept) && responses[`${s.id}_${u.email}`]?.isDone);
+                    const columnUsers = users.filter(
+                      (u) =>
+                        isOrgAllowed(targetDepts, u, { targetUnitIds: s.target_unit_ids }) &&
+                        responses[`${s.id}_${u.email}`]?.isDone
+                    );
                     const isColumnAllChecked = columnUsers.length > 0 && columnUsers.every(u => selectedCellKeys.has(`${s.id}_${u.email}`));
      
                     return (
@@ -1361,7 +1403,7 @@ const handleDownloadZipAll = async () => {
                       <td className="py-2 pl-6 font-black text-blue-900 flex items-center gap-2 text-[11px]"><span className="text-[8px] opacity-70 text-blue-700">{collapsedDepts.has(dept) ? '▶' : '▼'}</span>{dept} <span className="text-[9px] text-blue-600/80 ml-1">{deptUsers.length}명</span></td>
                       {filteredSurveys.map(s => {
                         const targetDepts = s.target.split(',').map((t: string) => t.trim());
-                        if (!isOrgAllowed(targetDepts, dept)) return <td key={`ds-${s.id}`} className="py-2 border-l border-blue-200 text-center bg-blue-50/80 text-[10px] font-black text-blue-300">-</td>;
+                        if (!isOrgAllowed(targetDepts, dept, { targetUnitIds: s.target_unit_ids })) return <td key={`ds-${s.id}`} className="py-2 border-l border-blue-200 text-center bg-blue-50/80 text-[10px] font-black text-blue-300">-</td>;
                         const dDone = deptUsers.filter(u => responses[`${s.id}_${u.email}`]?.isDone).length;
                         const dTotal = deptUsers.length;
                         return <td key={`ds-${s.id}`} className="py-2 border-l border-blue-200 text-center bg-blue-50/80"><div className="text-[9px] font-bold text-blue-800"><span className="text-blue-700 font-black">{dDone}명</span> / {dTotal}명</div></td>
@@ -1376,7 +1418,7 @@ const handleDownloadZipAll = async () => {
                           <td className="py-2 pl-12 font-bold text-slate-700 flex items-center gap-2 border-r border-slate-50 text-[10px]"><div className="w-1 h-1 rounded-full bg-slate-300"></div>{user.name} <span className="text-[8px] text-slate-400 font-mono">{user.email.split('@')[0]}</span></td>
                           {filteredSurveys.map(s => {
                             const targetDepts = s.target.split(',').map((t: string) => t.trim());
-                            if (!isOrgAllowed(targetDepts, user.dept)) return <td key={`${s.id}-${user.id}`} className="py-2 border-l border-slate-100 text-center text-[10px] font-black text-slate-300">-</td>;
+                            if (!isOrgAllowed(targetDepts, user, { targetUnitIds: s.target_unit_ids })) return <td key={`${s.id}-${user.id}`} className="py-2 border-l border-slate-100 text-center text-[10px] font-black text-slate-300">-</td>;
      
                             const cellKey = `${s.id}_${user.email}`;
                             const resp = responses[cellKey];

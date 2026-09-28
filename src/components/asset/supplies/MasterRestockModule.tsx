@@ -303,16 +303,17 @@ function MasterRestockContent() {
     }
   };
 
-  /** LV_1 전용 — 잘못된 백데이터 정리용 영구 삭제 */
-  const handleDeletePurchaseLv1 = async (purchaseData: any) => {
+  /** LV_1 전용 — 체크한 입고 행 영구 삭제 (허수·잔여 백데이터 정리) */
+  const handleDeleteSelectedLv1 = async () => {
+    if (!isLv1) return alert('잘못된 데이터 삭제는 LV_1만 가능합니다.');
     if (!canEdit) return alertNoEditPermission();
-    if (!isLv1) {
-      return alert('잘못된 데이터 삭제는 LV_1만 가능합니다.');
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0) {
+      return alert('삭제할 입고 내역을 체크박스로 선택해 주세요.');
     }
-    const itemName = purchaseData.item?.name || '알 수 없는 품목';
     if (
       !confirm(
-        `경고: [${itemName}] 입고 내역을 영구 삭제하시겠습니까? (LV_1 · 백데이터 정리)\n삭제 시 해당 수량만큼 현재고가 차감됩니다.`
+        `경고: 선택한 입고 내역 ${ids.length}건을 영구 삭제하시겠습니까? (LV_1 · 백데이터 정리)\n가능하면 해당 수량만큼 현재고가 차감됩니다.`
       )
     ) {
       return;
@@ -320,18 +321,15 @@ function MasterRestockContent() {
 
     try {
       const res = await fetch(
-        `/api/asset/supplies/master/restock?id=${purchaseData.id}&mode=purge`,
-        {
-          method: 'DELETE',
-          headers: { 'Content-Type': 'application/json' },
-        }
+        `/api/asset/supplies/master/restock?ids=${ids.map(encodeURIComponent).join(',')}&mode=purge`,
+        { method: 'DELETE' }
       );
-
+      const err = await res.json().catch(() => ({}));
       if (res.ok) {
-        alert('🗑️ 입고 내역이 삭제되었습니다.');
+        alert(err.message || `🗑️ ${ids.length}건 입고 내역이 삭제되었습니다.`);
+        setSelectedIds(new Set());
         fetchData();
       } else {
-        const err = await res.json().catch(() => ({}));
         alert(`🚨 삭제 실패: ${err.error || '알 수 없는 오류'}`);
       }
     } catch (e) {
@@ -654,6 +652,27 @@ function MasterRestockContent() {
           </div>
           
           <div className="flex items-center gap-2 flex-wrap">
+            {isLv1 && (
+              <button
+                type="button"
+                disabled={!canEdit || selectedIds.size === 0}
+                onClick={handleDeleteSelectedLv1}
+                title={
+                  !canEdit
+                    ? '편집 권한(Edit)이 필요합니다'
+                    : selectedIds.size === 0
+                      ? '체크박스로 삭제할 입고 내역을 선택해 주세요'
+                      : '체크한 입고 내역 영구 삭제 — LV_1 전용'
+                }
+                className={`px-3 py-1.5 rounded-lg text-[10px] font-black shadow-sm whitespace-nowrap border transition-all ${
+                  canEdit && selectedIds.size > 0
+                    ? 'bg-white text-rose-600 border-rose-200 hover:bg-rose-50'
+                    : 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed opacity-70'
+                }`}
+              >
+                {selectedIds.size > 0 ? `삭제(LV_1) ${selectedIds.size}` : '삭제(LV_1)'}
+              </button>
+            )}
             <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm">
               <span className="text-[10px] font-black text-slate-400 uppercase">연도</span>
               <select value={selectedYear} onChange={e => setSelectedYear(e.target.value)} className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent">
@@ -690,7 +709,7 @@ function MasterRestockContent() {
               <col className="w-[80px]" />
               <col className="w-[88px]" />
               <col className="w-[120px]" />
-              <col className="w-[168px]" />
+              <col className="w-[110px]" />
             </colgroup>
             <thead className="bg-slate-100 text-slate-700 text-[10px] font-black uppercase tracking-widest border-b border-slate-200">
               <tr>
@@ -773,45 +792,19 @@ function MasterRestockContent() {
                       </div>
                     </td>
                     <td className="px-1.5 text-center border-l border-slate-200">
-                      <div className="inline-flex items-center justify-center gap-1 whitespace-nowrap">
-                        <button
-                          type="button"
-                          disabled={!canEdit}
-                          onClick={() => handleCancelPurchase(p)}
-                          title={canEdit ? '입고 철회 (재고 차감)' : '편집 권한 필요'}
-                          className={
-                            canEdit
-                              ? 'px-1.5 py-1.5 bg-orange-50 text-orange-600 border border-orange-200 rounded-md text-[10px] font-black hover:bg-orange-100 shadow-sm whitespace-nowrap'
-                              : disabledActionBtn
-                          }
-                        >
-                          입고철회(Edit)
-                        </button>
-                        {canEdit && isLv1 ? (
-                            <button
-                              type="button"
-                              onClick={() => handleDeletePurchaseLv1(p)}
-                              title="잘못된 백데이터 영구 삭제 — LV_1 전용"
-                              className="px-1.5 py-1.5 bg-slate-100 text-slate-500 border border-slate-200 rounded-md text-[10px] font-black hover:text-red-500 hover:bg-red-50 whitespace-nowrap"
-                            >
-                              삭제(LV_1)
-                            </button>
-                          ) : (
-                          <button
-                            type="button"
-                            disabled
-                            onClick={() => handleDeletePurchaseLv1(p)}
-                            title={
-                              !canEdit
-                                ? '편집 권한 필요'
-                                : '잘못된 데이터 삭제는 LV_1만 가능합니다'
-                            }
-                            className={disabledActionBtn}
-                          >
-                            삭제(LV_1)
-                          </button>
-                        )}
-                      </div>
+                      <button
+                        type="button"
+                        disabled={!canEdit}
+                        onClick={() => handleCancelPurchase(p)}
+                        title={canEdit ? '입고 철회 (재고 차감)' : '편집 권한 필요'}
+                        className={
+                          canEdit
+                            ? 'px-1.5 py-1.5 bg-orange-50 text-orange-600 border border-orange-200 rounded-md text-[10px] font-black hover:bg-orange-100 shadow-sm whitespace-nowrap'
+                            : disabledActionBtn
+                        }
+                      >
+                        입고철회(Edit)
+                      </button>
                     </td>
                   </tr>
                 );

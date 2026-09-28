@@ -20,6 +20,7 @@ import {
   useInterfaceStepTabs,
   SURVEY_GENERAL_ADMIN_TABS,
 } from '@/lib/interface-step-tabs';
+import { userInSurveyTarget } from '@/lib/survey-target-match';
      
 export default function AdminSurveyHistoryModule() {
   const pathname = usePathname();
@@ -144,28 +145,16 @@ export default function AdminSurveyHistoryModule() {
     setSelectedIds(new Set());
   }, [selectedYear, selectedMonth, searchTitleQuery]);
   
-  // 🚀 [복구 및 개선] 조직 계층(Hierarchy) 포함 대상 검증 로직
-  const isOrgAllowed = (targetDepts: string[], userDeptName: string) => {
-    if (targetDepts.includes('전사')) return true;
-    if (targetDepts.includes(userDeptName)) return true;
-     
-    let currentId = unitsList.find(u => u.unit_name === userDeptName)?.id;
-    while (currentId) {
-      const unit = unitsList.find(u => u.id === currentId);
-      if (unit && unit.parent_id) {
-        const parentUnit = unitsList.find(u => u.id === unit.parent_id);
-        if (parentUnit && targetDepts.includes(parentUnit.unit_name)) return true; 
-        currentId = unit.parent_id;
-      } else break;
-    }
-    return false;
-  };
-
-  // 🚀 대상자 추출 헬퍼 함수 (반복되는 필터링 코드 제거)
-  const getTargetUsers = (targetString: string) => {
-    const targetDepts = (targetString || '').split(',').map((t: string) => t.trim());
-    if (targetDepts.includes('전사')) return users;
-    return users.filter(u => isOrgAllowed(targetDepts, u.dept));
+  const getTargetUsers = (survey: { target?: string | null; target_unit_ids?: unknown }) => {
+    return users.filter((u) =>
+      userInSurveyTarget({
+        userUnitId: u.unit_id,
+        userDeptName: u.dept,
+        target: survey?.target,
+        targetUnitIds: survey?.target_unit_ids,
+        units: unitsList,
+      })
+    );
   };
 
   // 🚀 엑셀 및 ZIP 출력 시 [object Object] 방지 및 깔끔한 텍스트화 헬퍼
@@ -321,7 +310,7 @@ export default function AdminSurveyHistoryModule() {
     }
 
     const GUIDE_MSG = 'ZIP 또는 Excel을 다운받아 확인바랍니다.';
-    const targetUsers = getTargetUsers(survey.target || '');
+    const targetUsers = getTargetUsers(survey);
     const submittedUsers = targetUsers.filter((u) => responses[`${survey.id}_${u.email}`]?.isDone);
 
     const answerSources = survey.isAnonymous
@@ -511,6 +500,10 @@ export default function AdminSurveyHistoryModule() {
   };
      
   const handlePermanentDelete = async (id: string) => {
+    if (!isLv1) {
+      alert('영구 삭제는 LV_1만 가능합니다.');
+      return;
+    }
     if (!confirm('경고: 이 보관된 설문을 영구적으로 삭제하시겠습니까?\n모든 정보와 이력이 완전히 유실되며 복구할 수 없습니다.')) return;
     try {
       const res = await fetch(`/api/survey/general?id=${id}`, { method: 'DELETE' });
@@ -555,7 +548,7 @@ export default function AdminSurveyHistoryModule() {
       return;
     }
     
-    const targetUsers = getTargetUsers(survey.target); // 🚀 헬퍼 적용 (계층 필터 반영)
+    const targetUsers = getTargetUsers(survey); // 🚀 헬퍼 적용 (계층 필터 반영)
     const submittedUsers = targetUsers.filter(u => responses[`${survey.id}_${u.email}`]?.isDone);
     
     if (submittedUsers.length === 0) return alert("본 설문에 접수된 완료 데이터가 없어 엑셀을 도출할 수 없습니다.");
@@ -621,7 +614,7 @@ export default function AdminSurveyHistoryModule() {
       alert(`${anonRows.length}명의 데이터를 압축 파일로 생성합니다. 잠시만 기다려주세요...`);
       anonRows.forEach((resp, idx) => writeOne(`익명응답자_${idx + 1}`, '익명', resp));
     } else {
-      const targetUsers = getTargetUsers(survey.target);
+      const targetUsers = getTargetUsers(survey);
       const submittedUsers = targetUsers.filter(u => responses[`${survey.id}_${u.email}`]?.isDone);
       if (submittedUsers.length === 0) return alert("제출된 응답이 없습니다.");
       alert(`${submittedUsers.length}명의 데이터를 압축 파일로 생성합니다. 잠시만 기다려주세요...`);
@@ -642,7 +635,7 @@ export default function AdminSurveyHistoryModule() {
       : filteredHistory;
     if (target.length === 0) return alert('다운로드할 데이터가 없습니다.');
     const exportData = target.map((h, idx) => {
-      const targetUsers = getTargetUsers(h.target);
+      const targetUsers = getTargetUsers(h);
       const total = targetUsers.length;
       const done = h.isAnonymous
         ? getAnonymousDoneCount(h.id, anonymousParticipationCounts, responses)
@@ -851,7 +844,7 @@ export default function AdminSurveyHistoryModule() {
                   </td>
                 </tr>
               ) : currentHistory.map((s, i) => {
-                const targetUsers = getTargetUsers(s.target);
+                const targetUsers = getTargetUsers(s);
                 const total = targetUsers.length;
                 const done = s.isAnonymous
                   ? getAnonymousDoneCount(s.id, anonymousParticipationCounts, responses)

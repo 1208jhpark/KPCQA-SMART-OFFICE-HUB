@@ -70,10 +70,17 @@ export async function DELETE(req: Request) {
   try {
     const auth = await authorizeAnyMenuPaths(MENU_PATHS, { requireEditor: true });
     const { searchParams } = new URL(req.url);
-    const id = searchParams.get('id');
     const mode = String(searchParams.get('mode') || '').trim().toLowerCase();
+    const ids = [
+      ...searchParams.getAll('id'),
+      ...(searchParams.get('ids') || '').split(','),
+    ]
+      .map((v) => String(v || '').trim())
+      .filter(Boolean);
 
-    if (!id) return NextResponse.json({ error: '삭제할 ID가 없습니다.' }, { status: 400 });
+    if (ids.length === 0) {
+      return NextResponse.json({ error: '삭제할 ID가 없습니다.' }, { status: 400 });
+    }
 
     if (mode === 'purge') {
       if (auth.permission.myRole !== 'LV_1') {
@@ -82,44 +89,67 @@ export async function DELETE(req: Request) {
           { status: 403 }
         );
       }
+    } else if (ids.length > 1) {
+      return NextResponse.json(
+        { error: '입고 철회는 건별로만 가능합니다.' },
+        { status: 400 }
+      );
     }
 
-    const log = await prisma.supplyPurchase.findUnique({
-      where: { id },
-      include: { item: { select: { id: true, owner_dept: true, owner_unit_ids: true } } },
-    });
-    if (!log) return NextResponse.json({ error: '존재하지 않는 입고 내역입니다.' }, { status: 404 });
-
-    assertSupplyOwnerDeptsEditable(
-      auth,
-      parseSupplyOwnerDepts(log.item?.owner_dept),
-      (log.item as { owner_unit_ids?: unknown } | null | undefined)?.owner_unit_ids
-    );
-
-    try {
-      await prisma.$transaction(async (tx) => {
-        const updated = await tx.supplyItem.updateMany({
-          where: { id: log.item_id, current_stock: { gte: log.qty } },
-          data: { current_stock: { decrement: log.qty } },
-        });
-        if (updated.count === 0) {
-          throw new Error('STOCK_INSUFFICIENT');
-        }
-        await tx.supplyPurchase.delete({ where: { id } });
+    let deleted = 0;
+    for (const id of ids) {
+      const log = await prisma.supplyPurchase.findUnique({
+        where: { id },
+        include: { item: { select: { id: true, owner_dept: true, owner_unit_ids: true } } },
       });
-    } catch (e: any) {
-      if (e?.message === 'STOCK_INSUFFICIENT') {
-        return NextResponse.json(
-          { error: '현재고가 부족하여 입고를 철회할 수 없습니다.' },
-          { status: 409 }
-        );
+      if (!log) {
+        if (mode === 'purge') continue;
+        return NextResponse.json({ error: '존재하지 않는 입고 내역입니다.' }, { status: 404 });
       }
-      throw e;
+
+      assertSupplyOwnerDeptsEditable(
+        auth,
+        parseSupplyOwnerDepts(log.item?.owner_dept),
+        (log.item as { owner_unit_ids?: unknown } | null | undefined)?.owner_unit_ids
+      );
+
+      try {
+        await prisma.$transaction(async (tx) => {
+          if (log.item_id) {
+            const updated = await tx.supplyItem.updateMany({
+              where: { id: log.item_id, current_stock: { gte: log.qty } },
+              data: { current_stock: { decrement: log.qty } },
+            });
+            if (updated.count === 0) {
+              // purge: 품목 삭제·재고 불일치 잔여 행은 이력만 제거
+              if (mode !== 'purge') throw new Error('STOCK_INSUFFICIENT');
+            }
+          }
+          await tx.supplyPurchase.delete({ where: { id } });
+        });
+        deleted += 1;
+      } catch (e: any) {
+        if (e?.message === 'STOCK_INSUFFICIENT') {
+          return NextResponse.json(
+            { error: '현재고가 부족하여 입고를 철회할 수 없습니다.' },
+            { status: 409 }
+          );
+        }
+        throw e;
+      }
+    }
+
+    if (mode === 'purge' && deleted === 0) {
+      return NextResponse.json({ error: '삭제할 입고 내역이 없습니다.' }, { status: 404 });
     }
 
     return NextResponse.json({
       success: true,
-      message: mode === 'purge' ? '입고 내역이 영구 삭제되었습니다.' : '입고가 철회되었습니다.',
+      count: deleted,
+      message:
+        mode === 'purge'
+          ? `${deleted}건 입고 내역이 영구 삭제되었습니다.`
+          : '입고가 철회되었습니다.',
     });
   } catch (error: any) {
     const authRes = authErrorToResponse(error);

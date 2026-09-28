@@ -483,7 +483,8 @@ export async function DELETE(req: Request) {
     if (!existing) return NextResponse.json({ error: '물품을 찾을 수 없습니다.' }, { status: 404 });
 
     if (force) {
-      if (auth.permission.myRole !== 'LV_1' && !auth.permission.isMaster) {
+      // UI·정책: 영구삭제는 시스템 LV_1만 (메뉴 Master 우회 불가)
+      if (auth.permission.myRole !== 'LV_1') {
         return NextResponse.json(
           { error: '아카이브 영구 삭제는 최고 관리자(LV_1)만 가능합니다.' },
           { status: 403 }

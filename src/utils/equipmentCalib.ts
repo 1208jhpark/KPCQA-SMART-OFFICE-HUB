@@ -1,4 +1,4 @@
-import { getKSTDateString, getKSTDaysUntil, parseKSTDateOnly } from '@/utils/dateUtils';
+import { addMonthsToKSTDateOnly, getKSTDateString, getKSTDaysUntil } from '@/utils/dateUtils';
 
 /** 검교정 일정 확인 윈도우: D-N ~ D-Day ~ D+ */
 export const CALIB_SCHEDULE_WINDOW_DAYS = 30;
@@ -17,6 +17,7 @@ export function toCalibYmd(raw: string | Date | null | undefined | unknown): str
   return null;
 }
 
+/** 검교정 주기 가산 — 말일 클램프 (setMonth 오버플로 방지) */
 export function addMonthsToCalibYmd(
   dateStr: string | null | undefined,
   months: number | null | undefined
@@ -24,10 +25,7 @@ export function addMonthsToCalibYmd(
   if (!dateStr || months == null || Number(months) === 0) return null;
   const ymd = toCalibYmd(dateStr);
   if (!ymd) return null;
-  const d = parseKSTDateOnly(ymd);
-  if (Number.isNaN(d.getTime())) return null;
-  d.setMonth(d.getMonth() + Number(months));
-  return getKSTDateString(d);
+  return addMonthsToKSTDateOnly(ymd, Number(months)) || null;
 }
 
 /** 이력 중 검교정 기준일(확정일 우선, 없으면 요청일)이 가장 최근인 건 */

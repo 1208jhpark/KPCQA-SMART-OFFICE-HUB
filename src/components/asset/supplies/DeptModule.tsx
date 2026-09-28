@@ -366,7 +366,9 @@ function DeptContent() {
       alert('대기 중인 신청만 취소할 수 있습니다.');
       return;
     }
-    if (req.user_email !== currentUser?.email) {
+    const ownerEmail = String(req.user_email || '').trim().toLowerCase();
+    const sessionEmail = String(currentUser?.email || '').trim().toLowerCase();
+    if (!ownerEmail || !sessionEmail || ownerEmail !== sessionEmail) {
       alert('본인이 신청한 건만 취소할 수 있습니다.');
       return;
     }
@@ -1020,7 +1022,11 @@ function DeptContent() {
                     const isRejected = isRejectedSupplyRequest(req.status);
                     const isCancelled = isCancelledSupplyRequest(req.status);
                     const statusLabel = supplyRequestStatusLabelDept(req.status);
-                    const isMine = Boolean(currentUser?.email && req.user_email === currentUser.email);
+                    const isMine = Boolean(
+                      currentUser?.email &&
+                        String(req.user_email || '').trim().toLowerCase() ===
+                          String(currentUser.email || '').trim().toLowerCase()
+                    );
                     let sUnit = '';
                     try {
                       const itemExt = req.item?.description ? JSON.parse(req.item.description) : {};

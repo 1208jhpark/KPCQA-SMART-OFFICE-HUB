@@ -1,7 +1,6 @@
 'use client';
 
 import { useState, useEffect, useMemo, useRef } from 'react';
-import * as XLSX from 'xlsx';
 import { usePathname } from 'next/navigation';
 import Link from 'next/link';
 import { getKSTDateString, getKSTNowYearMonth } from '@/utils/dateUtils';
@@ -547,42 +546,6 @@ export default function BusinessCardRequestPanel() {
     setSelectedIds(nextSet);
   };
 
-  const handleExcelDownload = () => {
-    if (!canEditMaster) return alertNoEditPermission();
-    const targets = requests.filter(r => selectedIds.has(r.id));
-    if (targets.length === 0) return alert('⚠️ 다운로드할 행을 체크박스로 선택해 주세요.');
-
-    const excelData = targets.map((r) => ({
-      '성명': r.userName,
-      '신청일자': r.applyDate,
-      '본부': r.deptHead,
-      '소속': r.deptName || '',
-      '직책/직급': r.title,
-      '추가사항': r.additionalKo || '',
-      '우편번호': r.zipCode,
-      '주소': r.addressKo,
-      '휴대전화': r.mobile,
-      '전화번호': r.phone || '',
-      '팩스': r.fax || '',
-      '이메일': r.email,
-      '영문이름': r.userNameEn || '',
-      '영문본부': r.deptHeadEn || '',
-      '영문소속': r.deptNameEn || '',
-      '영문직책': r.titleEn || '',
-      '영문추가': r.additionalEn || '',
-      '영문주소': r.addressEn || '',
-      '영문 휴대전화': stripBusinessCardEnPlus(r.mobileEn || ''),
-      '영문전화': stripBusinessCardEnPlus(r.phoneEn || ''),
-      '영문팩스': stripBusinessCardEnPlus(r.faxEn || ''),
-      '이메일(영문)': r.emailEn || r.email
-    }));
-
-    const ws = XLSX.utils.json_to_sheet(excelData);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "명함신청데이터");
-    XLSX.writeFile(wb, `명함발주데이터_${getKSTDateString()}.xlsx`);
-  };
-
   const handleApprove = async (id: string, postNumber: string) => {
     if (!canEditMaster) return alertNoEditPermission();
     if (!confirm(`[${postNumber}] 접수 완료 처리하시겠습니까?`)) return;
@@ -1047,10 +1010,10 @@ export default function BusinessCardRequestPanel() {
       BUSINESS CARD TOTAL GOVERNANCE
     </h3>
     <h1 className="text-2xl font-extrabold tracking-tight text-white leading-none">
-      전사 임직원 명함 발주 접수 통제 대장
+      전사 임직원 명함 통합 관리 대장
     </h1>
     <p className="text-emerald-100/90 text-xs mt-3 leading-relaxed">
-      [접수대기] 원문 검수 후 접수확정 → [발주대기] 개별 또는 묶음 발주로 넘깁니다. (원문 검수 가능)
+      [접수대기] 신청 건의 원문을 검수·확정하고, [발주대기] 상태의 건들을 개별 또는 묶음으로 취합하여 외주 발주합니다.
     </p>
     {permissionSummary && isSystemLv1User(currentUser) && (
       <div className="flex flex-wrap items-center gap-2 mt-4 pt-3 border-t border-white/15">
@@ -1315,21 +1278,6 @@ export default function BusinessCardRequestPanel() {
                 className="w-full h-7 box-border pl-7 pr-3 py-0 bg-white border border-slate-200 rounded-lg text-[11px] font-bold outline-none focus:border-indigo-500 shadow-sm transition-colors"
               />
             </div>
-            <button
-              type="button"
-              disabled={!canEditMaster}
-              title={!canEditMaster ? '편집 권한 필요' : undefined}
-              onClick={handleExcelDownload}
-              className={`h-7 px-3 rounded-lg text-[10px] font-black shadow-sm transition-all whitespace-nowrap leading-none ${
-                canEditMaster
-                  ? 'bg-emerald-600 text-white hover:bg-emerald-700'
-                  : DISABLED_ACTION_BTN
-              }`}
-            >
-              {selectedIds.size > 0
-                ? `선택 EXCEL 다운로드(${selectedIds.size})`
-                : '선택 데이터 엑셀 다운로드'}
-            </button>
             <button
               type="button"
               disabled={!canEditMaster}

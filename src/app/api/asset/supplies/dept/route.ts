@@ -227,7 +227,9 @@ export async function PATCH(req: Request) {
         return NextResponse.json({ error: '신청 내역을 찾을 수 없습니다.' }, { status: 404 });
       }
 
-      if (existing.user_email !== auth.user.email) {
+      const ownerEmail = String(existing.user_email || '').trim().toLowerCase();
+      const sessionEmail = String(auth.user.email || '').trim().toLowerCase();
+      if (!ownerEmail || !sessionEmail || ownerEmail !== sessionEmail) {
         return NextResponse.json(
           { error: '본인이 신청한 건만 취소할 수 있습니다.' },
           { status: 403 }
