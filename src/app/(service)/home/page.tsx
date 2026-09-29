@@ -107,7 +107,7 @@ export default function ServiceHomePage() {
       {/* Hero Section */}
       <header className={`relative z-10 shrink-0 w-full max-w-[1600px] px-8 md:px-16 mt-16 md:mt-20 ${isVertical ? 'text-left' : 'text-center'}`}>
         {String(config.tagline || '').trim() ? (
-          <div className={`inline-flex items-center space-x-2 px-3 py-1 rounded-full bg-white/60 backdrop-blur-sm border border-slate-200/80 text-[10px] font-black text-indigo-600 uppercase tracking-widest mb-5 shadow-sm ${!isVertical && 'mx-auto'}`}>
+          <div className={`inline-flex items-center space-x-2 px-3 py-1 rounded-full bg-white/60 backdrop-blur-sm border border-slate-200/80 text-[10px] font-black text-indigo-600 tracking-wide mb-5 shadow-sm ${!isVertical && 'mx-auto'}`}>
             <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full animate-pulse" />
             <span>{config.tagline}</span>
           </div>

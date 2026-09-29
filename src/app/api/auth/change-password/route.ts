@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import bcrypt from 'bcryptjs';
 import prisma from '@/lib/prisma';
 import { requireSessionUser, authErrorToResponse } from '@/lib/server-auth-guard';
+import { isPasswordSameAsEmployeeNo } from '@/lib/password-policy';
 
 const MIN_PASSWORD_LENGTH = 8;
 
@@ -32,9 +33,19 @@ export async function POST(req: Request) {
       );
     }
 
-    const dbUser = await prisma.user.findUnique({ where: { id: user.id } });
+    const dbUser = await prisma.user.findUnique({
+      where: { id: user.id },
+      select: { id: true, password: true, employee_no: true },
+    });
     if (!dbUser) {
       return NextResponse.json({ message: '사용자를 찾을 수 없습니다.' }, { status: 404 });
+    }
+
+    if (isPasswordSameAsEmployeeNo(newPassword, dbUser.employee_no)) {
+      return NextResponse.json(
+        { message: '사번은 비밀번호로 사용할 수 없습니다.' },
+        { status: 400 }
+      );
     }
 
     const ok = await bcrypt.compare(String(currentPassword), dbUser.password);

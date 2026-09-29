@@ -222,13 +222,19 @@ export default function InventoryModule() {
           
                 return (
                   <div key={item.id} className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm hover:shadow-lg transition-all group flex flex-col h-full">
-                    <div className={`w-full h-32 bg-slate-50/50 flex items-center justify-center relative border-b border-slate-100 ${isOut ? 'grayscale opacity-70' : ''}`}>
+                    <div className={`relative w-full aspect-square bg-slate-100 border-b border-slate-100 overflow-hidden ${isOut ? 'grayscale opacity-70' : ''}`}>
                       {item.image_url ? (
-                        <div className="w-16 h-16 bg-white rounded-xl shadow-sm border border-slate-200 p-1.5 flex items-center justify-center overflow-hidden">
-                          <img src={item.image_url} alt={item.name} className="max-w-full max-h-full object-contain group-hover:scale-110 transition-transform duration-300" />
+                        <img
+                          src={item.image_url}
+                          alt={item.name}
+                          className="absolute inset-0 w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                        />
+                      ) : (
+                        <div className="absolute inset-0 flex items-center justify-center">
+                          <span className="text-4xl opacity-15">📦</span>
                         </div>
-                      ) : <span className="text-4xl opacity-10">📦</span>}
-                      <div className="absolute top-2 right-2">
+                      )}
+                      <div className="absolute top-2 right-2 z-10">
                         {isOut ? <span className="px-2 py-0.5 bg-red-50 text-red-500 border border-red-100 rounded-md text-[9px] font-black shadow-sm tracking-widest">품절</span>
                                : <span className="px-2 py-0.5 bg-emerald-50 text-emerald-600 border border-emerald-100 rounded-md text-[9px] font-black shadow-sm tracking-widest">정상</span>}
                       </div>

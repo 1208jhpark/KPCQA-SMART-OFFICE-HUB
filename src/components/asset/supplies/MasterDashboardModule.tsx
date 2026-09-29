@@ -675,7 +675,7 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
                 <th className="h-12 px-1 text-center whitespace-nowrap bg-blue-50/60">안전재고</th>
                 <th className="h-12 px-1 text-center whitespace-nowrap bg-blue-50/60">재고 상태</th>
                 <th className="h-12 px-2 text-left bg-blue-50/60">관리 비고</th>
-                <th className="h-12 px-1 text-center whitespace-nowrap text-amber-700 border-l border-slate-300 bg-amber-50/60">신청단위</th>
+                <th className="h-12 px-1 text-center whitespace-nowrap text-amber-700 border-l border-slate-300 bg-amber-50/60">지급단위</th>
                 <th className="h-12 px-1 text-center whitespace-nowrap text-amber-700 bg-amber-50/60">게시(Edit)</th>
                 <th className="h-12 pr-3 pl-2 text-center whitespace-nowrap border-l border-slate-300">
                   <span className="inline-flex items-center justify-center gap-0.5">

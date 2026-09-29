@@ -1,9 +1,10 @@
 'use client';
 
-import { useState, Suspense } from 'react';
+import { useState, Suspense, useEffect } from 'react';
 import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { patchServiceShellUser } from '@/lib/service-shell-cache';
+import { isPasswordSameAsEmployeeNo } from '@/lib/password-policy';
 
 function PasswordEyeButton({
   show,
@@ -71,6 +72,24 @@ function ChangePasswordForm() {
   });
   const [submitting, setSubmitting] = useState(false);
   const [msg, setMsg] = useState<{ text: string; ok: boolean } | null>(null);
+  const [employeeNo, setEmployeeNo] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch('/api/auth/me', { cache: 'no-store' });
+        if (!res.ok) return;
+        const data = await res.json().catch(() => ({}));
+        if (!cancelled) setEmployeeNo(String(data.employee_no || '').trim());
+      } catch {
+        /* ignore — 서버에서도 재검증 */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -82,6 +101,10 @@ function ChangePasswordForm() {
     }
     if (form.newPassword.length < 8) {
       setMsg({ text: '새 비밀번호는 8자 이상이어야 합니다.', ok: false });
+      return;
+    }
+    if (isPasswordSameAsEmployeeNo(form.newPassword, employeeNo)) {
+      setMsg({ text: '사번은 비밀번호로 사용할 수 없습니다.', ok: false });
       return;
     }
 
@@ -174,6 +197,9 @@ function ChangePasswordForm() {
                 onToggle={() => setShow((s) => ({ ...s, next: !s.next }))}
               />
             </div>
+            <p className="text-[11px] font-bold text-slate-400 ml-1">
+              사번은 새 비밀번호로 사용할 수 없습니다.
+            </p>
           </div>
           <div className="space-y-1">
             <label className="text-[10px] font-black text-slate-400 ml-1 uppercase">
