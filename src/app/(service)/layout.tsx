@@ -9,6 +9,7 @@ import { checkMenuPermission } from '@/lib/permission-utils';
 import { resolveEntryHref } from '@/lib/resolve-entry-href';
 import LoadingState from '@/components/common/LoadingState';
 import AlarmBell from '@/components/common/AlarmBell';
+import PageViewTracker from '@/components/common/PageViewTracker';
 import {
   readServiceShellCache,
   writeServiceShellCache,
@@ -302,6 +303,7 @@ export default function ServiceLayout({ children }: { children: React.ReactNode 
   
   return (
     <div className="flex flex-col h-screen bg-slate-50/50 font-sans text-slate-900 overflow-hidden">
+      <PageViewTracker />
       <header className="h-16 bg-slate-900 border-b border-slate-800 flex items-center justify-between px-8 shrink-0 z-50 shadow-lg">
         <div className="flex items-center gap-12">
           <Link href="/home" className="font-black text-[14px] uppercase tracking-widest text-indigo-400 not-italic hover:opacity-80 transition-opacity">

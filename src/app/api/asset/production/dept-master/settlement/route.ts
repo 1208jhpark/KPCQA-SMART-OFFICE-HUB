@@ -552,79 +552,148 @@ export async function POST(req: Request) {
       });
     }
 
-    // 정상 UI는 inspection `archive-batch` 사용.
-    // settlement에도 동일 action·메타를 맞춰 두면 경로가 갈라져도 이관자 기록이 비지 않음.
-    if (action !== 'archive-batch') {
-      return NextResponse.json(
-        {
-          message:
-            '지원하지 않는 요청입니다. (inspect | statement-match | archive-batch)',
-        },
-        { status: 400 }
-      );
-    }
+    // 정산 → 검수 되돌리기 (inspection의 archive-batch 반대)
+    if (action === 'revert-to-inspection') {
+      const auth = await authorizeApi(MENU_PATH, { requireEditor: true });
+      const scope = buildSettlementScope(auth);
+      if (!scope || isProductionScopeEmpty(scope)) {
+        return NextResponse.json(
+          { message: '부서 스코프가 없어 처리할 수 없습니다.' },
+          { status: 403 }
+        );
+      }
 
-    const auth = await authorizeApi(MENU_PATH, { requireEditor: true });
-    const scope = buildSettlementScope(auth);
-    if (!scope || isProductionScopeEmpty(scope)) {
-      return NextResponse.json(
-        { message: '부서 스코프가 없어 처리할 수 없습니다.' },
-        { status: 403 }
-      );
-    }
+      const batchId = String(body.batchId || '').trim();
+      if (!batchId) {
+        return NextResponse.json({ message: '묶음 번호가 필요합니다.' }, { status: 400 });
+      }
 
-    const batchId = String(body.batchId || '').trim();
-    if (!batchId) {
-      return NextResponse.json({ message: '묶음 번호가 필요합니다.' }, { status: 400 });
-    }
-
-    const scopeWhere = buildProductionDeptScopeWhere(scope);
-    const rows = await prisma.productionRequest.findMany({
-      where: {
-        AND: [
-          { batchId, status: 'VERIFIED', isArchived: false },
-          ...(scopeWhere ? [scopeWhere] : []),
-        ],
-      },
-    });
-    if (rows.length === 0) {
-      return NextResponse.json(
-        { message: '담당 부서 범위의 수령완료(VERIFIED) 건만 보관함으로 이동할 수 있습니다.' },
-        { status: 400 }
-      );
-    }
-
-    const { getKSTDateString } = await import('@/utils/dateUtils');
-    const settlementMovedBy = {
-      date: getKSTDateString(),
-      userName: String(auth.user?.name || '').trim() || '-',
-      deptName: String(
-        (auth.user as { unit?: { unit_name?: string | null } | null })?.unit?.unit_name || ''
-      ).trim(),
-    };
-    const settlementMovedAt = new Date().toISOString();
-
-    let updated = 0;
-    for (const row of rows) {
-      const prevOpts = asOptionsRecord(row.options);
-      await prisma.productionRequest.update({
-        where: { id: row.id },
-        data: {
-          isArchived: true,
-          options: asInputJson({
-            ...prevOpts,
-            settlementMovedBy,
-            settlementMovedAt,
-          }),
+      const scopeWhere = buildProductionDeptScopeWhere(scope);
+      const rows = await prisma.productionRequest.findMany({
+        where: {
+          AND: [
+            { batchId, status: 'VERIFIED', isArchived: true },
+            ...(scopeWhere ? [scopeWhere] : []),
+          ],
         },
       });
-      updated += 1;
+      if (rows.length === 0) {
+        return NextResponse.json(
+          {
+            message:
+              '담당 부서 범위의 정산(명세대조) 묶음만 검수로 되돌릴 수 있습니다.',
+          },
+          { status: 400 }
+        );
+      }
+      if (rows.some((r) => isMasterSettledArchived(r.options))) {
+        return NextResponse.json(
+          {
+            message:
+              '정산완료 보관함으로 이동된 묶음은 검수로 되돌릴 수 없습니다.',
+          },
+          { status: 400 }
+        );
+      }
+
+      let updated = 0;
+      for (const row of rows) {
+        const nextOpts = { ...asOptionsRecord(row.options) };
+        delete nextOpts.settlementMovedBy;
+        delete nextOpts.settlementMovedAt;
+        await prisma.productionRequest.update({
+          where: { id: row.id },
+          data: {
+            isArchived: false,
+            options: asInputJson(nextOpts),
+          },
+        });
+        updated += 1;
+      }
+
+      return NextResponse.json({
+        message: `${updated}건을 수령검수 화면으로 되돌렸습니다.`,
+        count: updated,
+      });
     }
 
-    return NextResponse.json({
-      message: '해당 발주 묶음이 성공적으로 보관함으로 이관되었습니다.',
-      count: updated,
-    });
+    // 정상 UI는 inspection `archive-batch` 사용.
+    // settlement에도 동일 action·메타를 맞춰 두면 경로가 갈라져도 이관자 기록이 비지 않음.
+    if (action === 'archive-batch') {
+      const auth = await authorizeApi(MENU_PATH, { requireEditor: true });
+      const scope = buildSettlementScope(auth);
+      if (!scope || isProductionScopeEmpty(scope)) {
+        return NextResponse.json(
+          { message: '부서 스코프가 없어 처리할 수 없습니다.' },
+          { status: 403 }
+        );
+      }
+
+      const batchId = String(body.batchId || '').trim();
+      if (!batchId) {
+        return NextResponse.json({ message: '묶음 번호가 필요합니다.' }, { status: 400 });
+      }
+
+      const scopeWhere = buildProductionDeptScopeWhere(scope);
+      const rows = await prisma.productionRequest.findMany({
+        where: {
+          AND: [
+            { batchId, status: 'VERIFIED', isArchived: false },
+            ...(scopeWhere ? [scopeWhere] : []),
+          ],
+        },
+      });
+      if (rows.length === 0) {
+        return NextResponse.json(
+          {
+            message:
+              '담당 부서 범위의 수령완료(VERIFIED) 건만 보관함으로 이동할 수 있습니다.',
+          },
+          { status: 400 }
+        );
+      }
+
+      const { getKSTDateString } = await import('@/utils/dateUtils');
+      const settlementMovedBy = {
+        date: getKSTDateString(),
+        userName: String(auth.user?.name || '').trim() || '-',
+        deptName: String(
+          (auth.user as { unit?: { unit_name?: string | null } | null })?.unit?.unit_name ||
+            ''
+        ).trim(),
+      };
+      const settlementMovedAt = new Date().toISOString();
+
+      let updated = 0;
+      for (const row of rows) {
+        const prevOpts = asOptionsRecord(row.options);
+        await prisma.productionRequest.update({
+          where: { id: row.id },
+          data: {
+            isArchived: true,
+            options: asInputJson({
+              ...prevOpts,
+              settlementMovedBy,
+              settlementMovedAt,
+            }),
+          },
+        });
+        updated += 1;
+      }
+
+      return NextResponse.json({
+        message: '해당 발주 묶음이 성공적으로 보관함으로 이관되었습니다.',
+        count: updated,
+      });
+    }
+
+    return NextResponse.json(
+      {
+        message:
+          '지원하지 않는 요청입니다. (inspect | statement-match | archive-batch | revert-to-inspection)',
+      },
+      { status: 400 }
+    );
   } catch (error) {
     const authRes = authErrorToResponse(error);
     if (authRes.status !== 500) return authRes;

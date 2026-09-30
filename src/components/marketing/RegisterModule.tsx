@@ -529,8 +529,8 @@ function RegisterContent() {
       if (res.ok) {
         alert(
           needsApprovalRequest
-            ? '✅ 승인 요청이 등록되었습니다.\n재고는 즉시 예약(차감)되며, 관리자 승인 후 지급이 확정됩니다.'
-            : '✅ 성공적으로 등록되었으며, 재고가 차감되었습니다.'
+            ? '✅ 승인 요청이 등록되었습니다.\n재고는 즉시 예약(차감)되며, 관리자 승인 후 지급이 확정됩니다.\n\n그룹웨어로 이동하여 결재를 올려 주세요.'
+            : '✅ 성공적으로 등록되었으며, 재고가 차감되었습니다.\n\n그룹웨어로 이동하여 결재를 올려 주세요.'
         );
         setFormData({ ...initialForm, dist_date: getKSTDateString() });
         setCurrentPage(1);

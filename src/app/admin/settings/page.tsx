@@ -1,19 +1,8 @@
 'use client';
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect } from 'react';
+import * as XLSX from 'xlsx';
 import LoadingState from '@/components/common/LoadingState';
-
-type PurgeDomainPreview = {
-  id: string;
-  step1: string;
-  step2: string;
-  label: string;
-  paths: string[];
-  description: string;
-  tables: string[];
-  counts: Record<string, number>;
-  total: number;
-};
 
 export default function AdminSettingsPage() {
   const [config, setConfig] = useState<any>(null);
@@ -22,15 +11,28 @@ export default function AdminSettingsPage() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
 
-  const [purgeDomains, setPurgeDomains] = useState<PurgeDomainPreview[]>([]);
-  const [purgeExcludedNote, setPurgeExcludedNote] = useState('');
-  const [purgeSelected, setPurgeSelected] = useState<Set<string>>(new Set());
-  const [purgeConfirm, setPurgeConfirm] = useState('');
-  const [purgeChallengeId, setPurgeChallengeId] = useState('');
-  const [purgeChallengeCode, setPurgeChallengeCode] = useState('');
-  const [purgeEnabled, setPurgeEnabled] = useState(false);
-  const [purgeLoading, setPurgeLoading] = useState(false);
-  const [purgeBusy, setPurgeBusy] = useState(false);
+  type PageViewRow = {
+    path: string;
+    step1: string;
+    step2: string;
+    step3: string;
+    step4: string;
+    level: number;
+    hits: number;
+    users: number;
+    inMenu: boolean;
+  };
+  const nowY = new Date().getFullYear();
+  const [pvYear, setPvYear] = useState(nowY);
+  const [pvMonth, setPvMonth] = useState<'all' | number>('all');
+  const [pvYears, setPvYears] = useState<number[]>([nowY]);
+  const [pvRows, setPvRows] = useState<PageViewRow[]>([]);
+  const [pvTotalHits, setPvTotalHits] = useState(0);
+  const [pvTotalUsers, setPvTotalUsers] = useState(0);
+  const [pvLoading, setPvLoading] = useState(false);
+  const [pvError, setPvError] = useState<string | null>(null);
+  /** 기본 접힘 — 클릭 시 펼침 */
+  const [pvOpen, setPvOpen] = useState(false);
 
   const fetchData = async () => {
     try {
@@ -108,115 +110,73 @@ export default function AdminSettingsPage() {
     }
   };
 
-  const fetchPurgePreview = async () => {
-    setPurgeLoading(true);
+  const fetchPageViews = async (year: number, month: 'all' | number) => {
+    setPvLoading(true);
+    setPvError(null);
     try {
-      const res = await fetch(`/api/admin/test-data-purge?t=${Date.now()}`, {
-        cache: 'no-store',
+      const q = new URLSearchParams({
+        year: String(year),
+        month: month === 'all' ? 'all' : String(month),
+        t: String(Date.now()),
       });
+      const res = await fetch(`/api/admin/page-views?${q}`, { cache: 'no-store' });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        setPurgeEnabled(false);
-        setPurgeDomains([]);
-        setPurgeChallengeId('');
-        setPurgeChallengeCode('');
-        setPurgeExcludedNote(data.message || '미리보기를 불러오지 못했습니다.');
+        setPvRows(Array.isArray(data.rows) ? data.rows : []);
+        setPvError(data.error || data.message || `집계 로드 실패 (${res.status})`);
         return;
       }
-      if (data.enabled === false) {
-        setPurgeEnabled(false);
-        setPurgeDomains([]);
-        setPurgeChallengeId('');
-        setPurgeChallengeCode('');
-        setPurgeExcludedNote('');
-        return;
+      setPvRows(Array.isArray(data.rows) ? data.rows : []);
+      setPvTotalHits(Number(data.totalHits) || 0);
+      setPvTotalUsers(Number(data.totalUsers) || 0);
+      if (Array.isArray(data.years) && data.years.length) {
+        setPvYears(data.years);
       }
-      setPurgeEnabled(true);
-      setPurgeDomains(Array.isArray(data.domains) ? data.domains : []);
-      setPurgeExcludedNote(String(data.excludedNote || ''));
-      setPurgeChallengeId(String(data.challengeId || ''));
-      setPurgeChallengeCode(String(data.challengeCode || ''));
-      setPurgeConfirm('');
+      setPvError(data.warning ? String(data.warning) : null);
     } catch {
-      setPurgeEnabled(false);
-      setPurgeDomains([]);
-      setPurgeChallengeId('');
-      setPurgeChallengeCode('');
-      setPurgeExcludedNote('미리보기 통신 오류');
+      setPvRows([]);
+      setPvError('페이지 접속 집계 통신 오류');
     } finally {
-      setPurgeLoading(false);
+      setPvLoading(false);
     }
   };
 
   useEffect(() => {
     fetchData();
-    fetchPurgePreview();
   }, []);
 
-  const selectedPurgeTotal = useMemo(() => {
-    return purgeDomains
-      .filter((d) => purgeSelected.has(d.id))
-      .reduce((sum, d) => sum + (Number(d.total) || 0), 0);
-  }, [purgeDomains, purgeSelected]);
+  useEffect(() => {
+    if (!pvOpen) return;
+    fetchPageViews(pvYear, pvMonth);
+  }, [pvOpen, pvYear, pvMonth]);
 
-  const togglePurgeDomain = (id: string) => {
-    setPurgeSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  };
-
-  const handlePurgeSelected = async () => {
-    if (purgeSelected.size === 0) {
-      return alert('삭제할 페이지(도메인)를 하나 이상 선택해 주세요.');
+  const downloadPageViewsExcel = () => {
+    if (pvRows.length === 0) {
+      return alert('다운로드할 집계 데이터가 없습니다.');
     }
-    if (!purgeChallengeId || !purgeChallengeCode) {
-      return alert('확인 키가 없습니다. 건수 새로고침 후 다시 시도해 주세요.');
-    }
-    if (purgeConfirm.trim() !== purgeChallengeCode) {
-      return alert('화면에 표시된 확인 키를 정확히 입력해 주세요.');
-    }
-    const labels = purgeDomains
-      .filter((d) => purgeSelected.has(d.id))
-      .map((d) => `· ${d.label} (${d.total}건)`)
-      .join('\n');
-    if (
-      !confirm(
-        `선택한 영역의 거래 행을 DB에서 영구삭제합니다.\n복구할 수 없습니다.\n\n${labels}\n\n합계 약 ${selectedPurgeTotal}건\n계속할까요?`
-      )
-    ) {
-      return;
-    }
-    if (!confirm('정말 삭제할까요? (마스터·시드·설정값은 유지됩니다)')) return;
-
-    setPurgeBusy(true);
-    try {
-      const res = await fetch('/api/admin/test-data-purge', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          domainIds: Array.from(purgeSelected),
-          challengeId: purgeChallengeId,
-          confirm: purgeConfirm.trim(),
-        }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        alert(data.message || '삭제에 실패했습니다.');
-        await fetchPurgePreview();
-        return;
-      }
-      alert(data.message || '삭제되었습니다.');
-      setPurgeConfirm('');
-      setPurgeSelected(new Set());
-      await fetchPurgePreview();
-    } catch {
-      alert('삭제 중 통신 오류가 발생했습니다.');
-    } finally {
-      setPurgeBusy(false);
-    }
+    const monthLabel = pvMonth === 'all' ? '전체' : `${pvMonth}월`;
+    const exportData = pvRows.map((r) => ({
+      Step1: r.step1,
+      Step2: r.step2,
+      Step3: r.step3,
+      Step4: r.step4,
+      경로: r.path,
+      조회수: Number(r.hits) || 0,
+      접속자: Number(r.users) || 0,
+    }));
+    exportData.push({
+      Step1: '',
+      Step2: '',
+      Step3: '',
+      Step4: '합계',
+      경로: `${pvYear}년 ${monthLabel}`,
+      조회수: pvTotalHits,
+      접속자: pvTotalUsers,
+    } as any);
+    const ws = XLSX.utils.json_to_sheet(exportData);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, '페이지접속집계');
+    XLSX.writeFile(wb, `페이지접속집계_${pvYear}년_${monthLabel}.xlsx`);
   };
 
   const handleSaveGroup = async (fields: string[], groupLabel: string) => {
@@ -534,189 +494,222 @@ export default function AdminSettingsPage() {
         })}
       </div>
 
-      {purgeEnabled ? (
-      <div className="bg-white border border-rose-200 rounded-[2.5rem] shadow-sm overflow-hidden">
-        <div className="px-8 py-5 bg-rose-50/70 border-b border-rose-100 flex flex-wrap justify-between items-center gap-3">
+      <div className="bg-white border border-indigo-200 rounded-[2.5rem] shadow-sm overflow-hidden">
+        <button
+          type="button"
+          onClick={() => setPvOpen((v) => !v)}
+          className={`w-full px-8 py-5 bg-indigo-50/70 flex flex-wrap justify-between items-center gap-3 text-left transition-colors hover:bg-indigo-50 ${
+            pvOpen ? 'border-b border-indigo-100' : ''
+          }`}
+          aria-expanded={pvOpen}
+        >
           <div className="flex items-center gap-3 min-w-0">
-            <span className="text-2xl shrink-0">🧹</span>
+            <span className="text-2xl shrink-0">📊</span>
             <div className="min-w-0">
-              <h3 className="text-sm font-black text-slate-800">
-                테스트 거래 데이터 정리 (LV_1)
+              <h3 className="text-sm font-black text-slate-800 flex items-center gap-2">
+                페이지 접속 집계 (LV_1)
+                <span className="text-[10px] font-black text-indigo-600 bg-white border border-indigo-200 px-2 py-0.5 rounded-full">
+                  {pvOpen ? '접기' : '닫힘 · 클릭하여 펼치기'}
+                </span>
               </h3>
               <p className="text-[10px] text-slate-500 font-bold mt-0.5 leading-relaxed">
-                신청·응답·이력 등 표에 쌓인 행만 페이지별로 선택 삭제합니다. 마스터/시드/메뉴 권한은
-                건드리지 않습니다.
+                {pvOpen
+                  ? '조회수 = 페이지를 연 횟수(동일 경로 20초 내 중복은 1회) · 접속자 = 그 기간에 해당 경로를 연 사람 수(고유 계정, 서울 시각)'
+                  : '평소에는 접혀 있습니다. 필요할 때 펼쳐 연·월 집계를 확인하세요.'}
               </p>
             </div>
           </div>
-          <button
-            type="button"
-            onClick={() => fetchPurgePreview()}
-            disabled={purgeLoading || purgeBusy}
-            className="px-4 py-1.5 bg-white border border-rose-200 text-rose-700 font-black text-[11px] rounded-xl hover:bg-rose-50 transition-all shadow-sm disabled:opacity-50"
+          <span
+            className={`text-indigo-700 font-black text-lg shrink-0 transition-transform ${
+              pvOpen ? 'rotate-180' : ''
+            }`}
+            aria-hidden
           >
-            {purgeLoading ? '집계 중…' : '건수 새로고침'}
-          </button>
-        </div>
+            ▾
+          </span>
+        </button>
 
-        <div className="px-8 py-4 border-b border-slate-100 bg-slate-50/80">
-          <p className="text-[11px] text-slate-600 font-medium leading-relaxed">
-            {purgeExcludedNote ||
-              '마스터·시드·메뉴권한·설문정의·품목/자산/장비 본체는 삭제하지 않습니다.'}
-          </p>
-        </div>
+        {pvOpen ? (
+          <>
+            <div className="px-8 py-3 border-b border-slate-100 bg-slate-50/80 flex flex-wrap justify-end items-center gap-2">
+              <label className="flex items-center gap-1.5 text-[10px] font-black text-slate-500">
+                년도
+                <select
+                  value={pvYear}
+                  onChange={(e) => setPvYear(Number(e.target.value))}
+                  className="px-2.5 py-1.5 bg-white border border-indigo-200 rounded-lg text-[11px] font-black text-slate-800 outline-none focus:ring-2 ring-indigo-300"
+                >
+                  {pvYears.map((y) => (
+                    <option key={y} value={y}>
+                      {y}년
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="flex items-center gap-1.5 text-[10px] font-black text-slate-500">
+                월
+                <select
+                  value={pvMonth === 'all' ? 'all' : String(pvMonth)}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setPvMonth(v === 'all' ? 'all' : Number(v));
+                  }}
+                  className="px-2.5 py-1.5 bg-white border border-indigo-200 rounded-lg text-[11px] font-black text-slate-800 outline-none focus:ring-2 ring-indigo-300"
+                >
+                  <option value="all">전체</option>
+                  {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => (
+                    <option key={m} value={m}>
+                      {m}월
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <button
+                type="button"
+                onClick={() => fetchPageViews(pvYear, pvMonth)}
+                disabled={pvLoading}
+                className="px-4 py-1.5 bg-white border border-indigo-200 text-indigo-700 font-black text-[11px] rounded-xl hover:bg-indigo-50 transition-all shadow-sm disabled:opacity-50"
+              >
+                {pvLoading ? '집계 중…' : '새로고침'}
+              </button>
+              <button
+                type="button"
+                onClick={downloadPageViewsExcel}
+                disabled={pvLoading || pvRows.length === 0}
+                className="px-4 py-1.5 bg-emerald-600 text-white font-black text-[11px] rounded-xl hover:bg-emerald-700 transition-all shadow-sm disabled:opacity-50"
+              >
+                엑셀 다운로드
+              </button>
+            </div>
 
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-[11px] table-fixed min-w-[980px]">
-            <colgroup>
-              <col className="w-[44px]" />
-              <col className="w-[168px]" />
-              <col className="w-[168px]" />
-              <col />
-              <col className="w-[340px]" />
-              <col className="w-[72px]" />
-            </colgroup>
-            <thead className="bg-slate-50 text-slate-400 font-black tracking-widest uppercase border-b border-slate-200">
-              <tr>
-                <th className="py-3 px-3 text-center">선택</th>
-                <th className="py-3 px-2">Step1</th>
-                <th className="py-3 px-2">Step2</th>
-                <th className="py-3 px-3">영역</th>
-                <th className="py-3 px-3">관련 경로</th>
-                <th className="py-3 px-3 text-right">건수</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100 font-bold text-slate-700">
-              {purgeLoading && purgeDomains.length === 0 ? (
-                <tr>
-                  <td colSpan={6} className="px-8 py-10 text-center text-slate-400">
-                    건수 집계 중…
-                  </td>
-                </tr>
-              ) : purgeDomains.length === 0 ? (
-                <tr>
-                  <td colSpan={6} className="px-8 py-10 text-center text-slate-400">
-                    미리보기 데이터가 없습니다.
-                  </td>
-                </tr>
-              ) : (
-                purgeDomains.map((d, idx) => {
-                  const checked = purgeSelected.has(d.id);
-                  const prev = idx > 0 ? purgeDomains[idx - 1] : null;
-                  const showStep1 = !prev || prev.step1 !== d.step1;
-                  const showStep2 = showStep1 || !prev || prev.step2 !== d.step2;
-                  return (
-                    <tr
-                      key={d.id}
-                      className={`transition-colors align-top ${
-                        checked ? 'bg-rose-50/40' : 'hover:bg-slate-50/60'
-                      } ${showStep1 && idx > 0 ? 'border-t-2 border-slate-200' : ''}`}
-                    >
-                      <td className="px-3 py-3 text-center">
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={() => togglePurgeDomain(d.id)}
-                          disabled={purgeBusy}
-                          className="w-3.5 h-3.5 accent-rose-600 cursor-pointer"
-                        />
-                      </td>
-                      <td className="px-2 py-3">
-                        {showStep1 ? (
-                          <span className="text-[11px] font-black text-indigo-800 leading-snug break-keep">
-                            {d.step1}
-                          </span>
-                        ) : (
-                          <span className="text-slate-200">·</span>
-                        )}
-                      </td>
-                      <td className="px-2 py-3">
-                        {showStep2 ? (
-                          <span className="text-[11px] font-black text-slate-700 leading-snug break-keep">
-                            {d.step2}
-                          </span>
-                        ) : (
-                          <span className="text-slate-200">·</span>
-                        )}
-                      </td>
-                      <td className="px-3 py-3">
-                        <p className="text-slate-800 font-black text-[12px]">{d.label}</p>
-                        <p className="text-[10px] text-slate-500 font-medium mt-1 leading-relaxed break-keep">
-                          {d.description}
-                        </p>
-                      </td>
-                      <td className="px-3 py-3 font-mono text-[10px] text-slate-500 leading-relaxed">
-                        {(d.paths || []).map((p) => (
-                          <div key={p} className="truncate" title={p}>
-                            {p}
-                          </div>
-                        ))}
-                        <div className="mt-1 text-slate-400 font-sans break-all">
-                          {Object.entries(d.counts || {})
-                            .map(([k, n]) => `${k}: ${n}`)
-                            .join(' · ')}
-                        </div>
-                      </td>
-                      <td className="px-3 py-3 text-right tabular-nums text-slate-900 font-black">
-                        {Number(d.total || 0).toLocaleString()}
+            <div className="px-8 py-3 border-b border-slate-100 bg-slate-50/80 flex flex-wrap gap-4 text-[11px] font-bold text-slate-600">
+              <span>
+                조회수 합계{' '}
+                <span className="text-indigo-700 font-black tabular-nums">
+                  {pvTotalHits.toLocaleString()}
+                </span>
+                <span className="text-slate-400 font-medium ml-1">(열람 횟수)</span>
+              </span>
+              <span>
+                기간 내 접속자{' '}
+                <span className="text-indigo-700 font-black tabular-nums">
+                  {pvTotalUsers.toLocaleString()}
+                </span>
+                <span className="text-slate-400 font-medium ml-1">(고유 계정 수)</span>
+              </span>
+              {pvError ? <span className="text-rose-600">{pvError}</span> : null}
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-[11px] table-fixed min-w-[1080px]">
+                <colgroup>
+                  <col className="w-[140px]" />
+                  <col className="w-[140px]" />
+                  <col className="w-[150px]" />
+                  <col className="w-[150px]" />
+                  <col />
+                  <col className="w-[88px]" />
+                  <col className="w-[88px]" />
+                </colgroup>
+                <thead className="bg-slate-50 text-slate-400 font-black tracking-widest uppercase border-b border-slate-200">
+                  <tr>
+                    <th className="py-3 px-2">Step1</th>
+                    <th className="py-3 px-2">Step2</th>
+                    <th className="py-3 px-2">Step3</th>
+                    <th className="py-3 px-2">Step4</th>
+                    <th className="py-3 px-3">경로</th>
+                    <th className="py-3 px-3 text-right" title="페이지를 연 횟수">
+                      조회수
+                    </th>
+                    <th className="py-3 px-3 text-right" title="해당 경로를 연 고유 계정 수">
+                      접속자
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 font-bold text-slate-700">
+                  {pvLoading && pvRows.length === 0 ? (
+                    <tr>
+                      <td colSpan={7} className="px-8 py-10 text-center text-slate-400">
+                        집계 불러오는 중…
                       </td>
                     </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
-
-        <div className="px-8 py-5 bg-white border-t border-slate-100 flex flex-wrap items-end justify-between gap-4">
-          <div className="space-y-2 min-w-[240px]">
-            <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest">
-              확인 키 입력
-            </label>
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="inline-flex items-center px-3 py-2 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 font-black tracking-[0.2em] text-sm tabular-nums">
-                {purgeChallengeCode || '------'}
-              </span>
-              <input
-                type="text"
-                inputMode="numeric"
-                value={purgeConfirm}
-                onChange={(e) => setPurgeConfirm(e.target.value.replace(/\D/g, '').slice(0, 6))}
-                disabled={purgeBusy || !purgeChallengeCode}
-                placeholder="왼쪽 키 입력"
-                className="w-36 px-3 py-2 border border-slate-200 rounded-xl text-xs font-black tracking-widest outline-none focus:ring-2 ring-rose-400"
-                autoComplete="off"
-              />
+                  ) : pvRows.length === 0 ? (
+                    <tr>
+                      <td colSpan={7} className="px-8 py-10 text-center text-slate-400">
+                        경로 목록을 불러오지 못했습니다. 새로고침하거나 서버 로그를 확인해 주세요.
+                      </td>
+                    </tr>
+                  ) : (
+                    pvRows.map((r, idx) => {
+                      const prev = idx > 0 ? pvRows[idx - 1] : null;
+                      const showStep1 = !prev || prev.step1 !== r.step1;
+                      const showStep2 = showStep1 || !prev || prev.step2 !== r.step2;
+                      const showStep3 = showStep2 || !prev || prev.step3 !== r.step3;
+                      return (
+                        <tr
+                          key={`${r.path}-${r.level}-${idx}`}
+                          className={`align-top hover:bg-slate-50/60 ${
+                            showStep1 && idx > 0 ? 'border-t-2 border-slate-200' : ''
+                          } ${r.hits > 0 ? '' : 'opacity-60'}`}
+                        >
+                          <td className="px-2 py-2.5">
+                            {showStep1 ? (
+                              <span className="text-[11px] font-black text-indigo-800 leading-snug break-keep">
+                                {r.step1}
+                              </span>
+                            ) : (
+                              <span className="text-slate-200">·</span>
+                            )}
+                          </td>
+                          <td className="px-2 py-2.5">
+                            {showStep2 ? (
+                              <span className="text-[11px] font-black text-slate-700 leading-snug break-keep">
+                                {r.step2}
+                              </span>
+                            ) : (
+                              <span className="text-slate-200">·</span>
+                            )}
+                          </td>
+                          <td className="px-2 py-2.5">
+                            {showStep3 ? (
+                              <span className="text-[11px] font-bold text-slate-600 leading-snug break-keep">
+                                {r.step3}
+                              </span>
+                            ) : (
+                              <span className="text-slate-200">·</span>
+                            )}
+                          </td>
+                          <td className="px-2 py-2.5">
+                            <span className="text-[11px] font-bold text-slate-600 leading-snug break-keep">
+                              {r.step4}
+                            </span>
+                          </td>
+                          <td className="px-3 py-2.5 font-mono text-[10px] text-slate-500">
+                            <span className="truncate block" title={r.path}>
+                              {r.path}
+                            </span>
+                            {!r.inMenu && r.step1 === '기타' ? (
+                              <span className="text-[9px] text-amber-600 font-sans font-bold">
+                                카탈로그 외 접속 경로
+                              </span>
+                            ) : null}
+                          </td>
+                          <td className="px-3 py-2.5 text-right tabular-nums text-slate-900 font-black">
+                            {Number(r.hits || 0).toLocaleString()}
+                          </td>
+                          <td className="px-3 py-2.5 text-right tabular-nums text-slate-800 font-black">
+                            {Number(r.users || 0).toLocaleString()}
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
             </div>
-            <p className="text-[10px] text-slate-500 font-medium">
-              선택 {purgeSelected.size}개 · 삭제 예정 약{' '}
-              <span className="text-rose-700 font-black">
-                {selectedPurgeTotal.toLocaleString()}
-              </span>
-              건 · 키는 새로고침마다 바뀌며 1회만 사용됩니다.
-            </p>
-          </div>
-          <div className="flex flex-col items-end gap-2">
-            <p className="text-[11px] text-rose-600 font-black text-right leading-snug max-w-xs">
-              테스트 거래 데이터 삭제는 복구되지 않으므로 주의 바랍니다.
-            </p>
-            <button
-              type="button"
-              onClick={handlePurgeSelected}
-              disabled={
-                purgeBusy ||
-                purgeSelected.size === 0 ||
-                !purgeChallengeCode ||
-                purgeConfirm.trim() !== purgeChallengeCode
-              }
-              className="px-5 py-2.5 bg-rose-600 text-white font-black text-[11px] rounded-xl hover:bg-rose-700 shadow-sm disabled:opacity-40 disabled:cursor-not-allowed transition-all"
-            >
-              {purgeBusy ? '삭제 중…' : `선택 영역 영구삭제 (${purgeSelected.size})`}
-            </button>
-          </div>
-        </div>
+          </>
+        ) : null}
       </div>
-      ) : null}
 
       <div className="pt-4">
         <div className="bg-slate-800 border border-slate-700 rounded-[2rem] p-8 shadow-md text-white flex items-center gap-6 relative overflow-hidden">
@@ -734,6 +727,7 @@ export default function AdminSettingsPage() {
           </div>
         </div>
       </div>
+
     </div>
   );
 }

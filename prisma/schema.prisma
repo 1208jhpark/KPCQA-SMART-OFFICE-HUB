@@ -1075,3 +1075,34 @@ model ProductionPrintItemMaster {
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 }
+
+/// 페이지 접속 일별 집계 (조회수)
+model PageViewDaily {
+  id     String @id @default(cuid())
+  path   String
+  year   Int
+  month  Int
+  day    Int
+  hits   Int    @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([path, year, month, day])
+  @@index([year, month])
+  @@index([path])
+}
+
+/// 페이지 접속 일별 고유 사용자 (접속자 수)
+model PageViewVisitorDaily {
+  id     String @id @default(cuid())
+  path   String
+  year   Int
+  month  Int
+  day    Int
+  userId String
+  createdAt DateTime @default(now())
+
+  @@unique([path, year, month, day, userId])
+  @@index([year, month])
+  @@index([path])
+}

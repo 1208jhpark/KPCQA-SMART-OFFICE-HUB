@@ -1528,6 +1528,44 @@ export default function DeptArchivePanel({ variant = 'dept' }: DeptArchivePanelP
     }
   };
 
+  /** 부서 정산 → 수령검수 되돌리기 (inspection archive-batch 반대) */
+  const handleRevertToInspection = async (batch: ArchiveBatch) => {
+    if (!isDeptSettlement) return;
+    if (!canEdit) return alert('편집 권한(Edit)이 필요합니다.');
+    if (isBatchMasterSettledArchived(batch)) {
+      return alert('정산완료 보관함으로 이동된 묶음은 검수로 되돌릴 수 없습니다.');
+    }
+    if (
+      !confirm(
+        `[${formatBatchNo(batch.id)}] 수령검수 화면으로 되돌릴까요?\n명세표 대조·검수 기록은 유지되며, 검수 탭에서 다시 볼 수 있습니다.`
+      )
+    ) {
+      return;
+    }
+    try {
+      const res = await fetch(DEPT_SETTLEMENT_API_PATH, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'revert-to-inspection',
+          batchId: batch.id,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(data.message || '검수로 되돌리기에 실패했습니다.');
+        return;
+      }
+      alert(data.message || '수령검수 화면으로 되돌렸습니다.');
+      await fetchData();
+      if (confirm('수령검수 화면으로 이동할까요?')) {
+        router.push('/asset/production/dept-master/inspection');
+      }
+    } catch {
+      alert('서버와 통신할 수 없습니다.');
+    }
+  };
+
   const handleSaveStatementMatch = async () => {
     if (!canEdit) return alert('편집 권한이 필요합니다.');
     if (!statementBatch) return;
@@ -2226,7 +2264,8 @@ export default function DeptArchivePanel({ variant = 'dept' }: DeptArchivePanelP
                     <col className="w-10" />
                     <col className="w-12" />
                     <col className="w-64" />
-                    {/* 발주확정일 ~ 명세표 대조: 남은 폭 균등 분배 (정산상태 제외) */}
+                    {/* 발주확정일 ~ 관리(검수 되돌리기): 남은 폭 균등 분배 */}
+                    <col />
                     <col />
                     <col />
                     <col />
@@ -2247,10 +2286,13 @@ export default function DeptArchivePanel({ variant = 'dept' }: DeptArchivePanelP
                         신청/발주 정보
                       </th>
                       <th
-                        colSpan={isDeptSettlement ? 2 : 3}
-                        className="bg-amber-50 text-amber-800 border-b border-amber-200 font-semibold text-center text-xs py-1.5 normal-case tracking-normal"
+                        colSpan={2}
+                        className="bg-amber-50 text-amber-800 border-b border-r border-amber-200 font-semibold text-center text-xs py-1.5 normal-case tracking-normal"
                       >
                         명세 대조 및 마감
+                      </th>
+                      <th className="bg-slate-200 text-slate-800 border-b border-slate-300 font-semibold text-center text-xs py-1.5 normal-case tracking-normal">
+                        관리 액션
                       </th>
                     </tr>
                   )}
@@ -2406,12 +2448,22 @@ export default function DeptArchivePanel({ variant = 'dept' }: DeptArchivePanelP
                         </div>
                       </th>
                     )}
-                    {isMasterDashboard && (
-                      <th className="h-12 w-[88px] min-w-[88px] px-0.5 text-center">
+                    {isDeptSettlement && (
+                      <th className="h-12 w-[108px] min-w-[108px] px-0.5 text-center bg-slate-100/80">
                         <div className="flex flex-col items-center justify-center gap-0.5 leading-tight">
-                          <span className="whitespace-nowrap text-[10px]">관리 액션</span>
-                          <span className="text-[9px] font-bold text-indigo-700/80 normal-case tracking-normal whitespace-nowrap">
-                            (보관함)
+                          <span className="whitespace-nowrap text-[10px]">이전단계</span>
+                          <span className="text-[9px] font-bold text-slate-600 normal-case tracking-normal whitespace-nowrap">
+                            (Edit)
+                          </span>
+                        </div>
+                      </th>
+                    )}
+                    {isMasterDashboard && (
+                      <th className="h-12 w-[88px] min-w-[88px] px-0.5 text-center bg-slate-100/80">
+                        <div className="flex flex-col items-center justify-center gap-0.5 leading-tight">
+                          <span className="whitespace-nowrap text-[10px]">보관함</span>
+                          <span className="text-[9px] font-bold text-slate-600 normal-case tracking-normal whitespace-nowrap">
+                            (Edit)
                           </span>
                         </div>
                       </th>
@@ -2426,7 +2478,7 @@ export default function DeptArchivePanel({ variant = 'dept' }: DeptArchivePanelP
                           isMasterDashboard
                             ? 12
                             : isDeptSettlement
-                              ? 11
+                              ? 12
                               : useArchiveLedgerTable
                                 ? showBatchSelect
                                   ? 11
@@ -2660,8 +2712,29 @@ export default function DeptArchivePanel({ variant = 'dept' }: DeptArchivePanelP
                                 })()}
                               </td>
                             )}
+                            {isDeptSettlement && (
+                              <td className="px-1 text-center bg-slate-50/80">
+                                <button
+                                  type="button"
+                                  disabled={!canEdit}
+                                  title={
+                                    !canEdit
+                                      ? '편집 권한 필요'
+                                      : '명세대조 이동 직전 상태(발주/수령 검수)로 되돌립니다'
+                                  }
+                                  onClick={() => handleRevertToInspection(batch)}
+                                  className={`px-1.5 py-1 text-[9px] font-black rounded-lg w-full leading-tight whitespace-nowrap transition-colors ${
+                                    canEdit
+                                      ? 'bg-slate-200 hover:bg-slate-300 text-slate-800 border border-slate-400'
+                                      : DISABLED_ACTION_BTN
+                                  }`}
+                                >
+                                  →발주/수령 검수
+                                </button>
+                              </td>
+                            )}
                             {isMasterDashboard && (
-                              <td className="px-1 text-center">
+                              <td className="px-1 text-center bg-slate-50/80">
                                 {canMoveBatchToMasterArchive(batch) ? (
                                   <button
                                     type="button"
@@ -2678,7 +2751,7 @@ export default function DeptArchivePanel({ variant = 'dept' }: DeptArchivePanelP
                                         : DISABLED_ACTION_BTN
                                     }`}
                                   >
-                                    →보관함 이동(Edit)
+                                    →보관함 이동
                                   </button>
                                 ) : (
                                   <span className="text-[10px] font-bold text-slate-300">—</span>
@@ -2693,7 +2766,7 @@ export default function DeptArchivePanel({ variant = 'dept' }: DeptArchivePanelP
                               <td className="w-12 bg-slate-100/70 border-y border-slate-200" />
                               <td
                                 colSpan={
-                                  isMasterDashboard ? 10 : isDeptSettlement ? 9 : 8
+                                  isMasterDashboard ? 10 : isDeptSettlement ? 10 : 8
                                 }
                                 className="bg-slate-100/70 p-4 border-y border-slate-200 border-l-4 border-l-blue-500"
                               >

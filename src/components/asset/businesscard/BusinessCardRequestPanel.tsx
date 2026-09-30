@@ -1298,21 +1298,21 @@ export default function BusinessCardRequestPanel() {
         </div>
 
         <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse table-fixed min-w-[1280px]">
+          <table className="w-full text-left border-collapse table-fixed min-w-[1100px]">
             <colgroup>
               <col className="w-[40px]" />
-              <col className="w-[48px]" />
-              <col className="w-[160px]" />
-              <col className="w-[96px]" />
-              <col className="w-[72px]" />
-              <col className="w-[140px]" />
-              <col className="w-[140px]" />
+              <col className="w-[44px]" />
+              <col className="w-[132px]" />
               <col className="w-[88px]" />
-              <col className="w-[120px]" />
+              <col className="w-[64px]" />
+              <col className="w-[110px]" />
               <col className="w-[110px]" />
               <col className="w-[72px]" />
               <col className="w-[88px]" />
-              <col className="w-[140px]" />
+              <col className="w-[88px]" />
+              <col className="w-[56px]" />
+              <col className="w-[72px]" />
+              <col className="w-[200px]" />
             </colgroup>
             <thead className="bg-slate-100 text-slate-700 text-[10px] font-black uppercase tracking-widest border-b border-slate-200">
               <tr>
@@ -1411,19 +1411,13 @@ export default function BusinessCardRequestPanel() {
                         ) : activeFolder === 'ACCEPTED' ? (
                           <button
                             type="button"
-                            disabled={!canEditMaster}
-                            title={!canEditMaster ? '편집 권한 필요' : undefined}
                             onClick={() => {
-                              if (!canEditMaster) return alertNoEditPermission();
+                              setIsRequestEditing(false);
                               setDetailTarget(row);
                             }}
-                            className={`px-2.5 py-1 text-[10px] font-bold rounded-lg shadow-sm transition-colors ${
-                              canEditMaster
-                                ? 'bg-blue-600 text-white hover:bg-blue-700'
-                                : DISABLED_ACTION_BTN
-                            }`}
+                            className="px-2.5 py-1 text-[10px] font-bold rounded-lg transition-colors bg-slate-200 text-slate-600 hover:bg-slate-300 border border-slate-300"
                           >
-                            원문최종검수
+                            원문확인
                           </button>
                         ) : (
                           <button
@@ -1480,7 +1474,7 @@ export default function BusinessCardRequestPanel() {
                                   : DISABLED_ACTION_BTN
                               }`}
                             >
-                              {actionBusyId === row.id ? '처리중' : '접수취소'}
+                              {actionBusyId === row.id ? '처리중' : '→접수대기 이동'}
                             </button>
                           </div>
                         ) : isPending ? (
@@ -1648,7 +1642,7 @@ export default function BusinessCardRequestPanel() {
                   {isRequestEditing
                     ? '⚡ 원문 편집 모드 활성화'
                     : detailTarget.adminStatus === '접수완료'
-                      ? '🔎 원문 최종 검수 모드'
+                      ? '🔎 원문 확인'
                       : '🔎 원문 검수 모드'}
                 </span>
                 <h2 className="text-base font-black text-slate-900 mt-1">
@@ -1934,8 +1928,7 @@ export default function BusinessCardRequestPanel() {
               ) : (
                 <>
                   <button onClick={() => setDetailTarget(null)} className="px-5 py-2.5 bg-slate-100 text-slate-700 rounded-xl font-black text-xs hover:bg-slate-200 transition-colors">닫기</button>
-                  {(detailTarget.adminStatus === '대기중' ||
-                    detailTarget.adminStatus === '접수완료') && (
+                  {detailTarget.adminStatus === '대기중' && (
                     <button
                       type="button"
                       disabled={!canEditMaster}

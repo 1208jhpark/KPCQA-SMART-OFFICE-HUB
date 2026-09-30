@@ -6,6 +6,7 @@ import Link from "next/link";
 import prisma from "@/lib/prisma";
 
 import { JWT_SECRET } from '@/lib/jwt';
+import PageViewTracker from '@/components/common/PageViewTracker';
 
 export default async function AdminLayout({ children }: { children: ReactNode }) {
   // 1. 쿠키에서 토큰 가져오기 (Next.js 15 규격)
@@ -105,6 +106,7 @@ export default async function AdminLayout({ children }: { children: ReactNode })
       
       {/* 메인 콘텐츠 영역 */}
       <main className="flex-1 overflow-y-auto">
+        <PageViewTracker />
         {children}
       </main>
     </div>
