@@ -1,5 +1,17 @@
 [
   {
+    "id": "stmt-1790657539628-85im6",
+    "category": "OFFICE_SUPPLIES",
+    "vendorName": "드림디포",
+    "fileName": "(드림디포) 26년 7월 거래명세서-수정.xls",
+    "storedFileName": "statement_OFFICE_SUPPLIES_드림디포_1790657539628.xls",
+    "fileSize": 128512,
+    "mimeType": "application/vnd.ms-excel",
+    "uploadedAt": "2026-09-29T04:52:19.631Z",
+    "uploadedBy": "시스템운영자lv1",
+    "url": "/uploads/production-statement/statement_OFFICE_SUPPLIES_드림디포_1790657539628.xls"
+  },
+  {
     "id": "stmt-1790139816746-iftj5",
     "category": "OFFICE_SUPPLIES",
     "vendorName": "드림디포",

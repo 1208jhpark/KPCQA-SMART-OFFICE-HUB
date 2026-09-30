@@ -1088,14 +1088,21 @@ function DeptContent() {
                           ) : isPending ? (
                             <span className="text-slate-300">-</span>
                           ) : (
-                            <span className={`inline-block border px-1.5 py-0.5 rounded text-[10px] font-bold whitespace-nowrap ${
-                              isReady ? 'bg-sky-50 text-sky-700 border-sky-200' :
-                              isCancelled ? 'bg-slate-100 text-slate-500 border-slate-200' :
-                              isRejected ? 'bg-red-50 text-red-600 border-red-200' :
-                              'bg-emerald-50 text-emerald-600 border-emerald-200'
-                            }`}>
-                              {statusLabel}
-                            </span>
+                            <div className="flex flex-col items-center gap-0.5">
+                              <span className={`inline-block border px-1.5 py-0.5 rounded text-[10px] font-bold whitespace-nowrap ${
+                                isReady ? 'bg-sky-50 text-sky-700 border-sky-200' :
+                                isCancelled ? 'bg-slate-100 text-slate-500 border-slate-200' :
+                                isRejected ? 'bg-red-50 text-red-600 border-red-200' :
+                                'bg-emerald-50 text-emerald-600 border-emerald-200'
+                              }`}>
+                                {statusLabel}
+                              </span>
+                              {isReady && (
+                                <span className="text-[9px] font-bold text-slate-500 leading-tight whitespace-nowrap">
+                                  물품 수령 요망
+                                </span>
+                              )}
+                            </div>
                           )}
                         </td>
                       </tr>

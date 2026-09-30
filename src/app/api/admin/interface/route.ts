@@ -6,6 +6,10 @@ import {
   requireSessionUser,
   authErrorToResponse,
 } from '@/lib/server-auth-guard';
+import {
+  isInterfaceAdvancedEditable,
+  payloadTouchesInterfaceLock,
+} from '@/lib/interface-path-lock';
 
 const PATCH_ALLOWED = new Set([
   'level',
@@ -223,6 +227,16 @@ export async function PATCH(req: Request) {
 
     if (Object.keys(updateData).length === 0) {
       return badRequest('수정할 항목이 없습니다.');
+    }
+
+    if (!isInterfaceAdvancedEditable() && payloadTouchesInterfaceLock(updateData)) {
+      return NextResponse.json(
+        {
+          error:
+            '배포 설정상 경로·Entry Mode·View/Edit Scope 수정이 잠겨 있습니다. (ALLOW_INTERFACE_PATH_EDIT)',
+        },
+        { status: 403 }
+      );
     }
 
     if ('path' in updateData) {

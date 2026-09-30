@@ -292,11 +292,11 @@ export default function AuditModule() {
     }
     if (ok) {
       alert(
-        '모바일/웹 배포 링크가 클립보드에 복사되었습니다!\n게시판이나 메신저에 붙여넣기 하세요.\n\n⚠ 사내 LAN 및 Wi-Fi에서만 접속 가능합니다. (외부망·LTE 불가)'
+        '모바일/웹 배포 링크가 클립보드에 복사되었습니다!\n게시판이나 메신저에 붙여넣기 하세요.'
       );
     } else {
       alert(
-        `클립보드 복사에 실패했습니다.\n아래 링크를 직접 선택해 복사하세요.\n\n${publicLink}\n\n⚠ 사내 LAN 및 Wi-Fi에서만 접속 가능합니다.`
+        `클립보드 복사에 실패했습니다.\n아래 링크를 직접 선택해 복사하세요.\n\n${publicLink}`
       );
     }
   };
@@ -557,7 +557,7 @@ export default function AuditModule() {
                 <th className="h-12 px-3 text-left whitespace-nowrap">내용 요약</th>
                 <th className="h-12 px-2 text-center whitespace-nowrap">실사 운영 기간</th>
                 <th className="h-12 px-2 text-center whitespace-nowrap">대상범위</th>
-                <th className="h-12 px-2 text-center border-l border-slate-200 whitespace-nowrap">모바일/웹 배포 링크 (사내망)</th>
+                <th className="h-12 px-2 text-center border-l border-slate-200 whitespace-nowrap">모바일/웹 배포 링크</th>
                 <th className="h-12 px-2 text-center whitespace-nowrap">상태</th>
                 <th className="h-12 pr-4 text-center border-l border-slate-200 whitespace-nowrap">관리액션(Edit)</th>
               </tr>
@@ -634,8 +634,6 @@ export default function AuditModule() {
         <span className="font-black">📡 배포 링크 안내</span>
         <span className="mx-1.5 text-amber-300">·</span>
         참여 시 <span className="underline decoration-2">이메일 + Hub 비밀번호 또는 사번</span> 인증
-        <span className="mx-1.5 text-amber-300">·</span>
-        <span className="font-black">사내 LAN/Wi-Fi만</span> 접속 (외부망·LTE 불가, Wi-Fi 시 모바일 가능)
       </div>
   
       {/* 이력 보관함 */}
@@ -712,7 +710,7 @@ export default function AuditModule() {
                     <th className="h-12 px-3 text-left whitespace-nowrap">내용 요약</th>
                     <th className="h-12 px-2 text-center whitespace-nowrap">실사 운영 기간</th>
                     <th className="h-12 px-2 text-center whitespace-nowrap">대상범위</th>
-                    <th className="h-12 px-2 text-center border-l border-slate-200 whitespace-nowrap">모바일/웹 배포 링크 (사내망)</th>
+                    <th className="h-12 px-2 text-center border-l border-slate-200 whitespace-nowrap">모바일/웹 배포 링크</th>
                     <th className="h-12 px-2 text-center whitespace-nowrap">상태</th>
                     <th className="h-12 pr-4 text-center border-l border-slate-200 whitespace-nowrap">관리액션(Edit)</th>
                   </tr>

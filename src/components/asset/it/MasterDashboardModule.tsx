@@ -3165,7 +3165,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                   {showQrModal.code}
                 </p>
                 <p className="text-[10px] font-bold text-slate-400 truncate mt-1">
-                  {showQrModal.dept || '-'} · <span className="text-amber-700 font-black">사내 Wi-Fi 스캔</span>
+                  {showQrModal.dept || '-'}
                 </p>
               </div>
             </div>
@@ -3174,10 +3174,6 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
               <p className="text-[11px] font-black text-amber-800">📡 QR 스캔 안내</p>
               <p className="text-[10px] font-bold text-amber-700 mt-0.5 leading-relaxed">
                 스캔 시 <span className="underline decoration-2">등록 정보(분류·번호·모델·S/N·제조사·사양)</span>를 확인합니다.
-                <br />
-                <span className="font-black">⚠ 반드시 사내 Wi-Fi 연결 후 스캔하세요.</span>
-                <br />
-                (외부망·LTE에서는 조회되지 않습니다)
               </p>
             </div>
 
@@ -3270,9 +3266,6 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                         <p className="text-[6px] font-black text-slate-400 uppercase leading-none">자산번호</p>
                         <p className="text-[8px] font-black font-mono tracking-tighter text-indigo-700 leading-none truncate">
                           {a.code}
-                        </p>
-                        <p className="text-[6px] font-bold text-slate-400 truncate mt-0.5 scale-90">
-                          <span className="text-amber-700 font-black">사내 Wi-Fi</span>
                         </p>
                       </div>
                     </div>

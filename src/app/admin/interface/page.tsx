@@ -3,8 +3,10 @@
 
 import { useEffect, useState } from 'react';
 import LoadingState from '@/components/common/LoadingState';
+import { isInterfaceAdvancedEditable, payloadTouchesInterfaceLock } from '@/lib/interface-path-lock';
 
 export default function AdminInterfacePage() {
+  const advancedEditable = isInterfaceAdvancedEditable();
   const [activeTab, setActiveTab] = useState(1);
   const [menus, setMenus] = useState<any[]>([]);
   const [config, setConfig] = useState<any>(null);
@@ -107,6 +109,10 @@ export default function AdminInterfacePage() {
   };
   
   const handleUpdate = async (id: string, payload: any) => {
+    if (!advancedEditable && payloadTouchesInterfaceLock(payload)) {
+      alert('배포 설정상 경로·Entry Mode·View/Edit Scope 수정이 잠겨 있습니다.');
+      return false;
+    }
     if ('org_ids' in payload) {
       const orgIds = Array.isArray(payload.org_ids) ? payload.org_ids.filter(Boolean) : [];
       if (orgIds.length === 0) {
@@ -154,6 +160,9 @@ export default function AdminInterfacePage() {
   };
   
   const handleSyncChildPaths = async (parentMenu: any) => {
+    if (!advancedEditable) {
+      return alert('배포 설정상 메뉴 경로 수정이 잠겨 있습니다.');
+    }
     const children = menus.filter(m => m.parent_id === parentMenu.id);
     if (children.length === 0) return alert("동기화할 하위 메뉴가 없습니다.");
     if (!confirm(`부모 경로 [${parentMenu.path}]를 기준으로 경로를 업데이트하시겠습니까?`)) return;
@@ -460,7 +469,7 @@ export default function AdminInterfacePage() {
                   )}
                 </div>
                 <div className="flex items-center gap-2">
-                  {parent.id && children.length > 0 && <button onClick={(e) => { e.stopPropagation(); handleSyncChildPaths(parent); }} className="px-3 py-1.5 bg-amber-500 text-white rounded text-[10px] font-black shadow-sm hover:bg-amber-600 transition-colors">🔗 하위 경로 동기화</button>}
+                  {parent.id && children.length > 0 && advancedEditable && <button onClick={(e) => { e.stopPropagation(); handleSyncChildPaths(parent); }} className="px-3 py-1.5 bg-amber-500 text-white rounded text-[10px] font-black shadow-sm hover:bg-amber-600 transition-colors">🔗 하위 경로 동기화</button>}
                   {children.length > 0 && <button onClick={(e) => { e.stopPropagation(); handleResetOrder(children); }} className="px-3 py-1.5 bg-slate-800 rounded text-[10px] font-black text-white shadow-sm hover:bg-slate-700 transition-colors">🔄 번호 리셋</button>}
                   {activeTab <= 4 && parent.id && <button onClick={(e) => { e.stopPropagation(); handleAddSub(parent.id, parent.path, activeTab); }} className={`px-3 py-1.5 rounded text-[10px] font-black shadow-sm transition-colors ${isEmpty ? 'bg-slate-50 border border-slate-300 text-slate-500 hover:bg-white' : 'bg-white border border-blue-200 text-blue-600 hover:bg-blue-50'}`}>+ 하위 생성</button>}
                   <div className={`text-[10px] w-6 text-center ml-2 ${isEmpty ? 'text-slate-400' : 'text-slate-400'}`}>{isCollapsed ? '▼' : '▲'}</div>
@@ -535,17 +544,21 @@ export default function AdminInterfacePage() {
                             </div>
                             
                             {(m.level === 1 || m.level === 2) && (
-                              <div className="flex items-center gap-1 mt-3 bg-slate-50 p-1.5 rounded-lg inline-flex border border-slate-100 shadow-inner">
+                              <div className={`flex items-center gap-1 mt-3 bg-slate-50 p-1.5 rounded-lg inline-flex border border-slate-100 shadow-inner ${!advancedEditable ? 'opacity-60' : ''}`}>
                                 <span className="text-[9px] font-black text-slate-400 px-2 uppercase">Step {m.level} Entry Mode:</span>
                                 <button
                                   type="button"
-                                  title={`${m.path} 직접 로드`}
+                                  disabled={!advancedEditable}
+                                  title={advancedEditable ? `${m.path} 직접 로드` : '배포 잠금'}
                                   onClick={(e) => {
                                     e.preventDefault();
                                     e.stopPropagation();
+                                    if (!advancedEditable) return;
                                     handleUpdate(m.id, { l2_entry_mode: 'CUSTOM_UI' });
                                   }}
                                   className={`px-2 py-1 rounded text-[9px] font-black transition-all ${
+                                    !advancedEditable ? 'cursor-not-allowed' : ''
+                                  } ${
                                     m.l2_entry_mode === 'CUSTOM_UI' || !m.l2_entry_mode
                                       ? 'bg-white text-blue-600 shadow-sm border border-blue-200'
                                       : 'text-slate-400 hover:bg-slate-200'
@@ -555,13 +568,17 @@ export default function AdminInterfacePage() {
                                 </button>
                                 <button
                                   type="button"
-                                  title="하위 첫번째 주소로 자동 점프"
+                                  disabled={!advancedEditable}
+                                  title={advancedEditable ? '하위 첫번째 주소로 자동 점프' : '배포 잠금'}
                                   onClick={(e) => {
                                     e.preventDefault();
                                     e.stopPropagation();
+                                    if (!advancedEditable) return;
                                     handleUpdate(m.id, { l2_entry_mode: 'L3_DEFAULT' });
                                   }}
                                   className={`px-2 py-1 rounded text-[9px] font-black transition-all ${
+                                    !advancedEditable ? 'cursor-not-allowed' : ''
+                                  } ${
                                     m.l2_entry_mode === 'L3_DEFAULT'
                                       ? 'bg-white text-blue-600 shadow-sm border border-blue-200'
                                       : 'text-slate-400 hover:bg-slate-200'
@@ -628,7 +645,27 @@ export default function AdminInterfacePage() {
           <div className="p-5 bg-slate-900 text-white flex justify-between items-start shrink-0 shadow-md">
             <div className="flex-1 mr-4">
               <h3 className="text-[12px] font-black tracking-widest uppercase">{selectedMenu.icon} {selectedMenu.name}</h3>
-              <input type="text" defaultValue={selectedMenu.path} onBlur={(e) => handleUpdate(selectedMenu.id, { path: e.target.value })} className="mt-1 bg-slate-800 text-blue-400 text-[10px] font-mono px-2 py-1 rounded w-full outline-none border border-slate-700" />
+              <input
+                type="text"
+                key={selectedMenu.id}
+                defaultValue={selectedMenu.path}
+                readOnly={!advancedEditable}
+                title={advancedEditable ? '경로 주소' : '경로 수정 잠금 (배포 중)'}
+                onBlur={(e) => {
+                  if (!advancedEditable) return;
+                  handleUpdate(selectedMenu.id, { path: e.target.value });
+                }}
+                className={`mt-1 text-[10px] font-mono px-2 py-1 rounded w-full outline-none border ${
+                  advancedEditable
+                    ? 'bg-slate-800 text-blue-400 border-slate-700'
+                    : 'bg-slate-800/80 text-slate-400 border-slate-700 cursor-not-allowed'
+                }`}
+              />
+              {!advancedEditable && (
+                <p className="mt-1 text-[9px] font-bold text-slate-500 leading-snug">
+                  경로·Entry·Scope 잠금 · 해제 시 ALLOW_INTERFACE_PATH_EDIT / NEXT_PUBLIC_…
+                </p>
+              )}
             </div>
             <button onClick={() => setSelectedMenu(null)} className="text-xl font-light hover:rotate-90 transition-all text-slate-500">✕</button>
           </div>
@@ -690,28 +727,37 @@ export default function AdminInterfacePage() {
             )}
   
             {(selectedMenu.level === 1 || selectedMenu.level === 2) && (
-              <div className="bg-blue-50/50 p-4 rounded-2xl border border-blue-100 shadow-sm space-y-3 mt-4">
+              <div className={`bg-blue-50/50 p-4 rounded-2xl border border-blue-100 shadow-sm space-y-3 mt-4 ${!advancedEditable ? 'opacity-70' : ''}`}>
                 <div>
                   <h4 className="text-[11px] font-black text-blue-700 flex items-center gap-1">🚀 Step {selectedMenu.level} 진입로 라우팅 동작 설정</h4>
-                  <p className="text-[9px] text-slate-500 mt-0.5">사용자가 이 메뉴를 클릭했을 때 브라우저가 이동할 최초의 진입점 주소를 제어합니다.</p>
+                  <p className="text-[9px] text-slate-500 mt-0.5">
+                    사용자가 이 메뉴를 클릭했을 때 브라우저가 이동할 최초의 진입점 주소를 제어합니다.
+                    {!advancedEditable && <span className="text-amber-700 font-black"> · 배포 잠금</span>}
+                  </p>
                 </div>
                 <div className="grid grid-cols-2 gap-2">
                   <button 
+                    type="button"
+                    disabled={!advancedEditable}
                     onClick={() => { 
+                      if (!advancedEditable) return;
                       handleUpdate(selectedMenu.id, { l2_entry_mode: 'CUSTOM_UI' }); 
                       setSelectedMenu({...selectedMenu, l2_entry_mode: 'CUSTOM_UI'}); 
                     }} 
-                    className={`py-2 px-1 rounded-lg text-[10px] font-black border transition-all leading-tight ${selectedMenu.l2_entry_mode === 'CUSTOM_UI' || !selectedMenu.l2_entry_mode ? 'bg-blue-600 border-blue-600 text-white shadow-md' : 'bg-white border-slate-200 text-slate-400 hover:bg-slate-50'}`}
+                    className={`py-2 px-1 rounded-lg text-[10px] font-black border transition-all leading-tight ${!advancedEditable ? 'cursor-not-allowed' : ''} ${selectedMenu.l2_entry_mode === 'CUSTOM_UI' || !selectedMenu.l2_entry_mode ? 'bg-blue-600 border-blue-600 text-white shadow-md' : 'bg-white border-slate-200 text-slate-400 hover:bg-slate-50'}`}
                   >
                     <div>🖥️ 고유 기획화면 오픈</div>
                     <div className="text-[8px] opacity-75 font-normal mt-0.5">({selectedMenu.path} 직접 로드)</div>
                   </button>
                   <button 
+                    type="button"
+                    disabled={!advancedEditable}
                     onClick={() => { 
+                      if (!advancedEditable) return;
                       handleUpdate(selectedMenu.id, { l2_entry_mode: 'L3_DEFAULT' }); 
                       setSelectedMenu({...selectedMenu, l2_entry_mode: 'L3_DEFAULT'}); 
                     }} 
-                    className={`py-2 px-1 rounded-lg text-[10px] font-black border transition-all leading-tight ${selectedMenu.l2_entry_mode === 'L3_DEFAULT' ? 'bg-blue-600 border-blue-600 text-white shadow-md' : 'bg-white border-slate-200 text-slate-400 hover:bg-slate-50'}`}
+                    className={`py-2 px-1 rounded-lg text-[10px] font-black border transition-all leading-tight ${!advancedEditable ? 'cursor-not-allowed' : ''} ${selectedMenu.l2_entry_mode === 'L3_DEFAULT' ? 'bg-blue-600 border-blue-600 text-white shadow-md' : 'bg-white border-slate-200 text-slate-400 hover:bg-slate-50'}`}
                   >
                     <div>➡️ Step {selectedMenu.level + 1} 1번카드 즉시실행</div>
                     <div className="text-[8px] opacity-75 font-normal mt-0.5">(하위 첫번째 주소로 자동 점프)</div>
@@ -940,12 +986,16 @@ export default function AdminInterfacePage() {
               </div>
   
               {/* 4️⃣ [결과] View Scope */}
-              <div className="space-y-2 pt-3 border-t border-dashed border-purple-200">
-                <span className="text-[10px] font-black text-slate-800 tracking-tighter">4️⃣ [결과] 보이는 화면 (View Scope)</span>
+              <div className={`space-y-2 pt-3 border-t border-dashed border-purple-200 ${!advancedEditable ? 'opacity-70' : ''}`}>
+                <span className="text-[10px] font-black text-slate-800 tracking-tighter">
+                  4️⃣ [결과] 보이는 화면 (View Scope)
+                  {!advancedEditable && <span className="ml-1 text-amber-700">· 배포 잠금</span>}
+                </span>
                 {(() => {
                   const curScopes = Array.isArray(selectedMenu.view_scopes) ? selectedMenu.view_scopes.map(String) : [];
                   const coded = curScopes.includes('CODED');
                   const viewScopes = curScopes.filter((s: string) => ['OWN', 'DEPT', 'TOTAL'].includes(s));
+                  const scopeLocked = !advancedEditable || coded;
                   return (
                     <>
                       <div className="flex gap-1.5">
@@ -955,7 +1005,7 @@ export default function AdminInterfacePage() {
                             <label
                               key={s}
                               className={`flex-1 flex items-center justify-center py-2 rounded-lg border text-[10px] font-black transition-all ${
-                                coded
+                                scopeLocked
                                   ? 'border-slate-100 bg-slate-50 text-slate-300 cursor-not-allowed'
                                   : isChecked
                                     ? 'bg-indigo-600 border-indigo-600 text-white shadow-md cursor-pointer'
@@ -965,10 +1015,10 @@ export default function AdminInterfacePage() {
                               {s === 'OWN' ? '본인 자료' : s === 'DEPT' ? '부서 자료' : '전사 자료'}
                               <input
                                 type="checkbox"
-                                disabled={coded}
+                                disabled={scopeLocked}
                                 checked={isChecked}
                                 onChange={async (e) => {
-                                  if (coded) return;
+                                  if (scopeLocked) return;
                                   const next = e.target.checked
                                     ? [...viewScopes.filter((k: string) => k !== s), s]
                                     : viewScopes.filter((k: string) => k !== s);
@@ -987,7 +1037,9 @@ export default function AdminInterfacePage() {
                       </div>
                       <button
                         type="button"
+                        disabled={!advancedEditable}
                         onClick={async () => {
+                          if (!advancedEditable) return;
                           const next = coded
                             ? viewScopes.length > 0
                               ? viewScopes
@@ -997,6 +1049,8 @@ export default function AdminInterfacePage() {
                           if (ok) setSelectedMenu({ ...selectedMenu, view_scopes: next });
                         }}
                         className={`w-full py-2 rounded-lg border text-[10px] font-black transition-all ${
+                          !advancedEditable ? 'cursor-not-allowed opacity-80' : ''
+                        } ${
                           coded
                             ? 'bg-amber-500 border-amber-500 text-white shadow-md'
                             : 'border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100'
@@ -1126,12 +1180,16 @@ export default function AdminInterfacePage() {
                 </div>
   
                 {/* 3️⃣ [결과] Edit Scope (Access와 동일하게 본인,부서,전사 체크박스 형태 적용) */}
-                <div className="space-y-2 mt-4 pt-4 border-t border-dashed border-emerald-200">
-                  <span className="text-[10px] font-black text-slate-800 tracking-tighter">3️⃣ [결과] 편집 가능 범위 (Edit Scope) 설정</span>
+                <div className={`space-y-2 mt-4 pt-4 border-t border-dashed border-emerald-200 ${!advancedEditable ? 'opacity-70' : ''}`}>
+                  <span className="text-[10px] font-black text-slate-800 tracking-tighter">
+                    3️⃣ [결과] 편집 가능 범위 (Edit Scope) 설정
+                    {!advancedEditable && <span className="ml-1 text-amber-700">· 배포 잠금</span>}
+                  </span>
                   {(() => {
                     const curScopes = Array.isArray(selectedMenu.edit_scopes) ? selectedMenu.edit_scopes.map(String) : [];
                     const coded = curScopes.includes('CODED');
                     const dataScopes = curScopes.filter((s: string) => ['OWN', 'DEPT', 'TOTAL'].includes(s));
+                    const scopeLocked = !advancedEditable || coded;
                     return (
                       <>
                         <div className="flex gap-1.5">
@@ -1141,7 +1199,7 @@ export default function AdminInterfacePage() {
                               <label
                                 key={s}
                                 className={`flex-1 flex items-center justify-center py-2 rounded-lg border text-[10px] font-black transition-all ${
-                                  coded
+                                  scopeLocked
                                     ? 'border-slate-100 bg-slate-50 text-slate-300 cursor-not-allowed'
                                     : isChecked
                                       ? 'bg-emerald-600 border-emerald-600 text-white shadow-md cursor-pointer'
@@ -1151,10 +1209,10 @@ export default function AdminInterfacePage() {
                                 {s === 'OWN' ? '본인 자료' : s === 'DEPT' ? '부서 자료' : '전사 자료'}
                                 <input
                                   type="checkbox"
-                                  disabled={coded}
+                                  disabled={scopeLocked}
                                   checked={isChecked}
                                   onChange={(e) => {
-                                    if (coded) return;
+                                    if (scopeLocked) return;
                                     const next = e.target.checked
                                       ? [...dataScopes.filter((k: string) => k !== s), s]
                                       : dataScopes.filter((k: string) => k !== s);
@@ -1169,12 +1227,16 @@ export default function AdminInterfacePage() {
                         </div>
                         <button
                           type="button"
+                          disabled={!advancedEditable}
                           onClick={() => {
+                            if (!advancedEditable) return;
                             const next = coded ? dataScopes : ['CODED', ...dataScopes];
                             handleUpdate(selectedMenu.id, { edit_scopes: next });
                             setSelectedMenu({ ...selectedMenu, edit_scopes: next });
                           }}
                           className={`w-full py-2 rounded-lg border text-[10px] font-black transition-all ${
+                            !advancedEditable ? 'cursor-not-allowed opacity-80' : ''
+                          } ${
                             coded
                               ? 'bg-amber-500 border-amber-500 text-white shadow-md'
                               : 'border-amber-200 bg-amber-50 text-amber-800 hover:bg-amber-100'

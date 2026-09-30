@@ -83,9 +83,6 @@ function VerifyContent() {
       <div className="bg-white p-6 rounded-[2rem] shadow-2xl w-full max-w-sm border border-slate-200 space-y-4">
         <div className="text-center">
           <p className="text-[10px] font-black uppercase tracking-widest text-indigo-500">IT·업무자산 QR 조회</p>
-          <p className="text-[10px] font-bold text-amber-700 mt-2 leading-relaxed">
-            ⚠ 사내 LAN / Wi-Fi에서만 조회됩니다
-          </p>
         </div>
 
         <div className="rounded-xl bg-slate-900 text-white px-4 py-3">

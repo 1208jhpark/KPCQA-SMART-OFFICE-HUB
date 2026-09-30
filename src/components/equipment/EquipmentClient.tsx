@@ -3090,7 +3090,7 @@ export default function EquipmentClient({
               </div>
               <div className="w-full">
                 <p className="text-[15px] font-black font-mono tracking-tighter text-indigo-700 leading-none">{displayAssetNo(showQrModal.asset_no)}</p>
-                <p className="text-[10px] font-bold text-slate-400 truncate mt-1">{showQrModal.department || '공용'} · <span className="text-amber-700 font-black">사내 Wi-Fi 스캔</span></p>
+                <p className="text-[10px] font-bold text-slate-400 truncate mt-1">{showQrModal.department || '공용'}</p>
               </div>
             </div>
 
@@ -3098,10 +3098,6 @@ export default function EquipmentClient({
               <p className="text-[11px] font-black text-amber-800">📡 QR 스캔 안내</p>
               <p className="text-[10px] font-bold text-amber-700 mt-0.5 leading-relaxed">
                 스캔 시 <span className="underline decoration-2">로그인 없이</span> 공개 요약 카드가 열립니다.
-                <br />
-                <span className="font-black">⚠ 반드시 사내 Wi-Fi 연결 후 스캔하세요.</span>
-                <br />
-                (외부망·LTE에서는 조회되지 않습니다)
               </p>
             </div>
             

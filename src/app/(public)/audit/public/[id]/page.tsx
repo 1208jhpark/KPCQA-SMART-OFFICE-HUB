@@ -614,10 +614,6 @@ export default function MobilePublicAuditPage() {
       <p className="text-[10px] font-bold text-amber-700 mt-0.5 leading-relaxed">
         참여 시 <span className="underline decoration-2">이메일 + Hub 비밀번호 또는 사번</span>으로
         본인 인증합니다.
-        <br />
-        <span className="font-black">⚠ 반드시 사내 LAN 및 Wi-Fi 연결 후 접속하세요.</span>
-        <br />
-        (외부망·LTE에서는 접속되지 않습니다)
       </p>
     </div>
   );

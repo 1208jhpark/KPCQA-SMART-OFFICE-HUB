@@ -310,15 +310,6 @@ function PublicSurveyResponseContent() {
           submitLabel="인증하고 안내문 보기"
           accent={preferDelivery ? 'teal' : 'indigo'}
           onSuccess={loadSurveyForUser}
-          footer={
-            <div className="w-full bg-amber-50 border border-amber-200 rounded-xl p-3 text-center">
-              <p className="text-[10px] font-bold text-amber-800 leading-relaxed">
-                ⚠ 반드시 사내 LAN / Wi-Fi 연결 후 접속하세요.
-                <br />
-                (외부망·LTE에서는 접속되지 않습니다)
-              </p>
-            </div>
-          }
         />
       </div>
     );

@@ -905,7 +905,7 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
                   : selectedStatus === 'ALL'
                     ? '신청·지급 대기'
                     : selectedStatus === 'PENDING'
-                      ? '신규 신청 대기건'
+                      ? '접수 대기건'
                       : '지급 대기건'}
               </h2>
               {activeFolder === 'ACTIVE' ? (
@@ -930,7 +930,7 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
                       : 'bg-orange-50 text-orange-600 border border-orange-100 hover:bg-orange-100'
                   }`}
                 >
-                  신규대기 {countPending}
+                  접수대기 {countPending}
                 </button>
                 <button
                   type="button"
@@ -1203,13 +1203,19 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
                       </td>
 
                       <td className="px-2 text-center">
-                        <span className={`inline-block border px-1.5 py-0.5 rounded text-[10px] font-bold whitespace-nowrap ${
-                          isPending ? 'bg-orange-50 text-orange-600 border-orange-200' :
-                          isReady ? 'bg-sky-50 text-sky-700 border-sky-200' :
-                          isCancelled ? 'bg-slate-100 text-slate-500 border-slate-200' :
-                          isRejected ? 'bg-red-50 text-red-600 border-red-200' :
-                          'bg-emerald-50 text-emerald-600 border-emerald-200'
-                        }`}>
+                        <span
+                          className={`text-[10px] font-bold whitespace-nowrap ${
+                            isPending
+                              ? 'text-orange-600'
+                              : isReady
+                                ? 'text-sky-700'
+                                : isCancelled
+                                  ? 'text-slate-500'
+                                  : isRejected
+                                    ? 'text-red-600'
+                                    : 'text-emerald-600'
+                          }`}
+                        >
                           {statusLabel}
                         </span>
                       </td>
@@ -1258,7 +1264,7 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
                             </button>
                           </div>
                         ) : (
-                          <span className="text-slate-300 text-[10px]">-</span>
+                          <span className="text-[10px] font-bold text-slate-500 whitespace-nowrap">처리완료</span>
                         )}
                       </td>
      

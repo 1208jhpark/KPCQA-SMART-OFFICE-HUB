@@ -1255,7 +1255,9 @@ const formattedValidPeriod = useMemo(() => {
   };
 
   const handleRestoreSeedPlates = async () => {
-    if (!canEdit) return alertNoEditPermission();
+    if (!canDeleteLv1Cert) {
+      return alert('시드 항목 복구는 LV_1만 가능합니다.');
+    }
     if (
       !confirm(
         '시드 기본 품목 중 없거나 삭제된 항목만 다시 채웁니다.\n이미 있는 품목의 단가·명칭·규격은 변경되지 않습니다. 계속할까요?'
@@ -1281,7 +1283,9 @@ const formattedValidPeriod = useMemo(() => {
   };
 
   const handleRestoreSeedCerts = async () => {
-    if (!canEdit) return alertNoEditPermission();
+    if (!canDeleteLv1Cert) {
+      return alert('시드 항목 복구는 LV_1만 가능합니다.');
+    }
     const type = popSubTab === 'SIGN_SUB' ? 'SIGN' : 'JEBON';
     const typeLabel = type === 'SIGN' ? '현판 인증' : '제본 인증';
     if (
@@ -1309,7 +1313,9 @@ const formattedValidPeriod = useMemo(() => {
   };
 
   const handleRestoreSeedJebonSizes = async () => {
-    if (!canEdit) return alertNoEditPermission();
+    if (!canDeleteLv1Cert) {
+      return alert('시드 항목 복구는 LV_1만 가능합니다.');
+    }
     if (
       !confirm(
         '시드 기본 제본 판형 중 없거나 삭제된 항목만 다시 채웁니다.\n이미 있는 판형의 종류·규격·설명은 변경되지 않습니다. 계속할까요?'
@@ -1335,7 +1341,9 @@ const formattedValidPeriod = useMemo(() => {
   };
 
   const handleRestoreSeedPrintItems = async () => {
-    if (!canEdit) return alertNoEditPermission();
+    if (!canDeleteLv1Cert) {
+      return alert('시드 항목 복구는 LV_1만 가능합니다.');
+    }
     if (
       !confirm(
         '시드 기본 주문물품 중 없거나 삭제된 항목만 다시 채웁니다.\n이미 있는 품목의 명칭·규격·공급처·수량 등은 변경되지 않습니다. 계속할까요?'
@@ -1361,7 +1369,9 @@ const formattedValidPeriod = useMemo(() => {
   };
 
   const handleRestoreSeedVendors = async () => {
-    if (!canEdit) return alertNoEditPermission();
+    if (!canDeleteLv1Cert) {
+      return alert('시드 항목 복구는 LV_1만 가능합니다.');
+    }
     if (
       !confirm(
         '시드 기본 외주업체(아트로릭·한생미디어 3종·드림디포) 중 없거나 삭제된 항목만 다시 채웁니다.\n이미 있는 업체의 명칭·연락처·품목·우선연결은 변경되지 않습니다. 계속할까요?'
@@ -2706,16 +2716,8 @@ return (
                   
                   {/* 헤더 */}
                   <div className="border-b border-blue-100 pb-4">
-                    <h4 className="text-sm font-black text-blue-800 flex items-center gap-2">
-                      <span>📎</span> 사무문구류 견적서 내역 등록 
-                    </h4>
-                    <p className="text-xs text-slate-500 mt-1.5 font-medium whitespace-pre-line">
-                      {`실제 발주는 외주 문구사에서 발행한 견적서 PDF 파일을 기준으로 진행됩니다.
-향후 수령 및 명세서 검수를 위해, `}
-                      <strong className="font-bold text-slate-700">
-                        PDF 파일의 텍스트 전체를 복사(Ctrl+A, Ctrl+C)하여 아래에 붙여넣어(Ctrl+V)
-                      </strong>
-                      {` 주세요.`}
+                    <p className="text-xs font-black text-blue-800 leading-relaxed">
+                      드림디포 견적서 다운 (Excel / PDF) → 그룹웨어 결재 승인 → 하단 폼 제목생성 및 견적서 붙여넣기 → 외주업체 클릭 및 신청서 제출
                     </p>
                   </div>
 
@@ -2751,12 +2753,12 @@ return (
                   <div>
                     <div className="flex justify-between items-center mb-2">
                       <label className="block text-[10px] font-black text-slate-500 tracking-widest uppercase">
-                        2. 견적 내용 전체 복사 붙여넣기 (Ctrl + V) <span className="text-red-500">*</span>
+                        2. 견적 내용 전체 붙여넣기 (Ctrl + V) <span className="text-red-500">*</span>
                       </label>
                       <span className="text-[9px] font-bold text-blue-500 bg-blue-50 px-2 py-0.5 rounded">텍스트 전용</span>
                     </div>
                     <textarea 
-                      placeholder="견적서 PDF 파일의 텍스트 전체를 복사하여 이곳에 붙여넣어 주세요. (품명, 규격, 수량, 단가 필수 포함)" 
+                      placeholder="견적서(Excel 또는 PDF) 텍스트 전체를 복사하여 이곳에 붙여넣어 주세요. (품명, 규격, 수량, 단가 필수 포함)" 
                       value={signData.suppliesQuoteRawText || ''} 
                       onChange={(e) => setSignData({ ...signData, suppliesQuoteRawText: e.target.value })} 
                       className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-xs font-mono font-medium outline-none focus:bg-white focus:border-blue-500 min-h-[180px] resize-y"
@@ -2773,7 +2775,7 @@ return (
 
                   {/* 안내말 */}
                   <div className="bg-amber-50 border border-amber-200 rounded-xl p-3.5 text-[10px] text-amber-800 font-medium leading-relaxed">
-                    💡 **정산 프로세스 가이드:** 등록된 견적 텍스트는 내부 DB에 안전하게 키핑되며, 월말 정산 화면에서 통합 거래명세서 엑셀(Excel)을 파싱할 때 품명/수량을 1:1로 추출해 크로스매칭하여 빨간색 경고 등으로 불일치를 잡아내게 됩니다.
+                    💡 **명세 대조 프로세스 가이드:** 등록된 견적 텍스트는 부서 명세 대조 화면에서 품명/수량을 1:1로 추출해 크로스매칭합니다.
                   </div>
 
                 </div>
@@ -3285,10 +3287,8 @@ return (
                     <span className="flex items-center justify-center gap-2">
                       <span className="animate-spin text-lg">⏳</span> 데이터 전송 및 처리 중...
                     </span>
-                  ) : activeTab === 'OFFICE_SUPPLIES' ? (
-                    '사무문구류 정산 견적 원장 등록'
                   ) : (
-                    '부서 맞춤 제작물 발급 신청서 제출'
+                    '신청서 제출'
                   )}
                 </button>
               </div>
@@ -3636,20 +3636,20 @@ return (
 
                 <div className="flex flex-wrap items-center justify-between gap-2 pt-3 border-t border-slate-100">
                   <p className="text-[10px] text-slate-400 font-medium leading-relaxed max-w-xl">
-                    ※ 시드 업체(아트로릭·한생미디어 3종·드림디포) 삭제는 LV_1만 가능합니다. 「시드 항목 복구(Edit)」는 누락·삭제분만 다시 채우며 기존 값은 유지합니다.
+                    ※ 시드 업체(아트로릭·한생미디어 3종·드림디포) 삭제는 LV_1만 가능합니다. 「시드 항목 복구(LV_1)」는 누락·삭제분만 다시 채우며 기존 값은 유지합니다.
                   </p>
                   <button
                     type="button"
-                    disabled={!canEdit}
-                    title={!canEdit ? '편집 권한 필요' : undefined}
+                    disabled={!canDeleteLv1Cert}
+                    title={!canDeleteLv1Cert ? 'LV_1 권한 필요' : undefined}
                     onClick={handleRestoreSeedVendors}
                     className={`text-[10px] font-black px-3 py-1.5 rounded-lg border transition-colors shrink-0 ${
-                      canEdit
+                      canDeleteLv1Cert
                         ? 'bg-amber-50 text-amber-800 border-amber-200 hover:bg-amber-100'
                         : DISABLED_ACTION_BTN
                     }`}
                   >
-                    시드 항목 복구(Edit)
+                    시드 항목 복구(LV_1)
                   </button>
                 </div>
 
@@ -3689,25 +3689,25 @@ return (
                         제품명·규격·단위를 신청서에 반영하고, 최근 공급처·제작 기본 수량은 참고용으로 관리합니다.
                       </p>
                       <p className="text-[10px] text-slate-400 mt-1.5 leading-relaxed">
-                        ※ 신규 등록은 메뉴 접근자 모두 가능, 수정·삭제는 Edit, 시드 품목 삭제는 LV_1입니다. 「시드 항목 복구(Edit)」는 누락·삭제분만 다시 채우며 기존 값은 유지합니다.
+                        ※ 신규 등록은 메뉴 접근자 모두 가능, 수정·삭제는 Edit, 시드 품목 삭제는 LV_1입니다. 「시드 항목 복구(LV_1)」는 누락·삭제분만 다시 채우며 기존 값은 유지합니다.
                       </p>
                     </div>
                     <button
                       type="button"
-                      disabled={!canEdit}
+                      disabled={!canDeleteLv1Cert}
                       title={
-                        !canEdit
-                          ? '편집 권한 필요'
+                        !canDeleteLv1Cert
+                          ? 'LV_1 권한 필요'
                           : '시드 기본 품목 중 없거나 비활성인 항목만 추가/재활성'
                       }
                       onClick={handleRestoreSeedPrintItems}
                       className={`shrink-0 text-[10px] font-black px-3 py-2 rounded-xl border transition-all active:scale-95 ${
-                        canEdit
+                        canDeleteLv1Cert
                           ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
                           : DISABLED_ACTION_BTN
                       }`}
                     >
-                      시드 항목 복구(Edit)
+                      시드 항목 복구(LV_1)
                     </button>
                   </div>
                 </div>
@@ -4126,25 +4126,25 @@ return (
                         목록은 등록순이 아니라 <span className="font-bold text-slate-500">품목명 가나다순</span>으로 정렬되며, 같은 품목명은 <span className="font-bold text-slate-500">규격순</span>으로 이어집니다.
                       </p>
                       <p className="text-[10px] text-slate-400 mt-1.5 leading-relaxed">
-                        ※「시드 항목 복구」는 누락·삭제분만 다시 채우며 기존 단가·명칭은 유지합니다.
+                        ※「시드 항목 복구」는 LV_1만 가능하며, 누락·삭제분만 다시 채우고 기존 단가·명칭은 유지합니다.
                       </p>
                     </div>
                     <button
                       type="button"
-                      disabled={!canEdit}
+                      disabled={!canDeleteLv1Cert}
                       title={
-                        !canEdit
-                          ? '편집 권한 필요'
+                        !canDeleteLv1Cert
+                          ? 'LV_1 권한 필요'
                           : '시드 기본 품목 중 없거나 비활성인 항목만 추가/재활성'
                       }
                       onClick={handleRestoreSeedPlates}
                       className={`shrink-0 text-[10px] font-black px-3 py-2 rounded-xl border transition-all active:scale-95 ${
-                        canEdit
+                        canDeleteLv1Cert
                           ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
                           : DISABLED_ACTION_BTN
                       }`}
                     >
-                      시드 항목 복구(Edit)
+                      시드 항목 복구(LV_1)
                     </button>
                   </div>
                 </div>
@@ -4324,25 +4324,25 @@ return (
                               종류·규격·설명으로 관리합니다. 신청서 「제본 판형 지정」 콤보박스에 실시간 반영됩니다.
                             </p>
                             <p className="text-[10px] text-slate-400 mt-1.5 leading-relaxed">
-                              ※ 신규 판형 수정·삭제는 편집 권한, 시드 판형 삭제는 LV_1만 가능합니다. 「시드 항목 복구(Edit)」는 누락·삭제분만 다시 채우며 기존 종류·규격·설명은 유지합니다.
+                              ※ 신규 판형 수정·삭제는 편집 권한, 시드 판형 삭제는 LV_1만 가능합니다. 「시드 항목 복구(LV_1)」는 누락·삭제분만 다시 채우며 기존 종류·규격·설명은 유지합니다.
                             </p>
                           </div>
                           <button
                             type="button"
-                            disabled={!canEdit}
+                            disabled={!canDeleteLv1Cert}
                             title={
-                              !canEdit
-                                ? '편집 권한 필요'
+                              !canDeleteLv1Cert
+                                ? 'LV_1 권한 필요'
                                 : '시드 기본 판형 중 없거나 비활성인 항목만 추가/재활성'
                             }
                             onClick={handleRestoreSeedJebonSizes}
                             className={`shrink-0 text-[10px] font-black px-3 py-2 rounded-xl border transition-all active:scale-95 ${
-                              canEdit
+                              canDeleteLv1Cert
                                 ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
                                 : DISABLED_ACTION_BTN
                             }`}
                           >
-                            시드 항목 복구(Edit)
+                            시드 항목 복구(LV_1)
                           </button>
                         </div>
                       </div>
@@ -4570,25 +4570,25 @@ return (
                           「수정(Edit)」을 누른 행만 편집할 수 있습니다. 변경 후 「저장」으로 DB에 반영하세요.
                         </p>
                         <p className="text-[10px] text-slate-400 mt-1.5 leading-relaxed">
-                          ※ 시드 인증 삭제는 LV_1, 「시드 항목 복구(Edit)」는 누락·삭제분을 다시 채우고 복구 시 등급(GRADE)도 시드 기본값으로 맞춥니다. 명칭·서식·판형 연동은 유지합니다.
+                          ※ 시드 인증 삭제는 LV_1, 「시드 항목 복구(LV_1)」는 누락·삭제분을 다시 채우고 복구 시 등급(GRADE)도 시드 기본값으로 맞춥니다. 명칭·서식·판형 연동은 유지합니다.
                         </p>
                       </div>
                       <button
                         type="button"
-                        disabled={!canEdit}
+                        disabled={!canDeleteLv1Cert}
                         title={
-                          !canEdit
-                            ? '편집 권한 필요'
+                          !canDeleteLv1Cert
+                            ? 'LV_1 권한 필요'
                             : '시드 기본 인증 중 없거나 비활성인 항목만 추가/재활성'
                         }
                         onClick={handleRestoreSeedCerts}
                         className={`shrink-0 text-[10px] font-black px-3 py-2 rounded-xl border transition-all active:scale-95 ${
-                          canEdit
+                          canDeleteLv1Cert
                             ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
                             : DISABLED_ACTION_BTN
                         }`}
                       >
-                        시드 항목 복구(Edit)
+                        시드 항목 복구(LV_1)
                       </button>
                     </div>
                   </div>

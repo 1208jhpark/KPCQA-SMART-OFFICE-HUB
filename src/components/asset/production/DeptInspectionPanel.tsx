@@ -1112,7 +1112,10 @@ export default function DeptInspectionPanel() {
 
   return (
     <>
-      <div className="w-full">
+      <div className="w-full space-y-3">
+        <div className="bg-amber-50 border border-amber-200 rounded-xl p-3.5 text-[10px] text-amber-800 font-medium leading-relaxed">
+          💡 발주서(+사무문구류는 외부 다운견적서)+메일 양식 활용 → 그룹웨어 메일 전송 → 발주확정 → 물품수령검수 → 명세대조(이동시 관리자와 정보 공유)
+        </div>
         <div
           className="flex flex-wrap items-end gap-1 border-b border-slate-200"
           role="tablist"

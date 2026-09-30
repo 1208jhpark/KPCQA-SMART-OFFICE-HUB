@@ -256,9 +256,15 @@ export async function POST(req: Request) {
   try {
     const body = await req.json();
 
-    // 시드 누락분 복구: 없으면 추가, 비활성만 재활성 (명칭·서식·등급 등 보존)
+    // 시드 누락분 복구: 없으면 추가, 비활성만 재활성 (명칭·서식·등급 등 보존) — LV_1만
     if (body?.action === 'restore-seeds') {
-      await authorizeAnyMenuPaths(READ_PATHS, { requireEditor: true });
+      const auth = await authorizeAnyMenuPaths(READ_PATHS);
+      if (auth.permission.myRole !== 'LV_1') {
+        return NextResponse.json(
+          { message: '시드 항목 복구는 LV_1만 가능합니다.' },
+          { status: 403 }
+        );
+      }
       const type = String(body.type || '').trim().toUpperCase();
       if (type !== 'SIGN' && type !== 'JEBON') {
         return NextResponse.json(

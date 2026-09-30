@@ -59,10 +59,15 @@ export async function POST(req: Request) {
   try {
     const body = await req.json();
 
-    // 시드 누락분 복구: 없으면 추가, 비활성만 재활성 (종류·규격·설명 보존)
+    // 시드 누락분 복구: 없으면 추가, 비활성만 재활성 (종류·규격·설명 보존) — LV_1만
     if (body?.action === 'restore-seeds') {
-      const auth = await authorizeAnyMenuPaths(READ_PATHS, { requireEditor: true });
-      void auth;
+      const auth = await authorizeAnyMenuPaths(READ_PATHS);
+      if (auth.permission.myRole !== 'LV_1') {
+        return NextResponse.json(
+          { message: '시드 항목 복구는 LV_1만 가능합니다.' },
+          { status: 403 }
+        );
+      }
 
       let created = 0;
       let reactivated = 0;

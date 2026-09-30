@@ -17,6 +17,7 @@ const KO_TO_EN: Record<string, SupplyRequestStatus> = {
   대기중: 'PENDING',
   대기: 'PENDING',
   신규대기: 'PENDING',
+  접수대기: 'PENDING',
   수령대기: 'READY',
   지급대기: 'READY',
   지급승인: 'READY',
@@ -28,7 +29,7 @@ const KO_TO_EN: Record<string, SupplyRequestStatus> = {
 };
 
 const EN_LABEL: Record<SupplyRequestStatus, string> = {
-  PENDING: '신규대기',
+  PENDING: '접수대기',
   READY: '지급대기',
   COMPLETED: '지급완료',
   REJECTED: '반려',

@@ -183,7 +183,7 @@ export default function InventoryModule() {
             소모품 조회 및 신청 대장
           </h1>
           <p className="text-white/70 text-xs mt-3 leading-relaxed">
-            경영기획센터에서 중앙 관리하는 사내 공통 소모품과 일반 비품의 실시간 재고를 파악하고 신청합니다.
+            사내 공통 소모품의 실시간 재고를 파악하고 신청합니다.
           </p>
         </div>
       </div>
@@ -192,7 +192,7 @@ export default function InventoryModule() {
         <div className="p-4 px-6 bg-slate-200/70 border-b border-slate-300 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
           <div className="flex items-center gap-2">
             <div className="w-2.5 h-2.5 rounded-full bg-blue-600"></div>
-            <h2 className="text-sm font-black text-slate-800 tracking-tight">비품 청구 리스트</h2>
+            <h2 className="text-sm font-black text-slate-800 tracking-tight">소모품 품목</h2>
             <span className="text-[11px] font-bold bg-slate-300/80 text-slate-700 px-2 py-0.5 rounded-md">{filteredItems.length}개 품목</span>
           </div>
      
@@ -373,6 +373,9 @@ export default function InventoryModule() {
                     <textarea value={reqForm.note} onChange={(e) => setReqForm({...reqForm, note: e.target.value})} placeholder="상세 용도나 요청사항을 적어주세요." className="w-full p-4 border border-slate-200 rounded-2xl text-[13px] font-bold outline-none focus:border-indigo-500 bg-slate-50/50 h-24 resize-none transition-colors shadow-inner" />
                   </div>
                 </div>
+                <p className="text-[11px] font-bold text-slate-500 leading-relaxed text-center px-1">
+                  관리자의 승인이 완료되면 부서지급대장에 수령대기로 표시됩니다.
+                </p>
                 <div className="flex gap-3 pt-2">
                   <button type="button" disabled={submitting} onClick={() => setSelectedItem(null)} className="flex-1 py-4 bg-slate-100 rounded-2xl text-[13px] font-black text-slate-500 hover:bg-slate-200 transition-colors disabled:opacity-50">취소</button>
                   <button type="button" disabled={submitting} onClick={handleRequestSubmit} className="flex-1 py-4 bg-blue-600 text-white rounded-2xl text-[13px] font-black hover:bg-blue-700 shadow-lg shadow-blue-200 transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed">{submitting ? '신청 중…' : '신청 완료'}</button>

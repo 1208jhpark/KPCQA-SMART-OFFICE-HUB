@@ -490,7 +490,7 @@ export default function DeptOrderPanel() {
     if (item.status !== PRODUCTION_STATUS.ACCEPTED) return;
     if (
       !confirm(
-        `[${item.postNumber}] 접수를 취소하고 신청(접수대기) 탭으로 되돌릴까요?`
+        `[${item.postNumber}] 접수를 취소하고 접수대기 탭으로 이동할까요?`
       )
     ) {
       return;
@@ -628,7 +628,12 @@ export default function DeptOrderPanel() {
   return (
     <>
       {/* 카테고리 서류철 탭 + 테이블 — 배너는 dept-master/layout ProductionDeptShell */}
-      <div className="w-full">
+      <div className="w-full space-y-3">
+        <div className="bg-amber-50 border border-amber-200 rounded-xl p-3.5 text-[10px] text-amber-800 font-medium leading-relaxed">
+          💡{' '}
+          <span className="font-black">[접수대기판]</span> 신청된 목록의 원문검수 및 접수확정 →{' '}
+          <span className="font-black">[발주대기판]</span> 접수된 목록의 개별 또는 묶음 발주 이동
+        </div>
         <div
           className="flex flex-wrap items-end gap-1 border-b border-slate-200"
           role="tablist"
@@ -850,7 +855,7 @@ export default function DeptOrderPanel() {
                           {item.title || '-'}
                         </td>
                         <td className="px-2 text-center">
-                          {isPending || item.status === PRODUCTION_STATUS.ACCEPTED ? (
+                          {isPending ? (
                             <button
                               type="button"
                               onClick={() => setDetailItem(item)}
@@ -940,7 +945,7 @@ export default function DeptOrderPanel() {
                               <button
                                 type="button"
                                 disabled={!canEdit || ordering || actionBusyId === item.id}
-                                title={!canEdit ? '편집 권한 필요' : '신청(접수대기)로 되돌리기'}
+                                title={!canEdit ? '편집 권한 필요' : '접수대기 탭으로 이동'}
                                 onClick={() => handleRevertAccept(item)}
                                 className={`px-2 py-1 text-[10px] font-black rounded-lg transition-colors whitespace-nowrap ${
                                   canEdit
@@ -948,7 +953,7 @@ export default function DeptOrderPanel() {
                                     : DISABLED_ACTION_BTN
                                 }`}
                               >
-                                {actionBusyId === item.id ? '처리중' : '접수취소'}
+                                {actionBusyId === item.id ? '처리중' : '→접수대기 이동'}
                               </button>
                             </div>
                           ) : (
@@ -1089,7 +1094,7 @@ export default function DeptOrderPanel() {
           onClose={() => setDetailItem(null)}
           allowEdit={canEdit}
           editPermissionTag="Edit"
-          editableStatuses={['PENDING', 'ACCEPTED']}
+          editableStatuses={['PENDING']}
           editApiPath="/api/asset/production/dept-master/order"
           onSaved={(updated) => {
             setRequests((prev) =>
