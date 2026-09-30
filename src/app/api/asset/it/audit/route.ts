@@ -111,13 +111,30 @@ async function autoCloseExpiredAudits() {
     where: { status: '진행중' },
     select: { id: true, endDate: true, endTime: true, target: true, target_unit_ids: true } as any,
   });
-  const expired = active.filter((a) => isPastKSTDeadline(a.endDate, a.endTime || '23:59'));
+  //const expired = active.filter((a) => isPastKSTDeadline(a.endDate, a.endTime || '23:59'));
+
+  const expired = active.filter((a: any) => 
+    isPastKSTDeadline(
+      Array.isArray(a.endDate) ? String(a.endDate[0]) : String(a.endDate || ''), 
+      a.endTime || '23:59'
+    )
+  );
+
   if (expired.length === 0) return 0;
 
+  //await prisma.iTAudit.updateMany({
+  //  where: { id: { in: expired.map((a) => a.id) }, status: '진행중' },
+  //  data: { status: '마감' },
+  //});
+
   await prisma.iTAudit.updateMany({
-    where: { id: { in: expired.map((a) => a.id) }, status: '진행중' },
+    where: { 
+      id: { in: expired.map((a: any) => a.id).flat() as string[] }, 
+      status: '진행중' 
+    },
     data: { status: '마감' },
   });
+
   await clearNudgeDatesForAuditTargets(expired as any);
   return expired.length;
 }
@@ -349,7 +366,7 @@ export async function PATCH(req: Request) {
     let deadlineExtended = false;
     const becomingRunning = patchData.status === '진행중';
     const stayingRunning =
-      current.status === '진행중' &&
+      (current as any)?.status === '진행중' &&
       (patchData.status === undefined || patchData.status === '진행중');
     if (becomingRunning || stayingRunning) {
       const endDateCheck = String(patchData.endDate || current.endDate || '').trim();

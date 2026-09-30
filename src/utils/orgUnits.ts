@@ -418,7 +418,8 @@ export function isGlobalMgmtOrgMember(opts: {
       seen.add(cid);
     }
 
-    const parentId = cur.parent_id ? String(cur.parent_id).trim() : '';
+    //const parentId = cur.parent_id ? String(cur.parent_id).trim() : '';
+    const parentId: string = cur.parent_id ? String(cur.parent_id).trim() : '';
     if (parentId && parentId === mgmtId) return true;
 
     if (!parentId) break;
