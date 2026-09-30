@@ -298,8 +298,8 @@ export default function ServiceLayout({ children }: { children: React.ReactNode 
   // 캐시 복원 전: 문구 스플래시 없이 대기 (1프레임)
   if (!bootReady) return null;
 
-  // 콜드 스타트(캐시 없음): 빈 placeholder — 로딩 문구로 대기감 주지 않음
-  if (loading && !user) return <LoadingState />;
+  // 콜드 스타트(캐시 없음): 로그인→홈 진입 시 로딩 문구 없음
+  if (loading && !user) return null;
   
   return (
     <div className="flex flex-col h-screen bg-slate-50/50 font-sans text-slate-900 overflow-hidden">

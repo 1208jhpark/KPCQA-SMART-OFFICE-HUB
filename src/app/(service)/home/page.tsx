@@ -3,7 +3,6 @@
 import { useLayoutEffect, useState } from 'react';
 import Link from 'next/link';
 import { resolveEntryHref } from '@/lib/resolve-entry-href';
-import LoadingState from '@/components/common/LoadingState';
 import {
   readHomeConfigCache,
   writeHomeConfigCache,
@@ -68,7 +67,7 @@ export default function ServiceHomePage() {
   };
 
   if (!bootReady) return null;
-  if (!config) return <LoadingState />;
+  if (!config) return null;
   
   const isVertical = config.layout_type === 'vertical';
   const gridCols = config.home_grid_cols || 4;
