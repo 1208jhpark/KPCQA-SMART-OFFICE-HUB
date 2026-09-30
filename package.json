@@ -4,8 +4,9 @@
   "private": true,
   "scripts": {
     "dev": "rimraf .next && next dev",
-    "build": "next build",
+    "build": "node --max-old-space-size=8192 ./node_modules/next/dist/bin/next build",
     "start": "node server.js",
+    "start:next": "node --max-old-space-size=4096 ./node_modules/next/dist/bin/next start",
     "lint": "next lint",
     "db:push": "prisma db push",
     "db:migrate": "prisma migrate deploy",
