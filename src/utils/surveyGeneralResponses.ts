@@ -52,13 +52,15 @@ export function buildAdminResponseMap(
   rows.forEach((r: any) => {
     if (!r?.surveyId || !r?.userEmail) return;
     const masked = isMaskedAnonymousEmail(r.userEmail);
+    // 익명 참여 stub(본인 이메일) — 제출여부만, 엑셀 본문 목록에서 제외
+    const participationOnly = !!r.anonymousParticipationOnly;
     realRes[`${r.surveyId}_${r.userEmail}`] = {
       isDone: true,
       date: r.submittedAt ? formatDate(r.submittedAt) : '-',
       result: '제출완료',
-      answers: r.answers || {},
-      anonymousContent: masked,
-      participationOnly: false,
+      answers: participationOnly ? {} : r.answers || {},
+      anonymousContent: masked && !participationOnly,
+      participationOnly,
     };
   });
 

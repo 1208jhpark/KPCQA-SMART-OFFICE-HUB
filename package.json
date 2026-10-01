@@ -20,6 +20,7 @@
     "db:seed:equipment:sync": "tsx scripts/seed-equipment-performance.ts --sync",
     "db:seed:marketing-clients": "tsx scripts/seed-marketing-clients.ts",
     "db:seed:marketing-clients:sync": "tsx scripts/seed-marketing-clients.ts --sync",
+    "db:migrate:anon-survey": "tsx scripts/migrate-general-anonymous-privacy.ts",
     "db:studio": "prisma studio"
   },
   "dependencies": {

@@ -12,6 +12,7 @@ import { resolveCalibSchedule } from '@/utils/equipmentCalib';
 import { isGlobalMgmtOrgMember } from '@/utils/orgUnits';
 import { SNOOZABLE_ALARM_IDS } from '@/lib/alarm-snooze';
 import { SUPPLY_REQUEST_PENDING_STATUSES } from '@/utils/supplyRequestStatus';
+import { hashSurveyParticipantEmail } from '@/lib/survey-anonymous-hash';
 
 export type HomeAlarm = {
   id: string;
@@ -906,6 +907,7 @@ export async function buildHomeAlarms(user: SessionUser): Promise<HomeAlarm[]> {
               status: true,
               createdAt: true,
               updatedAt: true,
+              isAnonymous: true,
             },
           });
     const openRows = surveys.filter(
@@ -913,17 +915,49 @@ export async function buildHomeAlarms(user: SessionUser): Promise<HomeAlarm[]> {
     );
     if (openRows.length === 0) return empty;
     const ids = openRows.map((s) => s.id);
-    const answered =
-      kind === 'delivery'
-        ? await prisma.deliveryResponse.findMany({
-            where: { surveyId: { in: ids }, userEmail: { equals: email, mode: 'insensitive' }, isRevoked: false },
-            select: { surveyId: true },
-          })
-        : await prisma.generalResponse.findMany({
-            where: { surveyId: { in: ids }, userEmail: { equals: email, mode: 'insensitive' } },
-            select: { surveyId: true },
-          });
-    const done = new Set(answered.map((a) => a.surveyId));
+    let done = new Set<string>();
+    if (kind === 'delivery') {
+      const answered = await prisma.deliveryResponse.findMany({
+        where: {
+          surveyId: { in: ids },
+          userEmail: { equals: email, mode: 'insensitive' },
+          isRevoked: false,
+        },
+        select: { surveyId: true },
+      });
+      done = new Set(answered.map((a) => a.surveyId));
+    } else {
+      const namedIds = openRows
+        .filter((s) => !(s as { isAnonymous?: boolean }).isAnonymous)
+        .map((s) => s.id);
+      const anonIds = openRows
+        .filter((s) => (s as { isAnonymous?: boolean }).isAnonymous)
+        .map((s) => s.id);
+      const namedAnswered =
+        namedIds.length > 0
+          ? await prisma.generalResponse.findMany({
+              where: {
+                surveyId: { in: namedIds },
+                userEmail: { equals: email, mode: 'insensitive' },
+              },
+              select: { surveyId: true },
+            })
+          : [];
+      done = new Set(namedAnswered.map((a) => a.surveyId));
+      if (anonIds.length > 0) {
+        const hashList = anonIds.map((id) => hashSurveyParticipantEmail(id, email));
+        const wanted = new Set(
+          anonIds.map((id) => `${id}:${hashSurveyParticipantEmail(id, email)}`)
+        );
+        const anonAnswered = await prisma.generalAnonymousParticipation.findMany({
+          where: { surveyId: { in: anonIds }, emailHash: { in: hashList } },
+          select: { surveyId: true, emailHash: true },
+        });
+        for (const row of anonAnswered) {
+          if (wanted.has(`${row.surveyId}:${row.emailHash}`)) done.add(row.surveyId);
+        }
+      }
+    }
     let nudge = 0;
     let d3 = 0;
     let open = 0;

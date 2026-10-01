@@ -655,11 +655,15 @@ model GeneralSurvey {
   endTime   String?  @default("23:59") // 종료 시간 (기본값 밤 12시 1분 전)
 
   // 🚀 [추가 필수]: GeneralResponse와의 1:N 양방향 관계 설정
-  responses        GeneralResponse[] 
+  responses                 GeneralResponse[]
+  /// 익명: 참여(중복방지) — 이메일 HMAC만 저장
+  anonymousParticipations   GeneralAnonymousParticipation[]
+  /// 익명: 응답 본문 — 신원과 분리 저장
+  anonymousAnswers          GeneralAnonymousAnswer[]
 }
 
 // -----------------------------------------------------------------
-// 📝 일반 설문 응답 대장 (General Response) - 신규 추가
+// 📝 일반 설문 응답 대장 (General Response) — 기명 설문용
 // -----------------------------------------------------------------
 model GeneralResponse {
   id          String   @id @default(cuid())
@@ -675,6 +679,30 @@ model GeneralResponse {
 
   // 중복 제출 방지를 위한 복합 유니크 키
   @@unique([surveyId, userEmail])
+}
+
+/// 익명 설문 참여 기록 (중복 제출 방지) — 평문 이메일 없음
+model GeneralAnonymousParticipation {
+  id          String   @id @default(cuid())
+  surveyId    String
+  survey      GeneralSurvey @relation(fields: [surveyId], references: [id], onDelete: Cascade)
+  /// HMAC-SHA256(비밀:surveyId, email)
+  emailHash   String
+  submittedAt DateTime @default(now())
+
+  @@unique([surveyId, emailHash])
+  @@index([surveyId])
+}
+
+/// 익명 설문 응답 본문 — 참여자 식별값과 FK/조인 없음
+model GeneralAnonymousAnswer {
+  id          String   @id @default(cuid())
+  surveyId    String
+  survey      GeneralSurvey @relation(fields: [surveyId], references: [id], onDelete: Cascade)
+  answers     Json
+  submittedAt DateTime @default(now())
+
+  @@index([surveyId])
 }
 
 // 🚀 IT 자산 실사 마스터 테이블

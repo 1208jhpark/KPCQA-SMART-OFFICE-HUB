@@ -13,6 +13,7 @@ import {
   userInSurveyTarget,
   parseSurveyTargetUnitIds,
 } from '@/lib/survey-target-match';
+import { hashSurveyParticipantEmail } from '@/lib/survey-anonymous-hash';
 
 const SURVEY_GENERAL_ADMIN_PATHS = [
   '/survey/general/admin/active-surveys',
@@ -30,74 +31,98 @@ function isGeneralAdminPath(path: string | undefined | null) {
   return SURVEY_GENERAL_ADMIN_PATHS.some((p) => normalizeMenuPath(p) === clean);
 }
 
-/** 익명 설문 ID 집합 */
-async function getAnonymousSurveyIdSet(surveyIds: string[]): Promise<Set<string>> {
-  if (surveyIds.length === 0) return new Set();
-  const rows = await prisma.generalSurvey.findMany({
-    where: { id: { in: surveyIds }, isAnonymous: true },
+/**
+ * 익명 설문 응답 페이로드
+ * - 참여: GeneralAnonymousParticipation (emailHash)
+ * - 본문: GeneralAnonymousAnswer (신원 없음)
+ * - 기명: GeneralResponse 그대로
+ */
+async function buildGeneralResponsesPayload(options: {
+  viewerEmail: string | null;
+  /** 기명 응답 where (undefined = 기명 전체) */
+  namedWhere?: Record<string, unknown>;
+  /** 관리자/매니저가 익명 답변 본문 포함 */
+  revealAnonymousAnswers: boolean;
+}) {
+  const viewer = String(options.viewerEmail || '').trim();
+
+  const namedResponses = await prisma.generalResponse.findMany({
+    where: {
+      survey: { isAnonymous: false },
+      ...(options.namedWhere || {}),
+    } as any,
+    orderBy: { submittedAt: 'desc' },
+  });
+
+  const anonSurveys = await prisma.generalSurvey.findMany({
+    where: { isAnonymous: true },
     select: { id: true },
   });
-  return new Set(rows.map((s) => s.id));
-}
-
-type ResponseRow = {
-  id?: string;
-  surveyId: string;
-  userEmail: string;
-  answers?: unknown;
-  submittedAt?: Date | string;
-  isApproved?: boolean;
-  [key: string]: unknown;
-};
-
-/**
- * GET_RESPONSES 공통 성형
- * - 일반 사용자(본인): 익명 answers 마스킹, userEmail 유지(본인 매칭)
- * - 관리자/매니저: 타인 익명 → anonymous-N@masked.local, 본인 행만 userEmail 유지(허브 참여여부 매칭)
- * - 집계는 anonymousParticipationCounts
- */
-async function shapeGeneralResponsesPayload(
-  responses: ResponseRow[],
-  options: {
-    revealAnonymousAnswers: boolean;
-    keepOwnEmail: boolean;
-    /** keepOwnEmail=false 여도 이 이메일의 익명 행은 마스킹하지 않음 */
-    viewerEmail?: string | null;
-  }
-) {
-  const surveyIds = Array.from(new Set(responses.map((r) => r.surveyId).filter(Boolean)));
-  const anonymousIds = await getAnonymousSurveyIdSet(surveyIds);
+  const anonIds = anonSurveys.map((s) => s.id);
 
   const anonymousParticipationCounts: Record<string, number> = {};
-  for (const id of anonymousIds) {
-    anonymousParticipationCounts[id] = responses.filter((r) => r.surveyId === id).length;
+  if (anonIds.length > 0) {
+    const grouped = await prisma.generalAnonymousParticipation.groupBy({
+      by: ['surveyId'],
+      where: { surveyId: { in: anonIds } },
+      _count: { _all: true },
+    });
+    for (const g of grouped) {
+      anonymousParticipationCounts[g.surveyId] = g._count._all;
+    }
+    for (const id of anonIds) {
+      if (anonymousParticipationCounts[id] == null) anonymousParticipationCounts[id] = 0;
+    }
   }
 
-  const viewer = String(options.viewerEmail || '').trim().toLowerCase();
-  const anonIndexBySurvey: Record<string, number> = {};
-  const shaped = responses.map((r) => {
-    if (!anonymousIds.has(r.surveyId)) return r;
+  const responses: any[] = [...namedResponses];
 
-    const answers = options.revealAnonymousAnswers ? r.answers ?? {} : {};
-    const isViewerRow =
-      !!viewer && String(r.userEmail || '').trim().toLowerCase() === viewer;
-    if (options.keepOwnEmail || isViewerRow) {
-      return { ...r, answers };
+  // 본인 참여 stub — 허브/마이페이지 "제출 여부" 매칭용 (답변 본문 없음)
+  if (viewer && anonIds.length > 0) {
+    const wantedKeys = new Set(
+      anonIds.map((id) => `${id}:${hashSurveyParticipantEmail(id, viewer)}`)
+    );
+    const hashList = anonIds.map((id) => hashSurveyParticipantEmail(id, viewer));
+    const mine = await prisma.generalAnonymousParticipation.findMany({
+      where: { surveyId: { in: anonIds }, emailHash: { in: hashList } },
+    });
+    for (const p of mine) {
+      if (!wantedKeys.has(`${p.surveyId}:${p.emailHash}`)) continue;
+      responses.push({
+        id: p.id,
+        surveyId: p.surveyId,
+        userEmail: viewer,
+        answers: {},
+        submittedAt: p.submittedAt,
+        isApproved: false,
+        anonymousParticipationOnly: true,
+      });
     }
+  }
 
-    anonIndexBySurvey[r.surveyId] = (anonIndexBySurvey[r.surveyId] || 0) + 1;
-    const n = anonIndexBySurvey[r.surveyId];
-    return {
-      ...r,
-      userEmail: `anonymous-${n}@masked.local`,
-      answers,
-    };
-  });
+  // 관리자 추출용 익명 본문 — 마스킹 이메일만 부여 (DB 신원과 무관)
+  if (options.revealAnonymousAnswers && anonIds.length > 0) {
+    const answers = await prisma.generalAnonymousAnswer.findMany({
+      where: { surveyId: { in: anonIds } },
+      orderBy: { submittedAt: 'asc' },
+    });
+    const anonIndexBySurvey: Record<string, number> = {};
+    for (const a of answers) {
+      anonIndexBySurvey[a.surveyId] = (anonIndexBySurvey[a.surveyId] || 0) + 1;
+      const n = anonIndexBySurvey[a.surveyId];
+      responses.push({
+        id: a.id,
+        surveyId: a.surveyId,
+        userEmail: `anonymous-${n}@masked.local`,
+        answers: a.answers ?? {},
+        submittedAt: a.submittedAt,
+        isApproved: false,
+        anonymousContent: true,
+      });
+    }
+  }
 
-  return {
-    responses: shaped,
-    anonymousParticipationCounts,
-  };
+  return { responses, anonymousParticipationCounts };
 }
 
 // 🚀 [보안 가드] 토큰 기반 신원/권한 확인
@@ -247,38 +272,31 @@ export async function POST(req: NextRequest) {
       return response;
     }
 
-    // 2. 🚀 [GET_RESPONSES] 응답 조회 (설문관리자: 범위 내 전체 / 일반: 본인만)
-    // 익명: answers↔userEmail 분리. 관리자 답변 원문은 includeAnonymousAnswers=true
+    // 2. 🚀 [GET_RESPONSES] 응답 조회 (설문관리자: 기명 범위 / 익명: 참여해시+분리본문)
+    // 익명 답변 원문: includeAnonymousAnswers=true (관리자·매니저)
     if (action === 'GET_RESPONSES') {
       if (!auth.isAuth) return NextResponse.json({ error: '조회 권한이 없습니다.' }, { status: 401 });
 
       const wantAnonymousAnswers = rest.includeAnonymousAnswers === true;
 
       if (auth.isAdmin) {
-        const responses = await prisma.generalResponse.findMany({
-          orderBy: { submittedAt: 'desc' },
-        });
         return NextResponse.json(
-          await shapeGeneralResponsesPayload(responses, {
-            revealAnonymousAnswers: wantAnonymousAnswers,
-            keepOwnEmail: false,
+          await buildGeneralResponsesPayload({
             viewerEmail: auth.email,
+            revealAnonymousAnswers: wantAnonymousAnswers,
           })
         );
       }
 
       const mgr = await trySurveyManagerAuth(false);
       if (!mgr) {
-        const responses = await prisma.generalResponse.findMany({
-          where: { userEmail: { equals: auth.email!, mode: 'insensitive' } },
-          orderBy: { submittedAt: 'desc' },
-        });
-        // 본인 조회: 이메일 유지(목록 매칭), 익명 답변만 비움
         return NextResponse.json(
-          await shapeGeneralResponsesPayload(responses, {
-            revealAnonymousAnswers: false,
-            keepOwnEmail: true,
+          await buildGeneralResponsesPayload({
             viewerEmail: auth.email,
+            namedWhere: {
+              userEmail: { equals: auth.email!, mode: 'insensitive' },
+            },
+            revealAnonymousAnswers: false,
           })
         );
       }
@@ -294,24 +312,20 @@ export async function POST(req: NextRequest) {
                 : mgr.permission.viewScope
             );
 
-      let where: any = undefined;
+      let namedWhere: Record<string, unknown> | undefined;
       if (scopedIds) {
         const scopedUsers = await prisma.user.findMany({
           where: { unit_id: { in: scopedIds } },
           select: { email: true },
         });
-        where = { userEmail: { in: scopedUsers.map((u) => u.email) } };
+        namedWhere = { userEmail: { in: scopedUsers.map((u) => u.email) } };
       }
 
-      const responses = await prisma.generalResponse.findMany({
-        where,
-        orderBy: { submittedAt: 'desc' },
-      });
       return NextResponse.json(
-        await shapeGeneralResponsesPayload(responses, {
-          revealAnonymousAnswers: wantAnonymousAnswers,
-          keepOwnEmail: false,
+        await buildGeneralResponsesPayload({
           viewerEmail: auth.email,
+          namedWhere,
+          revealAnonymousAnswers: wantAnonymousAnswers,
         })
       );
     }
@@ -487,22 +501,46 @@ if (action === 'GET_STATS') {
         }
       }
 
-      const existing = await prisma.generalResponse.findUnique({
-        where: { surveyId_userEmail: { surveyId, userEmail: secureEmail } },
-        select: { id: true },
-      });
-      // 익명: 1회 제출 고정 — 재제출·수정 차단
-      if (survey.isAnonymous && existing) {
-        return NextResponse.json(
-          { error: '익명 설문은 제출 후 답변을 수정할 수 없습니다.' },
-          { status: 403 }
-        );
+      // 익명: 참여 해시 + 응답 본문 분리 저장 (평문 이메일·답변 매칭 불가)
+      if (survey.isAnonymous) {
+        const emailHash = hashSurveyParticipantEmail(surveyId, secureEmail);
+        const existing = await prisma.generalAnonymousParticipation.findUnique({
+          where: { surveyId_emailHash: { surveyId, emailHash } },
+          select: { id: true },
+        });
+        if (existing) {
+          return NextResponse.json(
+            { error: '익명 설문은 제출 후 답변을 수정할 수 없습니다.' },
+            { status: 403 }
+          );
+        }
+
+        const created = await prisma.$transaction(async (tx) => {
+          const participation = await tx.generalAnonymousParticipation.create({
+            data: { surveyId, emailHash },
+          });
+          const answer = await tx.generalAnonymousAnswer.create({
+            data: { surveyId, answers: answers || {} },
+          });
+          return { participationId: participation.id, answerId: answer.id, surveyId };
+        });
+
+        return NextResponse.json({
+          success: true,
+          surveyId: created.surveyId,
+          anonymous: true,
+        });
       }
 
       const newResponse = await prisma.generalResponse.upsert({
         where: { surveyId_userEmail: { surveyId, userEmail: secureEmail } },
         update: { answers: answers || {}, submittedAt: new Date() },
-        create: { surveyId, userEmail: secureEmail, answers: answers || {}, submittedAt: new Date() }
+        create: {
+          surveyId,
+          userEmail: secureEmail,
+          answers: answers || {},
+          submittedAt: new Date(),
+        },
       });
       return NextResponse.json(newResponse);
     }
@@ -557,7 +595,7 @@ if (action === 'GET_STATS') {
         : [];
 
       if (survey.isAnonymous || rest.resolveUnsubmittedOnServer === true) {
-        const [units, users, submitted] = await Promise.all([
+        const [units, users, submittedHashes] = await Promise.all([
           prisma.orgUnit.findMany({
             where: { is_deleted: false, is_active: true },
             select: { id: true, unit_name: true, parent_id: true },
@@ -570,13 +608,26 @@ if (action === 'GET_STATS') {
               unit: { select: { id: true, unit_name: true, parent_id: true } },
             },
           }),
-          prisma.generalResponse.findMany({
-            where: { surveyId },
-            select: { userEmail: true },
-          }),
+          survey.isAnonymous
+            ? prisma.generalAnonymousParticipation.findMany({
+                where: { surveyId },
+                select: { emailHash: true },
+              })
+            : prisma.generalResponse.findMany({
+                where: { surveyId },
+                select: { userEmail: true },
+              }),
         ]);
 
-        const submittedSet = new Set(submitted.map((r) => r.userEmail));
+        const submittedSet = survey.isAnonymous
+          ? new Set(
+              (submittedHashes as { emailHash: string }[]).map((r) => r.emailHash)
+            )
+          : new Set(
+              (submittedHashes as { userEmail: string }[]).map((r) =>
+                String(r.userEmail || '').trim().toLowerCase()
+              )
+            );
 
         emails = users
           .filter((u) =>
@@ -589,7 +640,13 @@ if (action === 'GET_STATS') {
             })
           )
           .map((u) => u.email)
-          .filter((email) => email && !submittedSet.has(email));
+          .filter((email) => {
+            if (!email) return false;
+            if (survey.isAnonymous) {
+              return !submittedSet.has(hashSurveyParticipantEmail(surveyId, email));
+            }
+            return !submittedSet.has(String(email).trim().toLowerCase());
+          });
       }
 
       const prevNudged = Array.isArray(survey.nudgedUsers) ? survey.nudgedUsers : [];
