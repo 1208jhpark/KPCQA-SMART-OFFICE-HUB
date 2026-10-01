@@ -562,17 +562,39 @@ export async function PATCH(req: Request) {
 }
 
 // 🚀 4. IT 자산 완전 삭제 (DELETE) — 마스터 Edit (허수·오등록 정리)
+// 단건: Edit / 일괄(ids): LV_1 전용
 // 종료 이관은 /archive POST (트랜잭션). 아카이브 영구삭제는 archive DELETE + LV_1
 export async function DELETE(req: Request) {
   try {
-    await authorizeAnyMenuPaths([...IT_MASTER_WRITE_PATHS], { requireEditor: true });
+    const auth = await authorizeAnyMenuPaths([...IT_MASTER_WRITE_PATHS], {
+      requireEditor: true,
+    });
 
     const { searchParams } = new URL(req.url);
-    const id = searchParams.get('id');
-    if (!id) return NextResponse.json({ message: 'ID 누락' }, { status: 400 });
+    const ids = [
+      ...searchParams.getAll('id'),
+      ...(searchParams.get('ids') || '').split(','),
+    ]
+      .map((v) => String(v || '').trim())
+      .filter(Boolean);
 
-    await prisma.iTAsset.delete({ where: { id } });
-    return NextResponse.json({ message: '삭제 완료' });
+    if (ids.length === 0) {
+      return NextResponse.json({ message: 'ID 누락' }, { status: 400 });
+    }
+
+    if (ids.length > 1 && !isLv1(auth.user)) {
+      return NextResponse.json(
+        { message: '일괄 삭제는 LV_1만 가능합니다.' },
+        { status: 403 }
+      );
+    }
+
+    if (ids.length === 1) {
+      await prisma.iTAsset.delete({ where: { id: ids[0] } });
+    } else {
+      await prisma.iTAsset.deleteMany({ where: { id: { in: ids } } });
+    }
+    return NextResponse.json({ message: '삭제 완료', count: ids.length });
   } catch (error) {
     const authRes = authErrorToResponse(error);
     if (authRes.status !== 500) return authRes;

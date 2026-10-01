@@ -403,6 +403,12 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
     () => resolveInterfaceEditState(currentUser, interfaceConfig).isEditor,
     [currentUser, interfaceConfig]
   );
+  const isLV1 = useMemo(
+    () =>
+      !!currentUser?.roles?.some((r: any) => String(r).includes('LV_1')) ||
+      currentUser?.permissionLevel === 'LV_1',
+    [currentUser]
+  );
   const alertNoEditPermission = () => alert('편집 권한이 없습니다.');
      
   const formatNumber = (val: any) => val?.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",") || '0';
@@ -618,6 +624,40 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
     } catch (error) {
       console.error("Delete Error:", error);
       alert("❌ 서버 통신 중 오류가 발생했습니다.");
+    }
+  };
+
+  /** 선택 행 일괄 삭제 — LV_1 전용 (체크박스·전체 선택과 연동) */
+  const handleDeleteSelected = async () => {
+    if (!isLV1) return alert('❌ 삭제 권한이 거부되었습니다. (LV_1 전용)');
+    if (selectedIds.size === 0) {
+      return alert('삭제할 자산을 체크박스로 선택해 주세요. (헤더 [전체]로 필터 전체 선택 가능)');
+    }
+    if (
+      !confirm(
+        `선택한 자산 ${selectedIds.size}건을 대장에서 삭제하시겠습니까?\n(허수·오등록 정리용. 종료 이관은 [종료]를 사용하세요.)\n되돌릴 수 없습니다.`
+      )
+    ) {
+      return;
+    }
+
+    try {
+      const ids = Array.from(selectedIds);
+      const res = await fetch(
+        `/api/asset/it?ids=${ids.map(encodeURIComponent).join(',')}`,
+        { method: 'DELETE' }
+      );
+      if (res.ok) {
+        alert(`✅ ${ids.length}건이 대장에서 제외되었습니다.`);
+        setSelectedIds(new Set());
+        fetchAllDataFromServer();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        alert(`❌ 일괄 삭제 실패${err.message ? `\n${err.message}` : ''}`);
+      }
+    } catch (error) {
+      console.error('Bulk Delete Error:', error);
+      alert('❌ 서버 통신 중 오류가 발생했습니다.');
     }
   };
   
@@ -2309,6 +2349,18 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
             )}
           </div>
           <div className="flex items-center gap-1.5 shrink-0 flex-nowrap justify-end">
+            {isLV1 && (
+              <button
+                type="button"
+                onClick={handleDeleteSelected}
+                className="px-3 py-2 bg-white text-rose-600 border border-rose-200 text-[11px] font-black rounded-lg hover:bg-rose-50 transition-all shadow-sm whitespace-nowrap"
+                title="체크한 자산 일괄 삭제 (LV_1)"
+              >
+                {selectedIds.size > 0
+                  ? `삭제(LV_1)(${selectedIds.size})`
+                  : '삭제(LV_1)'}
+              </button>
+            )}
             <button
               type="button"
               onClick={handleExcelDownload}
