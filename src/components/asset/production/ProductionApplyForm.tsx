@@ -2552,17 +2552,6 @@ return (
  {activeTab === 'PRINT' && (
               <div className="space-y-6 animate-fade-in pt-2">
                 <div className="p-6 bg-white rounded-2xl border border-purple-200 space-y-6 shadow-sm">
-                  
-                  {/* 헤더 타이틀 */}
-                  <div className="border-b border-purple-100 pb-4">
-                    <h4 className="text-sm font-black text-purple-800 flex items-center gap-2">
-                      <span>📁</span> 기성 서식 및 제작성 소모품 일괄 신청 코너
-                    </h4>
-                    <p className="text-xs text-slate-500 mt-1.5 font-medium">
-                      외주사에서 청구되는 물품을 선택하여 신청합니다.
-                    </p>
-                  </div>
-
                   {/* 🚀 1. 물품 선택을 가장 먼저 하도록 상단으로 이동! */}
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     
