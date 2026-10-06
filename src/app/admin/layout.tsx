@@ -61,10 +61,12 @@ export default async function AdminLayout({ children }: { children: ReactNode })
   }
 
   // 5. 관리자 전용 레이아웃 (사이드바 + 메인 콘텐츠)
+  // 좁은 화면: PC 레이아웃(min 1280) 유지 + 가로 스크롤 (찌그러짐 방지)
   return (
-    <div className="flex min-h-screen bg-[#F8FAFC] font-sans">
+    <div className="h-screen w-full overflow-x-auto overflow-y-hidden bg-[#F8FAFC]">
+    <div className="flex h-full min-w-[1280px] bg-[#F8FAFC] font-sans">
       {/* 🛠️ 관리자 왼쪽 사이드바 */}
-      <aside className="w-64 bg-white border-r border-slate-200 hidden md:flex flex-col shrink-0 z-10 shadow-sm">
+      <aside className="w-64 bg-white border-r border-slate-200 flex flex-col shrink-0 z-10 shadow-sm">
         <div className="p-8 border-b border-slate-100">
            <Link href="/home" className="font-black text-[14px] uppercase tracking-widest text-indigo-700 not-italic hover:opacity-80 transition-opacity">
              WISE HOME
@@ -105,10 +107,11 @@ export default async function AdminLayout({ children }: { children: ReactNode })
       </aside>
       
       {/* 메인 콘텐츠 영역 */}
-      <main className="flex-1 overflow-y-auto">
+      <main className="flex-1 overflow-y-auto min-w-0">
         <PageViewTracker />
         {children}
       </main>
+    </div>
     </div>
   );
 }

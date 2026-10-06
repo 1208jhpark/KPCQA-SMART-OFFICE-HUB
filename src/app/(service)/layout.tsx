@@ -246,15 +246,17 @@ export default function ServiceLayout({ children }: { children: React.ReactNode 
   if (loading && !user) return null;
   
   return (
-    <div className="flex flex-col h-screen bg-slate-50/50 font-sans text-slate-900 overflow-hidden">
+    // 좁은 화면: PC 레이아웃(min 1280) 유지 + 가로 스크롤 (찌그러짐 방지)
+    <div className="h-screen w-full overflow-x-auto overflow-y-hidden bg-slate-50/50">
+    <div className="flex flex-col h-full min-w-[1280px] bg-slate-50/50 font-sans text-slate-900 overflow-hidden">
       <PageViewTracker />
       <header className="h-16 bg-slate-900 border-b border-slate-800 flex items-center justify-between px-8 shrink-0 z-50 shadow-lg">
-        <div className="flex items-center gap-12">
-          <Link href="/home" className="font-black text-[14px] uppercase tracking-widest text-indigo-400 not-italic hover:opacity-80 transition-opacity">
+        <div className="flex items-center gap-12 shrink-0 min-w-0">
+          <Link href="/home" className="font-black text-[14px] uppercase tracking-widest text-indigo-400 not-italic hover:opacity-80 transition-opacity whitespace-nowrap">
             WISE HOME
           </Link>
           
-          <nav className="flex gap-10">
+          <nav className="flex gap-10 shrink-0">
             {l2Menus.map(l2 => {
               const isActive = pathname.startsWith(l2.path);
               const href = getEntryHref(l2);
@@ -263,7 +265,7 @@ export default function ServiceLayout({ children }: { children: React.ReactNode 
                   key={l2.id} 
                   href={href} 
                   onClick={(e) => !l2.is_active && handleInactiveClick(e, l2.name)}
-                  className={`text-[11px] font-black tracking-tighter transition-all relative py-5 uppercase flex items-center gap-1 ${
+                  className={`text-[11px] font-black tracking-tighter transition-all relative py-5 uppercase flex items-center gap-1 whitespace-nowrap ${
                     !l2.is_active ? 'opacity-20 cursor-not-allowed text-slate-400' :
                     isActive ? 'text-indigo-400 after:absolute after:bottom-0 after:left-0 after:right-0 after:h-0.5 after:bg-indigo-400' : 'text-slate-400 hover:text-slate-200'
                   }`}
@@ -275,7 +277,7 @@ export default function ServiceLayout({ children }: { children: React.ReactNode 
           </nav>
         </div>
   
-        <div className="relative flex items-center gap-3" ref={userMenuRef}>
+        <div className="relative flex items-center gap-3 shrink-0" ref={userMenuRef}>
           <AlarmBell userKey={String(user?.email || '')} />
           <button
             type="button"
@@ -448,6 +450,7 @@ export default function ServiceLayout({ children }: { children: React.ReactNode 
           )}
         </main>
       </div>
+    </div>
     </div>
   );
 }
