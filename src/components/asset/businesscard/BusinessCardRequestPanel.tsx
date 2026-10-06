@@ -1118,6 +1118,8 @@ export default function BusinessCardRequestPanel() {
           {FOLDER_TABS.map((tab) => {
             const active = activeFolder === tab.id;
             const badgeCount = tab.id === 'PENDING' ? folderCounts.pending : folderCounts.accepted;
+            const isReception = tab.id === 'PENDING';
+            const isOrderWait = tab.id === 'ACCEPTED';
             return (
               <button
                 key={tab.id}
@@ -1125,9 +1127,22 @@ export default function BusinessCardRequestPanel() {
                 role="tab"
                 aria-selected={active}
                 onClick={() => setActiveFolder(tab.id)}
-                className={`relative flex items-center gap-1.5 px-4 py-2.5 text-xs font-black tracking-tight transition-colors rounded-t-lg border ${
-                  active ? tab.activeClass : FOLDER_TAB_IDLE
-                }`}
+                title={
+                  isOrderWait ? '발주대기 · 묶음발주 후 검수 탭으로 이관' : undefined
+                }
+                className={
+                  isReception
+                    ? `group relative flex items-center gap-1.5 pl-4 pr-5 py-2.5 mr-3 text-xs font-black tracking-tight transition-colors rounded-tl-lg border border-r-0 ${
+                        active ? tab.activeClass : FOLDER_TAB_IDLE
+                      }`
+                    : isOrderWait
+                      ? `group relative flex items-center gap-1.5 pl-4 pr-4 py-2.5 text-xs font-black tracking-tight transition-colors rounded-tl-lg border border-r-0 ${
+                          active ? tab.activeClass : FOLDER_TAB_IDLE
+                        }`
+                      : `relative flex items-center gap-1.5 px-4 py-2.5 text-xs font-black tracking-tight transition-colors rounded-t-lg border ${
+                          active ? tab.activeClass : FOLDER_TAB_IDLE
+                        }`
+                }
               >
                 <span className="text-sm leading-none">{tab.icon}</span>
                 <span className="flex items-center gap-1">
@@ -1138,6 +1153,52 @@ export default function BusinessCardRequestPanel() {
                     </span>
                   ) : null}
                 </span>
+                {/* 접수대기 → 발주대기 (강한 화살표) */}
+                {isReception ? (
+                  <>
+                    <span
+                      aria-hidden
+                      className={`pointer-events-none absolute -right-[12px] -top-px -bottom-px z-[11] w-[13px] ${
+                        active
+                          ? 'bg-slate-900'
+                          : 'bg-slate-200 group-hover:bg-slate-300'
+                      }`}
+                      style={{ clipPath: 'polygon(0 0, 100% 50%, 0 100%)' }}
+                    />
+                    <span
+                      aria-hidden
+                      className={`pointer-events-none absolute -right-[11px] inset-y-0 z-[12] w-[12px] ${
+                        active
+                          ? 'bg-slate-900'
+                          : 'bg-slate-100 group-hover:bg-slate-200/80'
+                      }`}
+                      style={{ clipPath: 'polygon(0 0, 100% 50%, 0 100%)' }}
+                    />
+                  </>
+                ) : null}
+                {/* 발주대기 → 검수 탭 (약한 화살표) */}
+                {isOrderWait ? (
+                  <>
+                    <span
+                      aria-hidden
+                      className={`pointer-events-none absolute -right-[8px] -top-px -bottom-px z-[11] w-[9px] opacity-80 ${
+                        active
+                          ? 'bg-indigo-600'
+                          : 'bg-slate-200 group-hover:bg-slate-300'
+                      }`}
+                      style={{ clipPath: 'polygon(0 0, 100% 50%, 0 100%)' }}
+                    />
+                    <span
+                      aria-hidden
+                      className={`pointer-events-none absolute -right-[7px] inset-y-0 z-[12] w-[8px] opacity-80 ${
+                        active
+                          ? 'bg-indigo-600'
+                          : 'bg-slate-100 group-hover:bg-slate-200/80'
+                      }`}
+                      style={{ clipPath: 'polygon(0 0, 100% 50%, 0 100%)' }}
+                    />
+                  </>
+                ) : null}
               </button>
             );
           })}

@@ -355,7 +355,7 @@ const [signData, setSignData] = useState({
   compDateRaw: '', 
   coverPageCount: '', 
   innerPageCount: '',
-  coverPageFromAttachment: false,
+  coverPageFromAttachment: true,
   innerPageFromAttachment: true,
   jebonSizeType: 'A4', 
   jebonSize: 'A4', 
@@ -1102,9 +1102,9 @@ const formattedValidPeriod = useMemo(() => {
       jebonSize: resolveJebonSizeSpec(sizeCode, jebonSizeMasterList),
       quantity: Math.max(1, Number(cert.jebonDefaultQuantity) || 1),
       coverColor: cert.jebonCoverColor || '컬러',
-      coverPageCount: cert.useJebonCover ? cert.jebonCoverPageCount || '1' : '',
+      coverPageCount: '',
       innerColor: cert.jebonInnerColor || '흑백',
-      coverPageFromAttachment: false,
+      coverPageFromAttachment: true,
       innerPageFromAttachment: true,
       innerPageCount: '',
       // 일반제본: 인증 단계 해당없음 · 표지 일자 비활성 시 입력 초기화
@@ -1938,7 +1938,7 @@ return (
         <div className="flex items-center gap-3 border-b border-slate-100 pb-4">
           <span className="text-xl">{CATEGORIES.find(c => c.id === activeTab)?.icon || '✍️'}</span>
           <h2 className="text-lg font-black text-slate-800">
-            {CATEGORIES.find(c => c.id === activeTab)?.label || '부서 맞춤'} 제작 발급 신청서
+            {CATEGORIES.find((c) => c.id === activeTab)?.label || '부서 맞춤'} 제작 발주서 신청
           </h2>
         </div>
 
@@ -1965,14 +1965,21 @@ return (
         <div className="space-y-6 pt-6">
           <div className="bg-yellow-50 border-2 border-yellow-400 p-8 rounded-2xl transition-all shadow-inner space-y-6 relative mt-4">
             <div className="absolute -top-3 left-6 bg-yellow-400 text-yellow-900 px-4 py-1 rounded-full text-[10px] font-black tracking-widest shadow-sm">
-              DYNAMIC AREA : {CATEGORIES.find(c => c.id === activeTab)?.label} 전용 입력 폼
+              신청 내용
             </div>
 
 {/* 🔥 현판(SIGN) 탭일 때만 보이는 영역 */}
 {activeTab === 'SIGN' && (
               <div className="space-y-6 animate-fade-in pt-2">
 
-                <div className="p-6 bg-white rounded-2xl border border-yellow-200 space-y-6 shadow-sm">
+                <div className="p-6 bg-white rounded-2xl border border-blue-200 space-y-6 shadow-sm">
+
+                  {/* 프로세스 안내 */}
+                  <div className="border-b border-blue-100 pb-4">
+                    <p className="text-xs font-black text-blue-800 leading-relaxed">
+                      드롭다운 서식은 설정 탭 활용 / 발주서만 신청됨 / 첨부파일은 부서 NAS 활용하여 별첨 (파일명은 관리용 제목설정과 일치 권장)
+                    </p>
+                  </div>
 
                   {/* 1~2: 인증의 종류 | 등급/경영시스템 (좌우) */}
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-8 items-start">
@@ -2203,7 +2210,14 @@ return (
             {/* 🔥 2. 제본(JEBON) 탭 뷰 */}
             {activeTab === 'JEBON' && (
               <div className="space-y-6 animate-fade-in pt-2">
-              <div className="p-6 bg-white rounded-2xl border border-yellow-200 space-y-6 shadow-sm">
+              <div className="p-6 bg-white rounded-2xl border border-blue-200 space-y-6 shadow-sm">
+
+                {/* 프로세스 안내 */}
+                <div className="border-b border-blue-100 pb-4">
+                  <p className="text-xs font-black text-blue-800 leading-relaxed">
+                    드롭다운 서식은 설정 탭 활용 / 발주서만 신청됨 / 첨부파일은 부서 NAS 활용하여 별첨 (파일명은 관리용 제목설정과 일치 권장)
+                  </p>
+                </div>
 
                 {/* 🚀 3번: 제본 종류 (판형·표지·본문보다 먼저) */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
@@ -2551,7 +2565,14 @@ return (
  {/* 🔥 3. 기성 서식 / 소모품 제작 통합 탭 뷰 */}
  {activeTab === 'PRINT' && (
               <div className="space-y-6 animate-fade-in pt-2">
-                <div className="p-6 bg-white rounded-2xl border border-purple-200 space-y-6 shadow-sm">
+                <div className="p-6 bg-white rounded-2xl border border-blue-200 space-y-6 shadow-sm">
+                  {/* 프로세스 안내 */}
+                  <div className="border-b border-blue-100 pb-4">
+                    <p className="text-xs font-black text-blue-800 leading-relaxed">
+                      드롭다운 서식은 설정 탭 활용 / 발주서만 신청됨 / 일반소모품 입고관리는 별도 진행
+                    </p>
+                  </div>
+
                   {/* 🚀 1. 물품 선택을 가장 먼저 하도록 상단으로 이동! */}
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     
@@ -2563,7 +2584,7 @@ return (
                       <button
                         type="button"
                         onClick={() => setIsPrintItemMenuOpen((open) => !open)}
-                        className="w-full bg-purple-50/50 border border-purple-200 rounded-xl px-4 py-3 text-left focus:ring-2 focus:ring-purple-500 outline-none cursor-pointer hover:bg-white transition-colors flex items-center justify-between gap-2"
+                        className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-left focus:ring-2 focus:ring-blue-500 outline-none cursor-pointer hover:bg-white transition-colors flex items-center justify-between gap-2"
                       >
                         {selectedPrintItem ? (
                           <span className="min-w-0 truncate text-xs">
@@ -2586,7 +2607,7 @@ return (
                         </span>
                       </button>
                       {isPrintItemMenuOpen && printItemMasterList.length > 0 && (
-                        <div className="absolute z-30 mt-1.5 w-full max-h-64 overflow-y-auto rounded-xl border border-purple-200 bg-white shadow-lg">
+                        <div className="absolute z-30 mt-1.5 w-full max-h-64 overflow-y-auto rounded-xl border border-slate-200 bg-white shadow-lg">
                           {printItemMasterList.map((item) => {
                             const active = item.id === signData.printItemId;
                             const refText = printItemReferenceText(item);
@@ -2595,8 +2616,8 @@ return (
                                 key={item.id}
                                 type="button"
                                 onClick={() => applyPrintItemSelection(item)}
-                                className={`w-full px-4 py-2.5 text-left text-xs flex items-baseline gap-1.5 hover:bg-purple-50 transition-colors ${
-                                  active ? 'bg-purple-50/80' : ''
+                                className={`w-full px-4 py-2.5 text-left text-xs flex items-baseline gap-1.5 hover:bg-blue-50 transition-colors ${
+                                  active ? 'bg-blue-50/80' : ''
                                 }`}
                               >
                                 <span className="font-black text-slate-900 shrink-0">{item.name}</span>
@@ -2616,7 +2637,7 @@ return (
                     <div>
                       <label className="block text-[10px] font-black text-slate-500 tracking-widest uppercase mb-2">
                         {isPrintCustomItem ? (
-                          <span className="text-purple-700 font-black animate-pulse">
+                          <span className="text-blue-700 font-black animate-pulse">
                             1. 기타소모품 명칭/규격 직접 기재 *
                           </span>
                         ) : (
@@ -2633,9 +2654,9 @@ return (
                             onChange={(e) =>
                               setSignData({ ...signData, printCustomName: e.target.value })
                             }
-                            className="w-full bg-white border-2 border-purple-400 focus:border-purple-600 focus:ring-2 focus:ring-purple-200 rounded-xl px-4 py-2.5 text-xs font-bold outline-none shadow-sm text-purple-900"
+                            className="w-full bg-white border-2 border-blue-400 focus:border-blue-600 focus:ring-2 focus:ring-blue-200 rounded-xl px-4 py-2.5 text-xs font-bold outline-none shadow-sm text-blue-900"
                           />
-                          <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[9px] font-black text-purple-500 bg-purple-50 px-2 py-0.5 rounded-md">
+                          <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[9px] font-black text-blue-600 bg-blue-50 px-2 py-0.5 rounded-md">
                             입력모드
                           </span>
                         </div>
@@ -2655,7 +2676,7 @@ return (
                   </div>
 
                   {/* 🚀 2, 3. 상세 내용 및 비고 */}
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6 border-t border-purple-50 pt-6 mt-2">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6 border-t border-slate-100 pt-6 mt-2">
                     <div>
                       <label className="block text-[10px] font-black text-slate-500 tracking-widest uppercase mb-2">
                         2. 인쇄 제작 문구1 <span className="text-slate-400 font-medium">(선택)</span>
@@ -2667,7 +2688,7 @@ return (
                         onChange={(e) =>
                           setSignData({ ...signData, printItemDetails: e.target.value })
                         }
-                        className="w-full bg-white border border-slate-200 rounded-xl px-4 py-3 text-xs font-medium outline-none focus:ring-2 focus:ring-purple-500 shadow-sm"
+                        className="w-full bg-white border border-slate-200 rounded-xl px-4 py-3 text-xs font-medium outline-none focus:ring-2 focus:ring-blue-500 shadow-sm"
                       />
                     </div>
 
@@ -2682,16 +2703,9 @@ return (
                         onChange={(e) =>
                           setSignData({ ...signData, printDeliveryDetails: e.target.value })
                         }
-                        className="w-full bg-white border border-slate-200 rounded-xl px-4 py-3 text-xs font-medium outline-none focus:ring-2 focus:ring-purple-500 shadow-sm"
+                        className="w-full bg-white border border-slate-200 rounded-xl px-4 py-3 text-xs font-medium outline-none focus:ring-2 focus:ring-blue-500 shadow-sm"
                       />
                     </div>
-                  </div>
-
-                  {/* 실무 주의사항 배너 */}
-                  <div className="bg-amber-50 border border-amber-200 rounded-xl p-3.5 text-[10px] text-amber-800 font-medium leading-relaxed">
-                    📌 **실무 프로세스 안내:** 이 탭에서 작성된 물품은 발주 및 비용 정산(계산서 대사) 프로세스를 전담합니다. 
-                    <br /><br />
-                    주문 완료 후 실제 물품이 입고되어 **사무실 내부 재고 관리가 수반되어야 하는 품목(쇼핑백, 상장케이스 등)**은 물품 수령 시 반드시 **[일반소모품 입고 대장 시스템]**에도 수량을 등록하여 입고 처리를 진행해 주시기 바랍니다.
                   </div>
 
                 </div>
@@ -2731,7 +2745,7 @@ return (
                     </div>
                     <input 
                       type="text" 
-                      placeholder="좌측 '제목 자동 생성' 버튼을 누르거나 직접 제목을 기재해 주세요." 
+                      placeholder="상단 '제목 자동 생성' 버튼을 누르거나 직접 제목을 기재해 주세요." 
                       value={signData.suppliesProjectName || ''} 
                       onChange={(e) => setSignData({ ...signData, suppliesProjectName: e.target.value })} 
                       className="w-full bg-white border border-sky-300 rounded-xl px-4 py-3 text-xs font-bold outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-200 transition-colors"

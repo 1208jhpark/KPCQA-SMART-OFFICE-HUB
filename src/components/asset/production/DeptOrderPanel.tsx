@@ -631,7 +631,8 @@ export default function DeptOrderPanel() {
       <div className="w-full space-y-3">
         <div className="bg-amber-50 border border-amber-200 rounded-xl p-3.5 text-[10px] text-amber-800 font-medium leading-relaxed">
           💡{' '}
-          <span className="font-black">[접수대기판]</span> 신청된 목록의 원문검수 및 접수확정 →{' '}
+          <span className="font-black">[접수대기판]</span> 신청된 목록의 원문검수 및 접수확정{' '}
+          <b className="font-black text-amber-600">→</b>{' '}
           <span className="font-black">[발주대기판]</span> 접수된 목록의 개별 또는 묶음 발주 이동
         </div>
         <div
@@ -639,9 +640,12 @@ export default function DeptOrderPanel() {
           role="tablist"
           aria-label="제작 분류 필터"
         >
-          {HISTORY_CATEGORIES.map((cat) => {
+          {HISTORY_CATEGORIES.map((cat, index) => {
             const active = activeCategory === cat.id;
             const badgeCount = getTabBadgeCount(cat.id);
+            const isReception = cat.id === 'ALL';
+            const isLastOrderWait = index === HISTORY_CATEGORIES.length - 1;
+            const orderWaitActive = activeCategory !== 'ALL';
             return (
               <button
                 key={cat.id}
@@ -649,8 +653,24 @@ export default function DeptOrderPanel() {
                 role="tab"
                 aria-selected={active}
                 onClick={() => setActiveCategory(cat.id)}
-                title={tabCountTitle(cat.id)}
-                className={`relative flex items-center gap-1.5 px-4 py-2.5 text-xs font-black tracking-tight transition-colors rounded-t-lg border ${getProductionCategoryFolderTabClasses(cat.id, active)}`}
+                title={
+                  isReception
+                    ? tabCountTitle(cat.id)
+                    : isLastOrderWait
+                      ? `${tabCountTitle(cat.id)} · 발주 후 검수 탭으로 이관`
+                      : tabCountTitle(cat.id)
+                }
+                className={
+                  isReception
+                    ? `group relative flex items-center gap-1.5 pl-4 pr-5 py-2.5 mr-3 text-xs font-black tracking-tight transition-colors rounded-tl-lg border border-r-0 ${
+                        active
+                          ? 'bg-slate-900 text-white border-slate-900 border-b-white z-10 -mb-px'
+                          : 'bg-slate-100 text-slate-400 border-slate-200 border-b-transparent hover:bg-slate-200/80 hover:text-slate-600'
+                      }`
+                    : isLastOrderWait
+                      ? `group relative flex items-center gap-1.5 pl-4 pr-4 py-2.5 text-xs font-black tracking-tight transition-colors rounded-tl-lg border border-r-0 ${getProductionCategoryFolderTabClasses(cat.id, active)}`
+                      : `relative flex items-center gap-1.5 px-4 py-2.5 text-xs font-black tracking-tight transition-colors rounded-t-lg border ${getProductionCategoryFolderTabClasses(cat.id, active)}`
+                }
               >
                 <span className="text-sm leading-none">{cat.icon}</span>
                 <span className="flex items-center gap-1">
@@ -665,6 +685,56 @@ export default function DeptOrderPanel() {
                     </span>
                   ) : null}
                 </span>
+                {/* 접수대기 → 발주대기 (강한 화살표) */}
+                {isReception ? (
+                  <>
+                    <span
+                      aria-hidden
+                      className={`pointer-events-none absolute -right-[12px] -top-px -bottom-px z-[11] w-[13px] ${
+                        active
+                          ? 'bg-slate-900'
+                          : 'bg-slate-200 group-hover:bg-slate-300'
+                      }`}
+                      style={{ clipPath: 'polygon(0 0, 100% 50%, 0 100%)' }}
+                    />
+                    <span
+                      aria-hidden
+                      className={`pointer-events-none absolute -right-[11px] inset-y-0 z-[12] w-[12px] ${
+                        active
+                          ? 'bg-slate-900'
+                          : 'bg-slate-100 group-hover:bg-slate-200/80'
+                      }`}
+                      style={{ clipPath: 'polygon(0 0, 100% 50%, 0 100%)' }}
+                    />
+                  </>
+                ) : null}
+                {/* 발주대기 보드 → 검수 탭 (약한 화살표, 그룹 끝) */}
+                {isLastOrderWait ? (
+                  <>
+                    <span
+                      aria-hidden
+                      className={`pointer-events-none absolute -right-[8px] -top-px -bottom-px z-[11] w-[9px] opacity-80 ${
+                        active
+                          ? 'bg-emerald-600'
+                          : orderWaitActive
+                            ? 'bg-slate-300'
+                            : 'bg-slate-200 group-hover:bg-slate-300'
+                      }`}
+                      style={{ clipPath: 'polygon(0 0, 100% 50%, 0 100%)' }}
+                    />
+                    <span
+                      aria-hidden
+                      className={`pointer-events-none absolute -right-[7px] inset-y-0 z-[12] w-[8px] opacity-80 ${
+                        active
+                          ? 'bg-emerald-600'
+                          : orderWaitActive
+                            ? 'bg-slate-100'
+                            : 'bg-slate-100 group-hover:bg-slate-200/80'
+                      }`}
+                      style={{ clipPath: 'polygon(0 0, 100% 50%, 0 100%)' }}
+                    />
+                  </>
+                ) : null}
               </button>
             );
           })}

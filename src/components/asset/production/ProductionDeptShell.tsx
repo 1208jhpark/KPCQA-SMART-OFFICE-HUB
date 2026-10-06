@@ -13,11 +13,8 @@ import {
 const MENU_PATH = '/asset/production/dept-master/order';
 
 const PAGE_HINT_BY_PATH: Record<string, React.ReactNode> = {
-  '/asset/production/dept-master/order': (
-    <>
-      부서원의 <b>[접수대기]</b> 신청 건(원문 검수)을 검토하여 접수를 확정하고, <b>[발주대기]</b> 상태의 건들을 개별 또는 묶음으로 외주 발주합니다. (배송지 일괄 지정 가능)
-    </>
-  ),
+  '/asset/production/dept-master/order':
+    '부서원의 발주 신청건을 검수, 접수하여 발주로 이관 관리합니다.',
   '/asset/production/dept-master/inspection':
     '진행 중인 외주 발주 묶음의 상태를 추적하고, 물품 수령 및 검수 작업을 처리하는 관리 대장입니다.',
   '/asset/production/dept-master/settlement':

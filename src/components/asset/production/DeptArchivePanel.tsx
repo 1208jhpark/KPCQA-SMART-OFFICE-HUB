@@ -1655,6 +1655,17 @@ export default function DeptArchivePanel({ variant = 'dept' }: DeptArchivePanelP
   return (
     <>
       <div className="w-full space-y-3">
+        {/* 프로세스 안내 — 검수 탭과 동일하게 최상단 */}
+        {isDeptSettlement && (
+          <div className="bg-amber-50 border border-amber-200 rounded-xl p-3.5 text-[10px] text-amber-800 font-medium leading-relaxed">
+            💡 관리자가 업로드한 명세서 및 메모 확인{' '}
+            <b className="font-black text-amber-600">→</b> 명세서 검수 또는 수기 대조(부서
+            담당자와 관리자 동시 가능, 정보 공유됨){' '}
+            <b className="font-black text-amber-600">→</b> 관리자가 마감처리시 완료 보관함으로
+            이관
+          </div>
+        )}
+
         {/* 거래명세표 등록·목록 — 정산 화면만 (정산완료 보관함/아카이브 제외) */}
         {!isSettledArchiveView && (
         <div className="rounded-2xl border border-indigo-100 bg-gradient-to-r from-indigo-50/80 via-white to-indigo-50/50 p-4 shadow-sm flex flex-col gap-3">
@@ -1966,12 +1977,6 @@ export default function DeptArchivePanel({ variant = 'dept' }: DeptArchivePanelP
                 );
               })}
             </div>
-          </div>
-        )}
-
-        {isDeptSettlement && (
-          <div className="bg-amber-50 border border-amber-200 rounded-xl p-3.5 text-[10px] text-amber-800 font-medium leading-relaxed">
-            💡 관리자가 업로드한 명세서 및 메모 확인 →명세서 검수 또는 수기 대조(부서 담당자와 관리자 동시 가능, 정보 공유됨)→관리자가 마감처리시 완료 보관함으로 이관
           </div>
         )}
 

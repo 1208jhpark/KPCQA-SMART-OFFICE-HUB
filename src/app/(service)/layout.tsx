@@ -164,92 +164,36 @@ export default function ServiceLayout({ children }: { children: React.ReactNode 
     }
   }, [pathname, loading, user, menus, unitsList, router]);
    
+  // 경로 접근 권한 — 이미 로드된 menus로만 검사 (이동마다 interface 전체 재조회 안 함)
+  // 메뉴/권한 변경 반영: 새로고침 또는 재로그인 시 fetchInitialData
   useEffect(() => {
-    const validateAccessAndRouting = async () => {
-      if (loading || !user) return;
-      
-      try {
-        const res = await fetch('/api/admin/interface?t=' + Date.now(), { cache: 'no-store' });
-        if (!res.ok) return;
-        const freshMenus = await res.json();
-        
-        setMenus(freshMenus);
-        setAccessError(null);
-        setShowIndexGrid(false); 
-        
-        if (pathname.startsWith('/admin') && user.roles?.[0] !== 'LV_1') {
-          setAccessError('해당 경로는 최고 관리자(LV_1) 전용입니다.');
-          return;
-        }
-        
-        const cleanPathname = pathname.replace(/\/$/, '').toLowerCase();
-        const currentMenu = [...freshMenus]
-          .sort((a: any, b: any) => (b.path?.length || 0) - (a.path?.length || 0))
-          .find(m => cleanPathname.startsWith(m.path?.toLowerCase()) && m.path !== '/home');
-        
-        if (currentMenu) {
-          if (!currentMenu.is_active) {
-            setAccessError('현재 점검 중이거나 비활성화된 서비스입니다.');
-            return;
-          }
-        
-          const permission = checkMenuPermission(user, currentMenu, freshMenus, unitsList);
-        
-          if (!permission.hasAccess) {
-            setAccessError('귀하의 소속 부서 또는 권한(레벨)으로는 접근할 수 없는 메뉴입니다.');
-            return; 
-          }
+    if (loading || !user || menus.length === 0) return;
 
-          // 정확한 path 일치 + 즉시실행/단일화면 → 최종 목적지 (링크 미경유·북마크 대비)
-          const exactMatch =
-            cleanPathname === (currentMenu.path || '').replace(/\/$/, '').toLowerCase();
-          if (exactMatch) {
-            const dest = resolveEntryHref(currentMenu, freshMenus, user, unitsList);
-            if (dest.replace(/\/$/, '').toLowerCase() !== cleanPathname) {
-              setEntryJumpPending(true);
-              router.replace(dest);
-              return;
-            }
-          }
-          setEntryJumpPending(false);
-        
-          // Step 3 전용 인덱스 컨트롤러 (단일화면은 resolveEntryHref에서 처리)
-          if (currentMenu.level === 3 && exactMatch) {
-            const children = freshMenus
-              .filter((m: any) => m.parent_id === currentMenu.id && m.is_active && m.is_visible)
-              .sort((a: any, b: any) => (a.sort_order || 0) - (b.sort_order || 0));
-            
-            const allowedChildren = children.filter((c: any) => checkMenuPermission(user, c, freshMenus, unitsList).hasAccess);
-              
-            const isDirectMode = currentMenu.entry_l4_direct === true || String(currentMenu.entry_l4_direct).toLowerCase() === 'true' || currentMenu.entry_l4_direct === 1;
-      
-            if (!isDirectMode) {
-              // 인덱스 모드 — Step3「화면 상단 헤더 설정」반영
-              setIndexTitle(
-                currentMenu.show_page_title && currentMenu.page_title
-                  ? currentMenu.page_title
-                  : (currentMenu.name || '')
-              );
-              setShowIndexTitle(true);
-              if (currentMenu.show_page_desc) {
-                setIndexDescription(currentMenu.page_description || '');
-                setShowIndexDesc(true);
-              } else {
-                setIndexDescription('');
-                setShowIndexDesc(false);
-              }
-              setIndexCards(allowedChildren);
-              setShowIndexGrid(true);
-            }
-          }
-        }
-      } catch (e) {
-        console.error('라우팅 설정 동기화 실패:', e);
-      }
-    };
-   
-    validateAccessAndRouting();
-  }, [pathname, loading, user, router]); 
+    if (pathname.startsWith('/admin') && user.roles?.[0] !== 'LV_1') {
+      setAccessError('해당 경로는 최고 관리자(LV_1) 전용입니다.');
+      return;
+    }
+
+    const cleanPathname = pathname.replace(/\/$/, '').toLowerCase();
+    const currentMenu = [...menus]
+      .sort((a: any, b: any) => (b.path?.length || 0) - (a.path?.length || 0))
+      .find(
+        (m) =>
+          cleanPathname.startsWith(String(m.path || '').toLowerCase()) && m.path !== '/home'
+      );
+
+    if (!currentMenu) return;
+
+    if (!currentMenu.is_active) {
+      setAccessError('현재 점검 중이거나 비활성화된 서비스입니다.');
+      return;
+    }
+
+    const permission = checkMenuPermission(user, currentMenu, menus, unitsList);
+    if (!permission.hasAccess) {
+      setAccessError('귀하의 소속 부서 또는 권한(레벨)으로는 접근할 수 없는 메뉴입니다.');
+    }
+  }, [pathname, loading, user, menus, unitsList]); 
   
   const handleLogout = async () => {
     if (!confirm('로그아웃 하시겠습니까?')) return;

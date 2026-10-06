@@ -1114,7 +1114,11 @@ export default function DeptInspectionPanel() {
     <>
       <div className="w-full space-y-3">
         <div className="bg-amber-50 border border-amber-200 rounded-xl p-3.5 text-[10px] text-amber-800 font-medium leading-relaxed">
-          💡 발주서(+사무문구류는 외부 다운견적서)+메일 양식 활용 → 그룹웨어 메일 전송 → 발주확정 → 물품수령검수 → 명세대조(이동시 관리자와 정보 공유)
+          💡 발주서(+드림디포는 외부 다운견적서 / 제본 원본 파일(NAS)) + 메일 양식 활용{' '}
+          <b className="font-black text-amber-600">→</b> 그룹웨어 메일 전송{' '}
+          <b className="font-black text-amber-600">→</b> 발주확정{' '}
+          <b className="font-black text-amber-600">→</b> 물품수령검수{' '}
+          <b className="font-black text-amber-600">→</b> 명세대조(이동시 관리자와 정보 공유됨)
         </div>
         <div
           className="flex flex-wrap items-end gap-1 border-b border-slate-200"
@@ -1406,7 +1410,7 @@ export default function DeptInspectionPanel() {
                               (items.length > 0 &&
                                 items.every((i) => i.category === 'JEBON'));
                             const attachHint = isOffice
-                              ? { label: '(+견적PDF필수)', title: '견적서 PDF 필수 첨부' }
+                              ? { label: '(+외부견적서필수)', title: '외부 견적서 필수 첨부' }
                               : isJebon
                                 ? { label: '(+제본PDF필수)', title: '제본 관련 PDF 필수 첨부' }
                                 : null;
