@@ -390,7 +390,7 @@ export default function ServiceLayout({ children }: { children: React.ReactNode 
           </aside>
         )}
         
-        <main className="flex-1 overflow-y-auto [scrollbar-gutter:stable] bg-slate-50/20 relative">
+        <main className="flex-1 overflow-y-auto bg-slate-50/20 relative">
           {accessError ? (
             <div className="absolute inset-0 flex items-center justify-center p-8 bg-slate-50/50 backdrop-blur-sm z-10 animate-fade-in">
               <div className="bg-white border-2 border-dashed border-red-200 rounded-[2rem] p-12 max-w-lg w-full text-center shadow-xl">
