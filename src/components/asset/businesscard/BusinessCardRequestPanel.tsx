@@ -1121,6 +1121,7 @@ export default function BusinessCardRequestPanel() {
             const badgeCount = tab.id === 'PENDING' ? folderCounts.pending : folderCounts.accepted;
             const isReception = tab.id === 'PENDING';
             const isOrderWait = tab.id === 'ACCEPTED';
+            const tabTone = active ? tab.activeClass : FOLDER_TAB_IDLE;
             return (
               <button
                 key={tab.id}
@@ -1133,16 +1134,8 @@ export default function BusinessCardRequestPanel() {
                 }
                 className={
                   isReception
-                    ? `group relative flex items-center gap-1.5 pl-4 pr-5 py-2.5 mr-3 text-xs font-black tracking-tight transition-colors rounded-tl-lg border border-r-0 ${
-                        active ? tab.activeClass : FOLDER_TAB_IDLE
-                      }`
-                    : isOrderWait
-                      ? `group relative flex items-center gap-1.5 pl-4 pr-4 py-2.5 text-xs font-black tracking-tight transition-colors rounded-tl-lg border border-r-0 ${
-                          active ? tab.activeClass : FOLDER_TAB_IDLE
-                        }`
-                      : `relative flex items-center gap-1.5 px-4 py-2.5 text-xs font-black tracking-tight transition-colors rounded-t-lg border ${
-                          active ? tab.activeClass : FOLDER_TAB_IDLE
-                        }`
+                    ? `group relative flex items-center gap-1.5 pl-4 pr-5 py-2.5 mr-3 text-xs font-black tracking-tight transition-colors rounded-tl-lg border border-r-0 ${tabTone}`
+                    : `group relative flex items-center gap-1.5 pl-4 pr-4 py-2.5 text-xs font-black tracking-tight transition-colors rounded-tl-lg border border-r-0 ${tabTone}`
                 }
               >
                 <span className="text-sm leading-none">{tab.icon}</span>
