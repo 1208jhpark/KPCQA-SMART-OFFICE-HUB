@@ -4,6 +4,7 @@ import React, { useState, useMemo, useEffect, useRef } from 'react';
 import * as XLSX from 'xlsx'; 
 import { getKSTDateString, getKSTDaysUntil, getKSTNowYearMonth, getKSTYearMonthParts, toSortableTime, formatKSTDateTime, formatKSTDisplayDate } from '@/utils/dateUtils';
 import LoadingState from '@/components/common/LoadingState';
+import WindowedPagination from '@/components/common/WindowedPagination';
 import {
   buildInfoCorrectionPending,
   getCompletedAuditLabel,
@@ -2122,13 +2123,11 @@ const handleCancelRequest = async (id: string) => {
         </div>
 
         {filteredAssets.length > 0 && (
-          <div className="flex justify-center items-center gap-1.5 py-3 border-t border-slate-100 bg-white">
-            <button disabled={currentPage === 1} onClick={() => setCurrentPage(p => p - 1)} className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors">이전</button>
-            {Array.from({ length: totalPages }).map((_, i) => (
-              <button key={i} onClick={() => setCurrentPage(i + 1)} className={`w-8 h-8 rounded-xl font-black text-xs transition-all ${currentPage === i + 1 ? 'bg-slate-800 text-white shadow-sm scale-105' : 'bg-white border border-slate-200 text-slate-500 hover:bg-slate-50'}`}>{i + 1}</button>
-            ))}
-            <button disabled={currentPage === totalPages} onClick={() => setCurrentPage(p => p + 1)} className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors">다음</button>
-          </div>
+          <WindowedPagination
+            currentPage={currentPage}
+            totalPages={totalPages}
+            onPageChange={setCurrentPage}
+          />
         )}
       </div>
       )}

@@ -7,6 +7,7 @@ import { getKSTDateString, getKSTTimeString, getKSTYearMonth, getKSTNowYearMonth
 import { resolveTopOrgName, getChildUnitNames, isGlobalMgmtOrgMember, canEditTopOrgMarketingAsset } from '@/utils/orgUnits';
 import { resolveInterfaceEditState, isSystemLv1User } from '@/lib/permission-utils';
 import LoadingState from '@/components/common/LoadingState';
+import WindowedPagination from '@/components/common/WindowedPagination';
 
 // [UI 표준] 공통 HeaderLight 컴포넌트
 const HeaderLight = ({ title, count, children }: { title: string, count: number, children?: React.ReactNode }) => (
@@ -2026,13 +2027,11 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
             </div>
             
             {finalFilteredList.length > 0 && (
-              <div className="flex justify-center items-center gap-1.5 py-3 border-t border-slate-100 bg-white">
-                <button disabled={currentPage === 1} onClick={() => setCurrentPage(p => p - 1)} className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors">이전</button>
-                {Array.from({ length: totalPages }).map((_, i) => (
-                  <button key={i} onClick={() => setCurrentPage(i + 1)} className={`w-8 h-8 rounded-xl font-black text-xs transition-all ${currentPage === i + 1 ? 'bg-slate-800 text-white shadow-sm scale-105' : 'bg-white border border-slate-200 text-slate-500 hover:bg-slate-50'}`}>{i + 1}</button>
-                ))}
-                <button disabled={currentPage === totalPages} onClick={() => setCurrentPage(p => p + 1)} className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors">다음</button>
-              </div>
+              <WindowedPagination
+                currentPage={currentPage}
+                totalPages={totalPages}
+                onPageChange={setCurrentPage}
+              />
             )}
           </div>
         </div>
@@ -2283,13 +2282,11 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
           </div>
 
           {finalFilteredPurchases.length > 0 && (
-            <div className="flex justify-center items-center gap-1.5 py-3 border-t border-slate-100 bg-white">
-              <button disabled={currentPurchasePage === 1} onClick={() => setCurrentPurchasePage(p => p - 1)} className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors">이전</button>
-              {Array.from({ length: totalPurchasePages }).map((_, i) => (
-                <button key={i} onClick={() => setCurrentPurchasePage(i + 1)} className={`w-8 h-8 rounded-xl font-black text-xs transition-all ${currentPurchasePage === i + 1 ? 'bg-slate-800 text-white shadow-sm scale-105' : 'bg-white border border-slate-200 text-slate-500 hover:bg-slate-50'}`}>{i + 1}</button>
-              ))}
-              <button disabled={currentPurchasePage === totalPurchasePages} onClick={() => setCurrentPurchasePage(p => p + 1)} className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors">다음</button>
-            </div>
+            <WindowedPagination
+              currentPage={currentPurchasePage}
+              totalPages={totalPurchasePages}
+              onPageChange={setCurrentPurchasePage}
+            />
           )}
         </div>
       )}
@@ -2482,13 +2479,11 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
           </div>
 
           {filteredEndedItems.length > 0 && (
-            <div className="flex justify-center items-center gap-1.5 py-3 border-t border-slate-100 bg-white">
-              <button disabled={endedPage === 1} onClick={() => setEndedPage(p => p - 1)} className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors">이전</button>
-              {Array.from({ length: totalEndedPages }).map((_, i) => (
-                <button key={i} onClick={() => setEndedPage(i + 1)} className={`w-8 h-8 rounded-xl font-black text-xs transition-all ${endedPage === i + 1 ? 'bg-slate-800 text-white shadow-sm scale-105' : 'bg-white border border-slate-200 text-slate-500 hover:bg-slate-50'}`}>{i + 1}</button>
-              ))}
-              <button disabled={endedPage === totalEndedPages} onClick={() => setEndedPage(p => p + 1)} className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors">다음</button>
-            </div>
+            <WindowedPagination
+              currentPage={endedPage}
+              totalPages={totalEndedPages}
+              onPageChange={setEndedPage}
+            />
           )}
         </div>
       )}
@@ -2649,38 +2644,12 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
                   </tbody>
                 </table>
                 {pendingApprovals.length > APPROVAL_PAGE_SIZE && (
-                  <div className="flex justify-center items-center gap-1.5 pt-4">
-                    <button
-                      type="button"
-                      disabled={approvalPage === 1}
-                      onClick={() => setApprovalPage((p) => p - 1)}
-                      className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors"
-                    >
-                      이전
-                    </button>
-                    {Array.from({ length: approvalTotalPages }).map((_, i) => (
-                      <button
-                        key={i}
-                        type="button"
-                        onClick={() => setApprovalPage(i + 1)}
-                        className={`w-8 h-8 rounded-xl font-black text-xs transition-all ${
-                          approvalPage === i + 1
-                            ? 'bg-slate-800 text-white shadow-sm scale-105'
-                            : 'bg-white border border-slate-200 text-slate-500 hover:bg-slate-50'
-                        }`}
-                      >
-                        {i + 1}
-                      </button>
-                    ))}
-                    <button
-                      type="button"
-                      disabled={approvalPage === approvalTotalPages}
-                      onClick={() => setApprovalPage((p) => p + 1)}
-                      className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors"
-                    >
-                      다음
-                    </button>
-                  </div>
+                  <WindowedPagination
+                    currentPage={approvalPage}
+                    totalPages={approvalTotalPages}
+                    onPageChange={setApprovalPage}
+                    className="border-t-0 pt-4"
+                  />
                 )}
                 </>
               )}

@@ -11,6 +11,7 @@ import {
   getParentSectionId as getParentSectionIdShared,
 } from '@/utils/surveyBranching';
 import LoadingState from '@/components/common/LoadingState';
+import WindowedPagination from '@/components/common/WindowedPagination';
 import { normalizeGeneralResponsesPayload } from '@/utils/surveyGeneralResponses';
      
 // 🚀 [UI 표준 지침] 전사 공통 Header 컴포넌트 분리 선언
@@ -656,11 +657,11 @@ const handlePrevSection = () => {
           </table>
         </div>
         {eligibleSurveys.length > 0 && (
-          <div className="flex justify-center items-center gap-1.5 py-4 border-t border-slate-100 bg-white">
-            <button disabled={eligiblePage === 1} onClick={() => setEligiblePage(p => p - 1)} className="px-3 py-1 text-[11px] font-bold bg-white border border-slate-200 rounded-xl text-slate-500 disabled:opacity-30">이전</button>
-            {Array.from({ length: totalEligiblePages }).map((_, i) => <button key={i} onClick={() => setEligiblePage(i + 1)} className={`w-7 h-7 rounded-xl text-[11px] font-bold ${eligiblePage === i + 1 ? 'bg-slate-800 text-white' : 'bg-white text-slate-500 border'}`}>{i + 1}</button>)}
-            <button disabled={eligiblePage === totalEligiblePages} onClick={() => setEligiblePage(p => p + 1)} className="px-3 py-1 text-[11px] font-bold bg-white border border-slate-200 rounded-xl text-slate-500 disabled:opacity-30">다음</button>
-          </div>
+          <WindowedPagination
+            currentPage={eligiblePage}
+            totalPages={totalEligiblePages}
+            onPageChange={setEligiblePage}
+          />
         )}
       </div>
      
@@ -831,31 +832,11 @@ const handlePrevSection = () => {
             </table>
           </div>
           {filteredHistory.length > 0 && (
-            <div className="flex justify-center items-center gap-1.5 py-3 border-t border-slate-100 bg-white">
-              <button
-                disabled={historyPage === 1}
-                onClick={() => setHistoryPage((p) => p - 1)}
-                className="px-3 py-1.5 text-[11px] bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors"
-              >
-                이전
-              </button>
-              {Array.from({ length: totalHistoryPages }).map((_, i) => (
-                <button
-                  key={i}
-                  onClick={() => setHistoryPage(i + 1)}
-                  className={`w-8 h-8 rounded-xl font-bold text-[11px] transition-all ${historyPage === i + 1 ? 'bg-slate-800 text-white shadow-sm' : 'bg-white border border-slate-200 text-slate-500 hover:bg-slate-50'}`}
-                >
-                  {i + 1}
-                </button>
-              ))}
-              <button
-                disabled={historyPage === totalHistoryPages}
-                onClick={() => setHistoryPage((p) => p + 1)}
-                className="px-3 py-1.5 text-[11px] bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors"
-              >
-                다음
-              </button>
-            </div>
+            <WindowedPagination
+              currentPage={historyPage}
+              totalPages={totalHistoryPages}
+              onPageChange={setHistoryPage}
+            />
           )}
         </div>
       )}

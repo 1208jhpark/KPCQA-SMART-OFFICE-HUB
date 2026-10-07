@@ -392,20 +392,6 @@ export default function SurveyBuilderPage() {
             )}
             <button
               type="button"
-              onClick={toggleOrderBatch}
-              className={`px-4 py-2.5 rounded-xl text-xs font-black transition-all ${
-                !editAllowed
-                  ? 'bg-slate-200 text-slate-400 cursor-not-allowed opacity-60'
-                  : orderApplied
-                  ? 'bg-amber-500 text-white hover:bg-amber-600 shadow-sm'
-                  : 'bg-white border border-slate-300 text-slate-700 hover:bg-slate-50'
-              }`}
-              title={orderApplied ? '제목에 부여된 순번(1. 2. …)을 제거합니다' : '보이는 순번을 제목 앞자리에 고정 문구로 넣습니다'}
-            >
-              {orderApplied ? '순서부여 취소' : '순서일괄부여'}
-            </button>
-            <button
-              type="button"
               onClick={() => {
                 if (!requireEdit()) return;
                 if (confirm('모든 문항을 지우시겠습니까?')) {
@@ -419,7 +405,21 @@ export default function SurveyBuilderPage() {
                   : 'bg-slate-200 text-slate-400 cursor-not-allowed opacity-60'
               }`}
             >
-              초기화
+              질문지초기화
+            </button>
+            <button
+              type="button"
+              onClick={toggleOrderBatch}
+              className={`px-4 py-2.5 rounded-xl text-xs font-black transition-all ${
+                !editAllowed
+                  ? 'bg-slate-200 text-slate-400 cursor-not-allowed opacity-60'
+                  : orderApplied
+                  ? 'bg-amber-500 text-white hover:bg-amber-600 shadow-sm'
+                  : 'bg-white border border-slate-300 text-slate-700 hover:bg-slate-50'
+              }`}
+              title={orderApplied ? '제목에 부여된 순번(1. 2. …)을 제거합니다' : '보이는 순번을 제목 앞자리에 고정 문구로 넣습니다'}
+            >
+              {orderApplied ? '질문순서부여 취소' : '질문순서일괄부여'}
             </button>
             <button
               type="button"

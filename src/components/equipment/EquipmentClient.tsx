@@ -8,6 +8,7 @@ import * as XLSX from 'xlsx';
 import { getKSTDateString, getKSTDaysUntil, getKSTNowYearMonth, getKSTYearMonthParts } from '@/utils/dateUtils';
 import { buildEquipmentImagePayload } from '@/utils/equipmentImage';
 import LoadingState from '@/components/common/LoadingState';
+import WindowedPagination from '@/components/common/WindowedPagination';
 import {
   addMonthsToCalibYmd,
   isCalibApplicable,
@@ -1545,13 +1546,11 @@ export default function EquipmentClient({
           </div>
   
           {filteredEquipments.length > 0 && (
-            <div className="flex justify-center items-center gap-1.5 py-3 border-t border-slate-100 bg-white">
-              <button disabled={currentPage === 1} onClick={() => setCurrentPage(p => p - 1)} className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors">이전</button>
-              {Array.from({ length: totalPages }).map((_, i) => (
-                <button key={i} onClick={() => setCurrentPage(i + 1)} className={`w-8 h-8 rounded-xl font-black text-xs transition-all ${currentPage === i + 1 ? 'bg-slate-800 text-white shadow-sm scale-105' : 'bg-white border border-slate-200 text-slate-500 hover:bg-slate-50'}`}>{i + 1}</button>
-              ))}
-              <button disabled={currentPage === totalPages} onClick={() => setCurrentPage(p => p + 1)} className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors">다음</button>
-            </div>
+            <WindowedPagination
+              currentPage={currentPage}
+              totalPages={totalPages}
+              onPageChange={setCurrentPage}
+            />
           )}
         </div>
       )}
@@ -1749,13 +1748,11 @@ export default function EquipmentClient({
           </div>
   
           {filteredArchives.length > 0 && (
-            <div className="flex justify-center items-center gap-1.5 py-3 border-t border-slate-100 bg-white">
-              <button disabled={archivePage === 1} onClick={() => setArchivePage(p => p - 1)} className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors">이전</button>
-              {Array.from({ length: totalArchivePages }).map((_, i) => (
-                <button key={i} onClick={() => setArchivePage(i + 1)} className={`w-8 h-8 rounded-xl font-black text-xs transition-all ${archivePage === i + 1 ? 'bg-slate-800 text-white shadow-sm scale-105' : 'bg-white border border-slate-200 text-slate-500 hover:bg-slate-50'}`}>{i + 1}</button>
-              ))}
-              <button disabled={archivePage === totalArchivePages} onClick={() => setArchivePage(p => p + 1)} className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors">다음</button>
-            </div>
+            <WindowedPagination
+              currentPage={archivePage}
+              totalPages={totalArchivePages}
+              onPageChange={setArchivePage}
+            />
           )}
         </div>
       )}
@@ -2441,13 +2438,11 @@ export default function EquipmentClient({
                             </tbody>
                           </table>
                         {sortedHistories.length > 0 && (
-                          <div className="flex justify-center items-center gap-1.5 py-3 border-t border-slate-100 bg-white">
-                            <button type="button" disabled={historyPage === 1} onClick={() => setHistoryPage((p) => p - 1)} className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors">이전</button>
-                            {Array.from({ length: totalHistoryPages }).map((_, i) => (
-                              <button type="button" key={i} onClick={() => setHistoryPage(i + 1)} className={`w-8 h-8 rounded-xl font-black text-xs transition-all ${historyPage === i + 1 ? 'bg-slate-800 text-white shadow-sm scale-105' : 'bg-white border border-slate-200 text-slate-500 hover:bg-slate-50'}`}>{i + 1}</button>
-                            ))}
-                            <button type="button" disabled={historyPage === totalHistoryPages} onClick={() => setHistoryPage((p) => p + 1)} className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors">다음</button>
-                          </div>
+                          <WindowedPagination
+                            currentPage={historyPage}
+                            totalPages={totalHistoryPages}
+                            onPageChange={setHistoryPage}
+                          />
                         )}
                         </div>
                       </div>
@@ -2539,13 +2534,11 @@ export default function EquipmentClient({
                           </tbody>
                         </table>
                         {sortedMaint.length > 0 && (
-                          <div className="flex justify-center items-center gap-1.5 py-3 border-t border-slate-100 bg-white">
-                            <button type="button" disabled={maintenancePage === 1} onClick={() => setMaintenancePage((p) => p - 1)} className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors">이전</button>
-                            {Array.from({ length: totalMaintPages }).map((_, i) => (
-                              <button type="button" key={i} onClick={() => setMaintenancePage(i + 1)} className={`w-8 h-8 rounded-xl font-black text-xs transition-all ${maintenancePage === i + 1 ? 'bg-slate-800 text-white shadow-sm scale-105' : 'bg-white border border-slate-200 text-slate-500 hover:bg-slate-50'}`}>{i + 1}</button>
-                            ))}
-                            <button type="button" disabled={maintenancePage === totalMaintPages} onClick={() => setMaintenancePage((p) => p + 1)} className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors">다음</button>
-                          </div>
+                          <WindowedPagination
+                            currentPage={maintenancePage}
+                            totalPages={totalMaintPages}
+                            onPageChange={setMaintenancePage}
+                          />
                         )}
                       </div>
                     </div>

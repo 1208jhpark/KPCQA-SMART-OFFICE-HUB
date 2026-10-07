@@ -7,6 +7,7 @@ import { getKSTDateString, getKSTYearMonth, getKSTNowYearMonth, getDistBusinessD
 import { resolveInterfaceEditState, isSystemLv1User } from '@/lib/permission-utils';
 import { formatMarketingClientLocation } from '@/lib/marketing-client-address';
 import LoadingState from '@/components/common/LoadingState';
+import WindowedPagination from '@/components/common/WindowedPagination';
 
 // 🚀 [UI 표준] 공통 HeaderLight 컴포넌트
 const HeaderLight = ({ title, count, children }: { title: string, count: number, children?: React.ReactNode }) => (
@@ -1462,38 +1463,11 @@ function ClientSearchContent() {
         </div>
         
         {filteredClients.length > 0 && (
-          <div className="flex justify-center items-center gap-1.5 py-3 border-t border-slate-100 bg-white">
-            <button
-              type="button"
-              disabled={currentPage === 1}
-              onClick={() => setCurrentPage((p) => p - 1)}
-              className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors"
-            >
-              이전
-            </button>
-            {Array.from({ length: totalPages }).map((_, i) => (
-              <button
-                type="button"
-                key={i}
-                onClick={() => setCurrentPage(i + 1)}
-                className={`w-8 h-8 rounded-xl font-black text-xs transition-all ${
-                  currentPage === i + 1
-                    ? 'bg-slate-800 text-white shadow-sm scale-105'
-                    : 'bg-white border border-slate-200 text-slate-500 hover:bg-slate-50'
-                }`}
-              >
-                {i + 1}
-              </button>
-            ))}
-            <button
-              type="button"
-              disabled={currentPage === totalPages}
-              onClick={() => setCurrentPage((p) => p + 1)}
-              className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors"
-            >
-              다음
-            </button>
-          </div>
+          <WindowedPagination
+            currentPage={currentPage}
+            totalPages={totalPages}
+            onPageChange={setCurrentPage}
+          />
         )}
       </div>
 
@@ -1695,38 +1669,12 @@ function ClientSearchContent() {
             </div>
 
             {!historyModal.loading && filteredHistoryList.length > 0 && historyTotalPages > 1 && (
-              <div className="flex justify-center items-center gap-1.5 pt-4 mt-2 border-t border-slate-100">
-                <button
-                  type="button"
-                  disabled={historyPage === 1}
-                  onClick={() => setHistoryPage((p) => p - 1)}
-                  className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors"
-                >
-                  이전
-                </button>
-                {Array.from({ length: historyTotalPages }).map((_, i) => (
-                  <button
-                    key={i}
-                    type="button"
-                    onClick={() => setHistoryPage(i + 1)}
-                    className={`w-8 h-8 rounded-xl font-black text-xs transition-all ${
-                      historyPage === i + 1
-                        ? 'bg-slate-800 text-white shadow-sm scale-105'
-                        : 'bg-white border border-slate-200 text-slate-500 hover:bg-slate-50'
-                    }`}
-                  >
-                    {i + 1}
-                  </button>
-                ))}
-                <button
-                  type="button"
-                  disabled={historyPage === historyTotalPages}
-                  onClick={() => setHistoryPage((p) => p + 1)}
-                  className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors"
-                >
-                  다음
-                </button>
-              </div>
+              <WindowedPagination
+                currentPage={historyPage}
+                totalPages={historyTotalPages}
+                onPageChange={setHistoryPage}
+                className="mt-2"
+              />
             )}
           </div>
         </div>

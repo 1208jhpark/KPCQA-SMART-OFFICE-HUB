@@ -7,6 +7,7 @@ import { resolveTopOrgName } from '@/utils/orgUnits';
 import ItAssetQrImage from '@/components/asset/it/ItAssetQrImage';
 import { generateItAssetQrDataUrls } from '@/utils/equipmentQr';
 import LoadingState from '@/components/common/LoadingState';
+import WindowedPagination from '@/components/common/WindowedPagination';
 import ItMasterPageBanner from '@/components/asset/it/ItMasterPageBanner';
 import { resolveInterfaceEditState } from '@/lib/permission-utils';
 import {
@@ -1432,6 +1433,107 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
     setBulkPrintAssets(targets);
   };
 
+  /** Ctrl+P/모달 인쇄는 fixed 레이아웃 때문에 장 나눔이 깨지므로, A4 iframe으로 분리 인쇄 */
+  const runFormtecLabelPrint = () => {
+    if (!bulkQrReady || bulkPrintAssets.length === 0) return;
+    const LABELS_PER_PAGE = 28;
+    const pageCount = Math.max(1, Math.ceil(bulkPrintAssets.length / LABELS_PER_PAGE));
+    const escapeHtml = (s: string) =>
+      String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+
+    let pagesHtml = '';
+    for (let pageIndex = 0; pageIndex < pageCount; pageIndex += 1) {
+      const pageStart = pageIndex * LABELS_PER_PAGE;
+      let cells = '';
+      for (let cellIndex = 0; cellIndex < LABELS_PER_PAGE; cellIndex += 1) {
+        const a = bulkPrintAssets[pageStart + cellIndex];
+        if (!a) {
+          cells += `<div class="cell empty"></div>`;
+          continue;
+        }
+        const qr = bulkQrMap[a.code] || '';
+        const typeLabel = escapeHtml(String(a.it_type || a.category || '-'));
+        const code = escapeHtml(String(a.code || ''));
+        cells += `<div class="cell">
+          <div class="top"><div class="cap">자산 분류</div><div class="title">${typeLabel}</div></div>
+          <div class="qr">${qr ? `<img src="${qr}" alt="QR" />` : ''}</div>
+          <div class="bot"><div class="cap">자산번호</div><div class="code">${code}</div></div>
+        </div>`;
+      }
+      pagesHtml += `<section class="page"><div class="grid">${cells}</div></section>`;
+    }
+
+    const iframe = document.createElement('iframe');
+    iframe.setAttribute('title', 'formtec-qr-print');
+    iframe.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;opacity:0;pointer-events:none;';
+    document.body.appendChild(iframe);
+    const doc = iframe.contentDocument || iframe.contentWindow?.document;
+    if (!doc) {
+      iframe.remove();
+      alert('인쇄 창을 열 수 없습니다. 브라우저 팝업/권한을 확인해 주세요.');
+      return;
+    }
+    doc.open();
+    doc.write(`<!DOCTYPE html><html><head><meta charset="utf-8" />
+<title>한국폼텍 QR 라벨</title>
+<style>
+  @page { size: A4 portrait; margin: 0; }
+  * { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  html, body { margin: 0; padding: 0; background: #fff; }
+  .page {
+    width: 210mm; height: 297mm; margin: 0; padding: 0; overflow: hidden; background: #fff;
+    page-break-after: always; break-after: page;
+  }
+  .page:last-child { page-break-after: auto; break-after: auto; }
+  .grid {
+    display: grid; grid-template-columns: repeat(4, 40mm); width: 185mm; margin: 0 auto;
+    padding-top: 8mm; padding-left: 5mm; column-gap: 4.5mm; row-gap: 1mm;
+  }
+  .cell {
+    width: 40mm; height: 40mm; padding: 2.5mm 2mm 2mm; overflow: hidden;
+    display: flex; flex-direction: column; justify-content: space-between; text-align: center;
+    font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  }
+  .cell.empty { visibility: hidden; }
+  .cap { font-size: 6px; font-weight: 900; color: #94a3b8; line-height: 1; text-transform: uppercase; }
+  .title { font-size: 8px; font-weight: 900; color: #0f172a; line-height: 1.1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .code { font-size: 8px; font-weight: 900; font-family: ui-monospace, monospace; color: #4338ca; line-height: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .qr { display: flex; justify-content: center; align-items: center; }
+  .qr img { width: 20mm; height: 20mm; object-fit: contain; }
+</style></head><body>${pagesHtml}</body></html>`);
+    doc.close();
+
+    const finish = () => {
+      try {
+        iframe.contentWindow?.focus();
+        iframe.contentWindow?.print();
+      } finally {
+        setTimeout(() => iframe.remove(), 800);
+      }
+    };
+    const imgs = Array.from(doc.images || []);
+    if (imgs.length === 0) {
+      setTimeout(finish, 50);
+      return;
+    }
+    let left = imgs.length;
+    imgs.forEach((img) => {
+      if (img.complete) {
+        left -= 1;
+        if (left <= 0) setTimeout(finish, 50);
+      } else {
+        img.onload = img.onerror = () => {
+          left -= 1;
+          if (left <= 0) setTimeout(finish, 50);
+        };
+      }
+    });
+  };
+
   // 일괄 인쇄: QR을 미리 생성해 빈칸 인쇄 방지 (대량 자산 대응)
   useEffect(() => {
     if (bulkPrintAssets.length === 0) {
@@ -1458,6 +1560,19 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
       cancelled = true;
     };
   }, [bulkPrintAssets]);
+
+  // 모달 열린 동안 Ctrl+P → 장 나눔 iframe 인쇄
+  useEffect(() => {
+    if (bulkPrintAssets.length === 0) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'p' || e.key === 'P')) {
+        e.preventDefault();
+        if (bulkQrReady) runFormtecLabelPrint();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [bulkPrintAssets, bulkQrReady, bulkQrMap]);
   
   const selectedAssetsForNudge = useMemo(
     () => assets.filter((a) => selectedIds.has(a.id)),
@@ -3097,13 +3212,11 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
         </div>
         
         {filteredAssets.length > 0 && (
-          <div className="flex justify-center items-center gap-1.5 py-3 border-t border-slate-100 bg-white">
-            <button type="button" disabled={currentPage === 1} onClick={() => setCurrentPage(p => p - 1)} className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors">이전</button>
-            {Array.from({ length: totalPages }).map((_, i) => (
-              <button type="button" key={i} onClick={() => setCurrentPage(i + 1)} className={`w-8 h-8 rounded-xl font-black text-xs transition-all ${currentPage === i + 1 ? 'bg-slate-800 text-white shadow-sm scale-105' : 'bg-white border border-slate-200 text-slate-500 hover:bg-slate-50'}`}>{i + 1}</button>
-            ))}
-            <button type="button" disabled={currentPage === totalPages} onClick={() => setCurrentPage(p => p + 1)} className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors">다음</button>
-          </div>
+          <WindowedPagination
+            currentPage={currentPage}
+            totalPages={totalPages}
+            onPageChange={setCurrentPage}
+          />
         )}
       </div>
   
@@ -3236,11 +3349,17 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
         </div>
       )}
   
-      {/* 🖨️ 모달 3: 한국폼텍 28칸 QR 인쇄 모달 */}
+      {/* 🖨️ 모달 3: 한국폼텍 28칸 QR 인쇄 모달
+          A4 세로 297mm 안에 7×40mm+간격이 들어가도록 상단·행간을 맞춤 (12+280+9=301 → 넘침 방지) */}
       {bulkPrintAssets.length > 0 && (
-        <div className="fixed inset-0 bg-slate-900/90 z-[600] flex flex-col p-8 overflow-y-auto print:p-0 print:bg-white" onClick={() => setBulkPrintAssets([])}>
-          <div className="max-w-5xl w-full mx-auto bg-white rounded-[2rem] p-8 shadow-2xl print:shadow-none print:rounded-none print:p-0" onClick={e => e.stopPropagation()}>
-            
+        <div
+          className="formtec-print-overlay fixed inset-0 bg-slate-900/90 z-[600] flex flex-col p-8 overflow-y-auto"
+          onClick={() => setBulkPrintAssets([])}
+        >
+          <div
+            className="formtec-print-card max-w-5xl w-full mx-auto bg-white rounded-[2rem] p-8 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
             <div className="flex justify-between items-center mb-6 border-b border-slate-200 pb-4 print:hidden">
               <div>
                 <h2 className="text-xl font-black text-slate-800">🖨️ 한국폼텍 28칸 정사각 QR 라벨 발행 센터</h2>
@@ -3250,89 +3369,200 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                 <button
                   type="button"
                   disabled={!bulkQrReady}
-                  onClick={() => window.print()}
+                  onClick={runFormtecLabelPrint}
                   className={`px-6 py-2 font-black rounded-xl shadow-md flex items-center gap-2 text-xs transition-colors ${
                     bulkQrReady
                       ? 'bg-purple-600 text-white hover:bg-purple-700'
                       : 'bg-slate-300 text-slate-500 cursor-not-allowed'
                   }`}
                 >
-                  <span>🖨️</span> {bulkQrReady ? '라벨 인쇄 실행 (Ctrl+P)' : 'QR 생성 중…'}
+                  <span>🖨️</span> {bulkQrReady ? '라벨 인쇄 실행' : 'QR 생성 중…'}
                 </button>
                 <button type="button" onClick={() => setBulkPrintAssets([])} className="px-6 py-2 bg-slate-100 text-slate-600 font-black rounded-xl hover:bg-slate-200 text-xs">닫기</button>
               </div>
             </div>
-            
-            <div className="formtec-page-container bg-white p-0 relative" style={{ width: '210mm', minHeight: '297mm', margin: '0 auto', boxSizing: 'border-box' }}>
-              <div className="text-center font-black text-slate-800 text-xs mb-4 print:hidden bg-indigo-50 border border-indigo-100 py-2.5 rounded-xl max-w-[190mm] mx-auto">
-                📍 한국폼텍 28칸 기본 (드림디포 QR-3990 전용 4열 × 7행 정사각 매핑 완료) <br/>
-                <span className="text-[10px] text-indigo-500 font-medium font-sans mt-0.5 block">※ 화면에 보이는 회색 점선은 인쇄 시 출력되지 않는 안전 가이드 칼선입니다.</span>
-              </div>
-  
-              <div className="max-w-[190mm] mx-auto mb-4 print:hidden bg-blue-50 border-2 border-blue-200 p-4 rounded-2xl text-left">
-                <p className="text-center font-black text-slate-800 text-[13px] mb-2">📍 한국폼텍 28칸 정사각 [QR-3990] 전용 출력 가이드</p>
-                <div className="grid grid-cols-3 gap-2 text-[10px] font-black text-blue-900 border-t border-blue-200 pt-2 bg-white/60 p-2 rounded-xl">
-                  <div className="border-r border-blue-100 pr-2">무조건 <span className="text-red-600 font-bold">"실제 크기 (100%)"</span></div>
-                  <div className="border-r border-blue-100 px-2">무조건 <span className="text-red-600 font-bold">"여백 없음 (None)"</span></div>
-                  <div className="pl-2"><span className="text-red-600 font-bold">"배경 그래픽"</span> 반드시 체크</div>
-                </div>
-              </div>
-  
-              <div 
-                className="grid grid-cols-4 print:grid-cols-4" 
-                style={{
-                  width: '185mm',          
-                  margin: '0 auto',
-                  paddingTop: '12mm',      
-                  paddingLeft: '5mm',      
-                  columnGap: '4.5mm',      
-                  rowGap: '1.5mm'          
-                }}
-              >
-                {Array.from({ length: Math.max(28, Math.ceil(bulkPrintAssets.length / 4) * 4) }).map((_, idx) => {
-                  const a = bulkPrintAssets[idx];
-                  if (!a) return <div key={`empty-${idx}`} className="border border-dashed border-slate-200 print:border-none opacity-30 print:opacity-0" style={{ width: '40mm', height: '40mm', boxSizing: 'border-box' }} />;
-  
-                  return (
-                    <div 
-                      key={a.id} 
-                      className="flex flex-col justify-between bg-white overflow-hidden relative border border-dashed border-slate-200 print:border-none print:break-inside-avoid text-center"
-                      style={{ width: '40mm', height: '40mm', padding: '2.5mm 2mm 2mm 2mm', boxSizing: 'border-box' }}
-                    >
-                      <div className="w-full space-y-0.5">
-                        <p className="text-[6px] font-black text-slate-400 uppercase leading-none">자산 분류</p>
-                        <p className="text-[8px] font-black text-slate-900 truncate tracking-tight leading-tight">
-                          {a.it_type || a.category || '-'}
-                        </p>
-                      </div>
-                      <div className="w-full flex justify-center items-center my-0.5">
-                        {bulkQrMap[a.code] ? (
-                          <img src={bulkQrMap[a.code]} alt="QR" className="w-[20mm] h-[20mm] object-contain" />
-                        ) : (
-                          <div className="w-[20mm] h-[20mm] flex items-center justify-center bg-slate-50 text-[6px] font-bold text-slate-400 animate-pulse">
-                            생성 중…
+
+            {(() => {
+              const LABELS_PER_PAGE = 28;
+              const pageCount = Math.max(1, Math.ceil(bulkPrintAssets.length / LABELS_PER_PAGE));
+              /* 7×40mm=280 + 6×1mm 행간=6 + 상단 8 + 하단 여유 ≈ 297mm */
+              const pageGridStyle: React.CSSProperties = {
+                width: '185mm',
+                margin: '0 auto',
+                paddingTop: '8mm',
+                paddingLeft: '5mm',
+                columnGap: '4.5mm',
+                rowGap: '1mm',
+              };
+              return (
+                <div className="formtec-print-root">
+                  <div className="text-center font-black text-slate-800 text-xs mb-4 print:hidden bg-indigo-50 border border-indigo-100 py-2.5 rounded-xl max-w-[190mm] mx-auto">
+                    📍 한국폼텍 28칸 기본 (드림디포 QR-3990 전용 4열 × 7행 정사각 매핑 완료) <br />
+                    <span className="text-[10px] text-indigo-500 font-medium font-sans mt-0.5 block">
+                      ※ 회색 점선·장 구분선은 인쇄되지 않는 안전 가이드입니다. 28칸마다 새 A4 장으로 나뉩니다. (총 {pageCount}장)
+                    </span>
+                  </div>
+
+                  <div className="max-w-[190mm] mx-auto mb-4 print:hidden bg-blue-50 border-2 border-blue-200 p-4 rounded-2xl text-left">
+                    <p className="text-center font-black text-slate-800 text-[13px] mb-2">📍 한국폼텍 28칸 정사각 [QR-3990] 전용 출력 가이드</p>
+                    <div className="grid grid-cols-3 gap-2 text-[10px] font-black text-blue-900 border-t border-blue-200 pt-2 bg-white/60 p-2 rounded-xl">
+                      <div className="border-r border-blue-100 pr-2">무조건 <span className="text-red-600 font-bold">&quot;실제 크기 (100%)&quot;</span></div>
+                      <div className="border-r border-blue-100 px-2">무조건 <span className="text-red-600 font-bold">&quot;여백 없음 (None)&quot;</span></div>
+                      <div className="pl-2"><span className="text-red-600 font-bold">&quot;배경 그래픽&quot;</span> 반드시 체크</div>
+                    </div>
+                  </div>
+
+                  {Array.from({ length: pageCount }).map((_, pageIndex) => {
+                    const pageStart = pageIndex * LABELS_PER_PAGE;
+                    return (
+                      <React.Fragment key={`formtec-sheet-${pageIndex}`}>
+                        {pageIndex > 0 && (
+                          <div className="formtec-page-guide print:hidden my-8 max-w-[190mm] mx-auto px-2">
+                            <div className="flex items-center gap-3">
+                              <div className="flex-1 border-t-2 border-dashed border-slate-300" />
+                              <span className="text-[11px] font-black text-slate-500 tracking-wider whitespace-nowrap">
+                                {pageIndex}장 --- {pageIndex + 1}장
+                              </span>
+                              <div className="flex-1 border-t-2 border-dashed border-slate-300" />
+                            </div>
+                            <p className="text-center text-[10px] font-bold text-slate-400 mt-2">
+                              인쇄 시 이 구분선은 출력되지 않으며, 여기서부터 새 A4(28칸)로 넘어갑니다.
+                            </p>
                           </div>
                         )}
-                      </div>
-                      <div className="w-full">
-                        <p className="text-[6px] font-black text-slate-400 uppercase leading-none">자산번호</p>
-                        <p className="text-[8px] font-black font-mono tracking-tighter text-indigo-700 leading-none truncate">
-                          {a.code}
-                        </p>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
+                        <div
+                          className="formtec-page bg-white p-0 relative border border-slate-200 shadow-sm mb-6 mx-auto overflow-hidden"
+                          style={{ width: '210mm', height: '297mm', boxSizing: 'border-box' }}
+                        >
+                          <div className="absolute top-2 right-3 z-10 text-[10px] font-black text-indigo-600 bg-indigo-50 border border-indigo-100 px-2.5 py-1 rounded-lg">
+                            {pageIndex + 1} / {pageCount}장
+                          </div>
+                          <div className="grid grid-cols-4" style={pageGridStyle}>
+                            {Array.from({ length: LABELS_PER_PAGE }).map((_, cellIndex) => {
+                              const idx = pageStart + cellIndex;
+                              const a = bulkPrintAssets[idx];
+                              if (!a) {
+                                return (
+                                  <div
+                                    key={`empty-${pageIndex}-${cellIndex}`}
+                                    className="border border-dashed border-slate-200 print:border-none opacity-30 print:opacity-0"
+                                    style={{ width: '40mm', height: '40mm', boxSizing: 'border-box' }}
+                                  />
+                                );
+                              }
+                              return (
+                                <div
+                                  key={a.id}
+                                  className="flex flex-col justify-between bg-white overflow-hidden relative border border-dashed border-slate-200 print:border-none text-center"
+                                  style={{ width: '40mm', height: '40mm', padding: '2.5mm 2mm 2mm 2mm', boxSizing: 'border-box' }}
+                                >
+                                  <div className="w-full space-y-0.5">
+                                    <p className="text-[6px] font-black text-slate-400 uppercase leading-none">자산 분류</p>
+                                    <p className="text-[8px] font-black text-slate-900 truncate tracking-tight leading-tight">
+                                      {a.it_type || a.category || '-'}
+                                    </p>
+                                  </div>
+                                  <div className="w-full flex justify-center items-center my-0.5">
+                                    {bulkQrMap[a.code] ? (
+                                      <img src={bulkQrMap[a.code]} alt="QR" className="w-[20mm] h-[20mm] object-contain" />
+                                    ) : (
+                                      <div className="w-[20mm] h-[20mm] flex items-center justify-center bg-slate-50 text-[6px] font-bold text-slate-400 animate-pulse">
+                                        생성 중…
+                                      </div>
+                                    )}
+                                  </div>
+                                  <div className="w-full">
+                                    <p className="text-[6px] font-black text-slate-400 uppercase leading-none">자산번호</p>
+                                    <p className="text-[8px] font-black font-mono tracking-tighter text-indigo-700 leading-none truncate">
+                                      {a.code}
+                                    </p>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      </React.Fragment>
+                    );
+                  })}
+                </div>
+              );
+            })()}
           </div>
-          
+
           <style jsx global>{`
             @media print {
-              body * { visibility: hidden; }
-              .formtec-page-container, .formtec-page-container * { visibility: visible; }
-              .formtec-page-container { position: absolute; left: 0; top: 0; width: 210mm; height: 297mm; background: white !important; }
-              @page { size: A4 portrait; margin: 0; }
+              @page {
+                size: A4 portrait;
+                margin: 0;
+              }
+              html, body {
+                width: 210mm !important;
+                height: auto !important;
+                margin: 0 !important;
+                padding: 0 !important;
+                overflow: visible !important;
+                background: #fff !important;
+              }
+              /* fixed/overflow 모달이 페이지 나눔을 막지 않도록 해제 */
+              .formtec-print-overlay {
+                position: static !important;
+                inset: auto !important;
+                display: block !important;
+                width: auto !important;
+                height: auto !important;
+                min-height: 0 !important;
+                overflow: visible !important;
+                background: #fff !important;
+                padding: 0 !important;
+                z-index: auto !important;
+              }
+              .formtec-print-card {
+                max-width: none !important;
+                width: 210mm !important;
+                margin: 0 !important;
+                padding: 0 !important;
+                border-radius: 0 !important;
+                box-shadow: none !important;
+                background: #fff !important;
+              }
+              body * {
+                visibility: hidden;
+              }
+              .formtec-print-root,
+              .formtec-print-root * {
+                visibility: visible;
+              }
+              .formtec-print-root {
+                position: static !important;
+                width: 210mm !important;
+                margin: 0 !important;
+                background: #fff !important;
+              }
+              .formtec-page-guide {
+                display: none !important;
+              }
+              .formtec-page {
+                position: relative !important;
+                display: block !important;
+                width: 210mm !important;
+                height: 297mm !important;
+                max-height: 297mm !important;
+                overflow: hidden !important;
+                margin: 0 !important;
+                padding: 0 !important;
+                border: none !important;
+                box-shadow: none !important;
+                background: #fff !important;
+                break-after: page;
+                page-break-after: always;
+                break-inside: avoid;
+                page-break-inside: avoid;
+              }
+              .formtec-page:last-of-type {
+                break-after: auto;
+                page-break-after: auto;
+              }
             }
           `}</style>
         </div>

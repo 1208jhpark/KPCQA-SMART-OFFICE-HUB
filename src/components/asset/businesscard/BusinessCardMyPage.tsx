@@ -3,6 +3,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import * as XLSX from 'xlsx';
 import LoadingState from '@/components/common/LoadingState';
+import WindowedPagination from '@/components/common/WindowedPagination';
 import { resolveInterfaceEditState } from '@/lib/permission-utils';
 import { formatBusinessCardEnNumber, stripBusinessCardEnPlus } from '@/lib/businesscard-phone';
 import { formatBusinessCardUserStatusLabel } from '@/lib/businesscard-status';
@@ -503,6 +504,70 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
     openNewApplication();
   };
 
+  /** 최근 신청의 수동 입력 항목만 폼에 반영 (인사 연동 필드는 유지) */
+  const loadLatestApplicationInfo = () => {
+    if (!canEdit) return alertNoEditPermission();
+    const latest = history[0];
+    if (!latest) {
+      alert('불러올 신청 내역이 없습니다.');
+      return;
+    }
+    const ok = window.confirm(
+      '최근 신청 내역의 연락처·주소·추가자격을 현재 작성 중인 폼에 불러옵니다.\n' +
+        '이름·소속·직책·이메일 등 인사 연동 항목은 유지됩니다.\n계속하시겠습니까?'
+    );
+    if (!ok) return;
+
+    const parsedQuals = latest.additionalKo
+      ? latest.additionalKo.split(',').map((s) => s.trim()).filter(Boolean).map((ko) => {
+          const inMaster = qualifications.some((q) => q.nameKo === ko);
+          return inMaster ? ko : toManualQualValue(ko);
+        })
+      : [];
+    const parsedEnList = latest.additionalEn
+      ? latest.additionalEn.split(',').map((s) => s.trim())
+      : [];
+    const masterNames = qualifications.map((x) => x.nameKo);
+    const parsedQualsEn = parsedQuals.map((q, i) => {
+      if (isManualQualValue(q, masterNames)) {
+        return String(parsedEnList[i] || '').replace(/\s*\(수동 기재\)\s*$/, '').trim();
+      }
+      return qualifications.find((x) => x.nameKo === q)?.nameEn || parsedEnList[i] || '';
+    });
+
+    const addrFromMaster = addresses.find((a) => a.id === latest.addressId);
+    const mobile = latest.mobile || '';
+    const phone = latest.phone || '';
+
+    setForm((p) => ({
+      ...p,
+      mobile,
+      mobileEn: formatBusinessCardEnNumber('mobile', mobile) || stripBusinessCardEnPlus(latest.mobileEn || ''),
+      phone,
+      phoneEn: formatBusinessCardEnNumber('phone', phone) || stripBusinessCardEnPlus(latest.phoneEn || ''),
+      additionalQuals: parsedQuals,
+      additionalQualsEn: parsedQualsEn,
+      quantity: latest.quantity || p.quantity || 1,
+      ...(addrFromMaster
+        ? {
+            addressId: addrFromMaster.id,
+            zipCode: addrFromMaster.zipCode,
+            addressKo: formatCompanyAddressKo(addrFromMaster),
+            addressEn: addrFromMaster.addressEn,
+            fax: addrFromMaster.fax,
+            faxEn: stripBusinessCardEnPlus(addrFromMaster.faxEn || ''),
+          }
+        : {
+            addressId: latest.addressId || p.addressId,
+            zipCode: latest.zipCode || p.zipCode,
+            addressKo: latest.addressKo || p.addressKo,
+            addressEn: latest.addressEn || p.addressEn,
+            fax: latest.fax || p.fax,
+            faxEn: stripBusinessCardEnPlus(latest.faxEn || p.faxEn || ''),
+          }),
+    }));
+  };
+
   const handleDetailView = (row: RequestHistory) => {
     const matchedDuty = duties.find(d => row.title.includes(d.label))?.label || '';
     const matchedGrade = grades.find(g => row.title.includes(g.label))?.label || '';
@@ -835,9 +900,10 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
   /** 인사 연동 칸(수정 가능하되 회색 바탕) */
   const syncedFieldCls =
     'w-full p-2 border border-slate-200 rounded-lg text-xs font-bold bg-slate-50 text-slate-800 disabled:opacity-60 outline-slate-400';
-  /** 직접 입력 칸(하늘색 바탕) */
+  /** 직접 입력 칸(로즈 바탕 — 연동 회색과 구분) */
   const manualFieldCls =
-    'w-full p-2 border border-sky-200 rounded-lg text-xs font-bold bg-sky-50 text-slate-800 disabled:bg-slate-50 disabled:text-slate-400 disabled:border-slate-200 outline-sky-400';
+    'w-full p-2 border border-rose-300 rounded-lg text-xs font-bold bg-rose-50 text-slate-800 disabled:bg-slate-50 disabled:text-slate-400 disabled:border-slate-200 outline-rose-400';
+  const manualLabelCls = 'block text-[10px] font-black text-rose-700 mb-1';
 
   if (loading) return <LoadingState />;
 
@@ -919,13 +985,24 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
           </p>
           <div className="flex items-center gap-2">
             {formMode === 'NEW' && (
-              <button
-                type="button"
-                onClick={() => openNewApplication()}
-                className="text-[10px] font-black px-3 py-1.5 rounded-lg bg-sky-50 text-sky-800 border border-sky-200 hover:bg-sky-600 hover:text-white transition-colors"
-              >
-                🔄 인사정보 다시 동기화
-              </button>
+              <>
+                <button
+                  type="button"
+                  disabled={history.length === 0}
+                  onClick={loadLatestApplicationInfo}
+                  title={history.length === 0 ? '신청 내역이 없습니다' : '최근 신청의 연락처·주소·추가자격 불러오기'}
+                  className="text-[10px] font-black px-3 py-1.5 rounded-lg bg-rose-50 text-rose-800 border border-rose-200 hover:bg-rose-600 hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-rose-50 disabled:hover:text-rose-800"
+                >
+                  최근 신청정보 불러오기
+                </button>
+                <button
+                  type="button"
+                  onClick={() => openNewApplication()}
+                  className="text-[10px] font-black px-3 py-1.5 rounded-lg bg-sky-50 text-sky-800 border border-sky-200 hover:bg-sky-600 hover:text-white transition-colors"
+                >
+                  🔄 인사정보 다시 동기화
+                </button>
+              </>
             )}
             <button
               type="button"
@@ -970,8 +1047,8 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
               <span className="inline-block w-2.5 h-2.5 rounded-sm bg-slate-200 border border-slate-300 align-middle mr-1" />
               회색 = 인사 연동
               <span className="mx-1.5 text-slate-300">·</span>
-              <span className="inline-block w-2.5 h-2.5 rounded-sm bg-sky-50 border border-sky-200 align-middle mr-1" />
-              하늘색 = 직접 입력
+              <span className="inline-block w-2.5 h-2.5 rounded-sm bg-rose-50 border border-rose-300 align-middle mr-1" />
+              로즈 = 직접 입력
             </p>
           </div>
           <div className="space-y-3">
@@ -1025,9 +1102,9 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
             </div>
 
             {/* 2행: 추가사항(자격증) — 직접 입력 */}
-            <div className="space-y-2 border border-sky-100 rounded-xl p-3 bg-sky-50/40">
+            <div className="space-y-2 border border-rose-200 rounded-xl p-3 bg-rose-50/50">
               <div className="flex items-center justify-between">
-                <label className="block text-[10px] font-black text-blue-600">추가사항 (자격증 선택)</label>
+                <label className="block text-[10px] font-black text-rose-700">추가사항 (자격증 선택)</label>
                 {!isReadOnly && (
                   <button
                     type="button"
@@ -1038,7 +1115,7 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
                         additionalQualsEn: [...(p.additionalQualsEn || []), ''],
                       }))
                     }
-                    className="px-2.5 py-1 bg-white hover:bg-sky-100 text-sky-800 text-[10px] font-black rounded border border-sky-200 transition-colors"
+                    className="px-2.5 py-1 bg-white hover:bg-rose-100 text-rose-800 text-[10px] font-black rounded border border-rose-300 transition-colors"
                   >
                     + 자격증 추가
                   </button>
@@ -1143,7 +1220,7 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
             {/* 3행: 주소지 · 우편번호 · 국문주소 */}
             <div className="grid grid-cols-1 md:grid-cols-4 gap-x-4 gap-y-3">
               <div>
-                <label className="block text-[10px] font-black text-blue-600 mb-1">주소지 선택 *</label>
+                <label className={manualLabelCls}>주소지 선택 *</label>
                 <select disabled={isReadOnly} value={form.addressId} onChange={(e) => handleAddressChange(e.target.value)} className={manualFieldCls}>
                   {addresses.map(a => <option key={a.id} value={a.id}>{a.label}</option>)}
                 </select>
@@ -1161,11 +1238,11 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
             {/* 4행: 휴대전화 · 내선 · 팩스 · 이메일 */}
             <div className="grid grid-cols-1 md:grid-cols-4 gap-x-4 gap-y-3">
               <div>
-                <label className="block text-[10px] font-black text-blue-600 mb-1">휴대전화 *</label>
+                <label className={manualLabelCls}>휴대전화 *</label>
                 <input type="text" required disabled={isReadOnly} value={form.mobile} onChange={(e) => handleTextChange('mobile', e.target.value)} placeholder="ex. 010-0000-0000" className={manualFieldCls} />
               </div>
               <div>
-                <label className="block text-[10px] font-black text-blue-600 mb-1">전화번호 (내선) *</label>
+                <label className={manualLabelCls}>전화번호 (내선) *</label>
                 <input type="text" required disabled={isReadOnly} value={form.phone} onChange={(e) => handleTextChange('phone', e.target.value)} placeholder="ex. 02-6973-0000" className={manualFieldCls} />
               </div>
               <div>
@@ -1207,8 +1284,8 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
               </div>
             </div>
 
-            <div className="space-y-2 border border-slate-100 rounded-xl p-3 bg-slate-50/40">
-              <label className="block text-[10px] font-black text-blue-600">
+            <div className="space-y-2 border border-rose-200 rounded-xl p-3 bg-rose-50/40">
+              <label className="block text-[10px] font-black text-rose-700">
                 영문 추가사항{' '}
                 <span className="font-bold">(마스터는 자동 · 수동 기재는 직접 입력)</span>
               </label>
@@ -1243,7 +1320,7 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
                       }
                       className={`w-full p-2 rounded-lg text-xs font-bold ${
                         manualMode && !isReadOnly
-                          ? 'bg-sky-50 text-slate-800 border border-sky-200 outline-sky-400'
+                          ? 'bg-rose-50 text-slate-800 border border-rose-300 outline-rose-400'
                           : 'bg-slate-50 text-slate-500 border border-slate-100 cursor-not-allowed'
                       }`}
                     />
@@ -1591,38 +1668,11 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
             </div>
 
             {filteredHistory.length > 0 && (
-              <div className="flex justify-center items-center gap-1.5 py-3 border-t border-slate-100 bg-white">
-                <button
-                  type="button"
-                  disabled={safeHistoryPage === 1}
-                  onClick={() => setHistoryPage((p) => Math.max(1, p - 1))}
-                  className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors"
-                >
-                  이전
-                </button>
-                {Array.from({ length: totalHistoryPages }).map((_, i) => (
-                  <button
-                    key={i}
-                    type="button"
-                    onClick={() => setHistoryPage(i + 1)}
-                    className={`w-8 h-8 rounded-xl font-black text-xs transition-all ${
-                      safeHistoryPage === i + 1
-                        ? 'bg-slate-800 text-white shadow-sm scale-105'
-                        : 'bg-white border border-slate-200 text-slate-500 hover:bg-slate-50'
-                    }`}
-                  >
-                    {i + 1}
-                  </button>
-                ))}
-                <button
-                  type="button"
-                  disabled={safeHistoryPage === totalHistoryPages}
-                  onClick={() => setHistoryPage((p) => Math.min(totalHistoryPages, p + 1))}
-                  className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors"
-                >
-                  다음
-                </button>
-              </div>
+              <WindowedPagination
+                currentPage={safeHistoryPage}
+                totalPages={totalHistoryPages}
+                onPageChange={setHistoryPage}
+              />
             )}
           </>
         )}

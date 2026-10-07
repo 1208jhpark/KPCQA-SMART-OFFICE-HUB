@@ -434,6 +434,7 @@ const pendingAlwaysApprovals = useMemo(() => {
     if (!requireEdit()) return;
      
     // 🚀 [스키마 싱크]: 불필요한 allowedDepts 계산 로직 제거. (대상 부서는 target 필드 하나로 관리됨)
+    const wasNew = String(editModal?.id || '').startsWith('D_');
     const finalEditData = { 
       ...editModal, 
       endTime: editModal.endTime || '23:59', 
@@ -457,8 +458,13 @@ const pendingAlwaysApprovals = useMemo(() => {
             return [...prev, savedSurvey];
           }
         });
-        alert('✅ 배달 공고가 성공적으로 저장되었습니다.');
         setEditModal(null);
+        // 신규 생성 직후 → 배달 지원 공고 상세 및 배포(빌더·배포링크)로 바로 이어가기
+        if (wasNew) {
+          setPreviewModal(savedSurvey);
+        } else {
+          alert('✅ 배달 공고가 성공적으로 저장되었습니다.');
+        }
       } else {
         alert('서버 저장에 실패했습니다.');
       }
@@ -1758,10 +1764,7 @@ const handleDownloadZipAll = async () => {
                 </div>
               </div>
               
-              <div className="pt-4 mt-2 border-t border-slate-200 space-y-2.5">
-                <p className="text-[11px] font-bold text-teal-700 bg-teal-50 border border-teal-100 rounded-xl px-3 py-2 leading-relaxed">
-                  생성된 목록을 클릭하여 조사지 내용 상세 작성바랍니다.
-                </p>
+              <div className="pt-4 mt-2 border-t border-slate-200">
                 <div className="flex gap-2">
                   <button type="button" onClick={() => setEditModal(null)} className="flex-1 py-2.5 bg-white border rounded-xl font-black text-slate-600 hover:bg-slate-50">취소</button>
                   <button type="submit" className="flex-1 py-2.5 bg-teal-600 text-white rounded-xl font-black shadow-md hover:bg-teal-700">정보 저장하기</button>

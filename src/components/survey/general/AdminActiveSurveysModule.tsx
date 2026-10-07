@@ -463,6 +463,7 @@ const formatAnswerForExport = (ans: any) => {
     e.preventDefault();
     if (!requireEdit()) return;
     // 🚀 [찌꺼기 제거]: DB에 없는 allowedDepts 파생 로직 삭제. target 필드만 사용.
+    const wasNew = String(editModal?.id || '').startsWith('S_');
     const finalEditData = { ...editModal, menuPath: pathname };
      
     try {
@@ -482,8 +483,13 @@ const formatAnswerForExport = (ans: any) => {
             return [...prev, savedRecord];
           }
         });
-        alert('✅ 설문 메타 서식이 성공적으로 저장되었습니다.');
         setEditModal(null);
+        // 신규 생성 직후 → 게시 상세(빌더·배포링크)로 바로 이어가기
+        if (wasNew) {
+          setPreviewModal(savedRecord);
+        } else {
+          alert('✅ 설문 메타 서식이 성공적으로 저장되었습니다.');
+        }
       } else {
         const errData = await res.json();
         alert(`❌ 저장 실패: ${errData.error || '알 수 없는 오류'}`);
@@ -1441,10 +1447,7 @@ const formatAnswerForExport = (ans: any) => {
                 </div>
               </div>
               
-              <div className="pt-4 mt-2 border-t border-slate-200 space-y-2.5">
-                <p className="text-[11px] font-bold text-indigo-700 bg-indigo-50 border border-indigo-100 rounded-xl px-3 py-2 leading-relaxed">
-                  생성된 목록을 클릭하여 조사지 내용 상세 작성바랍니다.
-                </p>
+              <div className="pt-4 mt-2 border-t border-slate-200">
                 <div className="flex gap-2">
                   <button type="button" onClick={() => setEditModal(null)} className="flex-1 py-2.5 bg-white border rounded-xl font-black text-slate-600 hover:bg-slate-50">취소</button>
                   <button type="submit" className="flex-1 py-2.5 bg-indigo-600 text-white rounded-xl font-black shadow-md hover:bg-indigo-700">정보 저장하기</button>

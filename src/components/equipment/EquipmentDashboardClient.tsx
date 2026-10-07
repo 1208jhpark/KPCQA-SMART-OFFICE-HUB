@@ -12,6 +12,7 @@ import { rowMatchesOrgUnit } from '@/lib/org-unit-match';
 import { SEED_EQUIPMENT_BY_CATEGORY } from '@/lib/equipment-seed-performance';
 import { isActiveEquipmentRow } from '@/utils/equipmentActive';
 import { resolveInterfaceEditState } from '@/lib/permission-utils';
+import WindowedPagination from '@/components/common/WindowedPagination';
 
 const LoadingSkeleton = () => (
   <div className="w-full max-w-[1600px] mx-auto py-16 px-8 space-y-6 animate-pulse">
@@ -364,6 +365,118 @@ export default function EquipmentMainDashboard() {
     };
   }, [bulkPrintAssets]);
 
+  /** fixed 모달 인쇄는 장 나눔이 깨지므로 A4 iframe으로 분리 인쇄 */
+  const runFormtecLabelPrint = () => {
+    if (!bulkQrReady || bulkPrintAssets.length === 0) return;
+    const LABELS_PER_PAGE = 28;
+    const pageCount = Math.max(1, Math.ceil(bulkPrintAssets.length / LABELS_PER_PAGE));
+    const escapeHtml = (s: string) =>
+      String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+
+    let pagesHtml = '';
+    for (let pageIndex = 0; pageIndex < pageCount; pageIndex += 1) {
+      const pageStart = pageIndex * LABELS_PER_PAGE;
+      let cells = '';
+      for (let cellIndex = 0; cellIndex < LABELS_PER_PAGE; cellIndex += 1) {
+        const a = bulkPrintAssets[pageStart + cellIndex];
+        if (!a) {
+          cells += `<div class="cell empty"></div>`;
+          continue;
+        }
+        const qr = bulkQrMap[a.id] || '';
+        cells += `<div class="cell">
+          <div class="top">
+            <div class="badge-row"><span class="badge">장비</span><span class="name">${escapeHtml(String(a.name || ''))}</span></div>
+            <div class="title">${escapeHtml(String(a.model_name || '모델번호 미상'))}</div>
+            ${a.serial_no ? `<div class="serial">시리얼 ${escapeHtml(String(a.serial_no))}</div>` : ''}
+          </div>
+          <div class="qr">${qr ? `<img src="${qr}" alt="QR" />` : ''}</div>
+          <div class="bot">
+            <div class="code">${escapeHtml(displayAssetNo(a.asset_no))}</div>
+            <div class="dept">${escapeHtml(String(a.department || '공용'))}</div>
+          </div>
+        </div>`;
+      }
+      pagesHtml += `<section class="page"><div class="grid">${cells}</div></section>`;
+    }
+
+    const iframe = document.createElement('iframe');
+    iframe.setAttribute('title', 'equipment-formtec-qr-print');
+    iframe.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;opacity:0;pointer-events:none;';
+    document.body.appendChild(iframe);
+    const doc = iframe.contentDocument || iframe.contentWindow?.document;
+    if (!doc) {
+      iframe.remove();
+      alert('인쇄 창을 열 수 없습니다. 브라우저 팝업/권한을 확인해 주세요.');
+      return;
+    }
+    doc.open();
+    doc.write(`<!DOCTYPE html><html><head><meta charset="utf-8" />
+<title>한국폼텍 QR 라벨</title>
+<style>
+  @page { size: A4 portrait; margin: 0; }
+  * { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  html, body { margin: 0; padding: 0; background: #fff; }
+  .page { width: 210mm; height: 297mm; margin: 0; padding: 0; overflow: hidden; background: #fff; page-break-after: always; break-after: page; }
+  .page:last-child { page-break-after: auto; break-after: auto; }
+  .grid { display: grid; grid-template-columns: repeat(4, 40mm); width: 185mm; margin: 0 auto; padding-top: 8mm; padding-left: 5mm; column-gap: 4.5mm; row-gap: 1mm; }
+  .cell { width: 40mm; height: 40mm; padding: 2.5mm 2mm 2mm; overflow: hidden; display: flex; flex-direction: column; justify-content: space-between; text-align: center; font-family: system-ui, -apple-system, 'Segoe UI', sans-serif; }
+  .cell.empty { visibility: hidden; }
+  .badge-row { display: flex; justify-content: center; align-items: center; gap: 2px; }
+  .badge { font-size: 7px; font-weight: 900; background: #0f172a; color: #fff; padding: 1px 4px; border-radius: 999px; line-height: 1; }
+  .name, .title { font-size: 8px; font-weight: 900; color: #0f172a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .name { font-size: 7px; color: #334155; max-width: 26mm; }
+  .serial { font-size: 7px; font-family: ui-monospace, monospace; color: #64748b; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .code { font-size: 9px; font-weight: 900; font-family: ui-monospace, monospace; color: #4338ca; line-height: 1; }
+  .dept { font-size: 6.5px; font-weight: 700; color: #94a3b8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
+  .qr { display: flex; justify-content: center; align-items: center; }
+  .qr img { width: 20mm; height: 20mm; object-fit: contain; }
+</style></head><body>${pagesHtml}</body></html>`);
+    doc.close();
+
+    const finish = () => {
+      try {
+        iframe.contentWindow?.focus();
+        iframe.contentWindow?.print();
+      } finally {
+        setTimeout(() => iframe.remove(), 800);
+      }
+    };
+    const imgs = Array.from(doc.images || []);
+    if (imgs.length === 0) {
+      setTimeout(finish, 50);
+      return;
+    }
+    let left = imgs.length;
+    imgs.forEach((img) => {
+      if (img.complete) {
+        left -= 1;
+        if (left <= 0) setTimeout(finish, 50);
+      } else {
+        img.onload = img.onerror = () => {
+          left -= 1;
+          if (left <= 0) setTimeout(finish, 50);
+        };
+      }
+    });
+  };
+
+  useEffect(() => {
+    if (bulkPrintAssets.length === 0) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'p' || e.key === 'P')) {
+        e.preventDefault();
+        if (bulkQrReady) runFormtecLabelPrint();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [bulkPrintAssets, bulkQrReady, bulkQrMap]);
+
   const handleExportExcel = () => {
     const targetAssets =
       selectedMainIds.size > 0
@@ -701,13 +814,11 @@ export default function EquipmentMainDashboard() {
         </div>
         
         {filteredEquipments.length > 0 && (
-          <div className="flex justify-center items-center gap-1.5 py-3 border-t border-slate-100 bg-white">
-            <button disabled={currentPage === 1} onClick={() => setCurrentPage(p => p - 1)} className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors">이전</button>
-            {Array.from({ length: totalPages }).map((_, i) => (
-              <button key={i} onClick={() => setCurrentPage(i + 1)} className={`w-8 h-8 rounded-xl font-black text-xs transition-all ${currentPage === i + 1 ? 'bg-slate-800 text-white shadow-sm scale-105' : 'bg-white border border-slate-200 text-slate-500 hover:bg-slate-50'}`}>{i + 1}</button>
-            ))}
-            <button disabled={currentPage === totalPages} onClick={() => setCurrentPage(p => p + 1)} className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors">다음</button>
-          </div>
+          <WindowedPagination
+            currentPage={currentPage}
+            totalPages={totalPages}
+            onPageChange={setCurrentPage}
+          />
         )}
       </div>
 
@@ -767,15 +878,21 @@ export default function EquipmentMainDashboard() {
                 <p className="text-slate-500 text-xs font-bold mt-1">드림디포 구매 규격 [QR-3990] 적용 (40mm × 40mm 정사각형) | 총 {bulkPrintAssets.length}개의 라벨</p>
               </div>
               <div className="flex gap-2">
-                <button type="button" disabled={!bulkQrReady} onClick={() => window.print()} className={`px-6 py-2 font-black rounded-xl shadow-md flex items-center gap-2 text-xs transition-colors ${bulkQrReady ? 'bg-purple-600 text-white hover:bg-purple-700' : 'bg-slate-300 text-slate-500 cursor-not-allowed'}`}><span>🖨️</span> {bulkQrReady ? '라벨 인쇄 실행 (Ctrl+P)' : 'QR 생성 중…'}</button>
+                <button type="button" disabled={!bulkQrReady} onClick={runFormtecLabelPrint} className={`px-6 py-2 font-black rounded-xl shadow-md flex items-center gap-2 text-xs transition-colors ${bulkQrReady ? 'bg-purple-600 text-white hover:bg-purple-700' : 'bg-slate-300 text-slate-500 cursor-not-allowed'}`}><span>🖨️</span> {bulkQrReady ? '라벨 인쇄 실행' : 'QR 생성 중…'}</button>
                 <button type="button" onClick={() => setBulkPrintAssets([])} className="px-6 py-2 bg-slate-100 text-slate-600 font-black rounded-xl hover:bg-slate-200 text-xs">닫기</button>
               </div>
             </div>
 
-            <div className="equipment-formtec-page bg-white p-0 relative" style={{ width: '210mm', minHeight: '297mm', margin: '0 auto', boxSizing: 'border-box' }}>
+            {(() => {
+              const LABELS_PER_PAGE = 28;
+              const pageCount = Math.max(1, Math.ceil(bulkPrintAssets.length / LABELS_PER_PAGE));
+              return (
+            <div className="equipment-formtec-print-root">
               <div className="text-center font-black text-slate-800 text-xs mb-4 print:hidden bg-indigo-50 border border-indigo-100 py-2.5 rounded-xl max-w-[190mm] mx-auto">
                 📍 한국폼텍 28칸 기본 (드림디포 QR-3990 전용 4열 × 7행 정사각 매핑 완료) <br/>
-                <span className="text-[10px] text-indigo-500 font-medium font-sans mt-0.5 block">※ 화면에 보이는 회색 점선은 인쇄 시 출력되지 않는 안전 가이드 칼선입니다.</span>
+                <span className="text-[10px] text-indigo-500 font-medium font-sans mt-0.5 block">
+                  ※ 회색 점선·장 구분선은 인쇄되지 않는 안전 가이드입니다. 28칸마다 새 A4 장으로 나뉩니다. (총 {pageCount}장)
+                </span>
               </div>
 
               <div className="max-w-[190mm] mx-auto mb-4 print:hidden bg-blue-50 border-2 border-blue-200 p-4 rounded-2xl text-left">
@@ -787,61 +904,138 @@ export default function EquipmentMainDashboard() {
                 </div>
               </div>
 
-              <div
-                className="grid grid-cols-4 print:grid-cols-4"
-                style={{
-                  width: '185mm',
-                  margin: '0 auto',
-                  paddingTop: '12mm',
-                  paddingLeft: '5mm',
-                  columnGap: '4.5mm',
-                  rowGap: '1.5mm'
-                }}
-              >
-                {Array.from({ length: Math.max(28, Math.ceil(bulkPrintAssets.length / 4) * 4) }).map((_, idx) => {
-                  const a = bulkPrintAssets[idx];
-                  if (!a) return <div key={`empty-${idx}`} className="border border-dashed border-slate-200 print:border-none opacity-30 print:opacity-0" style={{ width: '40mm', height: '40mm', boxSizing: 'border-box' }} />;
-
-                  return (
-                    <div
-                      key={a.id}
-                      className="flex flex-col justify-between bg-white overflow-hidden relative border border-dashed border-slate-200 print:border-none print:break-inside-avoid text-center"
-                      style={{ width: '40mm', height: '40mm', padding: '2.5mm 2mm 2mm 2mm', boxSizing: 'border-box' }}
-                    >
-                      <div className="w-full space-y-0.5">
-                        <div className="flex justify-center items-center gap-1">
-                          <span className="text-[7px] font-black bg-slate-900 text-white px-1.5 py-0.5 rounded-full leading-none">장비</span>
-                          <span className="text-[7px] font-black text-slate-700 truncate max-w-[26mm]">{a.name}</span>
+              {Array.from({ length: pageCount }).map((_, pageIndex) => {
+                const pageStart = pageIndex * LABELS_PER_PAGE;
+                return (
+                  <React.Fragment key={`eq-formtec-sheet-${pageIndex}`}>
+                    {pageIndex > 0 && (
+                      <div className="print:hidden my-8 max-w-[190mm] mx-auto px-2">
+                        <div className="flex items-center gap-3">
+                          <div className="flex-1 border-t-2 border-dashed border-slate-300" />
+                          <span className="text-[11px] font-black text-slate-500 tracking-wider whitespace-nowrap">
+                            {pageIndex}장 --- {pageIndex + 1}장
+                          </span>
+                          <div className="flex-1 border-t-2 border-dashed border-slate-300" />
                         </div>
-                        <p className="text-[8px] font-black text-slate-900 truncate tracking-tight">{a.model_name || '모델번호 미상'}</p>
-                        {a.serial_no ? (
-                          <p className="text-[7px] font-mono text-slate-500 truncate">시리얼 {a.serial_no}</p>
-                        ) : null}
+                        <p className="text-center text-[10px] font-bold text-slate-400 mt-2">
+                          인쇄 시 이 구분선은 출력되지 않으며, 여기서부터 새 A4(28칸)로 넘어갑니다.
+                        </p>
                       </div>
-                      <div className="w-full flex justify-center items-center my-0.5">
-                        {bulkQrMap[a.id] ? (
-                          <img src={bulkQrMap[a.id]} alt="QR" className="w-[20mm] h-[20mm] object-contain" />
-                        ) : (
-                          <div className="w-[20mm] h-[20mm] flex items-center justify-center bg-slate-50 text-[6px] font-bold text-slate-400 animate-pulse">생성 중…</div>
-                        )}
+                    )}
+                    <div
+                      className="equipment-formtec-page bg-white p-0 relative border border-slate-100 print:border-none shadow-sm print:shadow-none mb-6 print:mb-0"
+                      style={{
+                        width: '210mm',
+                        height: '297mm',
+                        margin: '0 auto',
+                        boxSizing: 'border-box',
+                        overflow: 'hidden',
+                      }}
+                    >
+                      <div className="print:hidden absolute top-3 right-4 z-10 text-[10px] font-black text-indigo-600 bg-indigo-50 border border-indigo-100 px-2.5 py-1 rounded-lg">
+                        {pageIndex + 1} / {pageCount}장
                       </div>
-                      <div className="w-full">
-                        <p className="text-[9px] font-black font-mono tracking-tighter text-indigo-700 leading-none">{displayAssetNo(a.asset_no)}</p>
-                        <p className="text-[6.5px] font-bold text-slate-400 truncate mt-0.5 scale-90">{a.department || '공용'}</p>
+                      <div
+                        className="grid grid-cols-4 print:grid-cols-4"
+                        style={{
+                          width: '185mm',
+                          margin: '0 auto',
+                          paddingTop: '8mm',
+                          paddingLeft: '5mm',
+                          columnGap: '4.5mm',
+                          rowGap: '1mm',
+                        }}
+                      >
+                        {Array.from({ length: LABELS_PER_PAGE }).map((_, cellIndex) => {
+                          const idx = pageStart + cellIndex;
+                          const a = bulkPrintAssets[idx];
+                          if (!a) {
+                            return (
+                              <div
+                                key={`empty-${pageIndex}-${cellIndex}`}
+                                className="border border-dashed border-slate-200 print:border-none opacity-30 print:opacity-0"
+                                style={{ width: '40mm', height: '40mm', boxSizing: 'border-box' }}
+                              />
+                            );
+                          }
+                          return (
+                            <div
+                              key={a.id}
+                              className="flex flex-col justify-between bg-white overflow-hidden relative border border-dashed border-slate-200 print:border-none break-inside-avoid text-center"
+                              style={{ width: '40mm', height: '40mm', padding: '2.5mm 2mm 2mm 2mm', boxSizing: 'border-box' }}
+                            >
+                              <div className="w-full space-y-0.5">
+                                <div className="flex justify-center items-center gap-1">
+                                  <span className="text-[7px] font-black bg-slate-900 text-white px-1.5 py-0.5 rounded-full leading-none">장비</span>
+                                  <span className="text-[7px] font-black text-slate-700 truncate max-w-[26mm]">{a.name}</span>
+                                </div>
+                                <p className="text-[8px] font-black text-slate-900 truncate tracking-tight">{a.model_name || '모델번호 미상'}</p>
+                                {a.serial_no ? (
+                                  <p className="text-[7px] font-mono text-slate-500 truncate">시리얼 {a.serial_no}</p>
+                                ) : null}
+                              </div>
+                              <div className="w-full flex justify-center items-center my-0.5">
+                                {bulkQrMap[a.id] ? (
+                                  <img src={bulkQrMap[a.id]} alt="QR" className="w-[20mm] h-[20mm] object-contain" />
+                                ) : (
+                                  <div className="w-[20mm] h-[20mm] flex items-center justify-center bg-slate-50 text-[6px] font-bold text-slate-400 animate-pulse">생성 중…</div>
+                                )}
+                              </div>
+                              <div className="w-full">
+                                <p className="text-[9px] font-black font-mono tracking-tighter text-indigo-700 leading-none">{displayAssetNo(a.asset_no)}</p>
+                                <p className="text-[6.5px] font-bold text-slate-400 truncate mt-0.5 scale-90">{a.department || '공용'}</p>
+                              </div>
+                            </div>
+                          );
+                        })}
                       </div>
                     </div>
-                  );
-                })}
-              </div>
+                  </React.Fragment>
+                );
+              })}
             </div>
+              );
+            })()}
           </div>
 
           <style jsx global>{`
             @media print {
-              body * { visibility: hidden; }
-              .equipment-formtec-page, .equipment-formtec-page * { visibility: visible; }
-              .equipment-formtec-page { position: absolute; left: 0; top: 0; width: 210mm; height: 297mm; background: white !important; }
               @page { size: A4 portrait; margin: 0; }
+              html, body {
+                width: 210mm !important;
+                height: auto !important;
+                margin: 0 !important;
+                padding: 0 !important;
+                overflow: visible !important;
+                background: white !important;
+              }
+              body * { visibility: hidden; }
+              .equipment-formtec-print-root, .equipment-formtec-print-root * { visibility: visible; }
+              .equipment-formtec-print-root {
+                position: absolute;
+                left: 0;
+                top: 0;
+                width: 210mm;
+                height: auto !important;
+                background: white !important;
+              }
+              .equipment-formtec-page {
+                display: block;
+                width: 210mm !important;
+                height: 297mm !important;
+                overflow: hidden !important;
+                margin: 0 !important;
+                box-shadow: none !important;
+                border: none !important;
+                page-break-after: always;
+                break-after: page;
+                break-inside: avoid;
+                page-break-inside: avoid;
+              }
+              .equipment-formtec-page:last-child {
+                page-break-after: auto;
+                break-after: auto;
+              }
             }
           `}</style>
         </div>

@@ -6,6 +6,7 @@ import { saveAs } from 'file-saver';
 import { formatKSTDateTimeMinute, isPastKSTDeadline, getKSTDaysUntil, formatKSTCalendarLabel } from '@/utils/dateUtils';
 import { getVisibleQuestionsByBranch } from '@/utils/surveyBranching';
 import LoadingState from '@/components/common/LoadingState';
+import WindowedPagination from '@/components/common/WindowedPagination';
      
 // 🚀 [UI 표준] 전사 공통 헤더 컴포넌트
 const HeaderLight = ({ title, count, children }: { title: string, count: number, children?: React.ReactNode }) => (
@@ -617,13 +618,11 @@ export default function DeliveryMySubmissions() {
           </table>
         </div>
         {eligibleSurveys.length > 0 && (
-          <div className="flex justify-center items-center gap-1.5 pt-6 pb-6 border-t border-slate-100 bg-white">
-            <button disabled={eligiblePage === 1} onClick={() => setEligiblePage(p => Math.max(p - 1, 1))} className="px-3 py-1.5 text-[11px] bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 hover:bg-slate-50">이전</button>
-            {Array.from({ length: totalEligiblePages }).map((_, i) => (
-              <button key={i} onClick={() => setEligiblePage(i + 1)} className={`w-8 h-8 rounded-xl font-bold text-[11px] transition-all ${eligiblePage === i + 1 ? 'bg-slate-800 text-white shadow-sm' : 'bg-white border border-slate-200 text-slate-500 hover:bg-slate-50'}`}>{i + 1}</button>
-            ))}
-            <button disabled={eligiblePage === totalEligiblePages} onClick={() => setEligiblePage(p => Math.min(p + 1, totalEligiblePages))} className="px-3 py-1.5 text-[11px] bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 hover:bg-slate-50">다음</button>
-          </div>
+          <WindowedPagination
+            currentPage={eligiblePage}
+            totalPages={totalEligiblePages}
+            onPageChange={setEligiblePage}
+          />
         )}
       </div>
 
@@ -893,31 +892,11 @@ export default function DeliveryMySubmissions() {
             </table>
           </div>
           {filteredHistory.length > 0 && (
-            <div className="flex justify-center items-center gap-1.5 py-3 border-t border-slate-100 bg-white">
-              <button
-                disabled={historyPage === 1}
-                onClick={() => setHistoryPage((p) => Math.max(p - 1, 1))}
-                className="px-3 py-1.5 text-[11px] bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors"
-              >
-                이전
-              </button>
-              {Array.from({ length: totalHistoryPages }).map((_, i) => (
-                <button
-                  key={i}
-                  onClick={() => setHistoryPage(i + 1)}
-                  className={`w-8 h-8 rounded-xl font-bold text-[11px] transition-all ${historyPage === i + 1 ? 'bg-slate-800 text-white shadow-sm' : 'bg-white border border-slate-200 text-slate-500 hover:bg-slate-50'}`}
-                >
-                  {i + 1}
-                </button>
-              ))}
-              <button
-                disabled={historyPage === totalHistoryPages}
-                onClick={() => setHistoryPage((p) => Math.min(p + 1, totalHistoryPages))}
-                className="px-3 py-1.5 text-[11px] bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors"
-              >
-                다음
-              </button>
-            </div>
+            <WindowedPagination
+              currentPage={historyPage}
+              totalPages={totalHistoryPages}
+              onPageChange={setHistoryPage}
+            />
           )}
         </div>
       )}

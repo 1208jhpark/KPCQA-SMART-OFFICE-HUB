@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import * as XLSX from 'xlsx';
 import { getKSTDateString, getKSTNowYearMonth, getKSTYearMonthParts } from '@/utils/dateUtils';
 import LoadingState from '@/components/common/LoadingState';
+import WindowedPagination from '@/components/common/WindowedPagination';
 import { resolveInterfaceEditState, isSystemLv1User } from '@/lib/permission-utils';
 import { isSeedVendor } from '@/lib/production-seed-vendors';
 import ProductionRequestDetailModal from '@/components/asset/production/ProductionRequestDetailModal';
@@ -2167,38 +2168,11 @@ export default function DeptInspectionPanel() {
         </div>
 
         {!loading && filteredBatches.length > 0 && (
-          <div className="flex justify-center items-center gap-1.5 py-3 border-t border-slate-100 bg-white">
-            <button
-              type="button"
-              disabled={batchPage === 1}
-              onClick={() => setBatchPage((p) => p - 1)}
-              className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors"
-            >
-              이전
-            </button>
-            {Array.from({ length: totalPages }).map((_, i) => (
-              <button
-                key={i}
-                type="button"
-                onClick={() => setBatchPage(i + 1)}
-                className={`w-8 h-8 rounded-xl font-black text-xs transition-all ${
-                  batchPage === i + 1
-                    ? 'bg-slate-800 text-white shadow-sm scale-105'
-                    : 'bg-white border border-slate-200 text-slate-500 hover:bg-slate-50'
-                }`}
-              >
-                {i + 1}
-              </button>
-            ))}
-            <button
-              type="button"
-              disabled={batchPage === totalPages}
-              onClick={() => setBatchPage((p) => p + 1)}
-              className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors"
-            >
-              다음
-            </button>
-          </div>
+          <WindowedPagination
+            currentPage={batchPage}
+            totalPages={totalPages}
+            onPageChange={setBatchPage}
+          />
         )}
       </div>
       </div>
