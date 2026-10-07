@@ -14,7 +14,7 @@ export const DEFAULT_BC_MAIL_BODY = `안녕하세요, ${BC_MAIL_PLACEHOLDERS.VEN
 한국생산성본부인증원 명함 신청 담당자입니다.
 
 금일 발주 확정된 명함 리스트 총 ${BC_MAIL_PLACEHOLDERS.COUNT}건 송부해 드립니다.
-첨부된 엑셀 데이터로 명함 제작 부탁드립니다.
+첨부된 엑셀 발주서 파일의 각 담당자(이메일 확인)와 시안을 픽스 후 명함 제작을 부탁드립니다.
 
 - 발주 번호: ${BC_MAIL_PLACEHOLDERS.BATCH_NO}
 - 총 수량: ${BC_MAIL_PLACEHOLDERS.COUNT}건

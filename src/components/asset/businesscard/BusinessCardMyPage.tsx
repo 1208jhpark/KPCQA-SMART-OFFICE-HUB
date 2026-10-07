@@ -1474,6 +1474,11 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
       </form>
       )}
 
+      <div className="bg-amber-50 border border-amber-200 rounded-xl p-3.5 text-[10px] text-amber-800 font-medium leading-relaxed">
+        💡 안내: 공정상태가 <span className="font-black">‘제작중’</span>인 건은 외주업체에서 발송한{' '}
+        <span className="font-black">시안 메일을 확인 후 회신(컨펌)</span>하셔야 실제 인쇄 및 제작이 진행됩니다.
+      </div>
+
       {/* 내역 보관함 테이블 — supplies/dept 동일 헤더·표 스타일 */}
       <div className="bg-white border border-slate-200 rounded-[2.5rem] shadow-sm overflow-hidden animate-in fade-in duration-300 slide-in-from-top-4">
         <div className="p-4 px-6 bg-slate-200/70 border-b border-slate-300 flex flex-wrap items-center justify-between gap-4">

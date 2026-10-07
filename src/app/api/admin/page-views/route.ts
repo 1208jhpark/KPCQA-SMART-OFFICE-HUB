@@ -34,8 +34,12 @@ export async function GET(req: Request) {
     const now = seoulYmd();
     const year = Number(searchParams.get('year') || now.year);
     const monthRaw = searchParams.get('month'); // 'all' | '1'..'12'
+    const dayRaw = searchParams.get('day'); // 'all' | '1'..'31'
     const monthAll = !monthRaw || monthRaw === 'all' || monthRaw === '0';
+    const dayAll = !dayRaw || dayRaw === 'all' || dayRaw === '0';
     const month = monthAll ? null : Number(monthRaw);
+    // 월 전체일 때는 일 필터 무시(전체)
+    const day = monthAll || dayAll ? null : Number(dayRaw);
 
     if (!Number.isFinite(year) || year < 2000 || year > 2100) {
       return NextResponse.json({ error: '유효하지 않은 연도입니다.' }, { status: 400 });
@@ -43,10 +47,17 @@ export async function GET(req: Request) {
     if (month != null && (!Number.isFinite(month) || month < 1 || month > 12)) {
       return NextResponse.json({ error: '유효하지 않은 월입니다.' }, { status: 400 });
     }
+    if (day != null) {
+      const dim = new Date(year, month!, 0).getDate();
+      if (!Number.isFinite(day) || day < 1 || day > dim) {
+        return NextResponse.json({ error: '유효하지 않은 일입니다.' }, { status: 400 });
+      }
+    }
 
     const dayWhere = {
       year,
       ...(month != null ? { month } : {}),
+      ...(day != null ? { day } : {}),
     };
 
     let hitRows: { path: string; hits: number }[] = [];
@@ -145,6 +156,7 @@ export async function GET(req: Request) {
     return NextResponse.json({
       year,
       month: monthAll ? 'all' : month,
+      day: day == null ? 'all' : day,
       years,
       totalHits,
       totalUsers: totalUsersApprox,

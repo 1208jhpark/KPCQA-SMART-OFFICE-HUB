@@ -25,6 +25,7 @@ export default function AdminSettingsPage() {
   const nowY = new Date().getFullYear();
   const [pvYear, setPvYear] = useState(nowY);
   const [pvMonth, setPvMonth] = useState<'all' | number>('all');
+  const [pvDay, setPvDay] = useState<'all' | number>('all');
   const [pvYears, setPvYears] = useState<number[]>([nowY]);
   const [pvRows, setPvRows] = useState<PageViewRow[]>([]);
   const [pvTotalHits, setPvTotalHits] = useState(0);
@@ -33,6 +34,10 @@ export default function AdminSettingsPage() {
   const [pvError, setPvError] = useState<string | null>(null);
   /** 기본 접힘 — 클릭 시 펼침 */
   const [pvOpen, setPvOpen] = useState(false);
+
+  /** 선택 연·월의 말일 (월=전체면 일 필터 비활성) */
+  const pvDaysInMonth =
+    pvMonth === 'all' ? 0 : new Date(pvYear, pvMonth, 0).getDate();
 
   const fetchData = async () => {
     try {
@@ -110,13 +115,18 @@ export default function AdminSettingsPage() {
     }
   };
 
-  const fetchPageViews = async (year: number, month: 'all' | number) => {
+  const fetchPageViews = async (
+    year: number,
+    month: 'all' | number,
+    day: 'all' | number
+  ) => {
     setPvLoading(true);
     setPvError(null);
     try {
       const q = new URLSearchParams({
         year: String(year),
         month: month === 'all' ? 'all' : String(month),
+        day: month === 'all' || day === 'all' ? 'all' : String(day),
         t: String(Date.now()),
       });
       const res = await fetch(`/api/admin/page-views?${q}`, { cache: 'no-store' });
@@ -145,16 +155,35 @@ export default function AdminSettingsPage() {
     fetchData();
   }, []);
 
+  // 월이 전체로 바뀌면 일=전체 / 말일 초과 선택이면 보정
+  useEffect(() => {
+    if (pvMonth === 'all') {
+      if (pvDay !== 'all') setPvDay('all');
+      return;
+    }
+    if (pvDay !== 'all' && typeof pvDay === 'number' && pvDay > pvDaysInMonth) {
+      setPvDay('all');
+    }
+  }, [pvMonth, pvYear, pvDaysInMonth, pvDay]);
+
   useEffect(() => {
     if (!pvOpen) return;
-    fetchPageViews(pvYear, pvMonth);
-  }, [pvOpen, pvYear, pvMonth]);
+    fetchPageViews(pvYear, pvMonth, pvDay);
+  }, [pvOpen, pvYear, pvMonth, pvDay]);
 
   const downloadPageViewsExcel = () => {
     if (pvRows.length === 0) {
       return alert('다운로드할 집계 데이터가 없습니다.');
     }
     const monthLabel = pvMonth === 'all' ? '전체' : `${pvMonth}월`;
+    const dayLabel =
+      pvMonth === 'all' || pvDay === 'all' ? '' : `_${pvDay}일`;
+    const periodLabel =
+      pvMonth === 'all'
+        ? `${pvYear}년 전체`
+        : pvDay === 'all'
+          ? `${pvYear}년 ${monthLabel}`
+          : `${pvYear}년 ${pvMonth}월 ${pvDay}일`;
     const exportData = pvRows.map((r) => ({
       Step1: r.step1,
       Step2: r.step2,
@@ -169,14 +198,14 @@ export default function AdminSettingsPage() {
       Step2: '',
       Step3: '',
       Step4: '합계',
-      경로: `${pvYear}년 ${monthLabel}`,
+      경로: periodLabel,
       조회수: pvTotalHits,
       접속자: pvTotalUsers,
     } as any);
     const ws = XLSX.utils.json_to_sheet(exportData);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, '페이지접속집계');
-    XLSX.writeFile(wb, `페이지접속집계_${pvYear}년_${monthLabel}.xlsx`);
+    XLSX.writeFile(wb, `페이지접속집계_${pvYear}년_${monthLabel}${dayLabel}.xlsx`);
   };
 
   const handleSaveGroup = async (fields: string[], groupLabel: string) => {
@@ -515,7 +544,7 @@ export default function AdminSettingsPage() {
               <p className="text-[10px] text-slate-500 font-bold mt-0.5 leading-relaxed">
                 {pvOpen
                   ? '조회수 = 페이지를 연 횟수(동일 경로 20초 내 중복은 1회) · 접속자 = 그 기간에 해당 경로를 연 사람 수(고유 계정, 서울 시각)'
-                  : '평소에는 접혀 있습니다. 필요할 때 펼쳐 연·월 집계를 확인하세요.'}
+                  : '평소에는 접혀 있습니다. 필요할 때 펼쳐 연·월·일 집계를 확인하세요.'}
               </p>
             </div>
           </div>
@@ -553,6 +582,7 @@ export default function AdminSettingsPage() {
                   onChange={(e) => {
                     const v = e.target.value;
                     setPvMonth(v === 'all' ? 'all' : Number(v));
+                    if (v === 'all') setPvDay('all');
                   }}
                   className="px-2.5 py-1.5 bg-white border border-indigo-200 rounded-lg text-[11px] font-black text-slate-800 outline-none focus:ring-2 ring-indigo-300"
                 >
@@ -564,9 +594,30 @@ export default function AdminSettingsPage() {
                   ))}
                 </select>
               </label>
+              <label className="flex items-center gap-1.5 text-[10px] font-black text-slate-500">
+                일
+                <select
+                  value={pvMonth === 'all' || pvDay === 'all' ? 'all' : String(pvDay)}
+                  disabled={pvMonth === 'all'}
+                  title={pvMonth === 'all' ? '월을 먼저 선택하세요' : undefined}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setPvDay(v === 'all' ? 'all' : Number(v));
+                  }}
+                  className="px-2.5 py-1.5 bg-white border border-indigo-200 rounded-lg text-[11px] font-black text-slate-800 outline-none focus:ring-2 ring-indigo-300 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <option value="all">전체</option>
+                  {pvMonth !== 'all' &&
+                    Array.from({ length: pvDaysInMonth }, (_, i) => i + 1).map((d) => (
+                      <option key={d} value={d}>
+                        {d}일
+                      </option>
+                    ))}
+                </select>
+              </label>
               <button
                 type="button"
-                onClick={() => fetchPageViews(pvYear, pvMonth)}
+                onClick={() => fetchPageViews(pvYear, pvMonth, pvDay)}
                 disabled={pvLoading}
                 className="px-4 py-1.5 bg-white border border-indigo-200 text-indigo-700 font-black text-[11px] rounded-xl hover:bg-indigo-50 transition-all shadow-sm disabled:opacity-50"
               >
@@ -582,7 +633,7 @@ export default function AdminSettingsPage() {
               </button>
             </div>
 
-            <div className="px-8 py-3 border-b border-slate-100 bg-slate-50/80 flex flex-wrap gap-4 text-[11px] font-bold text-slate-600">
+            <div className="px-8 py-3 border-b border-slate-100 bg-slate-50/80 flex flex-wrap items-center gap-4 text-[11px] font-bold text-slate-600">
               <span>
                 조회수 합계{' '}
                 <span className="text-indigo-700 font-black tabular-nums">
@@ -597,7 +648,10 @@ export default function AdminSettingsPage() {
                 </span>
                 <span className="text-slate-400 font-medium ml-1">(고유 계정 수)</span>
               </span>
-              {pvError ? <span className="text-rose-600">{pvError}</span> : null}
+              <span className="ml-auto text-[10px] font-bold text-slate-400">
+                ※ 동일 접속자는 1일 기준 1번만 카운팅됩니다.
+              </span>
+              {pvError ? <span className="text-rose-600 w-full">{pvError}</span> : null}
             </div>
 
             <div className="overflow-x-auto">
