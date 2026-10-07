@@ -21,6 +21,7 @@ import {
   isProductionScopeEmpty,
   withProductionDeptDisplayNames,
 } from '@/lib/production-dept-scope';
+import { productionStatusChangedStamp } from '@/lib/production-status';
 
 export const dynamic = 'force-dynamic';
 
@@ -328,6 +329,8 @@ export async function POST(req: Request) {
           where: { id: row.id },
           data: {
             options: asInputJson(nextOpts),
+            // 발주확정(UI: 발주완료) 또는 직발송 수령완료 — 공정상태 전환
+            ...productionStatusChangedStamp(),
             ...(direct ? { status: 'VERIFIED' } : {}),
           },
         });
@@ -393,6 +396,7 @@ export async function POST(req: Request) {
         where: { id: requestId },
         data: {
           status: 'VERIFIED',
+          ...productionStatusChangedStamp(),
           ...(quoteLines.length > 0 ? { options: asInputJson(nextOpts) } : {}),
         },
       });
@@ -479,11 +483,13 @@ export async function POST(req: Request) {
         suppliesReceivedLineNos: Array.from(set).sort((a, b) => a - b),
       };
 
+      const nextStatus = allReceived ? 'VERIFIED' : 'ORDERED';
       await prisma.productionRequest.update({
         where: { id: requestId },
         data: {
-          status: allReceived ? 'VERIFIED' : 'ORDERED',
+          status: nextStatus,
           options: asInputJson(nextOpts),
+          ...(nextStatus !== row.status ? productionStatusChangedStamp() : {}),
         },
       });
 
@@ -547,17 +553,19 @@ export async function POST(req: Request) {
       const allReceived =
         lines.length > 0 && lines.every((l) => receivedNos.includes(l.lineNo));
 
+      const nextStatus =
+        row.status === 'VERIFIED' && !allReceived
+          ? 'ORDERED'
+          : row.status === 'ORDERED' && allReceived
+            ? 'VERIFIED'
+            : row.status;
       await prisma.productionRequest.update({
         where: { id: requestId },
         data: {
           options: asInputJson(nextOpts),
           // 줄 수정으로 수령 체크가 깨지면 ORDERED로 되돌림
-          status:
-            row.status === 'VERIFIED' && !allReceived
-              ? 'ORDERED'
-              : row.status === 'ORDERED' && allReceived
-                ? 'VERIFIED'
-                : row.status,
+          status: nextStatus,
+          ...(nextStatus !== row.status ? productionStatusChangedStamp() : {}),
         },
       });
 
@@ -616,6 +624,7 @@ export async function POST(req: Request) {
           where: { id: row.id },
           data: {
             status: 'ACCEPTED',
+            ...productionStatusChangedStamp(),
             batchId: null,
             options: asInputJson(restoredOptions),
           },
@@ -698,6 +707,7 @@ export async function POST(req: Request) {
       data: {
         finalPrice: Number(finalPrice),
         status: 'VERIFIED',
+        ...(priceRow.status !== 'VERIFIED' ? productionStatusChangedStamp() : {}),
       },
     });
 

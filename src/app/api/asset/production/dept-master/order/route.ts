@@ -20,6 +20,7 @@ import {
   isProductionScopeEmpty,
   withProductionDeptDisplayNames,
 } from '@/lib/production-dept-scope';
+import { productionStatusChangedStamp } from '@/lib/production-status';
 
 export const dynamic = 'force-dynamic';
 
@@ -333,6 +334,7 @@ export async function POST(req: Request) {
         where: { id: row.id },
         data: {
           status: 'ORDERED',
+          ...productionStatusChangedStamp(),
           batchId: bundleBatchId,
           options: asInputJson({ ...prev, batchOrderedAt }),
         },
@@ -425,7 +427,7 @@ export async function PATCH(req: Request) {
       }
       const updated = await prisma.productionRequest.update({
         where: { id },
-        data: { status: 'PENDING' },
+        data: { status: 'PENDING', ...productionStatusChangedStamp() },
       });
       return NextResponse.json({
         message: '접수를 취소하고 신청(접수 대기)으로 되돌렸습니다.',
@@ -443,7 +445,7 @@ export async function PATCH(req: Request) {
     if (action === 'approve' || action === 'accept') {
       const updated = await prisma.productionRequest.update({
         where: { id },
-        data: { status: 'ACCEPTED' },
+        data: { status: 'ACCEPTED', ...productionStatusChangedStamp() },
       });
       return NextResponse.json({
         message: '접수확정 완료 — 발주대기로 이동했습니다.',
@@ -464,6 +466,7 @@ export async function PATCH(req: Request) {
         where: { id },
         data: {
           status: 'REJECTED',
+          ...productionStatusChangedStamp(),
           options: {
             ...prevOpts,
             rejectReason: reason,

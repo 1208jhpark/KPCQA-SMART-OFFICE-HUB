@@ -69,6 +69,7 @@ export async function POST(req: Request) {
             quantity: Number(quantity) || 1,
             estimatedPrice: Number(estimatedPrice) || 0,
             status: 'PENDING',
+            statusChangedAt: new Date(),
             options: options || {},
           },
         });

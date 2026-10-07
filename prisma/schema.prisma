@@ -994,8 +994,10 @@ model ProductionRequest {
   // - "VERIFIED"  명세 대조·정산 승인
   // - "REJECTED"  부서 반려
   // - "CANCELLED" 대기중(미접수) 중 신청자 취소
-  status          String   @default("PENDING") 
-  
+  status          String   @default("PENDING")
+  /// 공정상태(또는 UI상 동등 전환·발주확정 등)가 바뀐 시각 — 원문 수정만으로는 갱신하지 않음
+  statusChangedAt DateTime?
+
   // 🔗 묶음 정산 추적 벨트
   batchId         String?  // 부서 관리자가 한번에 묶어서 발주할 때 생성될 묶음 고유 ID (예: BATCH-경영기획-202607)
   isArchived      Boolean  @default(false) // 정산 마감 후 아카이브 보관함 이관 여부

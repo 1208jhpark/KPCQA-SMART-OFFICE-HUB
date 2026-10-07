@@ -17,6 +17,11 @@ export const PRODUCTION_STATUS = {
 export type ProductionStatusCode =
   (typeof PRODUCTION_STATUS)[keyof typeof PRODUCTION_STATUS];
 
+/** 공정상태(또는 UI상 동등 전환) 변경 시 data에 합칠 스탬프 */
+export function productionStatusChangedStamp(at: Date = new Date()) {
+  return { statusChangedAt: at };
+}
+
 function isVendorDispatched(options?: Record<string, unknown> | null): boolean {
   return Boolean(options && (options as { vendorDispatched?: unknown }).vendorDispatched === true);
 }

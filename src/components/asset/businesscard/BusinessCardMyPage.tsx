@@ -1220,7 +1220,7 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
             {/* 3행: 주소지 · 우편번호 · 국문주소 */}
             <div className="grid grid-cols-1 md:grid-cols-4 gap-x-4 gap-y-3">
               <div>
-                <label className={manualLabelCls}>주소지 선택 *</label>
+                <label className={manualLabelCls}>주소지 선택(국문주소/팩스번호 연동) *</label>
                 <select disabled={isReadOnly} value={form.addressId} onChange={(e) => handleAddressChange(e.target.value)} className={manualFieldCls}>
                   {addresses.map(a => <option key={a.id} value={a.id}>{a.label}</option>)}
                 </select>

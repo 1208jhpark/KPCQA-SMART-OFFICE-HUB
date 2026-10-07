@@ -596,6 +596,7 @@ export default function ProductionApplyHistory() {
                     {activeCategory === 'OFFICE_SUPPLIES' ? '건' : '수량'}
                   </th>
                   <th className="h-12 px-2 text-left whitespace-nowrap">외주업체</th>
+                  <th className="h-12 px-2 text-center whitespace-nowrap">처리날짜</th>
                   <th className="h-12 px-2 text-center whitespace-nowrap">공정상태</th>
                   <th className="h-12 px-2 text-center whitespace-nowrap">액션</th>
                 </tr>
@@ -603,7 +604,7 @@ export default function ProductionApplyHistory() {
               <tbody className="bg-white divide-y divide-slate-100 text-[11px] font-bold text-slate-700">
                 {paginatedHistories.length === 0 ? (
                   <tr>
-                    <td colSpan={12} className="p-16 text-center text-slate-400 text-xs">
+                    <td colSpan={13} className="p-16 text-center text-slate-400 text-xs">
                       신청 가드 범위 내에 해당하는 내역이 존재하지 않습니다.
                     </td>
                   </tr>
@@ -709,6 +710,13 @@ export default function ProductionApplyHistory() {
                       </td>
                       <td className="px-2 text-left text-slate-800 truncate">
                         {item.options?.vendor || '-'}
+                      </td>
+                      <td className="px-2 text-center whitespace-nowrap tabular-nums text-slate-800">
+                        {item.statusChangedAt ? (
+                          getKSTDateString(item.statusChangedAt)
+                        ) : (
+                          <span className="text-slate-300">-</span>
+                        )}
                       </td>
                       <td className="px-2 text-center">
                         {isRejected ? (

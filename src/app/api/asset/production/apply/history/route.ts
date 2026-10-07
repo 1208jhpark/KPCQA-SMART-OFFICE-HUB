@@ -103,7 +103,7 @@ export async function PATCH(req: Request) {
       }
       const updated = await prisma.productionRequest.update({
         where: { id },
-        data: { status: 'PENDING' },
+        data: { status: 'PENDING', statusChangedAt: new Date() },
       });
       return NextResponse.json({
         message: '접수를 취소하고 신청 대기 상태로 되돌렸습니다.',
