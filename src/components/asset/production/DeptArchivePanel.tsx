@@ -1659,7 +1659,10 @@ export default function DeptArchivePanel({ variant = 'dept' }: DeptArchivePanelP
         {/* 프로세스 안내 — 검수 탭과 동일하게 최상단 */}
         {isDeptSettlement && (
           <div className="bg-amber-50 border border-amber-200 rounded-xl p-3.5 text-[10px] text-amber-800 font-medium leading-relaxed">
-            💡 관리자가 업로드한 명세서 및 메모 확인{' '}
+            💡{' '}
+            <span className="font-black text-slate-900">수령 후 명세 대조(경영기획센터 공유)</span>
+            {' : '}
+            관리자가 업로드한 명세서 및 메모 확인{' '}
             <b className="font-black text-amber-600">→</b> 명세서 검수 또는 수기 대조(부서
             담당자와 관리자 동시 가능, 정보 공유됨){' '}
             <b className="font-black text-amber-600">→</b> 관리자가 마감처리시 완료 보관함으로

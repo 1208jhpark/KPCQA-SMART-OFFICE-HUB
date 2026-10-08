@@ -811,6 +811,8 @@ export default function DeptOrderPanel() {
       <div className="w-full space-y-3">
         <div className="bg-amber-50 border border-amber-200 rounded-xl p-3.5 text-[10px] text-amber-800 font-medium leading-relaxed">
           💡{' '}
+          <span className="font-black text-slate-900">발주 전</span>
+          {' : '}
           <span className="font-black">[접수대기판]</span> 신청된 목록의 원문검수 및 접수확정{' '}
           <b className="font-black text-amber-600">→</b>{' '}
           <span className="font-black">[발주대기판]</span> 접수된 목록의 개별 또는 묶음 발주 이동

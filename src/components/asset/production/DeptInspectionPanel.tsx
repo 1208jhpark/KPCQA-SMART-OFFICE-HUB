@@ -1115,7 +1115,10 @@ export default function DeptInspectionPanel() {
     <>
       <div className="w-full space-y-3">
         <div className="bg-amber-50 border border-amber-200 rounded-xl p-3.5 text-[10px] text-amber-800 font-medium leading-relaxed">
-          💡 발주서(+드림디포는 외부 다운견적서 / 제본 원본 파일(NAS)) + 메일 양식 활용{' '}
+          💡{' '}
+          <span className="font-black text-slate-900">발주 중</span>
+          {' : '}
+          발주서(+드림디포는 외부 다운견적서 / 제본 원본 파일(NAS)) + 메일 양식 활용{' '}
           <b className="font-black text-amber-600">→</b> 그룹웨어 메일 전송{' '}
           <b className="font-black text-amber-600">→</b> 발주확정{' '}
           <b className="font-black text-amber-600">→</b> 물품수령검수{' '}

@@ -421,22 +421,15 @@ function RegisterContent() {
     setModalHistoryPage(1);
   };
 
-  const selectModalClient = (c: any) => {
-    setModalClient(c);
-    setModalDept(null);
-    setModalHistory([]);
-    setModalHistoryPage(1);
-  };
-
-  const selectModalDept = async (deptName: string) => {
-    if (!modalClient?.id) return;
+  const loadModalDeptHistory = async (client: { id?: string }, deptName: string) => {
+    if (!client?.id) return;
     setModalDept(deptName);
     setModalHistoryLoading(true);
     setModalHistory([]);
     setModalHistoryPage(1);
     try {
       const qs = new URLSearchParams({
-        clientId: modalClient.id,
+        clientId: String(client.id),
         clientDept: deptName,
         t: String(Date.now()),
       });
@@ -464,6 +457,26 @@ function RegisterContent() {
     } finally {
       setModalHistoryLoading(false);
     }
+  };
+
+  const selectModalClient = (c: any) => {
+    setModalClient(c);
+    setModalHistoryPage(1);
+    const visibleDepts = getNormalizedSortedDepts(c?.departments).filter((d) => !d.is_hidden);
+    // 기본 부서 '전사' 우선 자동 선택 → 이력까지 바로 로드
+    const defaultDept =
+      visibleDepts.find((d) => d.name === '전사')?.name || visibleDepts[0]?.name || null;
+    if (defaultDept) {
+      void loadModalDeptHistory(c, defaultDept);
+    } else {
+      setModalDept(null);
+      setModalHistory([]);
+    }
+  };
+
+  const selectModalDept = async (deptName: string) => {
+    if (!modalClient?.id) return;
+    await loadModalDeptHistory(modalClient, deptName);
   };
 
   const confirmModalClientDept = () => {
@@ -1047,23 +1060,35 @@ function RegisterContent() {
                   ? `선택 EXCEL 다운로드(${selectedIds.size})`
                   : '화면 목록 EXCEL 다운로드'}
               </button>
-              <div className="inline-flex items-stretch h-8 box-border rounded-lg overflow-hidden border border-slate-600 shadow-sm">
+              <div className="inline-flex items-stretch h-8 box-border rounded-lg border border-slate-600 shadow-sm">
                 <a
                   href={groupwareShortcutUrl}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="h-full px-3 bg-slate-700 text-white text-[11px] font-black hover:bg-slate-800 transition-colors whitespace-nowrap inline-flex items-center leading-none"
+                  title="그룹웨어 기념품 지급 신청서 바로가기"
+                  className="h-full px-3 bg-slate-700 text-white text-[10px] font-black hover:bg-slate-800 transition-colors whitespace-nowrap inline-flex items-center leading-none rounded-l-lg"
                 >
-                  그룹웨어 결재 바로가기 ↗
+                  그룹웨어(기념품 지급 신청서) ↗
                 </a>
-                <button
-                  type="button"
-                  onClick={() => setGroupwareShortcutEditor(groupwareShortcutUrl)}
-                  title="그룹웨어 바로가기 경로 설정"
-                  className="h-full px-2.5 bg-slate-600 text-slate-100 text-[11px] font-black border-l border-slate-500 hover:bg-slate-500 transition-colors whitespace-nowrap inline-flex items-center leading-none"
-                >
-                  ⚙
-                </button>
+                <div className="relative group/gwsettings">
+                  <button
+                    type="button"
+                    onClick={() => setGroupwareShortcutEditor(groupwareShortcutUrl)}
+                    aria-label="그룹웨어 바로가기 경로 설정"
+                    className="h-full px-2.5 bg-slate-600 text-slate-100 text-[11px] font-black border-l border-slate-500 hover:bg-slate-500 transition-colors whitespace-nowrap inline-flex items-center leading-none rounded-r-lg"
+                  >
+                    ⚙
+                  </button>
+                  <span
+                    role="tooltip"
+                    className="pointer-events-none absolute right-0 top-full mt-1.5 z-50 hidden group-hover/gwsettings:block w-[240px] rounded-lg bg-slate-800 px-2.5 py-2 text-[10px] font-bold text-white shadow-lg leading-relaxed"
+                  >
+                    <span className="block text-slate-200">개인별로 그룹웨어 경로를 설정하세요.</span>
+                    <span className="block mt-1 text-slate-300 font-medium">
+                      그룹웨어 전자결재 &gt; 공통 &gt; 기념품 지급 신청서
+                    </span>
+                  </span>
+                </div>
               </div>
             </div>
           </div>
@@ -1751,7 +1776,11 @@ function RegisterContent() {
         <div className="w-full max-w-lg rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl">
           <h3 className="text-base font-black text-slate-900">그룹웨어 바로가기 경로 설정</h3>
           <p className="mt-2 text-[11px] font-bold leading-relaxed text-slate-500">
-            본인 계정에만 저장됩니다. 다른 사용자와 공유되지 않으며, Edit 권한 없이도 설정할 수 있습니다.
+            개인별로 그룹웨어 경로를 설정하세요. 본인 계정에만 저장됩니다.
+            <br />
+            <span className="text-indigo-600">
+              그룹웨어 전자결재 &gt; 공통 &gt; 기념품 지급 신청서
+            </span>
           </p>
           <input
             type="text"
