@@ -6,7 +6,13 @@ import {
   assertCanEditOwnerDept,
   authErrorToResponse,
 } from '@/lib/server-auth-guard';
-import { isGlobalMgmtOrgMember, canDistributeMarketingOwnerDept, resolveTopOrgName, canApplyViaViewRoles } from '@/utils/orgUnits';
+import {
+  isGlobalMgmtOrgMember,
+  canDistributeMarketingOwnerDept,
+  resolveTopOrgName,
+  canApplyViaViewRoles,
+  resolveGlobalMgmtDeptName,
+} from '@/utils/orgUnits';
 import { buildUnitIdOrLegacyNameWhere } from '@/lib/org-unit-match';
 
 export const dynamic = 'force-dynamic';
@@ -72,9 +78,10 @@ function canSetItemViewRoles(auth: MarketingAuth) {
 }
 
 /**
- * 열람 판정 (신청과 동일 LV 정책)
+ * 열람 판정
  * - 신청가능 범위·본인 소속·GLOBAL_MGMT 계정 → 항상 노출
- * - 타부서: view_role_ids 지정 LV만 열람(=신청) / 미지정=숨김
+ * - 타부서 + view_role_ids 지정: 해당 LV만 열람(=신청)
+ * - 타부서 + 미지정: GLOBAL_MGMT(및 직속 하위)·전사 풀은 숨김 / 그외 부서는 열람만 개방
  */
 function canViewMarketingItem(
   item: {
@@ -93,7 +100,9 @@ function canViewMarketingItem(
   const mgmtDept = String(
     (auth.systemConfig as { global_mgmt_dept?: string } | null)?.global_mgmt_dept || ''
   ).trim();
+  const mgmtDeptName = resolveGlobalMgmtDeptName(mgmtDept, auth.unitsList);
   const ownerUnitId = String((item as { owner_unit_id?: string | null }).owner_unit_id || '').trim();
+  const owner = String(item.owner_dept || '').trim();
 
   // 신청 가능 범위(본인 소속·상위본부·전사 풀 등) → 항상 노출
   if (
@@ -123,8 +132,25 @@ function canViewMarketingItem(
     return true;
   }
 
-  // 타부서: 지정 LV만 열람·신청 (미지정=숨김) — 신청 판정과 동일
-  return canApplyViaViewRoles(item, auth.user.roles);
+  // 지정 LV 있음 → 해당 LV만 열람 (경영기획센터 등 직속 하위 포함)
+  const required = parseViewRoleIds(item.view_role_ids);
+  if (required.length > 0) {
+    return canApplyViaViewRoles(item, auth.user.roles);
+  }
+
+  // 미지정: GLOBAL_MGMT·직속하위·전사 풀 → 타부서 숨김 / 그외 부서 → 열람만 개방
+  const isTopOrgAsset = !!topOrgName && owner === topOrgName;
+  const isGlobalMgmtFamilyAsset =
+    (!!mgmtDeptName && owner === mgmtDeptName) ||
+    isGlobalMgmtOrgMember({
+      myUnitName: owner || null,
+      myUnitId: ownerUnitId || null,
+      globalMgmtDept: mgmtDept,
+      units: auth.unitsList,
+    });
+  if (isTopOrgAsset || isGlobalMgmtFamilyAsset) return false;
+
+  return true;
 }
 
 export async function GET(req: Request) {
