@@ -1007,16 +1007,6 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
     });
     return new Set(Object.keys(codeMap).filter((code) => codeMap[code] > 1));
   }, [assets]);
-  
-  const duplicateModels = useMemo(() => {
-    const modelMap: Record<string, number> = {};
-    assets.forEach((a) => {
-      const m = String(a.model || '').trim();
-      if (!isMeaningfulFieldValue(m)) return;
-      modelMap[m] = (modelMap[m] || 0) + 1;
-    });
-    return new Set(Object.keys(modelMap).filter((model) => modelMap[model] > 1));
-  }, [assets]);
 
   const duplicateSns = useMemo(() => {
     const snMap: Record<string, number> = {};
@@ -1228,10 +1218,11 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
         else if (logic.dday < 0) dPlusCount++;
       }
      
-      const isCodeDup = a.code && duplicateCodes.has(a.code);
-      const isModelDup = duplicateModels.has(String(a.model).trim()) && String(a.model).trim() !== '';
-      const isSnDup = duplicateSns.has(String(a.sn || '').trim()) && String(a.sn || '').trim() !== '';
-      if (isCodeDup || isModelDup || isSnDup) duplicateCount++;
+      const code = String(a.code || '').trim();
+      const sn = String(a.sn || '').trim();
+      const isCodeDup = isMeaningfulFieldValue(code) && duplicateCodes.has(code);
+      const isSnDup = isMeaningfulFieldValue(sn) && duplicateSns.has(sn);
+      if (isCodeDup || isSnDup) duplicateCount++;
     });
 
     auditScopeAssets.forEach((a) => {
@@ -1262,7 +1253,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
       sharedCount: assets.filter((a) => String(a.user || '').trim() === '공용').length,
       auditDoneCount, auditPendingCount, auditNudgeCount, infoCorrectionCount,
     };
-  }, [assets, audits, requests, duplicateCodes, duplicateModels, duplicateSns, isAuditActive, focusedAudit, orgs, focusedAuditId]);
+  }, [assets, audits, requests, duplicateCodes, duplicateSns, isAuditActive, focusedAudit, orgs, focusedAuditId]);
      
   const filteredAssets = useMemo(() => {
     return assets.filter(a => {
@@ -1352,17 +1343,18 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
       const matchShared =
         !sharedOnlyFilter || String(a.user || '').trim() === '공용';
      
+      const code = String(a.code || '').trim();
+      const sn = String(a.sn || '').trim();
       const isDup =
-        duplicateCodes.has(a.code) ||
-        (duplicateModels.has(String(a.model).trim()) && String(a.model).trim() !== '') ||
-        (duplicateSns.has(String(a.sn || '').trim()) && String(a.sn || '').trim() !== '');
+        (isMeaningfulFieldValue(code) && duplicateCodes.has(code)) ||
+        (isMeaningfulFieldValue(sn) && duplicateSns.has(sn));
      
       return matchSearch && matchNameSearch && matchUser && matchDept && matchCategory && matchItType && matchRental 
              && (!showReplaceableOnly || logic.isTargetCount) 
              && (!showDuplicatesOnly || isDup) 
              && matchStatus && matchIncomingFeedback && matchAdminOutbound && matchDday && matchShared;
     });
-  }, [assets, searchQuery, nameSearchQuery, userFilter, users, colFilters, showReplaceableOnly, showDuplicatesOnly, showStatusFilter, showFeedbackFilter, showAdminOutboundFilter, ddayFilter, sharedOnlyFilter, audits, orgs, requests, duplicateCodes, duplicateModels, duplicateSns, isAuditActive, focusedAudit, focusedAuditId]);
+  }, [assets, searchQuery, nameSearchQuery, userFilter, users, colFilters, showReplaceableOnly, showDuplicatesOnly, showStatusFilter, showFeedbackFilter, showAdminOutboundFilter, ddayFilter, sharedOnlyFilter, audits, orgs, requests, duplicateCodes, duplicateSns, isAuditActive, focusedAudit, focusedAuditId]);
      
   const totalPages = Math.max(1, Math.ceil(filteredAssets.length / itemsPerPage));
   const paginatedAssets = filteredAssets.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
@@ -2196,13 +2188,13 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                 // 행 「중복」으로 걸린 검색어가 남아 있으면 카드 토글이 안 풀린 것처럼 보이므로 함께 해제
                 setSearchQuery('');
               }}
-              title="자산번호 · 모델명 · S/N 값이 동일한 자산이 2건 이상일 때 중복으로 집계합니다. 다시 누르면 해제됩니다."
+              title="자산번호 · S/N 기준으로 중복을 집계합니다. 다시 누르면 해제됩니다."
               className={`relative group/dup w-full py-2 px-1 rounded-xl border flex flex-col items-center transition-all ${showDuplicatesOnly ? 'bg-red-600 border-red-500 text-white shadow-sm' : 'bg-white border-slate-200 text-red-600 hover:bg-red-50'}`}
             >
               <span className="text-[8px] font-black mb-0.5 leading-tight text-center">데이터 중복 점검</span>
               <span className="text-sm font-black tabular-nums">{stats.duplicateCount}</span>
               <span className="pointer-events-none absolute left-1/2 bottom-full z-40 mb-1.5 -translate-x-1/2 w-max max-w-[220px] rounded-lg bg-slate-900 px-2.5 py-1.5 text-[10px] font-bold text-white opacity-0 shadow-lg transition-opacity group-hover/dup:opacity-100 text-left leading-relaxed">
-                자산번호 · 모델명 · S/N<br />동일 값 2건 이상은 중복으로 표시합니다.
+                자산번호 · S/N
                 <span className="absolute -bottom-1 left-1/2 h-2 w-2 -translate-x-1/2 rotate-45 bg-slate-900" />
               </span>
             </button>
@@ -2933,20 +2925,6 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                           const d = getDisplayFieldValue(a, 'model');
                           return <span className={`truncate ${d.isPending ? 'text-red-600' : ''}`} title={d.value}>{d.value}</span>;
                         })()}
-                        {duplicateModels.has(String(a.model).trim()) && String(a.model).trim() !== '' && (
-                           <button
-                             type="button"
-                             onClick={() => toggleDuplicateSearch(a.model)}
-                             title={searchQuery.trim() === String(a.model || '').trim() ? '다시 클릭하면 필터 해제' : '클릭 시 동일 모델명만 표시'}
-                             className={`text-[9px] px-1 py-0.5 rounded border shrink-0 ${
-                               searchQuery.trim() === String(a.model || '').trim()
-                                 ? 'text-white bg-rose-600 border-rose-600'
-                                 : 'text-rose-600 bg-rose-50 border-rose-200 animate-pulse'
-                             }`}
-                           >
-                             중복
-                           </button>
-                        )}
                       </div>}
                     </td>
                     

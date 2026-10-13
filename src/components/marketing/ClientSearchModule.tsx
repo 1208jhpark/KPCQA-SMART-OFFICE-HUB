@@ -1,6 +1,6 @@
 'use client';
   
-import React, { useState, useEffect, useMemo, Suspense } from 'react';
+import React, { useState, useEffect, useMemo, useRef, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import * as XLSX from 'xlsx';
 import { getKSTDateString, getKSTYearMonth, getKSTNowYearMonth, getDistBusinessDate } from '@/utils/dateUtils';
@@ -9,15 +9,25 @@ import { formatMarketingClientLocation } from '@/lib/marketing-client-address';
 import LoadingState from '@/components/common/LoadingState';
 import WindowedPagination from '@/components/common/WindowedPagination';
 
-// 🚀 [UI 표준] 공통 HeaderLight 컴포넌트
-const HeaderLight = ({ title, count, children }: { title: string, count: number, children?: React.ReactNode }) => (
-  <div className="p-4 px-6 bg-slate-200/70 border-b border-slate-300 flex flex-wrap items-center justify-between gap-4">
-    <div className="flex items-center gap-2">
+// 🚀 [UI 표준] 공통 HeaderLight — 제목(좌) + 필터(우)
+const HeaderLight = ({
+  title,
+  count,
+  children,
+}: {
+  title: string;
+  count: number;
+  children?: React.ReactNode;
+}) => (
+  <div className="p-4 px-6 bg-slate-200/70 border-b border-slate-300 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+    <div className="flex items-center gap-2 shrink-0">
       <div className="w-2.5 h-2.5 rounded-full bg-blue-600"></div>
       <h2 className="text-sm font-black text-slate-800 tracking-tight">{title}</h2>
       <span className="text-[11px] font-bold bg-slate-300/80 text-slate-700 px-2 py-0.5 rounded-md">{count}건</span>
     </div>
-    {children}
+    {children ? (
+      <div className="flex items-center gap-2 flex-wrap justify-end min-w-0">{children}</div>
+    ) : null}
   </div>
 );
 
@@ -113,6 +123,7 @@ function ClientSearchContent() {
   const [deptStatsByClient, setDeptStatsByClient] = useState<Record<string, any>>({});
   const [deptStatsLoadingIds, setDeptStatsLoadingIds] = useState<Set<string>>(new Set());
   const [selectedClientIds, setSelectedClientIds] = useState<Set<string>>(new Set());
+  const excelUploadInputRef = useRef<HTMLInputElement>(null);
 
   const [currentUser, setCurrentUser] = useState<any>(null); 
   const [interfaceConfig, setInterfaceConfig] = useState<any>(null);
@@ -484,7 +495,7 @@ function ClientSearchContent() {
   const isLv1 = myRoles.includes('LV_1');
 
   /**
-   * 편집자: 엑셀 다운로드 · 부서관리 · 마스터 관리(수정/보관/복구 등)
+   * 편집자: 엑셀 다운로드·업로드 · 부서관리 · 마스터 관리(수정/보관/복구 등)
    * 신규 등록(+ 버튼)은 메뉴 접근자 전원 — API POST와 동일
    */
   const canEditMaster = useMemo(
@@ -560,6 +571,245 @@ function ClientSearchContent() {
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "고객사_수령현황");
     XLSX.writeFile(wb, `고객사_수령현황_${getKSTDateString()}.xlsx`);
+  };
+
+  const cellStr = (row: Record<string, unknown>, ...keys: string[]) => {
+    for (const key of keys) {
+      if (row[key] !== undefined && row[key] !== null) {
+        const s = String(row[key]).trim().replace(/\s+/g, ' ');
+        if (s && s !== '-' && s !== '—') return s;
+      }
+    }
+    return '';
+  };
+
+  /** 업로드용 빈 양식 — 업무범주 셀에 마스터 드롭다운 포함 */
+  const handleExcelTemplateDownload = async () => {
+    if (!canEditMaster) {
+      return alert('업로드 양식 다운로드는 편집 권한이 필요합니다.');
+    }
+    const categories =
+      masterCategories.length > 0
+        ? masterCategories.map((c) => String(c).trim()).filter(Boolean)
+        : ['건물 인증 관련', 'ISO 인증 관련', '지속가능 인증 관련', 'ESG 인증 관련', '협력사', '용역', '행사', '기타'];
+    const sampleCategory = categories[0] || '';
+
+    try {
+      const ExcelJS = (await import('exceljs')).default;
+      const workbook = new ExcelJS.Workbook();
+      workbook.creator = 'KPCQA WISE';
+
+      // 첫 시트 = 업로드 대상 (업로드 파서가 첫 시트를 읽음)
+      const sheet = workbook.addWorksheet('고객사_업로드양식');
+      const headers = [
+        '고객사명',
+        '업무범주',
+        '소재지',
+        '우편번호',
+        '기본(도로명)주소',
+        '상세주소',
+      ];
+      sheet.addRow(headers);
+      sheet.addRow([
+        '예시고객사',
+        sampleCategory,
+        '',
+        '12345',
+        '서울특별시 예시구 예시로 1',
+        '101호',
+      ]);
+
+      sheet.getRow(1).font = { bold: true };
+      sheet.getRow(1).fill = {
+        type: 'pattern',
+        pattern: 'solid',
+        fgColor: { argb: 'FFE2E8F0' },
+      };
+      const widths = [22, 22, 16, 12, 36, 18];
+      widths.forEach((w, i) => {
+        sheet.getColumn(i + 1).width = w;
+      });
+
+      const listSheet = workbook.addWorksheet('업무범주목록');
+      categories.forEach((cat, i) => {
+        listSheet.getCell(i + 1, 1).value = cat;
+      });
+      listSheet.getColumn(1).width = 28;
+      listSheet.state = 'hidden';
+
+      // 업무범주(B열) 드롭다운 — 업로드용 여유 행
+      const listEnd = Math.max(categories.length, 1);
+      const dvFormula = `'업무범주목록'!$A$1:$A$${listEnd}`;
+      for (let r = 2; r <= 501; r++) {
+        sheet.getCell(r, 2).dataValidation = {
+          type: 'list',
+          allowBlank: true,
+          formulae: [dvFormula],
+          showErrorMessage: true,
+          errorStyle: 'warning',
+          errorTitle: '업무범주',
+          error: `다음 중 선택해 주세요.\n${categories.join('\n')}`,
+          showInputMessage: true,
+          promptTitle: '업무범주',
+          prompt: `선택 가능: ${categories.join(' / ')}`,
+        };
+      }
+
+      // 안내 시트(눈에 보이는 선택 목록)
+      const guide = workbook.addWorksheet('작성안내');
+      guide.getCell(1, 1).value = '고객사 엑셀 업로드 안내';
+      guide.getCell(1, 1).font = { bold: true, size: 13 };
+      guide.getCell(3, 1).value =
+        '1) 「고객사_업로드양식」시트에 데이터를 입력한 뒤 업로드하세요.';
+      guide.getCell(4, 1).value =
+        '2) 업무범주 칸은 드롭다운에서 선택하세요. (아래 목록과 동일)';
+      guide.getCell(5, 1).value =
+        '3) 이미 등록된 고객사명은 업로드되지 않습니다. 상태는 운영중, 기본 부서 전사가 자동 생성됩니다.';
+      guide.getCell(7, 1).value = '선택 가능 업무범주';
+      guide.getCell(7, 1).font = { bold: true };
+      categories.forEach((cat, i) => {
+        guide.getCell(8 + i, 1).value = `· ${cat}`;
+      });
+      guide.getColumn(1).width = 72;
+
+      const buffer = await workbook.xlsx.writeBuffer();
+      const blob = new Blob([buffer], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `고객사_업로드양식_${getKSTDateString()}.xlsx`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('Client template download error:', err);
+      alert('업로드 양식 생성에 실패했습니다.');
+    }
+  };
+
+  /** 엑셀 업로드(Edit): 고객사명·업무범주·주소만 반영 / 중복명 스킵 / 상태=운영중·전사 자동 */
+  const handleExcelUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!canEditMaster) {
+      e.target.value = '';
+      return alert('엑셀 업로드는 편집 권한이 필요합니다.');
+    }
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = async (evt) => {
+      try {
+        const arrayBuffer = evt.target?.result;
+        const wb = XLSX.read(arrayBuffer, { type: 'array', cellDates: true });
+        const preferred =
+          wb.SheetNames.find((n) => n === '고객사_업로드양식') || wb.SheetNames[0];
+        const ws = wb.Sheets[preferred];
+        const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws);
+        if (!rows.length) {
+          alert('엑셀에 업로드할 데이터가 없습니다.');
+          return;
+        }
+
+        const existingNames = new Set(
+          clients.map((c) => String(c.name || '').trim().toLowerCase()).filter(Boolean)
+        );
+
+        const valid: Array<{
+          name: string;
+          category: string;
+          zip_code: string;
+          address_road: string;
+          address_detail: string;
+          location: string;
+        }> = [];
+        let skippedDup = 0;
+        let skippedInvalid = 0;
+
+        for (const row of rows) {
+          const name = cellStr(row, '고객사명');
+          if (!name) {
+            skippedInvalid++;
+            continue;
+          }
+          const nameKey = name.toLowerCase();
+          if (existingNames.has(nameKey)) {
+            skippedDup++;
+            continue;
+          }
+
+          let category = cellStr(row, '업무범주');
+          if (masterCategories.length > 0) {
+            if (!category) {
+              skippedInvalid++;
+              continue;
+            }
+            const matched = masterCategories.find(
+              (c) => c.trim().toLowerCase() === category.toLowerCase()
+            );
+            if (!matched) {
+              skippedInvalid++;
+              continue;
+            }
+            category = matched;
+          }
+
+          existingNames.add(nameKey);
+          valid.push({
+            name,
+            category,
+            zip_code: cellStr(row, '우편번호'),
+            address_road: cellStr(row, '기본(도로명)주소'),
+            address_detail: cellStr(row, '상세주소'),
+            location: cellStr(row, '소재지'),
+          });
+        }
+
+        if (valid.length === 0) {
+          alert(
+            `업로드할 신규 고객사가 없습니다.\n(전체 ${rows.length}건 · 중복 ${skippedDup}건 · 형식오류 ${skippedInvalid}건)`
+          );
+          return;
+        }
+
+        if (skippedDup > 0 || skippedInvalid > 0) {
+          alert(
+            `총 ${rows.length}건 중 신규 ${valid.length}건을 등록합니다.\n(중복 제외 ${skippedDup}건 · 형식오류 ${skippedInvalid}건)`
+          );
+        } else {
+          alert(`총 ${valid.length}건을 서버에 등록합니다...`);
+        }
+
+        let ok = 0;
+        let fail = 0;
+        for (const item of valid) {
+          const res = await fetch('/api/marketing/clients', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(item),
+          });
+          if (res.ok) ok++;
+          else {
+            fail++;
+            // 서버 중복(409) 등은 실패로 집계
+          }
+        }
+
+        alert(
+          `✅ 고객사 엑셀 업로드 완료\n성공 ${ok}건 · 실패 ${fail}건 · 중복 제외 ${skippedDup}건 · 형식오류 ${skippedInvalid}건\n(상태는 운영중, 기본 부서 전사가 자동 생성됩니다.)`
+        );
+        fetchClients();
+      } catch (error) {
+        console.error('Client Excel Upload Error:', error);
+        alert('엑셀 업로드 중 오류가 발생했습니다. 목록을 새로고침합니다.');
+        fetchClients();
+      } finally {
+        if (excelUploadInputRef.current) excelUploadInputRef.current.value = '';
+      }
+    };
+
+    reader.readAsArrayBuffer(file);
+    if (excelUploadInputRef.current) excelUploadInputRef.current.value = '';
   };
 
   const handleSaveDept = async () => {
@@ -947,7 +1197,7 @@ function ClientSearchContent() {
         </div>
       </div>
 
-      {/* 탭 네비게이션 — equipment inventory / survey admin 스위처 규격 · 보관함은 Edit 권한만 */}
+      {/* 탭 네비게이션 — 보관함은 Edit 권한만 */}
       <div className="flex items-center justify-between bg-white p-2 rounded-xl border border-slate-200 shadow-sm">
         <div className="flex items-center gap-1.5 bg-slate-100/80 p-1 rounded-lg">
           <button
@@ -990,134 +1240,181 @@ function ClientSearchContent() {
         </p>
       </div>
 
-      <div className="bg-white border border-slate-200 rounded-[2.5rem] shadow-sm overflow-hidden">
-        <HeaderLight title={activeTab === 'ACTIVE' ? "고객사 데이터 대장" : "보관된 고객사 목록"} count={filteredClients.length}>
-          <div className="flex items-center gap-2 flex-wrap">
-            {canEditMaster && (
-              <label className="flex items-center gap-2 cursor-pointer group">
-                <input type="checkbox" checked={showHiddenDepts} onChange={(e) => setShowHiddenDepts(e.target.checked)} className="sr-only peer" />
-                <div className="w-8 h-4 bg-slate-200 rounded-full peer peer-checked:bg-indigo-500 relative transition-colors shadow-inner">
-                  <div className={`absolute top-0.5 left-0.5 w-3 h-3 bg-white rounded-full transition-transform ${showHiddenDepts ? 'translate-x-4' : ''} shadow-sm`}></div>
+      {/* 표 바로 위 액션 줄 (탭과 분리) */}
+      {(canEditMaster || activeTab === 'ACTIVE') && (
+        <div className="flex items-center justify-end gap-2 flex-wrap px-0.5">
+          {canEditMaster && (
+            <button
+              type="button"
+              onClick={handleExcelDownload}
+              title={
+                selectedClientIds.size > 0
+                  ? `선택한 ${selectedClientIds.size}건 엑셀 다운로드`
+                  : '현재 화면 목록 엑셀 다운로드'
+              }
+              className="px-3 py-1.5 rounded-lg text-[10px] font-black shadow-sm whitespace-nowrap transition-all bg-emerald-600 text-white hover:bg-emerald-700"
+            >
+              {selectedClientIds.size > 0
+                ? `선택 EXCEL 다운로드(${selectedClientIds.size})(Edit)`
+                : '화면 목록 EXCEL 다운로드(Edit)'}
+            </button>
+          )}
+          {canEditMaster && activeTab === 'ACTIVE' && (
+            <>
+              <button
+                type="button"
+                onClick={handleExcelTemplateDownload}
+                title="업로드용 컬럼만 포함된 빈 양식을 받습니다"
+                className="px-3 py-1.5 rounded-lg text-[10px] font-black shadow-sm whitespace-nowrap transition-all bg-white text-emerald-700 border border-emerald-200 hover:bg-emerald-50"
+              >
+                업로드 양식 다운(Edit)
+              </button>
+              <div className="relative group/client-excel-upload">
+                <button
+                  type="button"
+                  onClick={() => excelUploadInputRef.current?.click()}
+                  title="고객사명 중복은 제외 · 상태 운영중 · 기본 부서 전사 자동 생성"
+                  className="px-3 py-1.5 rounded-lg text-[10px] font-black shadow-sm whitespace-nowrap transition-all bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-600 hover:text-white"
+                >
+                  + 엑셀 업로드(Edit)
+                </button>
+                <div
+                  role="tooltip"
+                  className="pointer-events-none absolute right-0 top-full mt-2 z-50 hidden group-hover/client-excel-upload:block w-[300px] rounded-xl bg-slate-900 px-3.5 py-3 text-left shadow-xl"
+                >
+                  <p className="text-[11px] font-black text-emerald-300 mb-2">고객사 엑셀 업로드 안내</p>
+                  <ul className="space-y-1.5 text-[10px] font-bold text-white/95 leading-relaxed list-disc pl-3.5">
+                    <li>먼저 「업로드 양식 다운」으로 양식을 받으세요.</li>
+                    <li>반영 컬럼: 고객사명, 업무범주, 소재지, 우편번호, 기본(도로명)주소, 상세주소</li>
+                    <li>이미 있는 고객사명은 올리지 않습니다.</li>
+                    <li>상태는 모두 운영중으로 등록됩니다.</li>
+                    <li>기본 부서(전사)가 자동 생성됩니다.</li>
+                  </ul>
                 </div>
-                <span className="text-[10px] font-black text-slate-400 group-hover:text-indigo-600 transition-colors whitespace-nowrap">숨김 부서 보기</span>
-              </label>
-            )}
-
-            <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm">
-              <span className="text-[10px] font-black text-slate-400 uppercase">업무범주</span>
-              <select
-                value={selectedCategory}
-                onChange={(e) => setSelectedCategory(e.target.value)}
-                className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent max-w-[140px]"
-              >
-                <option value="ALL">전체</option>
-                {uniqueCategories.map((cat) => (
-                  <option key={cat as string} value={cat as string}>{cat as string}</option>
-                ))}
-              </select>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <div className="relative w-40">
-                <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-[10px]">🏢</span>
                 <input
-                  type="text"
-                  placeholder="회사명 검색..."
-                  value={searchNameQuery}
-                  onChange={(e) => setSearchNameQuery(e.target.value)}
-                  className="w-full pl-7 pr-3 py-1.5 bg-white border border-slate-200 rounded-lg text-[11px] font-bold outline-none focus:border-indigo-500 shadow-sm transition-colors"
+                  type="file"
+                  ref={excelUploadInputRef}
+                  onChange={handleExcelUpload}
+                  accept=".xlsx,.xls"
+                  className="hidden"
                 />
               </div>
-              <div className="relative w-36">
-                <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-[10px]">📍</span>
-                <input
-                  type="text"
-                  placeholder="소재지 검색..."
-                  value={searchLocationQuery}
-                  onChange={(e) => setSearchLocationQuery(e.target.value)}
-                  className="w-full pl-7 pr-3 py-1.5 bg-white border border-slate-200 rounded-lg text-[11px] font-bold outline-none focus:border-indigo-500 shadow-sm transition-colors"
-                />
+            </>
+          )}
+          {activeTab === 'ACTIVE' && (
+            <button
+              type="button"
+              onClick={() => {
+                setEditClient(null);
+                setFormData(emptyClientForm);
+                setShowModal(true);
+              }}
+              className="px-3 py-1.5 bg-slate-900 text-white rounded-lg text-[10px] font-black shadow-sm hover:bg-indigo-600 transition-all whitespace-nowrap"
+            >
+              + 신규 등록
+            </button>
+          )}
+        </div>
+      )}
+
+      <div className="bg-white border border-slate-200 rounded-[2.5rem] shadow-sm overflow-hidden">
+        <HeaderLight
+          title={activeTab === 'ACTIVE' ? '고객사 데이터 대장' : '보관된 고객사 목록'}
+          count={filteredClients.length}
+        >
+          {canEditMaster && (
+            <label className="flex items-center gap-2 cursor-pointer group">
+              <input type="checkbox" checked={showHiddenDepts} onChange={(e) => setShowHiddenDepts(e.target.checked)} className="sr-only peer" />
+              <div className="w-8 h-4 bg-slate-200 rounded-full peer peer-checked:bg-indigo-500 relative transition-colors shadow-inner">
+                <div className={`absolute top-0.5 left-0.5 w-3 h-3 bg-white rounded-full transition-transform ${showHiddenDepts ? 'translate-x-4' : ''} shadow-sm`}></div>
               </div>
+              <span className="text-[10px] font-black text-slate-400 group-hover:text-indigo-600 transition-colors whitespace-nowrap">숨김 부서 보기</span>
+            </label>
+          )}
+
+          <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm">
+            <span className="text-[10px] font-black text-slate-400 uppercase">업무범주</span>
+            <select
+              value={selectedCategory}
+              onChange={(e) => setSelectedCategory(e.target.value)}
+              className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent max-w-[140px]"
+            >
+              <option value="ALL">전체</option>
+              {uniqueCategories.map((cat) => (
+                <option key={cat as string} value={cat as string}>{cat as string}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <div className="relative w-40">
+              <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-[10px]">🏢</span>
+              <input
+                type="text"
+                placeholder="회사명 검색..."
+                value={searchNameQuery}
+                onChange={(e) => setSearchNameQuery(e.target.value)}
+                className="w-full pl-7 pr-3 py-1.5 bg-white border border-slate-200 rounded-lg text-[11px] font-bold outline-none focus:border-indigo-500 shadow-sm transition-colors"
+              />
             </div>
-
-            <div className="flex items-center gap-1.5 flex-wrap">
-              <button
-                type="button"
-                onClick={() => setQuickFilter('ALL')}
-                className={`px-2.5 py-1.5 rounded-lg text-[10px] font-black border transition-all whitespace-nowrap ${
-                  quickFilter === 'ALL'
-                    ? 'bg-slate-800 text-white border-slate-800 shadow-sm'
-                    : 'bg-white text-slate-600 border-slate-200 hover:border-slate-300'
-                }`}
-              >
-                전체 {quickFilterCounts.all}건
-              </button>
-              <button
-                type="button"
-                onClick={() => setQuickFilter('STALE_6M')}
-                className={`px-2.5 py-1.5 rounded-lg text-[10px] font-black border transition-all whitespace-nowrap ${
-                  quickFilter === 'STALE_6M'
-                    ? 'bg-amber-500 text-white border-amber-500 shadow-sm'
-                    : 'bg-amber-50 text-amber-700 border-amber-200 hover:border-amber-300'
-                }`}
-              >
-                ⚠️ 6개월 이상 미지급 ({quickFilterCounts.stale}건)
-              </button>
-              <button
-                type="button"
-                onClick={() => setQuickFilter('NO_HISTORY')}
-                className={`px-2.5 py-1.5 rounded-lg text-[10px] font-black border transition-all whitespace-nowrap ${
-                  quickFilter === 'NO_HISTORY'
-                    ? 'bg-slate-500 text-white border-slate-500 shadow-sm'
-                    : 'bg-slate-50 text-slate-500 border-slate-200 hover:border-slate-300'
-                }`}
-              >
-                ⏳ 지급 이력 없음 ({quickFilterCounts.none}건)
-              </button>
+            <div className="relative w-36">
+              <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-[10px]">📍</span>
+              <input
+                type="text"
+                placeholder="소재지 검색..."
+                value={searchLocationQuery}
+                onChange={(e) => setSearchLocationQuery(e.target.value)}
+                className="w-full pl-7 pr-3 py-1.5 bg-white border border-slate-200 rounded-lg text-[11px] font-bold outline-none focus:border-indigo-500 shadow-sm transition-colors"
+              />
             </div>
+          </div>
 
-            <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm">
-              <span className="text-[10px] font-black text-slate-400 uppercase whitespace-nowrap">최근지급일</span>
-              <select
-                value={lastDistSort}
-                onChange={(e) => setLastDistSort(e.target.value as 'oldest' | 'newest')}
-                className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent"
-              >
-                <option value="oldest">오래된 순</option>
-                <option value="newest">최신 순</option>
-              </select>
-            </div>
+          <div className="flex items-center gap-1.5 flex-wrap justify-end">
+            <button
+              type="button"
+              onClick={() => setQuickFilter('ALL')}
+              className={`px-2.5 py-1.5 rounded-lg text-[10px] font-black border transition-all whitespace-nowrap ${
+                quickFilter === 'ALL'
+                  ? 'bg-slate-800 text-white border-slate-800 shadow-sm'
+                  : 'bg-white text-slate-600 border-slate-200 hover:border-slate-300'
+              }`}
+            >
+              전체 {quickFilterCounts.all}건
+            </button>
+            <button
+              type="button"
+              onClick={() => setQuickFilter('STALE_6M')}
+              className={`px-2.5 py-1.5 rounded-lg text-[10px] font-black border transition-all whitespace-nowrap ${
+                quickFilter === 'STALE_6M'
+                  ? 'bg-amber-500 text-white border-amber-500 shadow-sm'
+                  : 'bg-amber-50 text-amber-700 border-amber-200 hover:border-amber-300'
+              }`}
+            >
+              ⚠️ 6개월 이상 미지급 ({quickFilterCounts.stale}건)
+            </button>
+            <button
+              type="button"
+              onClick={() => setQuickFilter('NO_HISTORY')}
+              className={`px-2.5 py-1.5 rounded-lg text-[10px] font-black border transition-all whitespace-nowrap ${
+                quickFilter === 'NO_HISTORY'
+                  ? 'bg-slate-500 text-white border-slate-500 shadow-sm'
+                  : 'bg-slate-50 text-slate-500 border-slate-200 hover:border-slate-300'
+              }`}
+            >
+              ⏳ 지급 이력 없음 ({quickFilterCounts.none}건)
+            </button>
+          </div>
 
-            {canEditMaster && (
-              <button
-                type="button"
-                onClick={handleExcelDownload}
-                title={
-                  selectedClientIds.size > 0
-                    ? `선택한 ${selectedClientIds.size}건 엑셀 다운로드`
-                    : '현재 화면 목록 엑셀 다운로드'
-                }
-                className="px-3 py-1.5 rounded-lg text-[10px] font-black shadow-sm whitespace-nowrap transition-all bg-emerald-600 text-white hover:bg-emerald-700"
-              >
-                {selectedClientIds.size > 0
-                  ? `선택 EXCEL 다운로드(${selectedClientIds.size})(Edit)`
-                  : '화면 목록 EXCEL 다운로드(Edit)'}
-              </button>
-            )}
-
-            {activeTab === 'ACTIVE' && (
-              <button
-                type="button"
-                onClick={() => {
-                  setEditClient(null);
-                  setFormData(emptyClientForm);
-                  setShowModal(true);
-                }}
-                className="px-3 py-1.5 bg-slate-900 text-white rounded-lg text-[10px] font-black shadow-sm hover:bg-indigo-600 transition-all whitespace-nowrap"
-              >
-                + 신규 등록
-              </button>
-            )}
+          <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm">
+            <span className="text-[10px] font-black text-slate-400 uppercase whitespace-nowrap">최근지급일</span>
+            <select
+              value={lastDistSort}
+              onChange={(e) => setLastDistSort(e.target.value as 'oldest' | 'newest')}
+              className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent"
+            >
+              <option value="oldest">오래된 순</option>
+              <option value="newest">최신 순</option>
+            </select>
           </div>
         </HeaderLight>
 

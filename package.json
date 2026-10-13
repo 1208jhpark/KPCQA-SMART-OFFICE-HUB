@@ -28,6 +28,7 @@
     "bcrypt": "^6.0.0",
     "bcryptjs": "^3.0.3",
     "date-fns": "^4.1.0",
+    "exceljs": "^4.4.0",
     "file-saver": "^2.0.5",
     "html5-qrcode": "^2.3.8",
     "jsonwebtoken": "^9.0.3",
