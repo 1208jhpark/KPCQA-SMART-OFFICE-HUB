@@ -51,8 +51,10 @@ function CatalogContent() {
       
   const [items, setItems] = useState<any[]>([]);
   const [units, setUnits] = useState<any[]>([]);
-  const [distributions, setDistributions] = useState<any[]>([]);
-  const [purchases, setPurchases] = useState<any[]>([]);
+  /** 지급이력 있는 물품 id (전체 지급행 로드 금지 — OOM 방지) */
+  const [distLedgerItemIds, setDistLedgerItemIds] = useState<Set<string>>(new Set());
+  /** 물품별 입고 건수 */
+  const [purchaseCountsByItem, setPurchaseCountsByItem] = useState<Record<string, number>>({});
   const [currentUser, setCurrentUser] = useState<any>(null); 
   const [interfaceConfig, setInterfaceConfig] = useState<any>(null);
   const [permissionSummary, setPermissionSummary] = useState<{
@@ -139,8 +141,8 @@ function CatalogContent() {
         fetch('/api/admin/interface?t=' + ts),
         fetch('/api/admin/config?t=' + ts),
         fetch('/api/admin/master-data?t=' + ts),
-        fetch('/api/marketing/distributions?t=' + ts),
-        fetch('/api/marketing/purchases?t=' + ts),
+        fetch('/api/marketing/distributions?summary=itemLedger&t=' + ts),
+        fetch('/api/marketing/purchases?summary=itemCounts&t=' + ts),
         fetch(`/api/admin/interface/summary?path=${encodeURIComponent(MENU_PATH)}&t=${ts}`),
       ]);
       
@@ -160,10 +162,19 @@ function CatalogContent() {
       if (iRes.ok) setItems(await iRes.json());
       else setItems([]);
       if (uRes.ok) setUnits(await uRes.json());
-      if (dRes.ok) setDistributions(await dRes.json());
-      else setDistributions([]);
-      if (pRes.ok) setPurchases(await pRes.json());
-      else setPurchases([]);
+      if (dRes.ok) {
+        const ledger = await dRes.json();
+        const ids = Array.isArray(ledger?.itemIds) ? ledger.itemIds : [];
+        setDistLedgerItemIds(new Set(ids.map((id: string) => String(id))));
+      } else {
+        setDistLedgerItemIds(new Set());
+      }
+      if (pRes.ok) {
+        const pc = await pRes.json();
+        setPurchaseCountsByItem(pc?.counts && typeof pc.counts === 'object' ? pc.counts : {});
+      } else {
+        setPurchaseCountsByItem({});
+      }
       
       if (meRes.ok) setCurrentUser(await meRes.json());
       if (ifRes.ok) {
@@ -348,13 +359,9 @@ function CatalogContent() {
   };
 
   /** 지급 신청 이력만 — 입고만 있으면 삭제 가능(입고도 함께 삭제) */
-  const itemHasDistLedger = (itemId: string) => {
-    return distributions.some(d => d.item_id === itemId || d.item?.id === itemId);
-  };
+  const itemHasDistLedger = (itemId: string) => distLedgerItemIds.has(itemId);
 
-  const purchaseCountForItem = (itemId: string) => {
-    return purchases.filter(p => p.item_id === itemId || p.item?.id === itemId).length;
-  };
+  const purchaseCountForItem = (itemId: string) => Number(purchaseCountsByItem[itemId] || 0);
       
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>, isEdit: boolean) => {
     const file = e.target.files?.[0];

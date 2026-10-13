@@ -13,6 +13,18 @@ import {
 
 export const dynamic = 'force-dynamic';
 
+/** 지급 목록용 물품 필드 — image_url(대용량 data URL) 제외로 OOM 방지 */
+const DIST_ITEM_SELECT = {
+  id: true,
+  name: true,
+  unit_price: true,
+  unit: true,
+  owner_dept: true,
+  owner_unit_id: true,
+  current_stock: true,
+  category: true,
+} as const;
+
 function parseDistDate(raw: unknown) {
   if (!raw || typeof raw !== 'string') return new Date();
   const d = parseKSTDateOnly(raw);
@@ -91,6 +103,17 @@ export async function GET(req: Request) {
   const statusFilter = searchParams.get('status');
 
   try {
+    // 카탈로그: 지급이력 있는 item_id만 (전체 행·이미지 로드 금지)
+    if (summary === 'itemLedger') {
+      const rows = await prisma.marketingDistribution.findMany({
+        select: { item_id: true },
+        distinct: ['item_id'],
+      });
+      return NextResponse.json({
+        itemIds: rows.map((r) => r.item_id).filter(Boolean),
+      });
+    }
+
     // 대시보드 (전사) TOP5 — 집계만 반환 (신청자·건별 상세 없음). 전원 조회 가능.
     if (summary === 'companyTop') {
       const rows = await prisma.marketingDistribution.findMany({
@@ -289,7 +312,26 @@ export async function GET(req: Request) {
 
     let distributions = await prisma.marketingDistribution.findMany({
       where: whereClause,
-      include: { item: true },
+      select: {
+        id: true,
+        item_id: true,
+        client_id: true,
+        client_name: true,
+        client_dept: true,
+        qty: true,
+        purpose: true,
+        status: true,
+        approved_at: true,
+        reject_reason: true,
+        rejected_at: true,
+        dist_date: true,
+        createdAt: true,
+        sender_name: true,
+        sender_email: true,
+        sender_dept: true,
+        sender_unit_id: true,
+        item: { select: DIST_ITEM_SELECT },
+      },
       // 신청 쌓인 순(최신 위). 동일 시각 대비 id는 FE에서 보조
       orderBy: [{ createdAt: 'desc' }, { dist_date: 'desc' }],
     });

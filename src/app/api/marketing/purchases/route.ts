@@ -42,7 +42,7 @@ function parsePurchaseDate(raw: unknown) {
   return Number.isNaN(d.getTime()) ? new Date() : d;
 }
 
-export async function GET() {
+export async function GET(req: Request) {
   try {
     await authorizeMarketingPurchasesRead();
   } catch (e) {
@@ -50,8 +50,45 @@ export async function GET() {
   }
 
   try {
+    const { searchParams } = new URL(req.url);
+    const summary = searchParams.get('summary');
+
+    // 카탈로그: 물품별 입고 건수만 (전체 행·이미지 로드 금지)
+    if (summary === 'itemCounts') {
+      const rows = await prisma.marketingPurchase.groupBy({
+        by: ['item_id'],
+        _count: { _all: true },
+      });
+      const counts: Record<string, number> = {};
+      for (const r of rows) {
+        if (r.item_id) counts[r.item_id] = r._count._all;
+      }
+      return NextResponse.json({ counts });
+    }
+
     const purchases = await prisma.marketingPurchase.findMany({
-      include: { item: true },
+      select: {
+        id: true,
+        item_id: true,
+        qty: true,
+        unit_price: true,
+        total_price: true,
+        purchase_date: true,
+        old_vendor: true,
+        note: true,
+        createdAt: true,
+        item: {
+          select: {
+            id: true,
+            name: true,
+            unit_price: true,
+            unit: true,
+            owner_dept: true,
+            owner_unit_id: true,
+            current_stock: true,
+          },
+        },
+      },
       orderBy: [{ purchase_date: 'desc' }, { createdAt: 'desc' }],
     });
     return NextResponse.json(purchases.map(shapePurchase));
