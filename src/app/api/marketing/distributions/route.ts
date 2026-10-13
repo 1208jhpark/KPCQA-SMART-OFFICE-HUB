@@ -22,7 +22,6 @@ const DIST_ITEM_SELECT = {
   owner_dept: true,
   owner_unit_id: true,
   current_stock: true,
-  category: true,
 } as const;
 
 function parseDistDate(raw: unknown) {
