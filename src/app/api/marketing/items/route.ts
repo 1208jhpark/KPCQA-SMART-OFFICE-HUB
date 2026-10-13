@@ -6,7 +6,7 @@ import {
   assertCanEditOwnerDept,
   authErrorToResponse,
 } from '@/lib/server-auth-guard';
-import { isGlobalMgmtOrgMember, canDistributeMarketingOwnerDept, resolveTopOrgName, canApplyViaViewRoles, resolveGlobalMgmtDeptName } from '@/utils/orgUnits';
+import { isGlobalMgmtOrgMember, canDistributeMarketingOwnerDept, resolveTopOrgName, canApplyViaViewRoles } from '@/utils/orgUnits';
 import { buildUnitIdOrLegacyNameWhere } from '@/lib/org-unit-match';
 
 export const dynamic = 'force-dynamic';
@@ -61,10 +61,6 @@ function parseViewRoleIds(raw: unknown): string[] {
   return normalizeRoleIds(raw).filter((r) => ['LV_1', 'LV_2', 'LV_3'].includes(r));
 }
 
-function userRoleIds(user: { roles?: unknown }): string[] {
-  return normalizeRoleIds(user?.roles);
-}
-
 function canSetItemViewRoles(auth: MarketingAuth) {
   if (auth.permission.myRole === 'LV_1' || auth.permission.isMaster) return true;
   return isGlobalMgmtOrgMember({
@@ -76,13 +72,17 @@ function canSetItemViewRoles(auth: MarketingAuth) {
 }
 
 /**
- * 열람 판정
+ * 열람 판정 (신청과 동일 LV 정책)
  * - 신청가능 범위·본인 소속·GLOBAL_MGMT 계정 → 항상 노출
- * - Organization / GLOBAL_MGMT 지정 부서 소유: 기존 정책(미지정=타부서 숨김, 지정 LV만 열람)
- * - 그외 부서 소유: 예전처럼 타부서도 열람 가능(신청은 view_role_ids·소속 범위로 제어)
+ * - 타부서: view_role_ids 지정 LV만 열람(=신청) / 미지정=숨김
  */
 function canViewMarketingItem(
-  item: { owner_dept?: string | null; owner_unit_id?: string | null; view_role_ids?: unknown },
+  item: {
+    owner_dept?: string | null;
+    owner_unit_id?: string | null;
+    view_role_ids?: unknown;
+    view_allow_apply?: boolean | null;
+  },
   auth: MarketingAuth
 ) {
   if (auth.permission.myRole === 'LV_1' || auth.permission.isMaster) return true;
@@ -93,22 +93,7 @@ function canViewMarketingItem(
   const mgmtDept = String(
     (auth.systemConfig as { global_mgmt_dept?: string } | null)?.global_mgmt_dept || ''
   ).trim();
-  const mgmtDeptName = resolveGlobalMgmtDeptName(mgmtDept, auth.unitsList);
   const ownerUnitId = String((item as { owner_unit_id?: string | null }).owner_unit_id || '').trim();
-  const topOrgId = topOrgName
-    ? String(
-        auth.unitsList?.find((u: any) => String(u.unit_name || '').trim() === topOrgName)?.id || ''
-      ).trim()
-    : '';
-  const mgmtUnitId = mgmtDept
-    ? String(
-        auth.unitsList?.find(
-          (u: any) =>
-            String(u.id || '').trim() === mgmtDept ||
-            String(u.unit_name || '').trim() === mgmtDeptName
-        )?.id || ''
-      ).trim()
-    : '';
 
   // 신청 가능 범위(본인 소속·상위본부·전사 풀 등) → 항상 노출
   if (
@@ -138,24 +123,8 @@ function canViewMarketingItem(
     return true;
   }
 
-  const owner = String(item.owner_dept || '').trim();
-  const isGlobalMgmtAsset =
-    (!!ownerUnitId &&
-      ((!!topOrgId && ownerUnitId === topOrgId) || (!!mgmtUnitId && ownerUnitId === mgmtUnitId))) ||
-    (!!topOrgName && owner === topOrgName) ||
-    (!!mgmtDeptName && owner === mgmtDeptName);
-
-  const required = parseViewRoleIds(item.view_role_ids);
-  const myRoles = userRoleIds(auth.user);
-
-  if (isGlobalMgmtAsset) {
-    // GLOBAL_MGMT·최상위 풀: 미지정=타부서 숨김 / 지정 LV만 열람
-    if (required.length === 0) return false;
-    return myRoles.some((r) => required.includes(r));
-  }
-
-  // 그외 부서: 열람 개방 (신청 버튼은 FE checkDistributePermission)
-  return true;
+  // 타부서: 지정 LV만 열람·신청 (미지정=숨김) — 신청 판정과 동일
+  return canApplyViaViewRoles(item, auth.user.roles);
 }
 
 export async function GET(req: Request) {

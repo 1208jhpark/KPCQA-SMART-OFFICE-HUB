@@ -269,7 +269,7 @@ function CatalogContent() {
   /**
    * 지급 신청(버튼):
    * Center → 본인+상위HQ+최상위 / HQ → 본인+하위Center+최상위 / Organization → 최상위만
-   * LV_1만 전체. (목록 열람은 아랫줄 타 부서로 LV 무관)
+   * LV_1만 전체. 타부서는 view_role_ids 지정 LV만 (열람 API와 동일).
    */
   const checkDistributePermission = (item: {
     owner_dept?: string | null;
@@ -949,7 +949,11 @@ function CatalogContent() {
                   </div>
         
                   <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-[11px]">
-                    <div className="flex flex-col">
+                    {/* 신청 불가(타부서 열람만): 단가 라벨·값 모두 숨김 — 자리는 유지해 재고 위치 고정 */}
+                    <div
+                      className={`flex flex-col ${!isEditing && !canDistribute ? 'invisible' : ''}`}
+                      aria-hidden={!isEditing && !canDistribute}
+                    >
                       <span className="text-slate-400 font-bold uppercase text-[9px] mb-0.5">
                         물품 순수 단가(원)
                         {isEditing && hasLedger && (
@@ -975,13 +979,11 @@ function CatalogContent() {
                             hasLedger ? 'cursor-not-allowed opacity-60' : ''
                           }`}
                         />
-                      ) : canDistribute ? (
+                      ) : (
                         <span className="font-mono font-black text-slate-700 text-sm">
                           {Number(currentData.unit_price || 0).toLocaleString()}{' '}
                           <span className="text-[9px] font-bold">KRW</span>
                         </span>
-                      ) : (
-                        <span className="font-mono font-black text-slate-400 text-sm">-</span>
                       )}
                     </div>
                     
