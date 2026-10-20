@@ -183,7 +183,7 @@ export default function InventoryModule() {
             소모품 조회 및 신청 대장
           </h1>
           <p className="text-white/70 text-xs mt-3 leading-relaxed">
-            사내 공통 소모품의 실시간 재고를 파악하고 신청합니다.
+            센터 단위로 소모품을 신청합니다.
           </p>
         </div>
       </div>
@@ -251,19 +251,19 @@ export default function InventoryModule() {
                       
                       <div className="mt-auto flex flex-col gap-2 pt-3 border-t border-slate-50">
                         <div className="flex justify-between items-center">
-                          <span className="text-[9px] font-black text-slate-400">현재고</span>
-                          <span className={`font-mono font-black text-sm leading-none ${isOut ? 'text-slate-400' : 'text-indigo-600'}`}>
-                            {currentStock.toLocaleString()} {rUnit && <span className="text-[9px] font-sans text-slate-500 ml-0.5">{rUnit}</span>}
+                          <span className="text-[9px] font-medium text-slate-400">현재고</span>
+                          <span className={`font-mono font-medium text-[11px] leading-none ${isOut ? 'text-slate-400' : 'text-indigo-600'}`}>
+                            {currentStock.toLocaleString()}{rUnit && <span className="font-sans text-[11px] text-slate-500 ml-0.5">{rUnit}</span>}
                           </span>
                         </div>
                         <button 
                           onClick={() => openPopup(item)} disabled={applyDisabled}
-                          title={!canApply ? 'Edit 권한 필요' : isOut ? '품절' : '신청하기'}
-                          className={`w-full py-1.5 rounded-lg text-[10px] font-black tracking-wide uppercase transition-all shadow-sm ${
-                            applyDisabled ? 'bg-slate-100 text-slate-400 cursor-not-allowed border border-slate-200' : 'bg-slate-900 text-white hover:bg-blue-600 active:scale-95'
+                          title={!canApply ? 'Edit 권한 필요' : isOut ? '품절' : '센터로 지급요청'}
+                          className={`w-full py-1.5 rounded-lg text-[10px] font-medium tracking-wide transition-all shadow-sm ${
+                            applyDisabled ? 'bg-slate-100 text-slate-400 cursor-not-allowed border border-slate-200' : 'bg-blue-600 text-white hover:bg-blue-700 active:scale-95'
                           }`}
                         >
-                          {isOut ? '불가' : !canApply ? '권한없음' : '신청하기'}
+                          {isOut ? '불가' : !canApply ? '권한없음' : '센터로 지급요청'}
                         </button>
                       </div>
                     </div>
@@ -277,11 +277,9 @@ export default function InventoryModule() {
      
       {selectedItem && canApply && (() => {
         let sUnit = '';
-        let publishNote = '';
         try {
           const ext = selectedItem.description ? JSON.parse(selectedItem.description) : {};
           sUnit = ext.s_unit || ext.r_unit || '';
-          publishNote = String(ext.publish_note || '').trim();
         } catch (e) {}
      
         return (
@@ -289,48 +287,42 @@ export default function InventoryModule() {
             <div className="bg-white w-full max-w-md rounded-[2.5rem] shadow-2xl overflow-hidden animate-in slide-in-from-bottom-12 duration-500">
               <div className="bg-gradient-to-r from-blue-700 to-indigo-800 px-6 py-5 flex justify-between items-center text-white shadow-md">
                 <div>
-                  <p className="text-[10px] font-black uppercase tracking-widest text-blue-200 mb-1">SUPPLY REQUEST</p>
-                  <h3 className="text-base font-extrabold tracking-tight text-white">소모품 신청서 작성</h3>
+                  <p className="text-[10px] font-normal uppercase tracking-widest text-blue-200 mb-1">SUPPLY REQUEST</p>
+                  <h3 className="text-base font-semibold tracking-tight text-white">소모품 지급요청서</h3>
                 </div>
                 <button
                   type="button"
                   onClick={() => setSelectedItem(null)}
-                  className="w-8 h-8 flex items-center justify-center rounded-full bg-white/15 hover:bg-white/25 text-white transition-colors"
+                  className="w-8 h-8 flex items-center justify-center rounded-full bg-white/15 hover:bg-white/25 text-white transition-colors font-medium"
                   aria-label="닫기"
                 >
                   ✕
                 </button>
               </div>
-              <div className="p-8 space-y-6">
+              <div className="p-8 space-y-6 font-normal text-[#333333]">
                 <div className="space-y-1">
-                  <p className="text-[11px] font-black text-indigo-500 mb-3 tracking-widest">신청자 정보</p>
+                  <p className="text-[11px] font-semibold text-indigo-500 mb-3 tracking-widest">신청자 정보</p>
                   <div className="grid grid-cols-[90px_1fr] gap-2 py-2 border-b border-slate-100 items-center">
-                    <span className="text-[12px] font-bold text-slate-400">신청 부서</span>
-                    <span className="text-[13px] font-black text-slate-800">{currentUser?.unit?.unit_name || currentUser?.dept_name || '정보 없음'}</span>
+                    <span className="text-[12px] font-normal text-[#666666]">신청 부서</span>
+                    <span className="text-[13px] font-medium text-[#222222]">{currentUser?.unit?.unit_name || currentUser?.dept_name || '정보 없음'}</span>
                   </div>
                   <div className="grid grid-cols-[90px_1fr] gap-2 py-2 border-b border-slate-100 items-center">
-                    <span className="text-[12px] font-bold text-slate-400">신청인</span>
-                    <span className="text-[13px] font-black text-slate-800">{currentUser?.name} {currentUser?.email ? `(${currentUser.email.split('@')[0]})` : ''}</span>
+                    <span className="text-[12px] font-normal text-[#666666]">신청인</span>
+                    <span className="text-[13px] font-medium text-[#222222]">{currentUser?.name} {currentUser?.email ? `(${currentUser.email.split('@')[0]})` : ''}</span>
                   </div>
                 </div>
                 <div className="space-y-1">
-                  <p className="text-[11px] font-black text-indigo-500 mb-3 mt-2 tracking-widest">물품 정보</p>
+                  <p className="text-[11px] font-semibold text-indigo-500 mb-3 mt-2 tracking-widest">물품 정보</p>
                   <div className="grid grid-cols-[90px_1fr] gap-2 py-2 border-b border-slate-100 items-center">
-                    <span className="text-[12px] font-bold text-slate-400">물품명</span>
-                    <span className="text-[13px] font-black text-slate-900 leading-tight">{selectedItem.name}</span>
+                    <span className="text-[12px] font-normal text-[#666666]">물품명</span>
+                    <span className="text-[13px] font-medium text-[#222222] leading-tight">{selectedItem.name}</span>
                   </div>
-                  {publishNote ? (
-                    <div className="grid grid-cols-[90px_1fr] gap-2 py-2 border-b border-slate-100 items-start">
-                      <span className="text-[12px] font-bold text-slate-400">설명</span>
-                      <span className="text-[12px] font-bold text-slate-600 leading-snug">{publishNote}</span>
-                    </div>
-                  ) : null}
                   <div className="grid grid-cols-[90px_1fr] gap-2 py-2 border-b border-slate-100 items-center">
-                    <span className="text-[12px] font-bold text-slate-400">현재고</span>
-                    <span className="text-[13px] font-mono font-black text-indigo-600">{Number(selectedItem.current_stock).toLocaleString()} {sUnit && <span className="text-[11px] font-sans text-slate-400 ml-1">{sUnit}</span>}</span>
+                    <span className="text-[12px] font-normal text-[#666666]">현재고</span>
+                    <span className="text-[13px] font-mono font-medium text-[#222222]">{Number(selectedItem.current_stock).toLocaleString()} {sUnit && <span className="text-[11px] font-sans font-normal text-[#666666] ml-1">{sUnit}</span>}</span>
                   </div>
                   <div className="grid grid-cols-[90px_1fr] items-center gap-2 py-3 border-b border-slate-100">
-                    <span className="text-[12px] font-bold text-slate-400">신청 수량</span>
+                    <span className="text-[12px] font-normal text-[#666666]">신청 수량</span>
                     <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-xl px-3 py-1.5 focus-within:border-indigo-400 transition-colors">
                       <input
                         type="number"
@@ -363,22 +355,19 @@ export default function InventoryModule() {
                         onKeyDown={(e) => {
                           if (['.', ',', 'e', 'E', '+', '-'].includes(e.key)) e.preventDefault();
                         }}
-                        className="w-full bg-transparent text-sm font-black text-indigo-600 outline-none"
+                        className="w-full bg-transparent text-sm font-medium text-indigo-600 outline-none"
                       />
-                      {sUnit && <span className="text-[11px] font-black text-slate-400">{sUnit}</span>}
+                      {sUnit && <span className="text-[11px] font-normal text-[#666666]">{sUnit}</span>}
                     </div>
                   </div>
                   <div className="flex flex-col gap-2 pt-3">
-                    <span className="text-[12px] font-bold text-slate-400">비고 및 전달사항</span>
-                    <textarea value={reqForm.note} onChange={(e) => setReqForm({...reqForm, note: e.target.value})} placeholder="상세 용도나 요청사항을 적어주세요." className="w-full p-4 border border-slate-200 rounded-2xl text-[13px] font-bold outline-none focus:border-indigo-500 bg-slate-50/50 h-24 resize-none transition-colors shadow-inner" />
+                    <span className="text-[12px] font-normal text-[#666666]">비고 및 전달사항</span>
+                    <textarea value={reqForm.note} onChange={(e) => setReqForm({...reqForm, note: e.target.value})} placeholder="특이 요청사항이 있을 경우 적어주세요." className="w-full p-4 border border-slate-200 rounded-2xl text-[13px] font-normal text-[#222222] placeholder:font-light placeholder:text-slate-400 outline-none focus:border-indigo-500 bg-slate-50/50 h-24 resize-none transition-colors shadow-inner" />
                   </div>
                 </div>
-                <p className="text-[11px] font-bold text-slate-500 leading-relaxed text-center px-1">
-                  관리자의 승인이 완료되면 부서지급대장에 수령대기로 표시됩니다.
-                </p>
                 <div className="flex gap-3 pt-2">
-                  <button type="button" disabled={submitting} onClick={() => setSelectedItem(null)} className="flex-1 py-4 bg-slate-100 rounded-2xl text-[13px] font-black text-slate-500 hover:bg-slate-200 transition-colors disabled:opacity-50">취소</button>
-                  <button type="button" disabled={submitting} onClick={handleRequestSubmit} className="flex-1 py-4 bg-blue-600 text-white rounded-2xl text-[13px] font-black hover:bg-blue-700 shadow-lg shadow-blue-200 transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed">{submitting ? '신청 중…' : '신청 완료'}</button>
+                  <button type="button" disabled={submitting} onClick={() => setSelectedItem(null)} className="flex-1 py-4 bg-slate-100 rounded-2xl text-[13px] font-medium text-slate-500 hover:bg-slate-200 transition-colors disabled:opacity-50">취소</button>
+                  <button type="button" disabled={submitting} onClick={handleRequestSubmit} className="flex-1 py-4 bg-blue-600 text-white rounded-2xl text-[13px] font-medium hover:bg-blue-700 shadow-lg shadow-blue-200 transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed">{submitting ? '신청 중…' : '신청 완료'}</button>
                 </div>
               </div>
             </div>

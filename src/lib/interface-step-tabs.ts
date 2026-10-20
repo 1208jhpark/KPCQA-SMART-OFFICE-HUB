@@ -112,28 +112,28 @@ export function useInterfaceStepTabs(
 export const PRODUCTION_DEPT_MASTER_TABS: InterfaceStepTabDef[] = [
   {
     id: 'order',
-    path: '/asset/production/dept-master/order',
+    path: '/production/custom/dept-master/order',
     fallbackName: '부서 발주 대장',
     fallbackIcon: '📦',
     activeColor: 'text-indigo-600',
   },
   {
     id: 'inspection',
-    path: '/asset/production/dept-master/inspection',
+    path: '/production/custom/dept-master/inspection',
     fallbackName: '발주/수령검수',
     fallbackIcon: '🧾',
     activeColor: 'text-emerald-600',
   },
   {
     id: 'settlement',
-    path: '/asset/production/dept-master/settlement',
+    path: '/production/custom/dept-master/settlement',
     fallbackName: '명세서 정산',
     fallbackIcon: '💹',
     activeColor: 'text-amber-700',
   },
   {
     id: 'archive',
-    path: '/asset/production/dept-master/archive',
+    path: '/production/custom/dept-master/archive',
     fallbackName: '정산완료 보관함',
     fallbackIcon: '📁',
     activeColor: 'text-slate-800',
@@ -144,14 +144,14 @@ export const PRODUCTION_DEPT_MASTER_TABS: InterfaceStepTabDef[] = [
 export const PRODUCTION_MASTER_TABS: InterfaceStepTabDef[] = [
   {
     id: 'dashboard',
-    path: '/asset/production/master/dashboard',
+    path: '/production/custom/admin/dashboard',
     fallbackName: '검수 완료 보관함',
     fallbackIcon: '🗂️',
     activeColor: 'text-indigo-600',
   },
   {
     id: 'archive',
-    path: '/asset/production/master/archive',
+    path: '/production/custom/admin/archive',
     fallbackName: '대조완료 보관함',
     fallbackIcon: '📁',
     activeColor: 'text-slate-800',
@@ -185,28 +185,28 @@ export const BUSINESS_CARD_MASTER_TABS: InterfaceStepTabDef[] = [
 export const IT_MASTER_TABS: InterfaceStepTabDef[] = [
   {
     id: 'dashboard',
-    path: '/asset/it/master/dashboard',
+    path: '/equipment/it/master/dashboard',
     fallbackName: '전사 IT·업무자산 대시보드',
     fallbackIcon: '📊',
     activeColor: 'text-indigo-600',
   },
   {
     id: 'audit',
-    path: '/asset/it/master/audit',
+    path: '/equipment/it/master/audit',
     fallbackName: '정기 자산 실사 관리',
     fallbackIcon: '🔍',
     activeColor: 'text-teal-700',
   },
   {
     id: 'requests',
-    path: '/asset/it/master/requests',
+    path: '/equipment/it/master/requests',
     fallbackName: '기타 의견/요청 송수신 대장',
     fallbackIcon: '📋',
     activeColor: 'text-pink-600',
   },
   {
     id: 'archive',
-    path: '/asset/it/master/archive',
+    path: '/equipment/it/master/archive',
     fallbackName: '종료 처리 아카이브',
     fallbackIcon: '📁',
     activeColor: 'text-slate-800',

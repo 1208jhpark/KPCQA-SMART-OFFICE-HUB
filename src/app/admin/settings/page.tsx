@@ -270,19 +270,19 @@ export default function AdminSettingsPage() {
       items: [
         {
           label: 'IT·업무자산 > 대범주 (HW/SW 등)',
-          path: '/asset/it/master/dashboard',
+          path: '/equipment/it/master/dashboard',
           field: 'it_category_group',
           tag: 'it_category_group',
         },
         {
           label: 'IT·업무자산 > 품목',
-          path: '/asset/it/master/dashboard',
+          path: '/equipment/it/master/dashboard',
           field: 'it_master_group',
           tag: 'it_master_group',
         },
         {
           label: 'IT·업무자산 > 조달 유형 (구매/렌탈)',
-          path: '/asset/it/master/dashboard',
+          path: '/equipment/it/master/dashboard',
           field: 'it_rental_group',
           tag: 'it_rental_group',
         },
@@ -361,7 +361,7 @@ export default function AdminSettingsPage() {
                   <div>/marketing/distribution/catalog</div>
                   <div>/marketing/distribution/dept</div>
                   <div>/equipment/main</div>
-                  <div>/asset/it/dept</div>
+                  <div>/equipment/it/dept</div>
                 </td>
                 <td className="px-5 py-4 text-center">
                   <span className="bg-indigo-100 text-indigo-700 px-3 py-1 rounded-full font-black tracking-widest text-[9px]">

@@ -9,7 +9,7 @@ export async function GET(req: Request) {
   const normalizedPath = rawPath.trim().replace(/\/$/, "");
 
   try {
-    // 1. 현재 경로(/asset/it/master)의 설정을 찾습니다.
+    // 1. 현재 경로(/equipment/it/master)의 설정을 찾습니다.
     const currentConfig = await prisma.interfaceConfig.findFirst({
       where: {
         OR: [

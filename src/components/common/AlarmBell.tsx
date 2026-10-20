@@ -365,7 +365,7 @@ export default function AlarmBell({ userKey = '' }: Props) {
               ? '확인한 알람입니다. ✕로 해당 줄을 삭제할 수 있습니다.'
               : '알람 없음'
         }
-        className={`px-2.5 py-1 rounded-lg text-[11px] font-black tracking-tight border transition-colors ${
+        className={`px-2.5 py-1 rounded-lg text-[11px] font-medium tracking-tight border transition-colors ${
           hasFresh
             ? 'bg-amber-400/15 text-amber-200 border-amber-300/40 hover:bg-amber-400/25'
             : 'bg-white/5 text-slate-400 border-white/10 hover:text-slate-200'

@@ -107,7 +107,7 @@ function MasterArchiveContent() {
 
   const alertNoEditPermission = () => alert('편집 권한이 없습니다.');
   const disabledActionBtn =
-    'px-1.5 py-1.5 bg-slate-100 text-slate-400 border border-slate-200 rounded-md text-[10px] font-black cursor-not-allowed whitespace-nowrap opacity-70';
+    'px-1.5 py-1.5 bg-slate-100 text-slate-400 border border-slate-200 rounded-md text-[10px] font-medium cursor-not-allowed whitespace-nowrap opacity-70';
      
   // 🚀 아이템 리스트에 파싱된 데이터를 미리 매핑해두기 (필터링 및 엑셀 다운로드를 위해)
   const parsedItems = useMemo(() => {
@@ -309,32 +309,53 @@ function MasterArchiveContent() {
               <span className="text-[11px] font-bold bg-slate-300/80 text-slate-700 px-2 py-0.5 rounded-md">{filteredItems.length}건</span>
             </div>
             
-            <div className="flex items-center gap-2 flex-wrap">
+            <div className="soh-filter-bar flex items-center gap-2 flex-wrap">
+              {isLV1 && (
+                <button
+                  type="button"
+                  disabled={!canEdit || selectedIds.size === 0}
+                  onClick={() => handleDeleteArchived(Array.from(selectedIds))}
+                  title={
+                    !canEdit
+                      ? '편집 권한(Edit)이 필요합니다'
+                      : selectedIds.size === 0
+                        ? '체크박스로 삭제할 아카이브 내역을 선택해 주세요'
+                        : '체크한 아카이브 영구 삭제 — LV_1 전용'
+                  }
+                  className={`px-3 py-1.5 rounded-lg text-[10px] font-medium shadow-sm whitespace-nowrap border transition-all ${
+                    canEdit && selectedIds.size > 0
+                      ? 'bg-white text-rose-600 border-rose-200 hover:bg-rose-50'
+                      : 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed opacity-70'
+                  }`}
+                >
+                  {selectedIds.size > 0 ? `삭제(LV_1) ${selectedIds.size}` : '삭제(LV_1)'}
+                </button>
+              )}
               <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm">
-                <span className="text-[10px] font-black text-slate-400 uppercase">연도</span>
-                <select value={selectedYear} onChange={(e) => { setSelectedYear(e.target.value); setCurrentPage(1); }} className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent">
+                <span className="text-[10px] font-medium text-slate-400 uppercase">연도</span>
+                <select value={selectedYear} onChange={(e) => { setSelectedYear(e.target.value); setCurrentPage(1); }} className="text-[11px] font-medium text-slate-800 outline-none cursor-pointer bg-transparent">
                   <option value="ALL">전체</option>
                   {availableYears.map(year => <option key={year} value={year}>{year}년</option>)}
                 </select>
                 <div className="w-px h-3.5 bg-slate-300 mx-0.5"></div>
-                <span className="text-[10px] font-black text-slate-400 uppercase">월별</span>
-                <select value={selectedMonth} onChange={(e) => { setSelectedMonth(e.target.value); setCurrentPage(1); }} className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent">
+                <span className="text-[10px] font-medium text-slate-400 uppercase">월별</span>
+                <select value={selectedMonth} onChange={(e) => { setSelectedMonth(e.target.value); setCurrentPage(1); }} className="text-[11px] font-medium text-slate-800 outline-none cursor-pointer bg-transparent">
                   <option value="ALL">전체</option>
                   {availableMonths.map(month => <option key={month} value={month}>{month}월</option>)}
                 </select>
               </div>
               <div className="relative w-48">
                 <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-[10px]">🔍</span>
-                <input type="text" placeholder="물품, 사유, 처리자 검색..." value={searchQuery} onChange={e => { setSearchQuery(e.target.value); setCurrentPage(1); }} className="w-full pl-7 pr-3 py-1.5 bg-white border border-slate-200 rounded-lg text-[11px] font-bold outline-none focus:border-indigo-500 shadow-sm transition-colors" />
+                <input type="text" placeholder="물품, 사유, 처리자 검색..." value={searchQuery} onChange={e => { setSearchQuery(e.target.value); setCurrentPage(1); }} className="w-full pl-7 pr-3 py-1.5 bg-white border border-slate-200 rounded-lg text-[11px] font-medium outline-none focus:border-indigo-500 shadow-sm transition-colors placeholder:font-medium" />
               </div>
-              <button onClick={handleDownloadExcel} className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-[10px] font-black shadow-sm hover:bg-emerald-700 transition-all whitespace-nowrap">
+              <button onClick={handleDownloadExcel} className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-[10px] font-medium shadow-sm hover:bg-emerald-700 transition-all whitespace-nowrap">
                 {selectedIds.size > 0 ? `선택 EXCEL 다운로드(${selectedIds.size})` : '화면 목록 EXCEL 다운로드'}
               </button>
             </div>
           </div>
      
           <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse table-fixed min-w-[1180px]">
+            <table className="w-full text-left border-collapse table-fixed min-w-[1240px]">
               <colgroup>
                 <col className="w-[40px]" />
                 <col className="w-[48px]" />
@@ -342,8 +363,8 @@ function MasterArchiveContent() {
                 <col className="w-[180px]" />
                 <col className="w-[88px]" />
                 <col />
-                <col className="w-[110px]" />
-                <col className="w-[230px]" />
+                <col className="w-[200px]" />
+                <col className="w-[140px]" />
               </colgroup>
               <thead className="bg-slate-100 text-slate-700 text-[10px] font-black uppercase tracking-widest border-b border-slate-200">
                 <tr>
@@ -393,42 +414,19 @@ function MasterArchiveContent() {
                         </div>
                       </td>
                       <td className="px-1 text-center border-l border-slate-200">
-                        <div className="flex items-center justify-center gap-0.5 w-full flex-nowrap">
-                          <button
-                            type="button"
-                            disabled={!canEdit}
-                            onClick={() => handleRestore(item.id)}
-                            title={canEdit ? '대시보드 복구' : '편집 권한 필요'}
-                            className={
-                              canEdit
-                                ? 'px-1.5 py-1.5 bg-indigo-50 text-indigo-600 border border-indigo-200 rounded-md text-[10px] font-black hover:bg-indigo-100 shadow-sm whitespace-nowrap'
-                                : disabledActionBtn
-                            }
-                          >
-                            대시보드 복구(Edit)
-                          </button>
-                          {canEdit ? (
-                            isLV1 ? (
-                              <button
-                                type="button"
-                                onClick={() => handleDeleteArchived([item.id])}
-                                title="아카이브 영구 삭제 — LV_1 전용"
-                                className="px-1.5 py-1.5 bg-slate-100 text-slate-500 border border-slate-200 rounded-md text-[10px] font-black hover:text-red-500 hover:bg-red-50 whitespace-nowrap"
-                              >
-                                삭제(LV_1)
-                              </button>
-                            ) : null
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={() => handleDeleteArchived([item.id])}
-                              title="편집 권한 필요"
-                              className={disabledActionBtn}
-                            >
-                              삭제(LV_1)
-                            </button>
-                          )}
-                        </div>
+                        <button
+                          type="button"
+                          disabled={!canEdit}
+                          onClick={() => handleRestore(item.id)}
+                          title={canEdit ? '대시보드 복구' : '편집 권한 필요'}
+                          className={
+                            canEdit
+                              ? 'px-1.5 py-1.5 bg-indigo-50 text-indigo-600 border border-indigo-200 rounded-md text-[10px] font-medium hover:bg-indigo-100 shadow-sm whitespace-nowrap'
+                              : disabledActionBtn
+                          }
+                        >
+                          대시보드 복구(Edit)
+                        </button>
                       </td>
                     </tr>
                   );

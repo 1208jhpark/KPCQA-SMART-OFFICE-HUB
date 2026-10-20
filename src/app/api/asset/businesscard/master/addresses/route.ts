@@ -10,8 +10,8 @@ const READ_PATHS = [
   '/asset/businesscard/master/requests',
   '/asset/businesscard/master/order',
   '/asset/businesscard/master/archive',
-  '/asset/production/apply/request',
-  '/asset/production/apply/history',
+  '/production/custom/my-orders/request',
+  '/production/custom/my-orders/history',
 ];
 const WRITE_PATH = '/asset/businesscard/master/requests';
 

@@ -70,7 +70,12 @@ export default function ServiceHomePage() {
   if (!config) return null;
   
   const isVertical = config.layout_type === 'vertical';
-  const gridCols = config.home_grid_cols || 4;
+  const gridCols = Number(config.home_grid_cols) || 4;
+  const step1Menus = Array.isArray(menus)
+    ? menus.filter((m) => m.level === 1 && m.is_visible)
+    : [];
+  /** 실제 카드 수와 설정 열 수 중 작은 값 — 빈 칸 없이 중앙 정렬 */
+  const step1ColCount = Math.max(1, Math.min(step1Menus.length || 1, gridCols));
      
   let dynamicSites: any[] = [];
   if (config.linked_sites) {
@@ -112,12 +117,12 @@ export default function ServiceHomePage() {
           </div>
         ) : null}
 
-        <h1 className={`font-black tracking-tight text-slate-900 leading-[0.95] transition-all ${isVertical ? 'text-6xl md:text-7xl' : 'text-5xl md:text-6xl'}`}>
+        <h1 className={`soh-home-title tracking-tight text-slate-900 leading-[0.95] transition-all ${isVertical ? 'text-6xl md:text-7xl' : 'text-5xl md:text-6xl'}`}>
           {config.main_headline}
         </h1>
 
         {config.sub_headline ? (
-          <p className={`mt-5 text-sm md:text-[15px] font-semibold text-slate-900 leading-relaxed max-w-2xl ${!isVertical && 'mx-auto'}`}>
+          <p className={`soh-home-subtitle mt-5 text-sm md:text-[15px] text-slate-900 leading-relaxed max-w-2xl ${!isVertical && 'mx-auto'}`}>
             {config.sub_headline}
           </p>
         ) : null}
@@ -125,16 +130,24 @@ export default function ServiceHomePage() {
         <div className={`mt-7 h-px w-10 bg-indigo-400/60 ${!isVertical && 'mx-auto'}`} />
       </header>
   
-      {/* Service Grid */}
+      {/* Service Grid — 카드 수와 무관하게 항상 가운데 정렬 */}
       <main className="relative z-10 flex-1 flex w-full max-w-[1600px] px-8 md:px-16 justify-center items-center py-10">
-        <div className={`w-full transition-all duration-700 max-h-full px-2
+        <div
+          className={`w-full transition-all duration-700 max-h-full px-2
           ${isVertical 
             ? `grid gap-4 ${gridCols === 1 ? 'grid-cols-1' : 'grid-cols-1 sm:grid-cols-2'}` 
-            : `grid gap-5`
+            : `grid gap-5 justify-center`
           }`}
-          style={!isVertical ? { gridTemplateColumns: `repeat(${gridCols}, minmax(0, 1fr))` } : {}}
+          style={
+            !isVertical
+              ? {
+                  gridTemplateColumns: `repeat(${step1ColCount}, minmax(240px, 340px))`,
+                  justifyContent: 'center',
+                }
+              : undefined
+          }
         >
-          {Array.isArray(menus) && menus.filter(m => m.level === 1 && m.is_visible).map((menu) => (
+          {step1Menus.map((menu) => (
             <Link 
               key={menu.id} 
               href={hrefForStep1(menu)}
@@ -154,7 +167,7 @@ export default function ServiceHomePage() {
               ) : null}
               
               <div className={menu.icon ? 'text-left' : 'text-center'}>
-                <h3 className={`font-bold text-slate-800 tracking-tight mb-1 flex items-center text-[21px] ${menu.icon ? '' : 'justify-center'}`}>
+                <h3 className={`soh-home-menu-title text-slate-800 tracking-tight mb-1 flex items-center text-[21px] ${menu.icon ? '' : 'justify-center'}`}>
                   {menu.name}
                   {menu.is_active && (
                     <span className="ml-2 inline-flex items-center justify-center opacity-0 -translate-x-1.5 group-hover:opacity-100 group-hover:translate-x-0 transition-all duration-300 ease-out">
@@ -164,7 +177,7 @@ export default function ServiceHomePage() {
                     </span>
                   )}
                 </h3>
-                <p className="text-slate-400 font-medium leading-snug line-clamp-2 text-[12px]">
+                <p className="soh-home-menu-desc text-slate-400 leading-snug line-clamp-2 text-[12px]">
                   {menu.description}
                 </p>
               </div>

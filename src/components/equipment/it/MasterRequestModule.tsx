@@ -1,0 +1,1815 @@
+'use client';
+
+import { useState, useEffect, useMemo, useRef, Suspense, Fragment } from 'react';
+import { getKSTDateString, getKSTNowYearMonth, getKSTYearMonthParts, toSortableTime, formatKSTDateTime, formatKSTDisplayDate } from '@/utils/dateUtils';
+import { resolveInterfaceEditState } from '@/lib/permission-utils';
+import LoadingState from '@/components/common/LoadingState';
+import WindowedPagination from '@/components/common/WindowedPagination';
+import ItMasterPageBanner from '@/components/equipment/it/ItMasterPageBanner';
+import { rowMatchesOrgUnit } from '@/lib/org-unit-match';
+
+const MENU_PATH = '/equipment/it/master/requests';
+
+function isBoldOrgType(unitType?: string | null) {
+  const t = String(unitType || '').trim().toUpperCase();
+  return t === 'ORGANIZATION' || t === 'HQ';
+}
+
+function normalizeOrgUnitType(unitType?: string | null) {
+  return String(unitType || '').trim().toUpperCase();
+}
+
+/** admin/units sort_order 기준 정렬 (하드코딩 없음) */
+function sortUnitsByOrder<T extends { sort_order?: number | null; unit_name?: string | null }>(
+  units: T[]
+) {
+  return [...units].sort((a, b) => {
+    const ao = Number(a.sort_order) || 0;
+    const bo = Number(b.sort_order) || 0;
+    if (ao !== bo) return ao - bo;
+    return String(a.unit_name || '').localeCompare(String(b.unit_name || ''), 'ko');
+  });
+}
+
+/** 특정 조직의 하위(재귀) 조직명 집합 */
+function collectDescendantUnitNames(
+  rootId: string,
+  units: Array<{ id: string; unit_name?: string | null; parent_id?: string | null }>
+) {
+  const names = new Set<string>();
+  const walk = (parentId: string) => {
+    for (const child of units.filter((u) => u.parent_id === parentId)) {
+      const n = String(child.unit_name || '').trim();
+      if (n) names.add(n);
+      walk(child.id);
+    }
+  };
+  walk(rootId);
+  return names;
+}
+
+type ChartOrgMode = 'CENTER' | 'HQ';
+
+function flattenUnitsInSortOrder<T extends { id: string; parent_id?: string | null; sort_order?: number | null; unit_name?: string | null }>(units: T[]) {
+  const byId = new Map(units.map((u) => [u.id, u]));
+  const depthOf = (unit: T) => {
+    let depth = 0;
+    let current: T | undefined = unit;
+    const seen = new Set<string>();
+    while (current?.parent_id && byId.has(current.parent_id) && !seen.has(current.id)) {
+      seen.add(current.id);
+      depth += 1;
+      current = byId.get(current.parent_id);
+    }
+    return depth;
+  };
+  return [...units]
+    .sort((a, b) => {
+      const ao = Number(a.sort_order) || 0;
+      const bo = Number(b.sort_order) || 0;
+      if (ao !== bo) return ao - bo;
+      return String(a.unit_name || '').localeCompare(String(b.unit_name || ''), 'ko');
+    })
+    .map((unit) => ({ ...unit, depth: depthOf(unit) }));
+}
+
+function descendantUnitNames(unitName: string, units: Array<{ id: string; unit_name?: string | null; parent_id?: string | null }>) {
+  const names = new Set<string>();
+  const selected = units.find((u) => String(u.unit_name || '').trim() === unitName);
+  if (!selected) {
+    if (unitName) names.add(unitName);
+    return names;
+  }
+  if (selected.unit_name) names.add(String(selected.unit_name).trim());
+  const walk = (parentId: string) => {
+    for (const child of units.filter((u) => u.parent_id === parentId)) {
+      const n = String(child.unit_name || '').trim();
+      if (n) names.add(n);
+      walk(child.id);
+    }
+  };
+  walk(selected.id);
+  return names;
+}
+
+/** KST 연·월 — dateUtils.getKSTYearMonthParts */
+
+/** 관리자가 먼저 건 문의인지 (확인·종결로 status가 바뀌어도 동일) */
+function isAdminInquiryRow(req: any) {
+  if (!req) return false;
+  const s = String(req.status || '').trim();
+  if (s === '관리자 의견발송' || s === '사용자 확인완료') return true;
+  if (s === '관리자 답변') return false;
+  if (s === '답변회신' || String(req.adminOpinion || '').includes(':::REPLY:::')) return false;
+  if (s === '의견전송' || s === '답변 대기중' || s === '대기중') return false;
+  const content = String(req.content || '').trim();
+  const hasUserContent = !!content && content !== '(관리자 의견)';
+  const adminText = String(req.adminOpinion || '').split(':::')[0].trim();
+  // 처리완료로만 바뀐 관리자 선제 요청
+  if (!hasUserContent && adminText) return true;
+  return false;
+}
+
+function historyStatusLabel(status: string, req?: any, opts?: { isThreadRoot?: boolean }) {
+  // 스레드 첫 행: 항상 최초 질의 유형만 표기 (종결 후에도 유지)
+  if (opts?.isThreadRoot) {
+    return isAdminInquiryRow(req) ? '관리자 신규접수' : '사용자 신규접수';
+  }
+  const s = String(status || '').trim();
+  if (s === '처리완료' || s === '관리자 확인완료' || s === '사용자 종료처리') return '처리 완료(종료)';
+  if (s === '사용자 확인완료' || isAdminInquiryRow(req)) return '관리자 신규접수';
+  if (s === '관리자 답변') return '관리자 답변';
+  if (s === '관리자 의견발송') return '관리자 신규접수';
+  if (s === '답변회신' || (req && String(req.adminOpinion || '').includes(':::REPLY:::'))) return '사용자 답변';
+  if (s === '의견전송' || s === '답변 대기중' || s === '대기중') return '사용자 신규접수';
+  return s || '-';
+}
+
+/** 관리자가 종료 버튼을 눌렀을 때만 종결 */
+function isClosedStatus(status: string) {
+  return status === '처리완료' || status === '관리자 확인완료' || status === '사용자 종료처리';
+}
+
+/** 스레드 종결 = 시간순 최신 행이 종결 상태일 때만 (중간 이력 종결로 전체를 끝내지 않음) */
+function isThreadClosed(root: any, children: any[] = []) {
+  const members = [root, ...(children || [])].filter(Boolean);
+  if (members.length === 0) return false;
+  const latest = [...members].sort((a, b) => {
+    const d = reqTime(b) - reqTime(a);
+    if (d !== 0) return d;
+    return String(b.id || '').localeCompare(String(a.id || ''));
+  })[0];
+  return isClosedStatus(String(latest?.status || ''));
+}
+
+function hasMeaningfulUserContent(req: any) {
+  const c = String(req?.content || '').trim();
+  return !!c && c !== '(관리자 의견)';
+}
+
+function hasMeaningfulAdminContent(req: any) {
+  return !!String(
+    req?.adminOpinionText || parseAdminOpinion(req?.adminOpinion).opinionText || ''
+  ).trim();
+}
+
+/** 표준 3단계: 신규접수 → 진행중 → 처리완료 */
+function threadStage(root: any, children: any[] = []): 'NEW' | 'IN_PROGRESS' | 'DONE' {
+  if (isThreadClosed(root, children)) return 'DONE';
+  const members = [root, ...(children || [])].filter(Boolean);
+  if (isAdminInquiryRow(root)) {
+    return members.some((m) => hasMeaningfulUserContent(m)) ? 'IN_PROGRESS' : 'NEW';
+  }
+  return members.some((m) => hasMeaningfulAdminContent(m)) ? 'IN_PROGRESS' : 'NEW';
+}
+
+function isWaitingForUser(status: string) {
+  return status === '관리자 의견발송' || status === '관리자 답변';
+}
+
+function isUserPendingStatus(status: string) {
+  return status === '답변 대기중' || status === '의견전송' || status === '답변회신' || status === '대기중';
+}
+
+/** 동일 스레드: 자산번호 + 자산분류가 같을 때만 */
+function sameAssetCode(a: any, b: any) {
+  const codeA = String(a?.assetCode || a?.code || '').trim();
+  const codeB = String(b?.assetCode || b?.code || '').trim();
+  if (!codeA || codeA !== codeB) return false;
+  const typeA = String(a?.assetType || a?.category || '').trim() || '일반';
+  const typeB = String(b?.assetType || b?.category || '').trim() || '일반';
+  return typeA === typeB;
+}
+
+function isIncomingReply(req: any, allRequests: any[] = []) {
+  if (!req) return false;
+  const status = String(req.status || '').trim();
+  if (status === '답변회신') return true;
+  if (String(req.adminOpinion || '').includes(':::REPLY:::')) return true;
+  if (status !== '의견전송' && status !== '답변 대기중' && status !== '대기중') return false;
+  return !!findParentAdminRequest(req, allRequests);
+}
+
+function parseAdminOpinionText(raw: string | null | undefined) {
+  const parts = String(raw || '').split(':::');
+  const opinionText = parts[0] || '';
+  const responderName = (parts[1] || '').trim() || '-';
+  const responderDept = (parts[2] || '').trim();
+  const responderLabel = [responderDept, responderName].filter((v) => v && v !== '-').join(' / ') || responderName;
+  return { opinionText, responderName, responderDept, responderLabel };
+}
+
+function reqTime(r: any) {
+  return toSortableTime(r?.createdAt || r?.requestDate || 0);
+}
+
+function findParentAdminRequest(replyReq: any, allRequests: any[]) {
+  if (!replyReq) return null;
+  const t = reqTime(replyReq);
+  return allRequests
+    .filter((r) => sameAssetCode(r, replyReq) && String(r.id) !== String(replyReq.id))
+    .filter((r) => r.status === '관리자 의견발송' || r.status === '사용자 확인완료')
+    .filter((r) => reqTime(r) <= t)
+    .sort((a, b) => reqTime(b) - reqTime(a))[0] || null;
+}
+
+/** 최초 질문(관리자 요청/사용자 선제요청) 아래 묶일 회신 */
+function getThreadParentId(req: any, allRequests: any[]): string | null {
+  if (!req) return null;
+  const status = String(req.status || '').trim();
+  if (status === '관리자 의견발송' || status === '사용자 확인완료') return null;
+  const prior = allRequests
+    .filter((r) => sameAssetCode(r, req) && String(r.id) !== String(req.id) && reqTime(r) <= reqTime(req))
+    .sort((a, b) => {
+      const d = reqTime(b) - reqTime(a);
+      if (d !== 0) return d;
+      return String(b.id || '').localeCompare(String(a.id || ''));
+    })[0];
+  if (!prior) return null;
+
+  const isReplyFlag = status === '답변회신' || String(req.adminOpinion || '').includes(':::REPLY:::');
+  const userText = String(req.content || '').trim();
+  const hasUserContent = !!userText && userText !== '(관리자 의견)';
+  const adminText = String(req.adminOpinion || '').split(':::')[0].trim();
+  const adminOnly = !hasUserContent && !!adminText;
+
+  // 종결(처리완료 등) 후에도 스레드 소속 유지 — 루트가 이전 자산 이력에 잘못 붙지 않게 원래 유형으로 재판정
+  let linkStatus = status;
+  if (isClosedStatus(status)) {
+    if (isReplyFlag) {
+      linkStatus = '답변회신';
+    } else if (adminOnly) {
+      const priorOpenUser =
+        prior.status === '의견전송' ||
+        prior.status === '답변 대기중' ||
+        prior.status === '답변회신' ||
+        prior.status === '사용자 확인완료';
+      linkStatus = priorOpenUser ? '관리자 답변' : '관리자 의견발송';
+    } else if (hasUserContent) {
+      linkStatus = '의견전송';
+    } else {
+      return null;
+    }
+  }
+  if (linkStatus === '관리자 의견발송') return null;
+
+  if ((linkStatus === '의견전송' || linkStatus === '답변 대기중') && !isReplyFlag && isClosedStatus(prior.status)) {
+    return null;
+  }
+  if ((linkStatus === '의견전송' || linkStatus === '답변 대기중') && !isReplyFlag) {
+    const priorOk =
+      prior.status === '관리자 의견발송' ||
+      prior.status === '사용자 확인완료' ||
+      prior.status === '관리자 답변' ||
+      prior.status === '답변회신';
+    if (!priorOk) return null;
+  }
+  if (
+    isReplyFlag ||
+    linkStatus === '답변회신' ||
+    linkStatus === '관리자 답변' ||
+    linkStatus === '의견전송' ||
+    linkStatus === '답변 대기중'
+  ) {
+    return String(prior.id);
+  }
+  return null;
+}
+
+function collectThreadMessages(req: any, allRequests: any[]) {
+  if (!req) return [];
+  const pool = allRequests.filter((r) => sameAssetCode(r, req));
+  const parentOf = new Map<string, string>();
+  pool.forEach((r) => {
+    const pid = getThreadParentId(r, pool);
+    if (pid) parentOf.set(String(r.id), pid);
+  });
+  const rootOf = (id: string) => {
+    let cur = String(id);
+    const seen = new Set<string>();
+    while (parentOf.has(cur) && !seen.has(cur)) {
+      seen.add(cur);
+      cur = parentOf.get(cur) as string;
+    }
+    return cur;
+  };
+  const rootId = rootOf(String(req.id));
+  return pool.filter((r) => rootOf(String(r.id)) === rootId).sort((a, b) => reqTime(a) - reqTime(b));
+}
+
+function opinionDisplay(raw: string | null | undefined) {
+  const text = parseAdminOpinionText(raw).opinionText.trim();
+  if (!text || text.includes('의견 없이 처리') || text === '종결 처리' || text === '처리 완료' || text.includes(':::REPLY:::')) return '';
+  return text;
+}
+
+function threadTurns(req: any) {
+  const status = String(req?.status || '').trim();
+  const userText = String(req?.content || '').trim();
+  const userOk = userText && userText !== '(관리자 의견)';
+  const adminText = opinionDisplay(req?.adminOpinion);
+  const reqDateRaw = req?.requestDate || req?.createdAt;
+  const doneDateRaw = req?.completedAt || req?.updatedAt || req?.createdAt || reqDateRaw;
+  const reqDate = formatKSTDisplayDate(reqDateRaw);
+  const doneDate = formatKSTDisplayDate(doneDateRaw) || reqDate;
+  const userName = String(req?.requester || req?.name || '').trim() || '사용자';
+  const adminName = '관리자';
+  const turns: { role: 'admin' | 'user'; name: string; text: string; date: string }[] = [];
+  if (status === '관리자 의견발송' || status === '사용자 확인완료' || status === '관리자 답변') {
+    if (adminText) {
+      turns.push({
+        role: 'admin',
+        name: adminName,
+        text: adminText,
+        date: reqDate,
+      });
+    }
+  } else if (status === '답변회신' || status === '의견전송' || status === '답변 대기중') {
+    if (userOk) {
+      turns.push({
+        role: 'user',
+        name: userName,
+        text: userText,
+        date: reqDate,
+      });
+    }
+  } else if (isClosedStatus(status)) {
+    if (userOk) {
+      turns.push({ role: 'user', name: userName, text: userText, date: reqDate });
+    }
+    if (adminText) {
+      turns.push({ role: 'admin', name: adminName, text: adminText, date: doneDate });
+    }
+  }
+  return turns;
+}
+
+function userRequestContent(raw: string | null | undefined) {
+  const text = String(raw || '').trim();
+  if (!text || text === '(관리자 의견)') return '-';
+  return `"${text}"`;
+}
+
+function parseHistoryModel(req: any) {
+  const info = String(req?.assetInfo || '');
+  const slash = info.indexOf('/');
+  if (slash >= 0) {
+    const model = info.slice(slash + 1).trim();
+    if (model) return model;
+  }
+  return req?.modelName || req?.model || '-';
+}
+
+function isMetaResponderName(name: string) {
+  const n = String(name || '').trim().toUpperCase();
+  return !n || n === '-' || n === 'REPLY' || n === 'USERACK';
+}
+
+/** adminOpinion 저장 포맷: 의견:::처리자이름:::처리자부서[:::USERACK:::확인자이름:::확인자부서] */
+function parseAdminOpinion(raw: string | null | undefined) {
+  const parts = String(raw || '').split(':::');
+  const opinionText = parts[0] || '';
+  const rawName = (parts[1] || '').trim();
+  const responderName = isMetaResponderName(rawName) ? '' : rawName;
+  const responderDept = isMetaResponderName(parts[2] || '') ? '' : (parts[2] || '').trim();
+  const responderLabel = [responderDept, responderName].filter(Boolean).join(' / ');
+  const ackIdx = parts.indexOf('USERACK');
+  const ackedName = ackIdx >= 0 ? (parts[ackIdx + 1] || '').trim() : '';
+  const ackedDept = ackIdx >= 0 ? (parts[ackIdx + 2] || '').trim() : '';
+  const ackedLabel = [ackedDept, ackedName].filter(Boolean).join(' / ');
+  return { opinionText, responderName, responderDept, responderLabel, ackedName, ackedDept, ackedLabel };
+}
+
+function pickThreadAdminLabel(members: any[]) {
+  for (const m of members) {
+    const parsed = parseAdminOpinion(m?.adminOpinion);
+    if (parsed.responderLabel) return parsed.responderLabel;
+    if (m?.responderLabel && !isMetaResponderName(m.responderName)) return m.responderLabel;
+  }
+  return '';
+}
+
+function threadUserLabel(root: any) {
+  return [root?.dept || root?.department, root?.requester || root?.name].filter(Boolean).join(' / ');
+}
+
+function isAdminSideStatus(status: string) {
+  return status === '관리자 의견발송' || status === '관리자 답변' || status === '사용자 확인완료';
+}
+
+function rowAdminLabel(req: any) {
+  return pickThreadAdminLabel([req]);
+}
+
+const HISTORY_MONTHS = ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12'];
+
+function ITMasterRequestContent() {
+  const [currentUser, setCurrentUser] = useState<any>(null);
+  const [interfaceConfig, setInterfaceConfig] = useState<any>(null);
+  const [requests, setRequests] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+
+  const [editingReq, setEditingReq] = useState<any>(null);
+  const [editOpinion, setEditOpinion] = useState('');
+  const [commEditMode, setCommEditMode] = useState(false);
+  const [adminComposeReq, setAdminComposeReq] = useState<any>(null);
+
+  const [filterDept, setFilterDept] = useState('ALL');
+  const [orgUnits, setOrgUnits] = useState<any[]>([]);
+  const [orgMenuOpen, setOrgMenuOpen] = useState(false);
+  const orgMenuRef = useRef<HTMLDivElement>(null);
+  const [filterType, setFilterType] = useState('ALL');
+  const [filterStatus, setFilterStatus] = useState<'ALL' | 'PENDING' | 'DONE'>('ALL');
+  const [selectedYear, setSelectedYear] = useState(() => String(getKSTNowYearMonth().year));
+  const [selectedMonth, setSelectedMonth] = useState('ALL');
+  const [codeQuery, setCodeQuery] = useState('');
+  const [modelQuery, setModelQuery] = useState('');
+  const [userQuery, setUserQuery] = useState('');
+
+  const [currentPage, setCurrentPage] = useState(1);
+  const itemsPerPage = 10;
+
+  useEffect(() => {
+    setCurrentPage(1);
+    setSelectedIds(new Set());
+  }, [filterDept, filterType, filterStatus, selectedYear, selectedMonth, codeQuery, modelQuery, userQuery]);
+
+  useEffect(() => {
+    fetchData();
+  }, []);
+
+  const fetchData = async () => {
+    setLoading(true);
+
+    try {
+      const ts = Date.now();
+      const [userRes, ifRes, unitsRes] = await Promise.all([
+        fetch(`/api/auth/me?t=${ts}`, { cache: 'no-store' }),
+        fetch(`/api/admin/interface?t=${ts}`, { cache: 'no-store' }).catch(() => null),
+        fetch(`/api/admin/units?active=true&t=${ts}`, { cache: 'no-store' }).catch(() => null),
+      ]);
+      if (userRes.ok) {
+        const userData = await userRes.json();
+        const roles = Array.isArray(userData.roles)
+          ? userData.roles
+          : (() => {
+              try {
+                return JSON.parse(userData.roles || '[]');
+              } catch {
+                return [];
+              }
+            })();
+        setCurrentUser({
+          ...userData,
+          name: String(userData.name || '').trim(),
+          dept: String(userData.unit?.unit_name || userData.dept || '').trim(),
+          roles,
+        });
+      }
+      if (ifRes && ifRes.ok) {
+        const interfaces = await ifRes.json();
+        const menu = Array.isArray(interfaces)
+          ? interfaces.find((m: any) => m.path === MENU_PATH || m.path?.includes('/it/master/requests'))
+          : null;
+        setInterfaceConfig(menu || null);
+      } else {
+        setInterfaceConfig(null);
+      }
+      if (unitsRes && unitsRes.ok) {
+        const raw = await unitsRes.json();
+        setOrgUnits(Array.isArray(raw) ? raw : []);
+      } else setOrgUnits([]);
+    } catch (e) {
+      console.error('User fetch error', e);
+    }
+
+    try {
+      const reqRes = await fetch(`/api/equipment/it/requests?t=${Date.now()}`, { cache: 'no-store' });
+      if (reqRes.ok) {
+        let allReqs = await reqRes.json();
+        allReqs = allReqs.map((r: any) => {
+          let unifiedStatus = r.status;
+          if (unifiedStatus === '의견전송' || unifiedStatus === '대기중') unifiedStatus = '답변 대기중';
+          if (unifiedStatus === '완료') unifiedStatus = '관리자 확인완료';
+          const parsed = parseAdminOpinion(r.adminOpinion);
+          return {
+            ...r,
+            status: unifiedStatus,
+            adminOpinionText: parsed.opinionText,
+            responderName: parsed.responderName,
+            responderDept: parsed.responderDept,
+            responderLabel: parsed.responderLabel,
+            ackedLabel: parsed.ackedLabel,
+          };
+        });
+        allReqs.sort((a: any, b: any) => {
+          const ta = new Date(a.createdAt || a.requestDate || 0).getTime();
+          const tb = new Date(b.createdAt || b.requestDate || 0).getTime();
+          if (tb !== ta) return tb - ta;
+          return String(b.id || '').localeCompare(String(a.id || ''));
+        });
+        setRequests(allReqs);
+      }
+    } catch (e) {
+      console.error('Data fetch error', e);
+    }
+
+    setLoading(false);
+  };
+
+  const canEdit = useMemo(
+    () => resolveInterfaceEditState(currentUser, interfaceConfig).isEditor,
+    [currentUser, interfaceConfig]
+  );
+
+  const submitThreadAction = async (mode: 'reply' | 'close') => {
+    if (!editingReq) return;
+    if (!canEdit) return alert('편집 권한이 없습니다.');
+    if (mode === 'reply' && !editOpinion.trim()) {
+      return alert('답변 내용을 입력해 주세요.');
+    }
+    const responder = currentUser?.name || '-';
+    const responderDept = currentUser?.dept || '';
+    const thread = collectThreadMessages(editingReq, requests);
+    const latest = thread[thread.length - 1] || editingReq;
+    // 종료·답변은 최신 이력 행에서만
+    if (String(editingReq.id) !== String(latest.id)) {
+      return alert(
+        mode === 'close'
+          ? '처리 완료(종료)는 가장 최근 이력에서만 할 수 있습니다.'
+          : '답변 전송은 가장 최근 이력에서만 할 수 있습니다.'
+      );
+    }
+
+    try {
+      if (mode === 'reply') {
+        if (isWaitingForUser(latest.status)) {
+          return alert('사용자 답변을 기다린 뒤에 다시 답변할 수 있습니다.');
+        }
+        const res = await fetch('/api/equipment/it/requests', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            requestDate: getKSTDateString(),
+            requester: editingReq.requester || '-',
+            requester_email: editingReq.requester_email || null,
+            requester_id: editingReq.requester_id || null,
+            dept: editingReq.dept || '-',
+            assetInfo: editingReq.assetInfo || `${editingReq.assetCode} / -`,
+            content: '',
+            status: '관리자 답변',
+            assetCode: editingReq.assetCode,
+            assetType: editingReq.assetType,
+            adminOpinion: editOpinion.trim(),
+            responderName: responder,
+            responderDept,
+          }),
+        });
+        if (res.ok) {
+          const created = await res.json().catch(() => null);
+          setCommEditMode(false);
+          setEditOpinion('');
+          setEditingReq(created || { ...editingReq, status: '관리자 답변' });
+          fetchData();
+        } else {
+          alert('❌ 서버 오류로 답변 전송에 실패했습니다.');
+        }
+        return;
+      }
+
+      const res = await fetch('/api/equipment/it/requests', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: latest.id,
+          adminOpinion: editOpinion.trim() || opinionDisplay(latest.adminOpinion) || '처리 완료',
+          responderName: responder,
+          responderDept,
+          status: '처리완료',
+        }),
+      });
+      if (res.ok) {
+        const updated = await res.json().catch(() => null);
+        setCommEditMode(false);
+        setEditOpinion('');
+        setEditingReq({ ...(updated || latest), status: '처리완료' });
+        fetchData();
+      } else {
+        alert('❌ 처리 완료(종료)에 실패했습니다.');
+      }
+    } catch (e) {
+      console.error(e);
+      alert('❌ 통신 오류가 발생했습니다.');
+    }
+  };
+
+  const handleCancelSend = async (id: string) => {
+    if (!canEdit) return alert('편집 권한이 없습니다.');
+    if (!confirm('전송한 의견을 취소하시겠습니까? (취소 후 복구할 수 없습니다)')) return;
+    try {
+      const target = requests.find((r) => String(r.id) === String(id));
+      const res = await fetch(`/api/equipment/it/requests?id=${id}`, { method: 'DELETE' });
+      if (res.ok) {
+        // 답변 취소 시 종결 처리하지 않고, 직전 관리자 요청이 ACK로 바뀌었다면 복원
+        if (target && (target.status === '관리자 답변' || isUserPendingStatus(target.status) || String(target.adminOpinion || '').includes(':::REPLY:::'))) {
+          const prior = requests
+            .filter((r) => sameAssetCode(r, target) && String(r.id) !== String(id) && reqTime(r) <= reqTime(target))
+            .sort((a, b) => reqTime(b) - reqTime(a))[0];
+          if (prior?.status === '사용자 확인완료') {
+            await fetch('/api/equipment/it/requests', {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ id: prior.id, status: '관리자 의견발송' }),
+            });
+          }
+        }
+        setEditingReq(null);
+        setEditOpinion('');
+        setCommEditMode(false);
+        fetchData();
+      } else {
+        alert('❌ 취소에 실패했습니다.');
+      }
+    } catch (e) {
+      console.error(e);
+      alert('❌ 통신 오류가 발생했습니다.');
+    }
+  };
+
+  const handleUpdateAdminOutbound = async () => {
+    if (!editingReq) return;
+    if (!canEdit) return alert('편집 권한이 없습니다.');
+    if (!editOpinion.trim()) return alert('내용을 입력해 주세요.');
+    const responder = currentUser?.name || '-';
+    const responderDept = currentUser?.dept || '';
+    const thread = collectThreadMessages(editingReq, requests);
+    const latest = thread[thread.length - 1] || editingReq;
+    try {
+      const res = await fetch('/api/equipment/it/requests', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: latest.id,
+          adminOpinion: editOpinion.trim(),
+          responderName: responder,
+          responderDept,
+          status: latest.status,
+        }),
+      });
+      if (res.ok) {
+        const updated = await res.json().catch(() => null);
+        setCommEditMode(false);
+        setEditingReq(updated || { ...latest, adminOpinion: editOpinion.trim() });
+        fetchData();
+      } else {
+        alert('❌ 내용 저장에 실패했습니다.');
+      }
+    } catch (e) {
+      console.error(e);
+      alert('❌ 통신 오류가 발생했습니다.');
+    }
+  };
+
+  const openAdminCompose = (req: any) => {
+    if (!canEdit) return alert('편집 권한이 없습니다.');
+    setEditingReq(null);
+    setCommEditMode(false);
+    setAdminComposeReq(req);
+    setEditOpinion('');
+  };
+
+  const closeAdminCompose = () => {
+    setAdminComposeReq(null);
+    setEditOpinion('');
+  };
+
+  const submitAdminOpinionRequest = async () => {
+    if (!adminComposeReq) return;
+    if (!canEdit) return alert('편집 권한이 없습니다.');
+    if (!editOpinion.trim()) return alert('사용자에게 전달할 의견 내용을 입력해 주세요.');
+    const responder = currentUser?.name || '-';
+    const responderDept = currentUser?.dept || '';
+    try {
+      const res = await fetch('/api/equipment/it/requests', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          requestDate: getKSTDateString(),
+          requester: adminComposeReq.requester || '-',
+          requester_email: adminComposeReq.requester_email || null,
+          requester_id: adminComposeReq.requester_id || null,
+          dept: adminComposeReq.dept || '-',
+          assetInfo: adminComposeReq.assetInfo || `${adminComposeReq.assetCode} / -`,
+          content: '',
+          status: '관리자 의견발송',
+          assetCode: adminComposeReq.assetCode,
+          assetType: adminComposeReq.assetType,
+          adminOpinion: editOpinion.trim(),
+          responderName: responder,
+          responderDept,
+        }),
+      });
+      if (res.ok) {
+        alert('✅ 사용자에게 관리자 요청이 전송되었습니다.');
+        closeAdminCompose();
+        fetchData();
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        alert(`❌ 전송 실패: ${errData.error || '서버 오류'}`);
+      }
+    } catch (e) {
+      console.error(e);
+      alert('❌ 서버 통신 오류가 발생했습니다.');
+    }
+  };
+
+  const isLV1 = useMemo(() => !!currentUser?.roles?.includes('LV_1'), [currentUser]);
+
+  const handleDeleteSelected = async () => {
+    if (!isLV1) {
+      return alert('❌ 삭제 권한이 거부되었습니다. (LV_1 전용)');
+    }
+    if (selectedIds.size === 0) {
+      return alert('삭제할 항목을 체크박스로 선택해 주세요.');
+    }
+
+    // 목록은 대표(root)만 보이므로, 선택 건의 연계 회신까지 함께 삭제해야 잔여 행이 생기지 않음
+    const idsToDelete = new Set<string>();
+    selectedIds.forEach((rawId) => {
+      const id = String(rawId);
+      let rootId = id;
+      const seen = new Set<string>();
+      while (threadIndex.parentOf.has(rootId) && !seen.has(rootId)) {
+        seen.add(rootId);
+        rootId = threadIndex.parentOf.get(rootId) as string;
+      }
+      if (!requests.some((r) => String(r.id) === rootId)) rootId = id;
+      idsToDelete.add(rootId);
+      idsToDelete.add(id);
+      (threadIndex.childrenOf.get(rootId) || []).forEach((c) => idsToDelete.add(String(c.id)));
+    });
+
+    const ids = Array.from(idsToDelete);
+    const threadCount = selectedIds.size;
+    const extra = ids.length - threadCount;
+    if (
+      !confirm(
+        extra > 0
+          ? `선택한 ${threadCount}건(+연계 회신 ${extra}건, 합계 ${ids.length}건)을 영구 삭제하시겠습니까?\n이 작업은 되돌릴 수 없습니다.`
+          : `선택한 송수신 이력 ${ids.length}건을 영구 삭제하시겠습니까?\n이 작업은 되돌릴 수 없습니다.`
+      )
+    ) {
+      return;
+    }
+
+    try {
+      const res = await fetch(`/api/equipment/it/requests?ids=${ids.map(encodeURIComponent).join(',')}`, { method: 'DELETE' });
+      if (res.ok) {
+        alert(`✅ ${ids.length}건이 정상적으로 삭제되었습니다.`);
+        setSelectedIds(new Set());
+        fetchData();
+      } else {
+        alert('❌ 서버 삭제 처리에 실패했습니다.');
+      }
+    } catch (e) {
+      console.error(e);
+      alert('❌ 서버 통신 오류가 발생했습니다.');
+    }
+  };
+
+  const availableYears = useMemo(() => {
+    const years = requests
+      .map((r) => getKSTYearMonthParts(r.requestDate || r.createdAt)?.year)
+      .filter(Boolean) as string[];
+    const unique = Array.from(new Set(years));
+    const curr = String(getKSTNowYearMonth().year);
+    if (!unique.includes(curr)) unique.push(curr);
+    return unique.sort((a, b) => b.localeCompare(a));
+  }, [requests]);
+
+  const sortedOrgs = useMemo(() => flattenUnitsInSortOrder(orgUnits), [orgUnits]);
+  const organizationUnit = useMemo(
+    () =>
+      sortedOrgs.find((u) => String(u.unit_type || '').trim().toUpperCase() === 'ORGANIZATION') ||
+      sortedOrgs.find((u) => !u.parent_id) ||
+      null,
+    [sortedOrgs]
+  );
+  const isOrgWideFilter = useMemo(() => {
+    if (filterDept === 'ALL') return true;
+    if (!filterDept) return true;
+    if (organizationUnit && filterDept === organizationUnit.unit_name) return true;
+    const unit = sortedOrgs.find((u) => u.unit_name === filterDept);
+    return String(unit?.unit_type || '').trim().toUpperCase() === 'ORGANIZATION';
+  }, [filterDept, organizationUnit, sortedOrgs]);
+
+  const selectedOrgUnit = useMemo(
+    () =>
+      isOrgWideFilter
+        ? organizationUnit
+        : sortedOrgs.find((o) => o.unit_name === filterDept) || null,
+    [sortedOrgs, filterDept, isOrgWideFilter, organizationUnit]
+  );
+  const selectedDeptNames = useMemo(() => {
+    if (isOrgWideFilter || !filterDept) return null;
+    return descendantUnitNames(filterDept, orgUnits);
+  }, [filterDept, orgUnits, isOrgWideFilter]);
+
+  useEffect(() => {
+    if (!organizationUnit?.unit_name) return;
+    if (filterDept === 'ALL' || !filterDept) {
+      setFilterDept(String(organizationUnit.unit_name));
+    }
+  }, [organizationUnit, filterDept]);
+
+  useEffect(() => {
+    if (!orgMenuOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (orgMenuRef.current && !orgMenuRef.current.contains(e.target as Node)) setOrgMenuOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOrgMenuOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [orgMenuOpen]);
+
+  const matchesDeptFilter = (row: { dept?: string | null; unit_id?: string | null }) => {
+    if (isOrgWideFilter) return true;
+    const selectedId = String(selectedOrgUnit?.id || '').trim();
+    if (selectedId) {
+      return rowMatchesOrgUnit({
+        selectedOrgId: selectedId,
+        units: orgUnits,
+        unitId: row.unit_id,
+        legacyNames: [row.dept],
+      });
+    }
+    const name = String(row.dept || '').trim();
+    if (!name || name === '-') return false;
+    if (name === filterDept) return true;
+    return selectedDeptNames ? selectedDeptNames.has(name) : false;
+  };
+
+  const uniqueTypes = useMemo(() => {
+    const counts: Record<string, number> = {};
+    requests.forEach((r) => {
+      const key = String(r.assetType || r.category || '').trim();
+      if (!key) return;
+      counts[key] = (counts[key] || 0) + 1;
+    });
+    return Object.entries(counts)
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'ko'))
+      .map(([k]) => k);
+  }, [requests]);
+
+  const threadIndex = useMemo(() => {
+    const parentOf = new Map<string, string>();
+    requests.forEach((r) => {
+      const pid = getThreadParentId(r, requests);
+      if (pid) parentOf.set(String(r.id), pid);
+    });
+    const childrenOf = new Map<string, any[]>();
+    const rootOf = (id: string) => {
+      let cur = String(id);
+      const seen = new Set<string>();
+      while (parentOf.has(cur) && !seen.has(cur)) {
+        seen.add(cur);
+        cur = parentOf.get(cur) as string;
+      }
+      return cur;
+    };
+    requests.forEach((r) => {
+      const rootId = rootOf(String(r.id));
+      if (rootId === String(r.id)) return;
+      if (!requests.some((x) => String(x.id) === rootId)) return;
+      const list = childrenOf.get(rootId) || [];
+      list.push(r);
+      childrenOf.set(rootId, list);
+    });
+    childrenOf.forEach((list) => list.sort((a, b) => reqTime(a) - reqTime(b)));
+    return { parentOf, childrenOf };
+  }, [requests]);
+
+  const filteredThreads = useMemo(() => {
+    const codeQ = codeQuery.toLowerCase().trim();
+    const modelQ = modelQuery.toLowerCase().trim();
+    const matchesMeta = (r: any) => {
+      const ym = getKSTYearMonthParts(r.requestDate || r.createdAt);
+      const matchYear = selectedYear === 'ALL' || ym?.year === selectedYear;
+      const matchMonth = selectedMonth === 'ALL' || ym?.month === selectedMonth;
+      const matchDept = matchesDeptFilter({
+        dept: r.dept || r.department,
+        unit_id: r.unit_id,
+      });
+      const rType = r.assetType || r.category || '일반';
+      const matchType = filterType === 'ALL' || rType === filterType;
+      const model = parseHistoryModel(r);
+      const matchCode = !codeQ || String(r.assetCode || r.code || '').toLowerCase().includes(codeQ);
+      const matchModel = !modelQ || String(model).toLowerCase().includes(modelQ);
+      const userQ = userQuery.toLowerCase().trim();
+      const email = String(r.requester_email || r.user_email || '').trim().toLowerCase();
+      const emailLocal = email.includes('@') ? email.slice(0, email.indexOf('@')) : email;
+      const matchUser =
+        !userQ ||
+        String(r.requester || r.name || '').toLowerCase().includes(userQ) ||
+        email.includes(userQ) ||
+        emailLocal.includes(userQ);
+      return matchYear && matchMonth && matchDept && matchType && matchCode && matchModel && matchUser;
+    };
+
+    const roots = requests.filter((r) => {
+      const pid = threadIndex.parentOf.get(String(r.id));
+      return !pid || !requests.some((x) => String(x.id) === pid);
+    });
+
+    return roots
+      .map((root) => ({
+        root,
+        children: threadIndex.childrenOf.get(String(root.id)) || [],
+      }))
+      .filter((t) => {
+        // 연계필터는 대표(root) 줄 기준 — 하위 회신은 스레드에 자동 포함
+        if (!matchesMeta(t.root)) return false;
+        // 최신 행 종결만 처리 완료 — 중간 이력 종결과 구분
+        const threadClosed = isThreadClosed(t.root, t.children);
+        if (filterStatus === 'PENDING') return !threadClosed; // 문의/답변 진행
+        if (filterStatus === 'DONE') return threadClosed; // 처리 완료(종료)
+        return true;
+      })
+      .sort((a, b) => {
+        // 처리 완료: 대표줄 기준 랭크 / 그 외: 스레드 최신 활동순
+        if (filterStatus === 'DONE') {
+          const closedAt = (r: any) =>
+            isClosedStatus(String(r?.status || ''))
+              ? toSortableTime(r.completedAt || r.updatedAt || r.requestDate || r.createdAt || 0)
+              : 0;
+          const ta = Math.max(closedAt(a.root), ...a.children.map(closedAt), reqTime(a.root));
+          const tb = Math.max(closedAt(b.root), ...b.children.map(closedAt), reqTime(b.root));
+          if (tb !== ta) return tb - ta;
+          return String(b.root.id || '').localeCompare(String(a.root.id || ''));
+        }
+        const ta = Math.max(reqTime(a.root), ...a.children.map(reqTime));
+        const tb = Math.max(reqTime(b.root), ...b.children.map(reqTime));
+        return tb - ta;
+      });
+  }, [requests, threadIndex, selectedYear, selectedMonth, filterStatus, filterDept, filterType, codeQuery, modelQuery, userQuery, selectedDeptNames, orgUnits, isOrgWideFilter]);
+
+  const filteredRequests = useMemo(
+    () => filteredThreads.map((t) => t.root),
+    [filteredThreads]
+  );
+
+  const totalPages = Math.max(1, Math.ceil(filteredThreads.length / itemsPerPage));
+  const safePage = Math.min(currentPage, totalPages);
+  const currentThreads = filteredThreads.slice((safePage - 1) * itemsPerPage, safePage * itemsPerPage);
+
+  useEffect(() => {
+    if (currentPage > totalPages) setCurrentPage(totalPages);
+  }, [currentPage, totalPages]);
+
+  const paginationPages = useMemo(() => {
+    if (totalPages <= 7) {
+      return Array.from({ length: totalPages }, (_, i) => i + 1);
+    }
+    const pages = new Set<number>([1, totalPages, safePage - 1, safePage, safePage + 1]);
+    if (safePage <= 3) [2, 3, 4].forEach((p) => pages.add(p));
+    if (safePage >= totalPages - 2) [totalPages - 3, totalPages - 2, totalPages - 1].forEach((p) => pages.add(p));
+    return Array.from(pages)
+      .filter((p) => p >= 1 && p <= totalPages)
+      .sort((a, b) => a - b);
+  }, [totalPages, safePage]);
+
+  const toggleSelectAllFiltered = () => {
+    const allIds = filteredRequests.map((r) => r.id);
+    const allSelected = allIds.length > 0 && allIds.every((id) => selectedIds.has(id));
+    if (allSelected) setSelectedIds(new Set());
+    else setSelectedIds(new Set(allIds));
+  };
+
+  const allFilteredSelected =
+    filteredRequests.length > 0 && filteredRequests.every((r) => selectedIds.has(r.id));
+
+  const openReqModal = (req: any) => {
+    setAdminComposeReq(null);
+    setCommEditMode(false);
+    setEditingReq(req);
+    setEditOpinion(
+      isWaitingForUser(req.status) ? opinionDisplay(req.adminOpinion) : ''
+    );
+  };
+
+  const renderLedgerRow = (
+    req: any,
+    opts: {
+      rowNo: number | string;
+      children?: any[];
+      userLabel?: string;
+      adminLabel?: string;
+      threadClosed?: boolean;
+    }
+  ) => {
+    const relatedChildren = opts.children || [];
+    const threadMembers = [req, ...relatedChildren];
+    const latestRelated =
+      [...threadMembers].sort((a, b) => {
+        const d = reqTime(b) - reqTime(a);
+        if (d !== 0) return d;
+        return String(b.id || '').localeCompare(String(a.id || ''));
+      })[0] || req;
+    const stage = threadStage(req, relatedChildren);
+    const modelName = parseHistoryModel(req);
+    const rowDate =
+      getKSTDateString(latestRelated.completedAt || latestRelated.requestDate || latestRelated.createdAt) ||
+      latestRelated.completedAt ||
+      latestRelated.requestDate ||
+      '-';
+    const userLabel = opts.userLabel || threadUserLabel(req);
+    const adminLabel = opts.adminLabel || pickThreadAdminLabel(threadMembers);
+    const adminStarted = isAdminInquiryRow(req);
+    const isNew = stage === 'NEW';
+    const isDone = stage === 'DONE';
+    const userNewReceiptClass = isDone ? 'font-black text-slate-900' : 'font-black text-amber-600';
+    const adminNewReceiptClass = isDone ? 'font-black text-slate-900' : 'font-black text-blue-600';
+    const counterpartLabel = isDone ? '처리 완료(종료)' : isNew ? '대기중' : '진행중';
+    const counterpartClass = isDone
+      ? 'font-black text-slate-800'
+      : isNew
+        ? 'font-bold text-slate-400'
+        : 'font-black text-blue-600';
+    const actionLabel = isDone ? '처리 완료(종료)' : isNew ? '신규접수' : '진행중';
+    const actionTextClass = isDone
+      ? 'text-slate-900'
+      : isNew
+        ? 'text-amber-600'
+        : 'text-blue-600';
+
+    return (
+      <tr
+        key={req.id}
+        className={`h-12 transition-colors ${
+          selectedIds.has(req.id) ? 'bg-slate-50' : 'bg-white hover:bg-slate-50/50'
+        }`}
+      >
+        <td className="px-2 text-center">
+          <input
+            type="checkbox"
+            checked={selectedIds.has(req.id)}
+            onChange={() => {
+              const next = new Set(selectedIds);
+              next.has(req.id) ? next.delete(req.id) : next.add(req.id);
+              setSelectedIds(next);
+            }}
+            className="accent-slate-800"
+          />
+        </td>
+        <td className="px-2 text-center font-mono text-slate-500 tabular-nums">{opts.rowNo}</td>
+        <td className="px-2 text-left">
+          {userLabel ? (
+            <span className="text-slate-800 truncate block" title={userLabel}>{userLabel}</span>
+          ) : (
+            <span className="text-slate-300">-</span>
+          )}
+        </td>
+        <td className="px-2 text-center">
+          <span className="text-[9px] font-black uppercase tracking-wider text-indigo-600 bg-indigo-50 border border-indigo-100 px-2 py-0.5 rounded-md whitespace-nowrap">
+            {req.assetType || req.category || '일반'}
+          </span>
+        </td>
+        <td className="px-2 text-slate-900 truncate" title={req.assetCode || ''}>
+          {req.assetCode || req.code || '-'}
+        </td>
+        <td className="px-2 text-slate-800 truncate" title={modelName}>
+          {modelName}
+        </td>
+        <td className="px-2 truncate" title={adminStarted ? counterpartLabel : '신규접수'}>
+          {adminStarted ? (
+            <span className={counterpartClass}>{counterpartLabel}</span>
+          ) : (
+            <span className={userNewReceiptClass}>신규접수</span>
+          )}
+        </td>
+        <td className="px-2 border-l border-slate-200 truncate" title={adminStarted ? '신규접수' : counterpartLabel}>
+          {adminStarted ? (
+            <span className={adminNewReceiptClass}>신규접수</span>
+          ) : (
+            <span className={counterpartClass}>{counterpartLabel}</span>
+          )}
+        </td>
+        <td className="px-2 text-left">
+          {adminLabel ? (
+            <span className="text-slate-800 truncate block" title={adminLabel}>{adminLabel}</span>
+          ) : (
+            <span className="text-slate-300">-</span>
+          )}
+        </td>
+        <td className="px-2 text-center whitespace-nowrap tabular-nums text-slate-800 border-l border-slate-200">{rowDate}</td>
+        <td className="px-2 text-center overflow-hidden">
+          <button
+            type="button"
+            title={
+              !isDone
+                ? '클릭하여 대화 내역 확인 · 답변/조치'
+                : '클릭하여 대화 내역 확인'
+            }
+            onClick={() => openReqModal(latestRelated)}
+            className="inline-block max-w-full border px-2 py-1 rounded-md text-[10px] font-black whitespace-nowrap bg-white text-indigo-600 border-indigo-200 hover:bg-indigo-50 shadow-sm transition-colors"
+          >
+            상세보기
+          </button>
+        </td>
+        <td className="px-2 text-center overflow-hidden">
+          <span className={`text-[11px] font-black whitespace-nowrap ${actionTextClass}`}>
+            {actionLabel}
+          </span>
+        </td>
+      </tr>
+    );
+  };
+
+  if (loading) return <LoadingState />;
+
+  return (
+    <div className="w-full max-w-[1750px] mx-auto space-y-6 p-8 font-sans text-slate-900 pb-24 animate-fade-in">
+      <ItMasterPageBanner
+        label="IT Asset Service Requests & History Log"
+        title="전사 IT·업무자산 의견/요청 송수신 이력 아카이브"
+        description="최초 요청만 목록에 표시합니다. 상세보기 클릭 시 전체 대화 내역을 확인·조치할 수 있습니다."
+        menuPath="/equipment/it/master/requests"
+        canEdit={canEdit}
+      />
+
+      <div className={`bg-white border border-slate-200 rounded-[2.5rem] shadow-sm animate-in fade-in duration-300 slide-in-from-top-4 ${orgMenuOpen ? 'overflow-visible' : 'overflow-hidden'}`}>
+        <div className={`p-3 px-4 bg-slate-200/70 border-b border-slate-300 flex items-center gap-2 min-w-0 relative ${orgMenuOpen ? 'z-[80] overflow-visible' : ''}`}>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <div className="w-2.5 h-2.5 rounded-full bg-blue-600 shrink-0" />
+            <h2 className="text-sm font-black text-slate-800 tracking-tight whitespace-nowrap">의견/요청 송수신 대장</h2>
+            <span className="text-[11px] font-bold bg-slate-300/80 text-slate-700 px-1.5 py-0.5 rounded-md whitespace-nowrap">
+              {filteredThreads.length}건
+            </span>
+          </div>
+
+          <div className={`flex items-center gap-1.5 flex-nowrap min-w-0 ml-auto ${orgMenuOpen ? 'overflow-visible relative z-[90]' : 'overflow-x-auto scrollbar-hide'}`}>
+            <div className="flex items-center gap-0.5 bg-white p-0.5 rounded-lg border border-slate-200 shadow-sm shrink-0 h-7 box-border">
+              <button
+                type="button"
+                onClick={() => setFilterStatus('ALL')}
+                className={`h-full px-2 rounded-md text-[10px] font-black transition-all whitespace-nowrap leading-none ${
+                  filterStatus === 'ALL' ? 'bg-slate-800 text-white' : 'text-slate-500 hover:bg-slate-50'
+                }`}
+              >
+                전체
+              </button>
+              <button
+                type="button"
+                onClick={() => setFilterStatus('PENDING')}
+                className={`h-full px-2 rounded-md text-[10px] font-black transition-all whitespace-nowrap leading-none ${
+                  filterStatus === 'PENDING' ? 'bg-amber-500 text-white' : 'text-slate-500 hover:bg-slate-50'
+                }`}
+              >
+                문의/답변 진행
+              </button>
+              <button
+                type="button"
+                onClick={() => setFilterStatus('DONE')}
+                className={`h-full px-2 rounded-md text-[10px] font-black transition-all whitespace-nowrap leading-none ${
+                  filterStatus === 'DONE' ? 'bg-emerald-600 text-white' : 'text-slate-500 hover:bg-slate-50'
+                }`}
+              >
+                처리 완료(종료)
+              </button>
+            </div>
+
+            <div className={`flex items-center gap-1.5 bg-white px-2.5 rounded-lg border border-slate-200 shadow-sm shrink-0 h-7 box-border ${orgMenuOpen ? 'relative z-[90]' : ''}`}>
+              <span className="text-[10px] font-black text-slate-400 uppercase whitespace-nowrap leading-none">사용자조직</span>
+              <div className="relative inline-flex items-center" ref={orgMenuRef}>
+                <button
+                  type="button"
+                  onClick={() => setOrgMenuOpen((open) => !open)}
+                  className={`max-w-[120px] truncate text-left text-[11px] leading-none py-0 px-0 m-0 h-4 inline-flex items-center border-0 appearance-none outline-none cursor-pointer bg-transparent ${
+                    selectedOrgUnit && isBoldOrgType(selectedOrgUnit.unit_type)
+                      ? 'font-black text-slate-900'
+                      : 'font-bold text-slate-800'
+                  }`}
+                >
+                  {selectedOrgUnit?.unit_name || organizationUnit?.unit_name || '조직 선택'}
+                </button>
+                {orgMenuOpen && (
+                  <div className="absolute right-0 top-full mt-1.5 z-[100] min-w-[240px] max-h-72 overflow-y-auto bg-white border border-slate-200 rounded-lg shadow-xl py-1">
+                    {sortedOrgs.map((o) => {
+                      const bold = isBoldOrgType(o.unit_type);
+                      const active =
+                        filterDept === o.unit_name ||
+                        (isOrgWideFilter && o.id === organizationUnit?.id);
+                      return (
+                        <button
+                          key={o.id}
+                          type="button"
+                          onClick={() => {
+                            setFilterDept(String(o.unit_name || ''));
+                            setOrgMenuOpen(false);
+                          }}
+                          className={`w-full text-left pr-3 py-1.5 text-[11px] ${
+                            bold ? 'font-black text-slate-900' : 'font-medium text-slate-600'
+                          } ${active ? 'bg-slate-100' : 'hover:bg-slate-50'}`}
+                          style={{ paddingLeft: `${12 + o.depth * 12}px` }}
+                        >
+                          {o.unit_name}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              <div className="w-px h-3 bg-slate-300 shrink-0" />
+
+              <span className="text-[10px] font-black text-slate-400 uppercase whitespace-nowrap leading-none">분류</span>
+              <select
+                value={filterType}
+                onChange={(e) => setFilterType(e.target.value)}
+                className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent max-w-[88px] h-4 leading-none py-0"
+              >
+                <option value="ALL">전체</option>
+                {uniqueTypes.map((t) => (
+                  <option key={t} value={t}>{t}</option>
+                ))}
+              </select>
+
+              <div className="w-px h-3 bg-slate-300 shrink-0" />
+
+              <span className="text-[10px] font-black text-slate-400 uppercase whitespace-nowrap leading-none">연도</span>
+              <select
+                value={selectedYear}
+                onChange={(e) => {
+                  setSelectedYear(e.target.value);
+                  setSelectedMonth('ALL');
+                }}
+                className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent h-4 leading-none py-0"
+              >
+                <option value="ALL">전체</option>
+                {availableYears.map((year) => (
+                  <option key={year} value={year}>{year}년</option>
+                ))}
+              </select>
+
+              <div className="w-px h-3 bg-slate-300 shrink-0" />
+
+              <span className="text-[10px] font-black text-slate-400 uppercase whitespace-nowrap leading-none">월</span>
+              <select
+                value={selectedMonth}
+                onChange={(e) => setSelectedMonth(e.target.value)}
+                className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent h-4 leading-none py-0"
+              >
+                <option value="ALL">전체</option>
+                {HISTORY_MONTHS.map((month) => (
+                  <option key={month} value={month}>{month}월</option>
+                ))}
+              </select>
+            </div>
+
+            <div className="relative w-28 shrink-0 h-7">
+              <span className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400 text-[10px] leading-none pointer-events-none">🔢</span>
+              <input
+                type="text"
+                placeholder="자산번호"
+                value={codeQuery}
+                onChange={(e) => setCodeQuery(e.target.value)}
+                className="w-full h-7 box-border pl-6 pr-2 py-0 bg-white border border-slate-200 rounded-lg text-[11px] font-bold outline-none focus:border-indigo-500 shadow-sm transition-colors"
+              />
+            </div>
+            <div className="relative w-28 shrink-0 h-7">
+              <span className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400 text-[10px] leading-none pointer-events-none">💻</span>
+              <input
+                type="text"
+                placeholder="모델명"
+                value={modelQuery}
+                onChange={(e) => setModelQuery(e.target.value)}
+                className="w-full h-7 box-border pl-6 pr-2 py-0 bg-white border border-slate-200 rounded-lg text-[11px] font-bold outline-none focus:border-indigo-500 shadow-sm transition-colors"
+              />
+            </div>
+            <div className="relative w-28 shrink-0 h-7">
+              <span className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400 text-[10px] leading-none pointer-events-none">👤</span>
+              <input
+                type="text"
+                placeholder="사용자"
+                value={userQuery}
+                onChange={(e) => setUserQuery(e.target.value)}
+                className="w-full h-7 box-border pl-6 pr-2 py-0 bg-white border border-slate-200 rounded-lg text-[11px] font-bold outline-none focus:border-indigo-500 shadow-sm transition-colors"
+              />
+            </div>
+
+            {isLV1 && (
+              <button
+                type="button"
+                onClick={handleDeleteSelected}
+                className="h-7 px-2 bg-white text-rose-600 border border-rose-200 rounded-lg text-[10px] font-black shadow-sm hover:bg-rose-50 transition-all whitespace-nowrap shrink-0 leading-none"
+              >
+                {selectedIds.size > 0 ? `삭제(LV_1)(${selectedIds.size})` : '삭제(LV_1)'}
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="w-full text-left border-collapse table-fixed min-w-[1480px]">
+            <colgroup>
+              <col className="w-[44px]" />
+              <col className="w-[48px]" />
+              <col className="w-[120px]" />
+              <col className="w-[100px]" />
+              <col className="w-[110px]" />
+              <col className="w-[130px]" />
+              <col className="w-[180px]" />
+              <col className="w-[180px]" />
+              <col className="w-[120px]" />
+              <col className="w-[110px]" />
+              <col className="w-[108px]" />
+              <col className="w-[148px]" />
+            </colgroup>
+            <thead className="bg-slate-100 text-slate-700 text-[10px] font-black tracking-widest border-b border-slate-200">
+              <tr>
+                <th rowSpan={2} className="h-10 px-2 text-center align-middle">
+                  <input
+                    type="checkbox"
+                    title={`필터된 전체 ${filteredRequests.length}건 선택/해제`}
+                    checked={allFilteredSelected}
+                    onChange={toggleSelectAllFiltered}
+                    className="w-3.5 h-3.5 cursor-pointer appearance-none rounded-[3px] border-2 border-indigo-600 bg-white checked:bg-indigo-600 checked:border-indigo-600 relative
+                      after:content-[''] after:absolute after:hidden checked:after:block
+                      after:left-[3px] after:top-[0px] after:w-[4px] after:h-[8px]
+                      after:border-white after:border-r-2 after:border-b-2 after:rotate-45"
+                  />
+                </th>
+                <th rowSpan={2} className="h-10 px-2 text-center align-middle">NO</th>
+                <th colSpan={5} className="h-8 px-2 text-center bg-slate-50 text-slate-600 border-b border-slate-100">
+                  사용자 영역
+                </th>
+                <th colSpan={2} className="h-8 px-2 text-center bg-blue-50 text-blue-700 border-b border-blue-200 border-l border-slate-200">
+                  관리자 영역
+                </th>
+                <th rowSpan={2} className="h-10 px-2 text-center align-middle whitespace-nowrap border-l border-slate-200">요청/처리일자</th>
+                <th rowSpan={2} className="h-10 px-2 text-center align-middle">상세보기</th>
+                <th rowSpan={2} className="h-10 px-2 text-center align-middle whitespace-nowrap">진행상태</th>
+              </tr>
+              <tr>
+                <th className="h-10 px-2 text-left whitespace-nowrap">부서 / 사용자</th>
+                <th className="h-10 px-2 text-center whitespace-nowrap">자산 분류</th>
+                <th className="h-10 px-2">자산번호</th>
+                <th className="h-10 px-2">모델명</th>
+                <th className="h-10 px-2">사용자 요청/답변</th>
+                <th className="h-10 px-2 border-l border-slate-200 bg-blue-50/40 text-blue-800">관리자 요청/답변</th>
+                <th className="h-10 px-2 text-left whitespace-nowrap bg-blue-50/40 text-blue-800">부서 / 관리자</th>
+              </tr>
+            </thead>
+            <tbody className="bg-white divide-y divide-slate-100 text-[11px] font-bold text-slate-700">
+              {currentThreads.length === 0 ? (
+                <tr>
+                  <td colSpan={12} className="p-16 text-center text-slate-400 text-xs">
+                    조건에 맞는 송수신 내역이 없습니다.
+                  </td>
+                </tr>
+              ) : (
+                currentThreads.map((thread, i) => {
+                  const rowNo = filteredThreads.length - ((safePage - 1) * itemsPerPage + i);
+                  const userLabel = threadUserLabel(thread.root);
+                  const adminLabel = pickThreadAdminLabel([thread.root, ...thread.children]);
+                  const threadClosed = isThreadClosed(thread.root, thread.children);
+                  return (
+                      renderLedgerRow(thread.root, {
+                        rowNo,
+                        children: thread.children,
+                        userLabel,
+                        adminLabel,
+                        threadClosed,
+                      })
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        {filteredThreads.length > 0 && (
+          <div className="flex justify-center items-center gap-1.5 py-3 border-t border-slate-100 bg-white flex-wrap">
+            <button
+              type="button"
+              disabled={safePage === 1}
+              onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+              className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors"
+            >
+              이전
+            </button>
+            {paginationPages.map((page, idx) => {
+              const prev = paginationPages[idx - 1];
+              const showEllipsis = idx > 0 && page - (prev || 0) > 1;
+              return (
+                <Fragment key={page}>
+                  {showEllipsis && (
+                    <span className="px-1 text-[11px] font-bold text-slate-400">…</span>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setCurrentPage(page)}
+                    className={`w-8 h-8 rounded-xl font-black text-xs transition-all ${
+                      safePage === page
+                        ? 'bg-slate-800 text-white shadow-sm scale-105'
+                        : 'bg-white border border-slate-200 text-slate-500 hover:bg-slate-50'
+                    }`}
+                  >
+                    {page}
+                  </button>
+                </Fragment>
+              );
+            })}
+            <button
+              type="button"
+              disabled={safePage === totalPages}
+              onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+              className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors"
+            >
+              다음
+            </button>
+          </div>
+        )}
+      </div>
+
+      {editingReq && (() => {
+        const threadMsgs = collectThreadMessages(editingReq, requests);
+        const latest = threadMsgs[threadMsgs.length - 1] || editingReq;
+        const openedIsLatest = String(editingReq.id) === String(latest.id);
+        const threadClosed = isClosedStatus(String(latest.status || ''));
+        const waitingForUser = openedIsLatest && !threadClosed && isWaitingForUser(latest.status);
+        const canAdminReply = canEdit && openedIsLatest && !threadClosed && !isWaitingForUser(latest.status);
+        const turns = threadMsgs.flatMap(threadTurns);
+        const assetModel = parseHistoryModel(editingReq);
+
+        return (
+          <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[700] flex items-center justify-center p-4 animate-in fade-in duration-200">
+            <div
+              className="bg-white w-[500px] border border-slate-200 shadow-2xl p-8 rounded-3xl animate-in zoom-in-95 duration-200 flex flex-col max-h-[90vh]"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <h4 className="text-[14px] font-black text-slate-900 tracking-tight mb-2">
+                {threadClosed
+                  ? '처리 완료(종료)'
+                  : waitingForUser
+                    ? (latest.status === '관리자 답변' ? '관리자 답변' : '관리자 신규접수')
+                    : isIncomingReply(latest, requests)
+                      ? '사용자 답변'
+                      : '사용자 신규접수'}
+              </h4>
+              <p className="text-[10px] font-bold text-slate-400 mb-6 border-b-2 border-slate-900 pb-3">
+                {!canEdit
+                  ? '주고받은 전체 이력을 확인할 수 있습니다 (조회 전용)'
+                  : !openedIsLatest
+                    ? '과거 이력 조회 · 답변/종료는 가장 최근 행의 상태를 눌러 주세요'
+                    : threadClosed
+                      ? '주고받은 전체 이력을 확인할 수 있습니다'
+                      : waitingForUser
+                        ? '사용자 답변 전 · 전송 취소 또는 내용 수정 가능'
+                        : '답변을 작성하거나 처리 완료(종료)할 수 있습니다'}
+              </p>
+
+              <div className="overflow-y-auto flex-1 pr-2 space-y-4 min-h-0">
+                <div className="rounded-xl bg-slate-50 border border-slate-100 px-4 py-3 space-y-2">
+                  <div className="flex justify-between gap-3 text-[11px] font-bold">
+                    <span className="text-slate-400 shrink-0">대상자산</span>
+                    <span className="text-slate-800 text-right">
+                      {editingReq.assetType || editingReq.category || '-'} | {editingReq.assetCode || '-'} / {assetModel}
+                    </span>
+                  </div>
+                  <div className="flex justify-between gap-3 text-[11px] font-bold">
+                    <span className="text-slate-400 shrink-0">대상 사용자</span>
+                    <span className="text-slate-800 text-right">
+                      {editingReq.requester || '-'} ({editingReq.dept || '-'})
+                    </span>
+                  </div>
+                  <div className="flex justify-between gap-3 text-[11px] font-bold">
+                    <span className="text-slate-400 shrink-0">상태</span>
+                    <span className={threadClosed ? 'text-slate-500' : waitingForUser ? 'text-blue-600' : 'text-amber-600'}>
+                      {threadClosed
+                        ? '처리 완료(종료)'
+                        : waitingForUser
+                          ? '사용자 답변 대기중'
+                          : '대화 진행중'}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="border-l-2 border-slate-200 ml-2 space-y-4">
+                  {turns.map((turn, idx) => {
+                    const isAdmin = turn.role === 'admin';
+                    const roleTag = isAdmin ? '관리자' : '사용자';
+                    return (
+                      <div key={`${turn.role}-${idx}`} className="relative pl-5">
+                        <span
+                          className={`absolute -left-[5px] top-2 w-2 h-2 rounded-full ring-2 ring-white ${
+                            isAdmin ? 'bg-blue-500' : 'bg-slate-400'
+                          }`}
+                          aria-hidden
+                        />
+                        <div className="flex items-center justify-between gap-3 mb-1.5">
+                          <span
+                            className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-black whitespace-nowrap ${
+                              isAdmin
+                                ? 'bg-blue-100 text-blue-700'
+                                : 'bg-slate-100 text-slate-600'
+                            }`}
+                          >
+                            [{roleTag}] {turn.name}
+                          </span>
+                          {turn.date && (
+                            <span className="text-[10px] font-bold text-slate-400 tabular-nums shrink-0">
+                              {turn.date}
+                            </span>
+                          )}
+                        </div>
+                        <div
+                          className={`rounded-md border p-3.5 text-[11px] font-semibold whitespace-pre-wrap leading-relaxed ${
+                            isAdmin
+                              ? 'bg-blue-50/40 border-blue-200 text-slate-800'
+                              : 'bg-white border-slate-200 text-slate-800'
+                          }`}
+                        >
+                          {turn.text}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {canAdminReply && (
+                  <div className="border-l-2 border-slate-200 ml-2">
+                    <div className="relative pl-5">
+                      <span
+                        className="absolute -left-[5px] top-2 w-2 h-2 rounded-full bg-blue-500 ring-2 ring-white"
+                        aria-hidden
+                      />
+                      <div className="flex items-center justify-between gap-3 mb-1.5">
+                        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-black whitespace-nowrap bg-blue-100 text-blue-700">
+                          [관리자] 관리자
+                        </span>
+                        <span className="text-[10px] font-bold text-slate-400 tabular-nums shrink-0">작성 중</span>
+                      </div>
+                      <div className="rounded-md border border-blue-200 bg-blue-50/40 p-3.5">
+                        <textarea
+                          value={editOpinion}
+                          onChange={(e) => setEditOpinion(e.target.value)}
+                          placeholder="사용자에게 전달할 답변·조치 내용을 작성하세요."
+                          className="w-full min-h-[8rem] bg-transparent text-[11px] font-semibold text-slate-800 outline-none resize-none placeholder:text-slate-400 leading-relaxed"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                )}
+                {canEdit && waitingForUser && commEditMode && (
+                  <div className="border-l-2 border-slate-200 ml-2">
+                    <div className="relative pl-5">
+                      <span
+                        className="absolute -left-[5px] top-2 w-2 h-2 rounded-full bg-blue-500 ring-2 ring-white"
+                        aria-hidden
+                      />
+                      <div className="flex items-center justify-between gap-3 mb-1.5">
+                        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-black whitespace-nowrap bg-blue-100 text-blue-700">
+                          [관리자] 관리자
+                        </span>
+                        <span className="text-[10px] font-bold text-slate-400 tabular-nums shrink-0">수정 중</span>
+                      </div>
+                      <div className="rounded-md border border-blue-200 bg-blue-50/40 p-3.5">
+                        <textarea
+                          value={editOpinion}
+                          onChange={(e) => setEditOpinion(e.target.value)}
+                          placeholder="사용자에게 전달할 내용을 수정하세요."
+                          className="w-full min-h-[8rem] bg-transparent text-[11px] font-semibold text-slate-800 outline-none resize-none placeholder:text-slate-400 leading-relaxed"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex gap-2 mt-6 pt-4 border-t border-slate-100">
+                {!canEdit ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditingReq(null);
+                      setEditOpinion('');
+                      setCommEditMode(false);
+                    }}
+                    className="flex-1 py-3.5 bg-slate-100 text-slate-600 rounded-xl font-black text-[11px] hover:bg-slate-200 transition-colors"
+                  >
+                    닫기
+                  </button>
+                ) : waitingForUser && commEditMode ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCommEditMode(false);
+                        setEditOpinion(opinionDisplay(latest.adminOpinion));
+                      }}
+                      className="flex-1 py-3.5 bg-slate-100 text-slate-500 rounded-xl font-bold text-[11px] hover:bg-slate-200 transition-colors"
+                    >
+                      편집 취소
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleUpdateAdminOutbound}
+                      className="flex-[2] py-3.5 bg-blue-600 text-white rounded-xl font-black text-[12px] shadow-md hover:bg-blue-700 active:scale-95 transition-all"
+                    >
+                      내용 저장
+                    </button>
+                  </>
+                ) : !openedIsLatest ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingReq(null);
+                        setEditOpinion('');
+                        setCommEditMode(false);
+                      }}
+                      className="flex-1 py-3.5 bg-slate-100 text-slate-600 rounded-xl font-black text-[11px] hover:bg-slate-200 transition-colors"
+                    >
+                      닫기
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => openReqModal(latest)}
+                      className="flex-[1.6] py-3.5 bg-slate-900 text-white rounded-xl font-black text-[12px] shadow-md hover:bg-black active:scale-95 transition-all"
+                    >
+                      최신 행에서 조치
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingReq(null);
+                        setEditOpinion('');
+                        setCommEditMode(false);
+                      }}
+                      className="flex-1 py-3.5 bg-slate-100 text-slate-600 rounded-xl font-black text-[11px] hover:bg-slate-200 transition-colors"
+                    >
+                      닫기
+                    </button>
+                    {waitingForUser && (
+                      <button
+                        type="button"
+                        onClick={() => handleCancelSend(String(latest.id))}
+                        className="flex-1 py-3.5 bg-rose-50 text-rose-600 border border-rose-200 rounded-xl font-black text-[11px] hover:bg-rose-100 transition-colors"
+                      >
+                        전송 취소
+                      </button>
+                    )}
+                    {waitingForUser && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditOpinion(opinionDisplay(latest.adminOpinion));
+                          setCommEditMode(true);
+                        }}
+                        className="flex-1 py-3.5 bg-white text-slate-700 border border-slate-300 rounded-xl font-black text-[11px] hover:bg-slate-50 transition-colors"
+                      >
+                        내용 수정
+                      </button>
+                    )}
+                    {waitingForUser && (
+                      <button
+                        type="button"
+                        onClick={() => submitThreadAction('close')}
+                        className="flex-1 py-3.5 bg-white text-slate-600 border border-slate-300 rounded-xl font-black text-[11px] hover:bg-slate-50 transition-colors"
+                      >
+                        처리 완료(종료)
+                      </button>
+                    )}
+                    {threadClosed && (
+                      <button
+                        type="button"
+                        onClick={() => openAdminCompose(editingReq)}
+                        className="flex-[1.4] py-3.5 bg-slate-900 text-white rounded-xl font-black text-[12px] shadow-md hover:bg-black active:scale-95 transition-all"
+                      >
+                        신규 요청하기
+                      </button>
+                    )}
+                    {canAdminReply && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => submitThreadAction('reply')}
+                          className="flex-[1.4] py-3.5 bg-slate-900 text-white rounded-xl font-black text-[12px] shadow-md hover:bg-black active:scale-95 transition-all"
+                        >
+                          사용자에게 답변 전송
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => submitThreadAction('close')}
+                          className="flex-1 py-3.5 bg-white text-slate-600 border border-slate-300 rounded-xl font-black text-[11px] hover:bg-slate-50 transition-colors"
+                        >
+                          처리 완료(종료)
+                        </button>
+                      </>
+                    )}
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {adminComposeReq && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[710] flex items-center justify-center p-4 animate-in fade-in duration-200">
+          <div
+            className="bg-white w-[500px] border border-slate-200 shadow-2xl p-8 rounded-3xl animate-in zoom-in-95 duration-200 flex flex-col max-h-[90vh]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h4 className="text-[14px] font-black text-slate-900 tracking-tight mb-2">신규 요청하기</h4>
+            <p className="text-[10px] font-bold text-slate-400 mb-6 border-b-2 border-slate-900 pb-3">
+              자산 사용자에게 전달할 요청·의견을 작성해 주세요
+            </p>
+
+            <div className="overflow-y-auto flex-1 pr-2 space-y-4 scrollbar-hide">
+              <div className="rounded-md bg-slate-50 border border-slate-200 px-4 py-3 space-y-2">
+                <div className="flex justify-between gap-3 text-[11px] font-bold">
+                  <span className="text-slate-400 shrink-0">대상자산</span>
+                  <span className="text-slate-800 text-right">
+                    {adminComposeReq.assetType || adminComposeReq.category || '-'} | {adminComposeReq.assetCode || '-'} / {parseHistoryModel(adminComposeReq)}
+                  </span>
+                </div>
+                <div className="flex justify-between gap-3 text-[11px] font-bold">
+                  <span className="text-slate-400 shrink-0">대상 사용자</span>
+                  <span className="text-slate-800 text-right">
+                    {adminComposeReq.requester || '-'} ({adminComposeReq.dept || '-'})
+                  </span>
+                </div>
+              </div>
+
+              <div className="border-l-2 border-slate-200 ml-2">
+                <div className="relative pl-5">
+                  <span
+                    className="absolute -left-[5px] top-2 w-2 h-2 rounded-full bg-blue-500 ring-2 ring-white"
+                    aria-hidden
+                  />
+                  <div className="flex items-center justify-between gap-3 mb-1.5">
+                    <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-black whitespace-nowrap bg-blue-100 text-blue-700">
+                      [관리자] 관리자
+                    </span>
+                    <span className="text-[10px] font-bold text-slate-400 tabular-nums shrink-0">
+                      {formatKSTDateTime(new Date()) !== '-'
+                        ? formatKSTDateTime(new Date())
+                        : getKSTDateString()}
+                    </span>
+                  </div>
+                  <div className="rounded-md border border-blue-200 bg-blue-50/40 p-3.5">
+                    <textarea
+                      value={editOpinion}
+                      onChange={(e) => setEditOpinion(e.target.value)}
+                      placeholder="실사 안내, 자산 확인 요청, 교체 일정 협의 등 사용자에게 전달할 내용을 작성하세요."
+                      className="w-full min-h-[8rem] bg-transparent text-[11px] font-semibold text-slate-800 outline-none resize-none placeholder:text-slate-400 leading-relaxed"
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex gap-2 mt-6 pt-4 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={closeAdminCompose}
+                className="flex-1 py-3.5 bg-slate-100 text-slate-600 rounded-xl font-black text-[11px] hover:bg-slate-200 transition-colors"
+              >
+                닫기
+              </button>
+              {canEdit && (
+                <button
+                  type="button"
+                  onClick={submitAdminOpinionRequest}
+                  className="flex-[2] py-3.5 bg-slate-900 text-white rounded-xl font-black text-[12px] shadow-md hover:bg-black active:scale-95 transition-all"
+                >
+                  사용자에게 의견/요청 전송
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default function MasterRequestModule() {
+  return (
+    <Suspense fallback={<LoadingState />}>
+      <ITMasterRequestContent />
+    </Suspense>
+  );
+}

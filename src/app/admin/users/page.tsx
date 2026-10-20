@@ -5,6 +5,8 @@ import * as XLSX from 'xlsx';
 import {
   DEFAULT_USER_DUTY_OPTIONS,
   DEFAULT_USER_GRADE_OPTIONS,
+  suggestDutyCode,
+  suggestGradeCode,
   type UserJobOption,
 } from '@/lib/user-job-options';
 import { COMPANY_EMAIL_SUFFIX, extractEmailLocalPart } from '@/utils/companyEmail';
@@ -16,12 +18,28 @@ const EMPTY_CREATE_FORM = {
   name_en: '',
   emailLocal: '',
   employee_no: '',
+  extension: '',
   unit_id: '',
   duty: '',
   grade: '',
   role: 'LV_3',
   status: 'Active',
 };
+
+/** 시드 기본 직책·직급 — 삭제(X) 숨김 */
+const SEED_DUTY_CODES = new Set(
+  DEFAULT_USER_DUTY_OPTIONS.map((o) => String(o.code || '').trim().toUpperCase()).filter(Boolean)
+);
+const SEED_GRADE_CODES = new Set(
+  DEFAULT_USER_GRADE_OPTIONS.map((o) => String(o.code || '').trim().toUpperCase()).filter(Boolean)
+);
+
+function isSeedDutyOption(row: UserJobOption) {
+  return SEED_DUTY_CODES.has(String(row.code || '').trim().toUpperCase());
+}
+function isSeedGradeOption(row: UserJobOption) {
+  return SEED_GRADE_CODES.has(String(row.code || '').trim().toUpperCase());
+}
 
 export default function AdminUsersPage() {
   const [data, setData] = useState<any>(null);
@@ -38,6 +56,7 @@ export default function AdminUsersPage() {
     name: string;
     name_en: string;
     employee_no: string;
+    extension: string;
     duty: string;
     duty_en: string;
     grade: string;
@@ -133,6 +152,7 @@ export default function AdminUsersPage() {
       name: u.name || '',
       name_en: u.name_en || '',
       employee_no: u.employee_no || '',
+      extension: u.extension || '',
       duty: u.duty || '',
       duty_en: u.duty_en || '',
       grade: u.grade || '',
@@ -154,6 +174,7 @@ export default function AdminUsersPage() {
         name: editDraft.name.trim(),
         name_en: editDraft.name_en.trim(),
         employee_no: editDraft.employee_no.trim(),
+        extension: editDraft.extension.trim(),
         duty: editDraft.duty,
         duty_en: editDraft.duty_en,
         grade: editDraft.grade,
@@ -229,10 +250,18 @@ export default function AdminUsersPage() {
   const openJobOptionsModal = () => {
     setJobOptionsModal({
       duties: Array.isArray(data?.duties) && data.duties.length > 0
-        ? data.duties.map((d: any) => ({ label: String(d.label || ''), value: String(d.value || '') }))
+        ? data.duties.map((d: any) => ({
+            code: String(d.code || '').trim(),
+            label: String(d.label || ''),
+            value: String(d.value || ''),
+          }))
         : [...DEFAULT_USER_DUTY_OPTIONS],
       grades: Array.isArray(data?.grades) && data.grades.length > 0
-        ? data.grades.map((g: any) => ({ label: String(g.label || ''), value: String(g.value || '') }))
+        ? data.grades.map((g: any) => ({
+            code: String(g.code || '').trim(),
+            label: String(g.label || ''),
+            value: String(g.value || ''),
+          }))
         : [...DEFAULT_USER_GRADE_OPTIONS],
     });
   };
@@ -267,6 +296,7 @@ export default function AdminUsersPage() {
           name_en: createForm.name_en.trim(),
           emailLocal,
           employee_no: createForm.employee_no.trim(),
+          extension: createForm.extension.trim(),
           unit_id: createForm.unit_id || null,
           duty: createForm.duty,
           duty_en: dutyOpt?.value || '',
@@ -402,6 +432,7 @@ export default function AdminUsersPage() {
       u.name?.toLowerCase().includes(s) || 
       u.name_en?.toLowerCase().includes(s) ||
       u.employee_no?.toLowerCase().includes(s) ||
+      u.extension?.toLowerCase().includes(s) ||
       u.unit?.unit_name?.toLowerCase().includes(s) || 
       u.email?.toLowerCase().includes(s) ||
       u.duty?.toLowerCase().includes(s) ||
@@ -426,6 +457,7 @@ export default function AdminUsersPage() {
         '성명(한글)': u.name || '',
         '성명(영문)': u.name_en || '',
         사번: u.employee_no || '',
+        내선번호: u.extension || '',
         '직책(한글)': u.duty || '',
         '직책(영문)': u.duty_en || '',
         '직급(한글)': u.grade || '',
@@ -487,7 +519,7 @@ export default function AdminUsersPage() {
           </button>
           <input 
             type="text" 
-            placeholder="성명/영문명/사번/부서/직책/직급 검색..." 
+            placeholder="성명/영문명/사번/내선/부서/직책/직급 검색..." 
             className="p-3 border border-gray-200 rounded-2xl text-sm w-80 shadow-sm focus:ring-2 focus:ring-blue-500 outline-none bg-white transition-all font-bold"
             onChange={(e) => setSearchTerm(e.target.value)}
           />
@@ -531,6 +563,7 @@ export default function AdminUsersPage() {
               <tr>
                 <th className="p-6 w-44">사용자 성명 (국/영)</th>
                 <th className="p-6 w-52">계정 정보 및 사번</th>
+                <th className="p-6 w-28">내선번호</th>
                 <th className="p-6 w-44">직책 (국/영)</th>
                 <th className="p-6 w-44">직급 (국/영)</th>
                 <th className="p-6 w-48">소속 ORGANIZATION</th>
@@ -600,6 +633,23 @@ export default function AdminUsersPage() {
                         </div>
                       )}
                     </div>
+                  </td>
+
+                  {/* 2️⃣-b 내선번호 */}
+                  <td className="p-4 px-6">
+                    {isEditing ? (
+                      <input
+                        type="text"
+                        placeholder="내선"
+                        value={editDraft.extension}
+                        onChange={(e) => setEditDraft({ ...editDraft, extension: e.target.value })}
+                        className="bg-white px-2 py-1 border border-indigo-200 rounded-lg outline-none font-mono text-slate-600 text-[10px] w-24 focus:border-indigo-400"
+                      />
+                    ) : (
+                      <div className="font-mono text-slate-600 text-[11px]">
+                        {u.extension || '—'}
+                      </div>
+                    )}
                   </td>
 
                   {/* 3️⃣ 직책 */}
@@ -904,23 +954,24 @@ export default function AdminUsersPage() {
                 </label>
               </div>
 
+              <label className="space-y-1.5 block">
+                <span className="text-xs font-semibold text-slate-500">사내메일 *</span>
+                <div className="flex items-stretch overflow-hidden rounded-xl border border-slate-200 focus-within:border-indigo-400 focus-within:ring-2 focus-within:ring-indigo-100">
+                  <input
+                    type="text"
+                    value={createForm.emailLocal}
+                    onChange={(e) => setCreateForm({ ...createForm, emailLocal: e.target.value })}
+                    className="flex-1 px-3.5 py-2.5 text-sm outline-none bg-white"
+                    placeholder="honggd"
+                    autoComplete="off"
+                  />
+                  <span className="px-3 flex items-center bg-slate-50 text-slate-500 text-sm font-medium border-l border-slate-200 whitespace-nowrap">
+                    {COMPANY_EMAIL_SUFFIX}
+                  </span>
+                </div>
+              </label>
+
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <label className="space-y-1.5">
-                  <span className="text-xs font-semibold text-slate-500">사내메일 *</span>
-                  <div className="flex items-stretch overflow-hidden rounded-xl border border-slate-200 focus-within:border-indigo-400 focus-within:ring-2 focus-within:ring-indigo-100">
-                    <input
-                      type="text"
-                      value={createForm.emailLocal}
-                      onChange={(e) => setCreateForm({ ...createForm, emailLocal: e.target.value })}
-                      className="flex-1 px-3.5 py-2.5 text-sm outline-none bg-white"
-                      placeholder="honggd"
-                      autoComplete="off"
-                    />
-                    <span className="px-3 flex items-center bg-slate-50 text-slate-500 text-sm font-medium border-l border-slate-200 whitespace-nowrap">
-                      {COMPANY_EMAIL_SUFFIX}
-                    </span>
-                  </div>
-                </label>
                 <label className="space-y-1.5">
                   <span className="text-xs font-semibold text-slate-500">사번</span>
                   <input
@@ -929,6 +980,16 @@ export default function AdminUsersPage() {
                     onChange={(e) => setCreateForm({ ...createForm, employee_no: e.target.value })}
                     className="w-full px-3.5 py-2.5 border border-slate-200 rounded-xl text-sm font-mono outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100"
                     placeholder="임시 비밀번호로 사용"
+                  />
+                </label>
+                <label className="space-y-1.5">
+                  <span className="text-xs font-semibold text-slate-500">내선번호</span>
+                  <input
+                    type="text"
+                    value={createForm.extension}
+                    onChange={(e) => setCreateForm({ ...createForm, extension: e.target.value })}
+                    className="w-full px-3.5 py-2.5 border border-slate-200 rounded-xl text-sm font-mono outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100"
+                    placeholder="예: 1234"
                   />
                 </label>
               </div>
@@ -1081,8 +1142,8 @@ export default function AdminUsersPage() {
             <div className="px-8 pt-7 pb-5 border-b border-slate-100 shrink-0">
               <h3 className="text-lg font-bold text-slate-900 tracking-tight">직책·직급 옵션 설정</h3>
               <p className="text-sm text-slate-500 mt-1.5 leading-relaxed">
-                직책 및 직급 설정 화면입니다. 시드 기본값으로 복구할 수 있습니다.
-                한글 선택 시 대응 영문이 사용자에게 자동 반영됩니다.
+                직책·직급 옵션입니다. 코드는 한글 입력 시 자동 채워지고, 한글명을 바꿔 저장하면
+                이미 등록된 사용자 직책/직급도 코드 기준으로 함께 갱신됩니다.
               </p>
             </div>
 
@@ -1093,14 +1154,14 @@ export default function AdminUsersPage() {
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <h4 className="text-sm font-bold text-slate-800">직책</h4>
-                      <p className="text-xs text-slate-400 mt-0.5">한글 / 영문 </p>
+                      <p className="text-xs text-slate-400 mt-0.5">코드 / 한글 / 영문</p>
                     </div>
                     <button
                       type="button"
                       onClick={() =>
                         setJobOptionsModal({
                           ...jobOptionsModal,
-                          duties: [...jobOptionsModal.duties, { label: '', value: '' }],
+                          duties: [...jobOptionsModal.duties, { code: '', label: '', value: '' }],
                         })
                       }
                       className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-xs font-semibold text-slate-700 hover:bg-slate-50 hover:border-slate-300 transition-colors"
@@ -1109,7 +1170,8 @@ export default function AdminUsersPage() {
                     </button>
                   </div>
 
-                  <div className="grid grid-cols-[1fr_1fr_2.5rem] gap-2 px-1">
+                  <div className="grid grid-cols-[7.5rem_1fr_1fr_2.5rem] gap-2 px-1">
+                    <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">코드</span>
                     <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">한글</span>
                     <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">영문</span>
                     <span />
@@ -1117,14 +1179,38 @@ export default function AdminUsersPage() {
 
                   <div className="space-y-2.5">
                     {jobOptionsModal.duties.map((row, idx) => (
-                      <div key={`duty-${idx}`} className="grid grid-cols-[1fr_1fr_2.5rem] gap-2 items-center">
+                      <div key={`duty-${idx}`} className="grid grid-cols-[7.5rem_1fr_1fr_2.5rem] gap-2 items-center">
+                        <input
+                          type="text"
+                          placeholder="자동"
+                          value={row.code || ''}
+                          onChange={(e) => {
+                            const next = [...jobOptionsModal.duties];
+                            next[idx] = { ...next[idx], code: e.target.value };
+                            setJobOptionsModal({ ...jobOptionsModal, duties: next });
+                          }}
+                          className="w-full px-2.5 py-2.5 border border-slate-200 rounded-xl text-xs text-slate-700 font-mono bg-slate-50/50 outline-none focus:bg-white focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 transition-colors"
+                          title="한글 입력 시 자동 채움 · 필요 시만 직접 수정"
+                        />
                         <input
                           type="text"
                           placeholder="예: 원장"
                           value={row.label}
                           onChange={(e) => {
+                            const label = e.target.value;
                             const next = [...jobOptionsModal.duties];
-                            next[idx] = { ...next[idx], label: e.target.value };
+                            const prev = next[idx];
+                            const prevAuto = suggestDutyCode(prev.label);
+                            // 코드가 비었거나, 이전 한글에서 자동 채운 값이면 새 한글에 맞춰 갱신
+                            const codeStillAuto =
+                              !String(prev.code || '').trim() ||
+                              String(prev.code || '').trim() === prevAuto;
+                            const suggested = suggestDutyCode(label);
+                            next[idx] = {
+                              ...prev,
+                              label,
+                              code: codeStillAuto && suggested ? suggested : prev.code,
+                            };
                             setJobOptionsModal({ ...jobOptionsModal, duties: next });
                           }}
                           className="w-full px-3.5 py-2.5 border border-slate-200 rounded-xl text-sm text-slate-800 bg-slate-50/50 outline-none focus:bg-white focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 transition-colors"
@@ -1140,21 +1226,25 @@ export default function AdminUsersPage() {
                           }}
                           className="w-full px-3.5 py-2.5 border border-slate-200 rounded-xl text-sm text-slate-700 font-mono bg-slate-50/50 outline-none focus:bg-white focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 transition-colors"
                         />
-                        <button
-                          type="button"
-                          title="삭제"
-                          onClick={() =>
-                            setJobOptionsModal({
-                              ...jobOptionsModal,
-                              duties: jobOptionsModal.duties.filter((_, i) => i !== idx),
-                            })
-                          }
-                          className="h-10 w-10 flex items-center justify-center rounded-xl text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors"
-                        >
-                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                          </svg>
-                        </button>
+                        {isSeedDutyOption(row) ? (
+                          <span className="h-10 w-10" aria-hidden />
+                        ) : (
+                          <button
+                            type="button"
+                            title="삭제"
+                            onClick={() =>
+                              setJobOptionsModal({
+                                ...jobOptionsModal,
+                                duties: jobOptionsModal.duties.filter((_, i) => i !== idx),
+                              })
+                            }
+                            className="h-10 w-10 flex items-center justify-center rounded-xl text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors"
+                          >
+                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                            </svg>
+                          </button>
+                        )}
                       </div>
                     ))}
                   </div>
@@ -1165,14 +1255,14 @@ export default function AdminUsersPage() {
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <h4 className="text-sm font-bold text-slate-800">직급</h4>
-                      <p className="text-xs text-slate-400 mt-0.5">한글 / 영문 </p>
+                      <p className="text-xs text-slate-400 mt-0.5">코드 / 한글 / 영문</p>
                     </div>
                     <button
                       type="button"
                       onClick={() =>
                         setJobOptionsModal({
                           ...jobOptionsModal,
-                          grades: [...jobOptionsModal.grades, { label: '', value: '' }],
+                          grades: [...jobOptionsModal.grades, { code: '', label: '', value: '' }],
                         })
                       }
                       className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-xs font-semibold text-slate-700 hover:bg-slate-50 hover:border-slate-300 transition-colors"
@@ -1181,7 +1271,8 @@ export default function AdminUsersPage() {
                     </button>
                   </div>
 
-                  <div className="grid grid-cols-[1fr_1fr_2.5rem] gap-2 px-1">
+                  <div className="grid grid-cols-[7.5rem_1fr_1fr_2.5rem] gap-2 px-1">
+                    <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">코드</span>
                     <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">한글</span>
                     <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">영문</span>
                     <span />
@@ -1189,14 +1280,37 @@ export default function AdminUsersPage() {
 
                   <div className="space-y-2.5">
                     {jobOptionsModal.grades.map((row, idx) => (
-                      <div key={`grade-${idx}`} className="grid grid-cols-[1fr_1fr_2.5rem] gap-2 items-center">
+                      <div key={`grade-${idx}`} className="grid grid-cols-[7.5rem_1fr_1fr_2.5rem] gap-2 items-center">
+                        <input
+                          type="text"
+                          placeholder="자동"
+                          value={row.code || ''}
+                          onChange={(e) => {
+                            const next = [...jobOptionsModal.grades];
+                            next[idx] = { ...next[idx], code: e.target.value };
+                            setJobOptionsModal({ ...jobOptionsModal, grades: next });
+                          }}
+                          className="w-full px-2.5 py-2.5 border border-slate-200 rounded-xl text-xs text-slate-700 font-mono bg-slate-50/50 outline-none focus:bg-white focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 transition-colors"
+                          title="한글 입력 시 자동 채움 · 필요 시만 직접 수정"
+                        />
                         <input
                           type="text"
                           placeholder="예: 수석전문위원"
                           value={row.label}
                           onChange={(e) => {
+                            const label = e.target.value;
                             const next = [...jobOptionsModal.grades];
-                            next[idx] = { ...next[idx], label: e.target.value };
+                            const prev = next[idx];
+                            const prevAuto = suggestGradeCode(prev.label);
+                            const codeStillAuto =
+                              !String(prev.code || '').trim() ||
+                              String(prev.code || '').trim() === prevAuto;
+                            const suggested = suggestGradeCode(label);
+                            next[idx] = {
+                              ...prev,
+                              label,
+                              code: codeStillAuto && suggested ? suggested : prev.code,
+                            };
                             setJobOptionsModal({ ...jobOptionsModal, grades: next });
                           }}
                           className="w-full px-3.5 py-2.5 border border-slate-200 rounded-xl text-sm text-slate-800 bg-slate-50/50 outline-none focus:bg-white focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 transition-colors"
@@ -1212,21 +1326,25 @@ export default function AdminUsersPage() {
                           }}
                           className="w-full px-3.5 py-2.5 border border-slate-200 rounded-xl text-sm text-slate-700 font-mono bg-slate-50/50 outline-none focus:bg-white focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 transition-colors"
                         />
-                        <button
-                          type="button"
-                          title="삭제"
-                          onClick={() =>
-                            setJobOptionsModal({
-                              ...jobOptionsModal,
-                              grades: jobOptionsModal.grades.filter((_, i) => i !== idx),
-                            })
-                          }
-                          className="h-10 w-10 flex items-center justify-center rounded-xl text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors"
-                        >
-                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                          </svg>
-                        </button>
+                        {isSeedGradeOption(row) ? (
+                          <span className="h-10 w-10" aria-hidden />
+                        ) : (
+                          <button
+                            type="button"
+                            title="삭제"
+                            onClick={() =>
+                              setJobOptionsModal({
+                                ...jobOptionsModal,
+                                grades: jobOptionsModal.grades.filter((_, i) => i !== idx),
+                              })
+                            }
+                            className="h-10 w-10 flex items-center justify-center rounded-xl text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors"
+                          >
+                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                            </svg>
+                          </button>
+                        )}
                       </div>
                     ))}
                   </div>

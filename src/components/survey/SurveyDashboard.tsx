@@ -6,15 +6,6 @@ import { isPastKSTDeadline } from '@/utils/dateUtils';
 import { normalizeGeneralResponsesPayload } from '@/utils/surveyGeneralResponses';
 import { userInSurveyTarget } from '@/lib/survey-target-match';
 
-// 로딩 스켈레톤 (와이드 형태)
-const LoadingSkeleton = () => (
-  <div className="w-full max-w-6xl mx-auto py-16 px-6 space-y-6 animate-pulse">
-    <div className="w-64 h-10 bg-slate-200 rounded-lg mb-12"></div>
-    <div className="w-full h-48 bg-slate-200 rounded-3xl"></div>
-    <div className="w-full h-48 bg-slate-200 rounded-3xl"></div>
-  </div>
-);
-
 export default function SurveyDashboard() {
   const [stats, setStats] = useState({
     general: { pending: 0, total: 0 },
@@ -24,7 +15,6 @@ export default function SurveyDashboard() {
     general: '📊',
     delivery: '📦',
   });
-  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const syncData = async () => {
@@ -58,7 +48,6 @@ export default function SurveyDashboard() {
 
         if (!currentUser) {
           // 💡 미로그인/세션 만료 시 무음 실패 방지
-          setLoading(false);
           return;
         }
 
@@ -66,7 +55,6 @@ export default function SurveyDashboard() {
         currentUser.unit = myUnit || { unit_name: '소속없음' };
         const userEmail = String(currentUser.email || '').trim();
         if (!userEmail) {
-          setLoading(false);
           return;
         }
         const userUnitId = currentUser.unit_id || currentUser.dept_id || currentUser.unit?.id;
@@ -172,14 +160,10 @@ export default function SurveyDashboard() {
       } catch (err) {
         console.error("Dashboard Sync Error:", err);
         alert('대시보드 데이터를 동기화하는 중 오류가 발생했습니다.');
-      } finally {
-        setLoading(false);
       }
     };
     syncData();
   }, []);
-
-  if (loading) return <LoadingSkeleton />;
 
   return (
     <div className="min-h-screen bg-slate-50 font-sans pb-24">

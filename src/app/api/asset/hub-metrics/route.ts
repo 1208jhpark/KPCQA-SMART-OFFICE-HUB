@@ -3,12 +3,13 @@ import prisma from '@/lib/prisma';
 import { authorizeAnyMenuPaths, authErrorToResponse } from '@/lib/server-auth-guard';
 import {
   isPendingSupplyRequest,
-  isReadySupplyRequest,
+  isCompletedSupplyRequest,
 } from '@/utils/supplyRequestStatus';
 import {
   isBusinessCardUserApplyPending,
   isBusinessCardUserReadyPickup,
 } from '@/lib/businesscard-status';
+import { getKSTNowYearMonth, getKSTYearMonthParts } from '@/utils/dateUtils';
 
 export const dynamic = 'force-dynamic';
 
@@ -18,9 +19,7 @@ const HUB_MENU_PATHS = [
   '/asset/supplies/inventory',
   '/asset/supplies/dept',
   '/asset/businesscard/my-page',
-  '/asset/production/apply/request',
-  '/asset/production/apply/history',
-  '/asset/it/personal',
+  '/equipment/it/personal',
 ];
 
 export async function GET() {
@@ -31,10 +30,10 @@ export async function GET() {
       return NextResponse.json({ message: '인증 정보가 누락되었습니다.' }, { status: 400 });
     }
 
-    const [supplyRows, bizRows, prodRows] = await Promise.all([
+    const [supplyRows, bizRows] = await Promise.all([
       prisma.supplyRequest.findMany({
         where: { user_email: { equals: emailRaw, mode: 'insensitive' } },
-        select: { status: true },
+        select: { status: true, processedAt: true, updatedAt: true },
       }),
       prisma.businessCardRequest.findMany({
         where: {
@@ -43,17 +42,19 @@ export async function GET() {
         },
         select: { adminStatus: true },
       }),
-      prisma.productionRequest.findMany({
-        where: {
-          userEmail: { equals: emailRaw, mode: 'insensitive' },
-          isArchived: false,
-        },
-        select: { status: true, options: true },
-      }),
     ]);
 
+    const nowYm = getKSTNowYearMonth();
+    const thisYear = String(nowYm.year);
+    const thisMonth = String(nowYm.month).padStart(2, '0');
+
     const mySupPending = supplyRows.filter((r) => isPendingSupplyRequest(r.status)).length;
-    const mySupReady = supplyRows.filter((r) => isReadySupplyRequest(r.status)).length;
+    /** 내가 신청 · 마스터 지급승인(COMPLETED) · 이번 달(KST) 처리분만 */
+    const mySupMonthlyCompleted = supplyRows.filter((r) => {
+      if (!isCompletedSupplyRequest(r.status)) return false;
+      const ym = getKSTYearMonthParts(r.processedAt || r.updatedAt);
+      return ym?.year === thisYear && ym?.month === thisMonth;
+    }).length;
 
     const myBizPending = bizRows.filter((r) =>
       isBusinessCardUserApplyPending(r.adminStatus)
@@ -62,27 +63,10 @@ export async function GET() {
       isBusinessCardUserReadyPickup(r.adminStatus)
     ).length;
 
-    const myProdAcceptWait = prodRows.filter((r) => {
-      const st = String(r.status || '').toUpperCase();
-      if (st === 'PENDING' || st === 'ACCEPTED') return true;
-      if (st === 'ORDERED') {
-        const opts = (r.options || {}) as Record<string, unknown>;
-        return opts.vendorDispatched !== true;
-      }
-      return false;
-    }).length;
-
-    const myProdInProgress = prodRows.filter((r) => {
-      const st = String(r.status || '').toUpperCase();
-      const opts = (r.options || {}) as Record<string, unknown>;
-      return st === 'ORDERED' && opts.vendorDispatched === true;
-    }).length;
-
     return NextResponse.json(
       {
-        supplies: { myPending: mySupPending, readyPickup: mySupReady },
+        supplies: { myPending: mySupPending, readyPickup: mySupMonthlyCompleted },
         bizcard: { myPending: myBizPending, readyPickup: myBizReady },
-        production: { myPending: myProdAcceptWait, inProgress: myProdInProgress },
       },
       { headers: { 'Cache-Control': 'no-store, max-age=0' } }
     );

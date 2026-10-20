@@ -50,6 +50,16 @@ function getPendingActualStock(
   return catalogStock + reserved;
 }
 
+/** 예약 대기 취소 사유 (드롭다운 고정 · 추가 입력 없음) */
+const CANCEL_REASON_OPTIONS = [
+  '재고부족',
+  '물품단종',
+  '입고지연',
+  '물품불량/파손',
+  '중복신청',
+  '기타',
+] as const;
+
 /** 승인 완료 후 3일(KST) 이내 — 최근 승인 하이라이트 */
 function isRecentlyApproved(d: { status?: string | null; approved_at?: string | Date | null }, withinDays = 3) {
   if (d.status === 'PENDING' || d.status === 'REJECTED' || !d.approved_at) return false;
@@ -182,22 +192,19 @@ function DeptDistributionContent() {
 
   const { year: kstYear } = getKSTNowYearMonth();
   
-  // 🚀 활성 탭 상태 관리 (?tab=DIST|PURCHASE|ARCHIVED)
-  const [activeTab, setActiveTab] = useState<'DIST' | 'PURCHASE' | 'ARCHIVED'>('DIST');
+  // 🚀 활성 탭 상태 관리 (?tab=DIST|ARCHIVED)
+  const [activeTab, setActiveTab] = useState<'DIST' | 'ARCHIVED'>('DIST');
   /** 지급 이력: 기본 = 관리소속(물품 owner) 기준 (장부·승인 후 추적에 유리) */
   const [distViewMode, setDistViewMode] = useState<'SENDER' | 'OWNER'>('OWNER');
 
   // [탭 1] 지급 이력 상태
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [searchItemQuery, setSearchItemQuery] = useState('');
-  const [searchClientQuery, setSearchClientQuery] = useState('');
   const [selectedYear, setSelectedYear] = useState(kstYear.toString());
   const [selectedMonth, setSelectedMonth] = useState<string>('ALL');
   const [distOwnerFilter, setDistOwnerFilter] = useState<string>('ALL');
   const [distSenderFilter, setDistSenderFilter] = useState<string>('ALL');
-  const [selectedClientFilter, setSelectedClientFilter] = useState<string | null>(null);
-  const [otherClientsOpen, setOtherClientsOpen] = useState(false);
-  const otherClientsRef = useRef<HTMLDivElement>(null);
+
   /** GLOBAL_MGMT: Organization 풀 승인대기 */
   const [pendingApprovals, setPendingApprovals] = useState<any[]>([]);
   const [approvalModalOpen, setApprovalModalOpen] = useState(false);
@@ -210,9 +217,12 @@ function DeptDistributionContent() {
 
   useEffect(() => {
     const tab = (searchParams.get('tab') || '').toUpperCase();
-    if (tab === 'PURCHASE' || tab === 'ARCHIVED' || tab === 'DIST') {
-      setActiveTab(tab);
-      if (tab !== 'DIST') setApprovalModalOpen(false);
+    // 입고/매입 장부 탭 제거 — 구링크 ?tab=PURCHASE 는 지급 이력으로
+    if (tab === 'ARCHIVED') {
+      setActiveTab('ARCHIVED');
+      setApprovalModalOpen(false);
+    } else if (tab === 'DIST' || tab === 'PURCHASE' || !tab) {
+      setActiveTab('DIST');
     }
   }, [searchParams]);
 
@@ -236,6 +246,9 @@ function DeptDistributionContent() {
   const [endedOwnerFilter, setEndedOwnerFilter] = useState<string>('ALL');
   const [endedPage, setEndedPage] = useState<number>(1);
   const [selectedEndedIds, setSelectedEndedIds] = useState<Set<string>>(new Set());
+  /** 종료 장부 비고 인라인 편집 */
+  const [memoDrafts, setMemoDrafts] = useState<Record<string, string>>({});
+  const [memoSavingId, setMemoSavingId] = useState<string | null>(null);
 
   const itemsPerPage = 10;
   /** 신청자/물품소속 전환 시 늦게 도착한 응답 무시 */
@@ -491,19 +504,19 @@ function DeptDistributionContent() {
     return false;
   };
 
-  /** 반려 이력 삭제: LV_1 전용 (신청철회는 나의지급대장에서 처리) */
+  /** 취소 이력 삭제: LV_1 전용 (신청철회는 나의지급대장에서 처리) */
   const canDeleteRejected = (d: any) => d?.status === 'REJECTED' && isLv1;
 
   const handleDelete = async (id: string) => {
     const dist = distributions.find((d) => d.id === id);
     if (!dist || !canDeleteRejected(dist)) {
-      return alert('❌ 반려 이력 삭제는 최고 관리자(LV_1)만 가능합니다.');
+      return alert('❌ 취소 이력 삭제는 최고 관리자(LV_1)만 가능합니다.');
     }
-    if (!confirm('이 반려 이력을 영구 삭제하시겠습니까?\n(재고는 이미 복구된 상태이며, 이력만 삭제됩니다.)')) return;
+    if (!confirm('이 취소 이력을 영구 삭제하시겠습니까?\n(재고는 이미 복구된 상태이며, 이력만 삭제됩니다.)')) return;
     const res = await fetch(`/api/marketing/distributions?id=${id}`, { method: 'DELETE' });
     if (res.ok) {
       setDistributions((prev) => prev.filter((d) => d.id !== id));
-      alert('반려 이력이 삭제되었습니다.');
+      alert('취소 이력이 삭제되었습니다.');
       fetchData();
     } else {
       alert(await readApiError(res, '삭제에 실패했습니다.'));
@@ -542,6 +555,50 @@ function DeptDistributionContent() {
     });
     if (res.ok) { alert('활성 리스트로 복원되었습니다.'); fetchData(); }
     else alert(await readApiError(res, '복원에 실패했습니다.'));
+  };
+
+  const memoValue = (item: { id: string; memo?: string | null }) =>
+    memoDrafts[item.id] !== undefined ? memoDrafts[item.id] : String(item.memo || '');
+
+  const saveItemMemo = async (item: {
+    id: string;
+    memo?: string | null;
+    owner_dept?: string | null;
+    owner_unit_id?: string | null;
+  }) => {
+    if (!checkEditPermission(item.owner_dept, item.owner_unit_id)) return;
+    const next = memoValue(item).trim();
+    const prev = String(item.memo || '').trim();
+    if (next === prev) {
+      setMemoDrafts((s) => {
+        const { [item.id]: _, ...rest } = s;
+        return rest;
+      });
+      return;
+    }
+    setMemoSavingId(item.id);
+    try {
+      const res = await fetch('/api/marketing/items', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: item.id, memo: next }),
+      });
+      if (res.ok) {
+        setItems((list) =>
+          list.map((row) => (row.id === item.id ? { ...row, memo: next } : row))
+        );
+        setMemoDrafts((s) => {
+          const { [item.id]: _, ...rest } = s;
+          return rest;
+        });
+      } else {
+        alert(await readApiError(res, '비고 저장 실패'));
+      }
+    } catch {
+      alert('통신 오류가 발생했습니다.');
+    } finally {
+      setMemoSavingId(null);
+    }
   };
 
   /** 종료 물품 영구삭제 — LV_1 전용, 체크박스 선택분 */
@@ -611,7 +668,7 @@ function DeptDistributionContent() {
   };
 
   const handleApprovePending = async (id: string) => {
-    if (!confirm('이 승인 요청을 승인하시겠습니까?\n지급일자가 오늘로 확정됩니다.\n(재고는 신청 시 이미 예약되어 있습니다.)')) return;
+    if (!confirm('이 예약을 확정하시겠습니까?\n(재고는 신청 시 이미 예약되어 있습니다.)')) return;
     const target = pendingApprovals.find((d) => d.id === id);
     const itemId = String(target?.item_id || target?.item?.id || '').trim();
     setApprovalBusyId(id);
@@ -626,7 +683,7 @@ function DeptDistributionContent() {
         }),
       });
       if (!res.ok) {
-        alert(await readApiError(res, '승인 실패'));
+        alert(await readApiError(res, '예약확정 실패'));
         return;
       }
       setPendingApprovals((prev) => prev.filter((d) => d.id !== id));
@@ -641,8 +698,8 @@ function DeptDistributionContent() {
   const handleRejectPending = async () => {
     if (!rejectTarget?.id) return;
     const reason = rejectReason.trim();
-    if (!reason) {
-      alert('반려 사유를 입력해 주세요.');
+    if (!reason || !(CANCEL_REASON_OPTIONS as readonly string[]).includes(reason)) {
+      alert('취소 사유를 선택해 주세요.');
       return;
     }
     const id = rejectTarget.id as string;
@@ -656,7 +713,7 @@ function DeptDistributionContent() {
         body: JSON.stringify({ id, action: 'reject', reject_reason: reason }),
       });
       if (!res.ok) {
-        alert(await readApiError(res, '반려 실패'));
+        alert(await readApiError(res, '취소 실패'));
         return;
       }
       const updated = await res.json().catch(() => null);
@@ -826,8 +883,7 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
   }, [availableDistOwners, availableDistSenders, distOwnerFilter, distSenderFilter]);
   
   const baseFilteredList = useMemo(() => {
-    const itemQ = searchItemQuery.trim().toLowerCase();
-    const clientQ = searchClientQuery.trim().toLowerCase();
+    const q = searchItemQuery.trim().toLowerCase();
     return distributions.filter(d => {
       const ym = getKSTYearMonth(getDistBusinessDate(d) as string);
       const yearMatch = selectedYear === 'ALL' || ym?.year?.toString() === selectedYear;
@@ -839,10 +895,12 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
       const ownerMatch = distOwnerFilter === 'ALL' || (d.item?.owner_dept || '미지정') === distOwnerFilter;
       const senderMatch =
         distSenderFilter === 'ALL' || (d.sender_dept || '미지정') === distSenderFilter;
-      const itemMatch = !itemQ || (d.item?.name || '').toLowerCase().includes(itemQ);
-      const clientMatch = !clientQ || (d.client_name || '').toLowerCase().includes(clientQ);
+      const textMatch =
+        !q ||
+        (d.item?.name || '').toLowerCase().includes(q) ||
+        (d.purpose || '').toLowerCase().includes(q);
         
-      return yearMatch && monthMatch && ownerMatch && senderMatch && itemMatch && clientMatch;
+      return yearMatch && monthMatch && ownerMatch && senderMatch && textMatch;
     })
     // 재고신청(createdAt) 시각 최신순 — 같은 지급일자여도 신청 쌓인 순서. 순번(reverseNo)도 이 기준
     .sort((a, b) => {
@@ -851,85 +909,17 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
       if (tb !== ta) return tb - ta;
       return String(b.id || '').localeCompare(String(a.id || ''));
     });
-  }, [distributions, selectedYear, selectedMonth, distOwnerFilter, distSenderFilter, searchItemQuery, searchClientQuery]);
+  }, [distributions, selectedYear, selectedMonth, distOwnerFilter, distSenderFilter, searchItemQuery]);
   
-  const totalAmountForYear = useMemo(() => {
-    return baseFilteredList.reduce((acc, cur) => {
-      if (cur.status === 'REJECTED' || cur.status === 'PENDING') return acc;
-      return acc + (cur.item?.unit_price || 0) * cur.qty;
-    }, 0);
-  }, [baseFilteredList]);
+  const finalFilteredList = baseFilteredList;
 
-  const totalCountForYear = useMemo(
-    () =>
-      baseFilteredList.filter((d) => d.status !== 'REJECTED' && d.status !== 'PENDING').length,
-    [baseFilteredList]
-  );
-
-  const clientStats = useMemo(() => {
-    const statsMap: Record<string, { price: number; count: number }> = {};
-    baseFilteredList.forEach((d) => {
-      if (d.status === 'REJECTED' || d.status === 'PENDING') return;
-      const amount = (d.item?.unit_price || 0) * d.qty;
-      if (!statsMap[d.client_name]) statsMap[d.client_name] = { price: 0, count: 0 };
-      statsMap[d.client_name].price += amount;
-      statsMap[d.client_name].count += 1;
-    });
-    return Object.entries(statsMap)
-      .map(([name, { price, count }]) => ({
-        name,
-        price,
-        count,
-        percent: totalAmountForYear > 0 ? ((price / totalAmountForYear) * 100).toFixed(1) : '0.0',
-      }))
-      .sort((a, b) => b.price - a.price);
-  }, [baseFilteredList, totalAmountForYear]);
-
-  /** TOP 4 + 기타(N개사) — 카드 슬롯 고정 (register와 동일) */
-  const CLIENT_TOP_N = 4;
-  const topClientStats = useMemo(() => clientStats.slice(0, CLIENT_TOP_N), [clientStats]);
-  const otherClientStats = useMemo(() => clientStats.slice(CLIENT_TOP_N), [clientStats]);
-  const otherClientAgg = useMemo(() => {
-    const price = otherClientStats.reduce((sum, s) => sum + s.price, 0);
-    const count = otherClientStats.reduce((sum, s) => sum + s.count, 0);
-    return {
-      price,
-      count,
-      percent: totalAmountForYear > 0 ? ((price / totalAmountForYear) * 100).toFixed(1) : '0.0',
-    };
-  }, [otherClientStats, totalAmountForYear]);
-  const isOtherClientSelected =
-    !!selectedClientFilter && otherClientStats.some((s) => s.name === selectedClientFilter);
-
-  useEffect(() => {
-    if (!otherClientsOpen) return;
-    const onDoc = (e: MouseEvent) => {
-      if (!otherClientsRef.current?.contains(e.target as Node)) setOtherClientsOpen(false);
-    };
-    document.addEventListener('mousedown', onDoc);
-    return () => document.removeEventListener('mousedown', onDoc);
-  }, [otherClientsOpen]);
-
-  useEffect(() => {
-    setOtherClientsOpen(false);
-  }, [selectedYear, selectedMonth, distOwnerFilter, distSenderFilter, searchItemQuery, searchClientQuery]);
-
-  const finalFilteredList = useMemo(() => {
-    // 칩 미선택: 전체 이력(대기·반려 포함). 칩 선택: 칩 집계와 동일하게 확정만
-    if (!selectedClientFilter) return baseFilteredList;
-    return baseFilteredList.filter(
-      (d) =>
-        d.client_name === selectedClientFilter &&
-        d.status !== 'REJECTED' &&
-        d.status !== 'PENDING'
-    );
-  }, [baseFilteredList, selectedClientFilter]);
-  
   const totalPages = Math.max(1, Math.ceil(finalFilteredList.length / itemsPerPage));
   const paginatedList = finalFilteredList.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
-  
-  // 🚀 selectedMonth 변경 시에도 페이지 초기화되도록 추가
-  useEffect(() => { setCurrentPage(1); setSelectedIds(new Set()); }, [selectedYear, selectedMonth, searchItemQuery, searchClientQuery, selectedClientFilter, distOwnerFilter, distSenderFilter]);
+
+  useEffect(() => {
+    setCurrentPage(1);
+    setSelectedIds(new Set());
+  }, [selectedYear, selectedMonth, searchItemQuery, distOwnerFilter, distSenderFilter]);
 
   const toggleAll = () => {
     const currentPageIds = paginatedList.map(d => d.id);
@@ -1284,26 +1274,22 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
     if (targetList.length === 0) return alert("다운로드할 데이터가 없습니다.");
     const exportData = targetList.map((d) => ({
       '재고신청일': getKSTDateString(d.createdAt),
-      '지급일자':
-        d.status === 'PENDING'
-          ? '지급대기'
-          : d.status === 'REJECTED'
-            ? '반려'
-            : getKSTDateString(d.dist_date || d.createdAt),
-      '상태': d.status === 'REJECTED' ? '반려' : d.status === 'PENDING' ? '지급대기' : '확정',
-      '반려사유': d.reject_reason || '',
-      '고객사(회사명)': d.client_name,
-      '고객사 부서': d.client_dept,
       '물품소속': d.item?.owner_dept || '-',
       '물품명': d.item?.name || '(삭제됨)',
-      '단가(원)': d.item?.unit_price,
       '개수': d.status === 'REJECTED' ? '' : d.qty,
       '단위': d.item?.unit || 'EA',
-      '총금액(원)': d.status === 'REJECTED' ? '' : (d.item?.unit_price || 0) * d.qty,
-      '지급목적': d.purpose,
       '신청자': d.sender_name,
-      '신청자소속': d.sender_dept,
-      '신청자이메일': d.sender_email || '-',
+      '소속부서': d.sender_dept,
+      '비고 (사용 목적 / 배포처 등)': d.purpose || '',
+      '상태':
+        d.status === 'REJECTED'
+          ? '취소'
+          : d.status === 'PENDING'
+            ? '예약대기'
+            : d.approved_at
+              ? '예약확정'
+              : '예약확정',
+      '취소사유': d.reject_reason || '',
     }));
     const ws = XLSX.utils.json_to_sheet(exportData);
     const wb = XLSX.utils.book_new();
@@ -1360,9 +1346,9 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
         '단가(원)': item.unit_price,
         '재고수량': item.current_stock,
         '단위': item.unit || 'EA',
+        '비고 (입고량 / 기타사항 등)': item.memo || '',
         '종료처리자': reg.name,
-        '종료처리자소속': reg.dept,
-        '종료처리자이메일': reg.email || '-',
+        '소속부서': reg.dept,
       };
     });
     const ws = XLSX.utils.json_to_sheet(exportData);
@@ -1398,7 +1384,7 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
             <span className="text-white font-extrabold">부서 지급 관리 대장</span>
           </h1>
           <p className="text-slate-400 text-xs mt-3 leading-relaxed">
-           부서 관리 물품 및 부서원의 지급·입고 이력을 통합 관리합니다.
+           부서 관리 물품 및 부서원의 지급·종료 이력을 통합 관리합니다.
           </p>
           {permissionSummary && isSystemLv1User(currentUser) && (
             <div className="flex flex-wrap items-center gap-2 mt-4 pt-3 border-t border-white/15">
@@ -1442,20 +1428,6 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
           <button
             type="button"
             onClick={() => {
-              setActiveTab('PURCHASE');
-              setApprovalModalOpen(false);
-            }}
-            className={`px-5 py-2 rounded-md text-xs font-black transition-all flex items-center gap-2 ${
-              activeTab === 'PURCHASE'
-                ? 'bg-white text-emerald-600 shadow-sm border border-slate-200/80'
-                : 'text-slate-500 hover:text-slate-800'
-            }`}
-          >
-            <span>📦 입고 / 매입 장부</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => {
               setActiveTab('ARCHIVED');
               setApprovalModalOpen(false);
             }}
@@ -1465,11 +1437,11 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
                 : 'text-slate-500 hover:text-slate-800'
             }`}
           >
-            <span>🛑 종료된 과거 물품</span>
+            <span>🛑 종료 물품 이력관리</span>
           </button>
         </div>
         <p className="text-[10px] text-slate-400 font-bold px-3 hidden sm:block">
-          ※ 탭을 클릭하여 지급·입고·종료 내역을 전환합니다.
+          ※ 탭을 클릭하여 지급·종료 내역을 전환합니다.
         </p>
       </div>
 
@@ -1499,7 +1471,7 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
                     pendingApprovals.length > 0 ? 'text-amber-900' : 'text-slate-700'
                   }`}
                 >
-                  승인 대기 {pendingApprovals.length.toLocaleString()}건
+                  예약 대기 신청 {pendingApprovals.length.toLocaleString()}건
                 </p>
                 <p
                   className={`text-[11px] font-bold mt-0.5 truncate ${
@@ -1508,9 +1480,9 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
                 >
                   {pendingApprovals.length > 0
                     ? canProcessApprovals
-                      ? '전사(KPCQA) 물품 지급 승인 요청 · 클릭하여 확인'
-                      : '전사(KPCQA) 물품 지급 승인 요청 · 열람만 가능 (편집 권한 없음)'
-                    : '대기 중인 요청이 없습니다 · 클릭하여 확인'}
+                      ? '전사 · 신청가능물품'
+                      : '전사 · 신청가능물품 · 열람만 가능'
+                    : '대기 중인 요청이 없습니다'}
                 </p>
               </div>
             </div>
@@ -1519,7 +1491,7 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
                 pendingApprovals.length > 0 ? 'text-amber-600' : 'text-slate-400'
               }`}
             >
-              확인하기 →
+              클릭하여 확인하기 →
             </span>
           </div>
         </button>
@@ -1691,19 +1663,9 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
                     <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-[10px]">📦</span>
                     <input
                       type="text"
-                      placeholder="물품명 검색..."
+                      placeholder="물품명·비고 검색..."
                       value={searchItemQuery}
                       onChange={(e) => setSearchItemQuery(e.target.value)}
-                      className="w-full pl-7 pr-3 py-1.5 bg-white border border-slate-200 rounded-lg text-[11px] font-bold outline-none focus:border-indigo-500 shadow-sm transition-colors"
-                    />
-                  </div>
-                  <div className="relative w-36">
-                    <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-[10px]">🏢</span>
-                    <input
-                      type="text"
-                      placeholder="고객사 검색..."
-                      value={searchClientQuery}
-                      onChange={(e) => setSearchClientQuery(e.target.value)}
                       className="w-full pl-7 pr-3 py-1.5 bg-white border border-slate-200 rounded-lg text-[11px] font-bold outline-none focus:border-indigo-500 shadow-sm transition-colors"
                     />
                   </div>
@@ -1721,186 +1683,8 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
               </div>
             </HeaderLight>
 
-            <div className="p-6 bg-slate-50/70 border-b border-slate-200 grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-              <div className="lg:col-span-3 bg-white p-4 rounded-2xl border border-slate-200 shadow-sm min-h-[110px] flex flex-col justify-center">
-                <span className="text-[9px] font-black text-slate-400 uppercase tracking-wider">
-                  부서 총 지급액/지급건 ({selectedYear === 'ALL' ? '전체' : `${selectedYear}년`})
-                </span>
-                <div className="text-xl font-mono font-black text-indigo-600 mt-1">
-                  {totalAmountForYear.toLocaleString()}
-                  <span className="text-xs text-slate-500 font-sans font-bold">원</span>
-                  <span className="text-slate-300 font-sans mx-1">/</span>
-                  <span className="text-slate-800">{totalCountForYear.toLocaleString()}</span>
-                  <span className="text-xs text-slate-500 font-sans font-bold">건</span>
-                </div>
-              </div>
-              
-              <div className="lg:col-span-9 bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
-                <span className="text-[9px] font-black text-slate-400 uppercase tracking-wider mb-2 block">
-                  고객사별 지급금액 비중 요약 (금액 기준) · TOP {CLIENT_TOP_N}
-                  {otherClientStats.length > 0 ? ` + 기타 ${otherClientStats.length}개사` : ''}
-                  {' '}
-                  (클릭하여 해당 내역만 필터링)
-                </span>
-                {clientStats.length === 0 ? (
-                  <span className="text-xs text-slate-400 font-bold py-2">
-                    지급 통계 데이터가 존재하지 않습니다.
-                  </span>
-                ) : (
-                  <div
-                    className={`grid gap-2 ${
-                      otherClientStats.length > 0
-                        ? 'grid-cols-2 sm:grid-cols-3 lg:grid-cols-5'
-                        : topClientStats.length >= 4
-                          ? 'grid-cols-2 sm:grid-cols-4'
-                          : topClientStats.length === 3
-                            ? 'grid-cols-3'
-                            : topClientStats.length === 2
-                              ? 'grid-cols-2'
-                              : 'grid-cols-1'
-                    }`}
-                  >
-                    {topClientStats.map((stat, idx) => {
-                      const isSelected = selectedClientFilter === stat.name;
-                      return (
-                        <button
-                          key={stat.name}
-                          type="button"
-                          onClick={() => {
-                            setOtherClientsOpen(false);
-                            setSelectedClientFilter((prev) => (prev === stat.name ? null : stat.name));
-                          }}
-                          className={`border rounded-xl px-3 py-2 flex flex-col justify-center text-right min-w-0 transition-colors ${
-                            isSelected
-                              ? 'bg-indigo-100 border-indigo-300 shadow-sm'
-                              : 'bg-slate-50 border-slate-200 hover:bg-white hover:border-slate-300 hover:shadow-sm'
-                          }`}
-                        >
-                          <span
-                            className={`text-[10px] font-black truncate text-left flex items-center gap-1 ${
-                              isSelected ? 'text-indigo-900' : 'text-slate-700'
-                            }`}
-                          >
-                            <span
-                              className={`shrink-0 inline-flex items-center justify-center w-4 h-4 rounded text-[9px] font-black ${
-                                idx === 0
-                                  ? 'bg-amber-400 text-amber-950'
-                                  : idx === 1
-                                    ? 'bg-slate-300 text-slate-700'
-                                    : idx === 2
-                                      ? 'bg-orange-300 text-orange-900'
-                                      : 'bg-slate-200 text-slate-600'
-                              }`}
-                            >
-                              {idx + 1}
-                            </span>
-                            <span className="truncate">{stat.name}</span>
-                          </span>
-                          <span className="text-[11px] font-mono font-black text-indigo-600 mt-0.5">
-                            {stat.price.toLocaleString()}원
-                            <span className="text-slate-400 font-sans font-bold">/{stat.count}건</span>
-                            <strong
-                              className={`text-[10px] ml-1 ${
-                                isSelected ? 'text-indigo-600' : 'text-emerald-500'
-                              }`}
-                            >
-                              ({stat.percent}%)
-                            </strong>
-                          </span>
-                        </button>
-                      );
-                    })}
-
-                    {otherClientStats.length > 0 && (
-                      <div className="relative min-w-0" ref={otherClientsRef}>
-                        <button
-                          type="button"
-                          onClick={() => setOtherClientsOpen((v) => !v)}
-                          className={`w-full h-full border rounded-xl px-3 py-2 flex flex-col justify-center text-right transition-colors ${
-                            isOtherClientSelected || otherClientsOpen
-                              ? 'bg-indigo-100 border-indigo-300 shadow-sm'
-                              : 'bg-slate-50 border-slate-200 hover:bg-white hover:border-slate-300 hover:shadow-sm'
-                          }`}
-                        >
-                          <span
-                            className={`text-[10px] font-black truncate text-left ${
-                              isOtherClientSelected || otherClientsOpen
-                                ? 'text-indigo-900'
-                                : 'text-slate-700'
-                            }`}
-                          >
-                            기타
-                            <span className="text-slate-400 font-bold">
-                              {' '}
-                              (+{otherClientStats.length}개사)
-                            </span>
-                            <span className="ml-0.5 text-slate-400">{otherClientsOpen ? '▴' : '▾'}</span>
-                          </span>
-                          <span className="text-[11px] font-mono font-black text-indigo-600 mt-0.5">
-                            {otherClientAgg.price.toLocaleString()}원
-                            <span className="text-slate-400 font-sans font-bold">
-                              /{otherClientAgg.count}건
-                            </span>
-                            <strong
-                              className={`text-[10px] ml-1 ${
-                                isOtherClientSelected ? 'text-indigo-600' : 'text-emerald-500'
-                              }`}
-                            >
-                              ({otherClientAgg.percent}%)
-                            </strong>
-                          </span>
-                          {isOtherClientSelected && (
-                            <span className="text-[9px] font-black text-indigo-700 truncate text-left mt-0.5">
-                              {selectedClientFilter}
-                            </span>
-                          )}
-                        </button>
-
-                        {otherClientsOpen && (
-                          <div className="absolute right-0 left-0 top-full mt-1 z-30 max-h-56 overflow-y-auto rounded-xl border border-slate-200 bg-white shadow-xl py-1">
-                            {otherClientStats.map((stat, i) => {
-                              const isSelected = selectedClientFilter === stat.name;
-                              return (
-                                <button
-                                  key={stat.name}
-                                  type="button"
-                                  onClick={() => {
-                                    setSelectedClientFilter((prev) =>
-                                      prev === stat.name ? null : stat.name
-                                    );
-                                    setOtherClientsOpen(false);
-                                  }}
-                                  className={`w-full px-3 py-2 flex items-center justify-between gap-2 text-left transition-colors ${
-                                    isSelected
-                                      ? 'bg-indigo-50 text-indigo-900'
-                                      : 'hover:bg-slate-50 text-slate-700'
-                                  }`}
-                                >
-                                  <span className="min-w-0 flex items-center gap-1.5">
-                                    <span className="shrink-0 text-[9px] font-black text-slate-400 w-5">
-                                      {CLIENT_TOP_N + i + 1}
-                                    </span>
-                                    <span className="text-[11px] font-black truncate">{stat.name}</span>
-                                  </span>
-                                  <span className="shrink-0 text-[10px] font-mono font-black text-indigo-600">
-                                    {stat.price.toLocaleString()}원
-                                    <span className="text-slate-400 font-sans">/{stat.count}</span>
-                                    <span className="text-emerald-500 ml-1">({stat.percent}%)</span>
-                                  </span>
-                                </button>
-                              );
-                            })}
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            </div>
-      
             <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse min-w-[1320px] xl:min-w-full">
+              <table className="w-full text-left border-collapse min-w-[800px] xl:min-w-full">
                 <thead className="bg-slate-100 text-slate-700 text-[10px] font-black uppercase tracking-widest border-b border-slate-200">
                   <tr>
                     <th className="h-12 pl-4 w-10 text-center">
@@ -1908,30 +1692,26 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
                     </th>
                     <th className="h-12 px-2 w-10 text-center">NO</th>
                     <th className="h-12 px-2 w-[88px] text-center whitespace-nowrap">재고신청일</th>
-                    <th className="h-12 px-2 w-[88px] text-center whitespace-nowrap">지급일자</th>
-                    <th className="h-12 px-2 w-28 text-left">고객사</th>
-                    <th className="h-12 px-2 w-24 text-left">고객사부서</th>
                     <th className="h-12 px-2 w-24 text-left whitespace-nowrap">물품소속</th>
                     <th className="h-12 px-2 w-36 text-left text-indigo-600">물품명</th>
-                    <th className="h-12 px-2 w-[72px] text-center whitespace-nowrap">단가(원)</th>
                     <th className="h-12 px-2 w-14 text-center whitespace-nowrap">수량</th>
-                    <th className="h-12 px-2 w-[88px] text-center text-indigo-600 whitespace-nowrap">총금액(원)</th>
-                    <th className="h-12 px-2 w-28 text-left">지급목적</th>
-                    <th className="h-12 px-2 w-32 text-left whitespace-nowrap">신청자(소속)</th>
-                    <th className="h-12 px-2 w-28 text-left whitespace-nowrap">이메일</th>
+                    <th className="h-12 px-2 w-32 text-left whitespace-nowrap">신청자</th>
+                    <th className="h-12 px-2 w-52 text-left whitespace-nowrap" title="비고 (사용 목적 / 배포처 등)">
+                      비고 (사용 목적 / 배포처 등)
+                    </th>
+                    <th className="h-12 px-2 w-20 text-center whitespace-nowrap">상태</th>
                     <th className="h-12 pr-4 text-center w-28 whitespace-nowrap">관리액션(Edit)</th>
                   </tr>
                 </thead>
                 <tbody className="bg-white divide-y divide-slate-100 text-[11px] font-bold text-slate-700">
                   {paginatedList.length === 0 ? (
-                    <tr><td colSpan={15} className="p-16 text-center text-slate-400 text-xs">부서 지급 내역 장부가 비어있습니다.</td></tr>
+                    <tr><td colSpan={10} className="p-16 text-center text-slate-400 text-xs">부서 지급 내역 장부가 비어있습니다.</td></tr>
                   ) : paginatedList.map((d, idx) => {
                     const isSelected = selectedIds.has(d.id);
                     const isPending = d.status === 'PENDING';
                     const isRejected = d.status === 'REJECTED';
                     const isRecentApproved = isRecentlyApproved(d);
                     const reqDate = getKSTDateString(d.createdAt);
-                    const distDate = getKSTDateString(d.dist_date || d.createdAt);
                     const reverseNo = finalFilteredList.length - ((currentPage - 1) * itemsPerPage + idx);
                     
                     return (
@@ -1946,9 +1726,13 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
                               ? isSelected
                                 ? 'bg-amber-100/90'
                                 : 'bg-amber-50 hover:bg-amber-100/80'
-                              : isSelected
-                                ? 'bg-indigo-50/50'
-                                : 'hover:bg-slate-50/50'
+                              : isRecentApproved
+                                ? isSelected
+                                  ? 'bg-emerald-100/90'
+                                  : 'bg-emerald-50 hover:bg-emerald-100/80'
+                                : isSelected
+                                  ? 'bg-indigo-50/50'
+                                  : 'hover:bg-slate-50/50'
                         }`}
                       >
                         <td className="pl-4 text-center" onClick={(e)=>e.stopPropagation()}>
@@ -1956,11 +1740,36 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
                         </td>
                         <td className="px-2 text-center font-mono text-slate-500 tabular-nums !text-slate-500 !no-underline" style={isRejected ? { textDecoration: 'none' } : undefined}>{reverseNo}</td>
                         <td className={`px-2 text-center whitespace-nowrap tabular-nums ${isRejected ? '' : 'text-slate-800'}`}>{reqDate}</td>
-                        <td className="px-2 text-center whitespace-nowrap">
+                        <td className="px-2 text-left">
+                          <span className={`inline-block border px-1.5 py-0.5 rounded text-[10px] font-bold whitespace-nowrap ${isRejected ? 'bg-transparent border-red-200 text-red-500' : 'bg-slate-100 text-slate-700 border-slate-200'}`}>{d.item?.owner_dept || '-'}</span>
+                        </td>
+                        <td className={`px-2 text-left truncate max-w-[144px] ${isRejected ? '' : 'text-indigo-700'}`} title={d.item?.name || ''}>{d.item?.name || '(삭제됨)'}</td>
+                        <td className={`px-2 text-center font-mono whitespace-nowrap tabular-nums ${isRejected ? '' : 'text-slate-700'}`}>
+                          {d.qty}
+                          <span className={`text-[10px] font-sans ml-0.5 ${isRejected ? '' : 'text-slate-500'}`}>{d.item?.unit || 'EA'}</span>
+                        </td>
+                        <td className="px-2 text-left truncate">
+                          <span
+                            className={`text-[10px] block truncate ${isRejected ? '' : 'text-slate-500'}`}
+                            title={d.sender_dept || ''}
+                          >
+                            {d.sender_dept || '-'}
+                          </span>
+                          <span
+                            className={`truncate block ${isRejected ? '' : 'text-slate-800'}`}
+                            title={d.sender_name || ''}
+                          >
+                            {d.sender_name || '-'}
+                          </span>
+                        </td>
+                        <td className={`px-2 text-left truncate max-w-[112px] ${isRejected ? '' : 'text-slate-700'}`} title={isRejected && d.reject_reason ? `${d.purpose || ''} / 취소: ${d.reject_reason}` : d.purpose}>
+                          {d.purpose}
+                        </td>
+                        <td className="px-2 text-center whitespace-nowrap !no-underline" style={isRejected ? { textDecoration: 'none' } : undefined}>
                           {isRejected ? (
                             <span className="inline-flex flex-col items-center leading-tight" title={d.reject_reason || ''}>
-                              <span className="inline-block font-black text-red-600 px-0.5 text-[10px]">
-                                반려
+                              <span className="inline-block font-black text-red-600 bg-red-50 border border-red-200 px-1.5 py-0.5 rounded text-[10px]">
+                                취소
                               </span>
                               {d.reject_reason ? (
                                 <span className="text-[9px] font-bold text-red-400 truncate max-w-[88px] mt-0.5">
@@ -1969,41 +1778,19 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
                               ) : null}
                             </span>
                           ) : isPending ? (
-                            <span className="inline-block font-black text-amber-600 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded text-[10px]">
-                              지급대기
+                            <span className="inline-block font-black text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded text-[10px]">
+                              예약대기
+                            </span>
+                          ) : d.approved_at ? (
+                            <span className="inline-block font-black text-emerald-700 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded text-[10px]">
+                              예약확정
                             </span>
                           ) : (
-                            <span className="text-slate-800 tabular-nums">{distDate}</span>
+                            <span className="text-[11px] font-bold text-slate-400" title="공유 승인 없이 즉시 예약된 건">
+                              예약확정
+                            </span>
                           )}
                         </td>
-                        <td className={`px-2 text-left truncate max-w-[112px] ${isRejected ? '' : 'text-slate-800'}`} title={d.client_name}>{d.client_name}</td>
-                        <td className={`px-2 text-left truncate max-w-[96px] ${isRejected ? '' : 'text-slate-700'}`} title={d.client_dept || ''}>{d.client_dept || '-'}</td>
-                        <td className="px-2 text-left">
-                          <span className={`inline-block border px-1.5 py-0.5 rounded text-[10px] font-bold whitespace-nowrap ${isRejected ? 'bg-transparent border-red-200 text-red-500' : 'bg-slate-100 text-slate-700 border-slate-200'}`}>{d.item?.owner_dept || '-'}</span>
-                        </td>
-                        <td className={`px-2 text-left truncate max-w-[144px] ${isRejected ? '' : 'text-indigo-700'}`} title={d.item?.name || ''}>{d.item?.name || '(삭제됨)'}</td>
-                        <td className={`px-2 text-center font-mono whitespace-nowrap tabular-nums ${isRejected ? '' : 'text-slate-700'}`}>{d.item?.unit_price?.toLocaleString()}</td>
-                        <td className={`px-2 text-center font-mono whitespace-nowrap tabular-nums ${isRejected ? '' : 'text-slate-700'}`}>
-                          {d.qty}
-                          <span className={`text-[10px] font-sans ml-0.5 ${isRejected ? '' : 'text-slate-500'}`}>{d.item?.unit || 'EA'}</span>
-                        </td>
-                        <td className={`px-2 text-center font-mono whitespace-nowrap tabular-nums ${isRejected ? '' : 'text-indigo-600'}`}>
-                          {isRejected ? '-' : ((d.item?.unit_price || 0) * d.qty).toLocaleString()}
-                        </td>
-                        <td className={`px-2 text-left truncate max-w-[112px] ${isRejected ? '' : 'text-slate-700'}`} title={isRejected && d.reject_reason ? `${d.purpose || ''} / 반려: ${d.reject_reason}` : d.purpose}>
-                          {d.purpose}
-                        </td>
-                        <td className={`px-2 text-left ${isRejected ? '' : 'text-slate-700'}`}>
-                          <div className="flex flex-col items-start justify-center leading-tight min-w-[7rem]">
-                            <span className="truncate max-w-[120px]" title={d.sender_name || ''}>
-                              {d.sender_name || '-'}
-                            </span>
-                            <span className={`text-[10px] truncate max-w-[120px] ${isRejected ? '' : 'text-slate-500'}`} title={d.sender_dept || ''}>
-                              ({d.sender_dept || '-'})
-                            </span>
-                          </div>
-                        </td>
-                        <td className={`px-2 text-left truncate max-w-[120px] ${isRejected ? '' : 'text-slate-700'}`} title={d.sender_email || ''}>{d.sender_email || '-'}</td>
                         <td className="pr-4 text-center no-underline" style={isRejected ? { textDecoration: 'none' } : undefined} onClick={(e)=>e.stopPropagation()}>
                           {canDeleteRejected(d) ? (
                             <button
@@ -2013,8 +1800,20 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
                             >
                               삭제(LV_1)
                             </button>
-                          ) : isRecentApproved ? (
-                            <span className="text-[10px] font-black text-emerald-600 whitespace-nowrap">승인완료</span>
+                          ) : d.status === 'CONFIRMED' &&
+                            d.approved_at &&
+                            checkEditPermission(d.item?.owner_dept, d.item?.owner_unit_id) ? (
+                            <button
+                              type="button"
+                              disabled={approvalBusyId === d.id}
+                              onClick={() => {
+                                setRejectReason('');
+                                setRejectTarget(d);
+                              }}
+                              className="inline-flex items-center justify-center px-2 py-1 bg-red-50 text-red-500 border border-red-100 rounded text-[9px] font-black hover:bg-red-500 hover:text-white transition-colors whitespace-nowrap disabled:opacity-40"
+                            >
+                              취소
+                            </button>
                           ) : (
                             <span className="text-[10px] text-slate-300 font-bold no-underline" style={{ textDecoration: 'none' }}>-</span>
                           )}
@@ -2038,261 +1837,7 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
       )}
 
       {/* ========================================================================= */}
-      {/* 🚀 [탭 2] 부서 입고(구매) 장부 화면 (물품소속 칼럼 & 필터 적용) */}
-      {/* ========================================================================= */}
-      {activeTab === 'PURCHASE' && (
-        <div className="bg-white border border-slate-200 rounded-[2.5rem] shadow-sm overflow-hidden animate-in fade-in slide-in-from-bottom-4 duration-500">
-          <HeaderLight title="부서 입고 내역 장부" count={finalFilteredPurchases.length}>
-            <div className="flex items-center gap-2 flex-wrap">
-              <div className="relative group/filter flex items-center gap-2 bg-white px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm">
-                <span
-                  role="tooltip"
-                  className="pointer-events-none absolute left-0 top-full mt-1.5 z-50 hidden group-hover/filter:block whitespace-nowrap rounded-lg bg-slate-800 px-2.5 py-1.5 text-[10px] font-bold text-white shadow-lg"
-                >
-                  연도 → 월 → 물품소속 → 신청자소속 · 연계필터
-                </span>
-
-                <span className="text-[10px] font-black text-slate-400 uppercase">연도</span>
-                <select
-                  value={purchaseYear}
-                  onChange={(e) => {
-                    setPurchaseYear(e.target.value);
-                    setPurchaseMonth('ALL');
-                    setPurchaseOwnerFilter('ALL');
-                    setPurchasePurchaserFilter('ALL');
-                  }}
-                  className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent"
-                >
-                  <option value="ALL">전체</option>
-                  {purchaseYears.map((y) => (
-                    <option key={y} value={y}>{y}년</option>
-                  ))}
-                </select>
-
-                <div className="w-px h-3.5 bg-slate-300 mx-0.5"></div>
-
-                <span className="text-[10px] font-black text-slate-400 uppercase">월별</span>
-                <select
-                  value={purchaseMonth}
-                  onChange={(e) => {
-                    setPurchaseMonth(e.target.value);
-                    setPurchaseOwnerFilter('ALL');
-                    setPurchasePurchaserFilter('ALL');
-                  }}
-                  className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent"
-                >
-                  <option value="ALL">전체</option>
-                  {availablePurchaseMonths.map((m) => (
-                    <option key={m} value={m}>{m}월</option>
-                  ))}
-                </select>
-
-                <div className="w-px h-3.5 bg-slate-300 mx-0.5"></div>
-
-                <span className="text-[10px] font-black text-slate-400 uppercase">물품소속</span>
-                <select
-                  value={purchaseOwnerFilter}
-                  onChange={(e) => {
-                    setPurchaseOwnerFilter(e.target.value);
-                    setPurchasePurchaserFilter('ALL');
-                  }}
-                  className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent max-w-[140px]"
-                >
-                  <option value="ALL">전체</option>
-                  {availablePurchaseOwners.map((o) => (
-                    <option key={o} value={o}>{o}</option>
-                  ))}
-                </select>
-
-                <div className="w-px h-3.5 bg-slate-300 mx-0.5"></div>
-
-                <span className="text-[10px] font-black text-slate-400 uppercase">신청자소속</span>
-                <select
-                  value={purchasePurchaserFilter}
-                  onChange={(e) => setPurchasePurchaserFilter(e.target.value)}
-                  className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent max-w-[140px]"
-                >
-                  <option value="ALL">전체</option>
-                  {availablePurchasePurchasers.map((d) => (
-                    <option key={d} value={d}>{d}</option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <div className="relative w-40">
-                  <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-[10px]">📦</span>
-                  <input
-                    type="text"
-                    placeholder="물품명 검색..."
-                    value={purchaseItemQuery}
-                    onChange={(e) => setPurchaseItemQuery(e.target.value)}
-                    className="w-full pl-7 pr-3 py-1.5 bg-white border border-slate-200 rounded-lg text-[11px] font-bold outline-none focus:border-indigo-500 shadow-sm transition-colors"
-                  />
-                </div>
-                <div className="relative w-36">
-                  <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-[10px]">🏪</span>
-                  <input
-                    type="text"
-                    placeholder="공급처 검색..."
-                    value={purchaseVendorQuery}
-                    onChange={(e) => setPurchaseVendorQuery(e.target.value)}
-                    className="w-full pl-7 pr-3 py-1.5 bg-white border border-slate-200 rounded-lg text-[11px] font-bold outline-none focus:border-indigo-500 shadow-sm transition-colors"
-                  />
-                </div>
-              </div>
-
-              <button
-                type="button"
-                onClick={handleDownloadPurchaseExcel}
-                className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-[10px] font-black shadow-sm hover:bg-emerald-700 transition-all whitespace-nowrap"
-              >
-                {selectedPurchaseIds.size > 0
-                  ? `선택 EXCEL 다운로드(${selectedPurchaseIds.size})`
-                  : '화면 목록 EXCEL 다운로드'}
-              </button>
-            </div>
-          </HeaderLight>
-
-          <div className="p-6 bg-slate-50/70 border-b border-slate-200 grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-            <div className="lg:col-span-3 bg-white p-4 rounded-2xl border border-slate-200 shadow-sm min-h-[110px] flex flex-col justify-center">
-              <span className="text-[9px] font-black text-slate-400 uppercase tracking-wider">
-                총 입고(구매)액/건
-              </span>
-              <div className="text-xl font-mono font-black text-emerald-600 mt-1">
-                {totalPurchaseAmount.toLocaleString()}
-                <span className="text-xs text-slate-500 font-sans font-bold">원</span>
-                <span className="text-slate-300 font-sans mx-1">/</span>
-                <span className="text-slate-800">{totalPurchaseCount.toLocaleString()}</span>
-                <span className="text-xs text-slate-500 font-sans font-bold">건</span>
-              </div>
-            </div>
-            
-            <div className="lg:col-span-9 bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
-              <span className="text-[9px] font-black text-slate-400 uppercase tracking-wider mb-2 block">
-                입고 금액 기준 물품 순위 (클릭 시 해당 품목만 필터링)
-              </span>
-              <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-hide max-h-[64px]">
-                {purchaseItemStats.length === 0 ? (
-                  <span className="text-xs text-slate-400 font-bold py-2">입고 매입 통계가 존재하지 않습니다.</span>
-                ) : purchaseItemStats.map(stat => {
-                  const isSelected = selectedItemFilter === stat.name;
-                  return (
-                    <div 
-                      key={stat.name} 
-                      onClick={() => setSelectedItemFilter(prev => prev === stat.name ? null : stat.name)}
-                      className={`shrink-0 border rounded-xl px-3 py-1.5 flex flex-col justify-center text-right min-w-[120px] max-w-[180px] cursor-pointer transition-colors ${
-                        isSelected ? 'bg-emerald-100 border-emerald-300' : 'bg-slate-50 border-slate-200 hover:bg-white hover:border-slate-300'
-                      }`}
-                    >
-                      <span className="text-[10px] font-black text-slate-700 truncate text-left">{stat.name}</span>
-                      <span className="text-[11px] font-mono font-black text-emerald-600 mt-0.5">
-                        {stat.price.toLocaleString()}원
-                        <span className="text-slate-400 font-sans font-bold">/{stat.count}건</span>
-                        <strong className="text-indigo-500 text-[10px] ml-0.5">({stat.percent}%)</strong>
-                      </span>
-                    </div>
-                  )
-                })}
-              </div>
-            </div>
-          </div>
-
-          <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse min-w-[1200px] xl:min-w-full">
-            <thead className="bg-slate-100 text-slate-700 text-[10px] font-black uppercase tracking-widest border-b border-slate-200">
-                <tr>
-                  <th className="h-12 pl-4 w-10 text-center">
-                    <input type="checkbox" checked={paginatedPurchases.length > 0 && paginatedPurchases.every(p => selectedPurchaseIds.has(p.id))} onChange={toggleAllPurchases} className="w-3 h-3 accent-emerald-600 cursor-pointer" />
-                  </th>
-                  <th className="h-12 px-2 w-10 text-center">NO</th>
-                  <th className="h-12 px-2 w-[88px] text-center whitespace-nowrap">입고일자</th>
-                  <th className="h-12 px-2 w-24 text-left whitespace-nowrap">물품소속</th>
-                  <th className="h-12 px-2 w-40 text-left text-emerald-600">물품명</th>
-                  <th className="h-12 px-2 w-[72px] text-center whitespace-nowrap">단가(원)</th>
-                  <th className="h-12 px-2 w-14 text-center whitespace-nowrap">수량</th>
-                  <th className="h-12 px-2 w-[88px] text-center whitespace-nowrap">부대비용(원)</th>
-                  <th className="h-12 px-2 w-[88px] text-center text-emerald-600 whitespace-nowrap">총금액(원)</th>
-                  <th className="h-12 px-2 w-32 text-left">구매/공급처</th>
-                  <th className="h-12 px-2 w-32 text-left whitespace-nowrap">등록자(소속)</th>
-                  <th className="h-12 px-2 w-28 text-left whitespace-nowrap">이메일</th>
-                  <th className="h-12 pr-4 text-center w-28 whitespace-nowrap">관리액션(Edit)</th>
-                </tr>
-              </thead>
-              <tbody className="bg-white divide-y divide-slate-100 text-[11px] font-bold text-slate-700">
-                {paginatedPurchases.length === 0 ? (
-                  <tr><td colSpan={13} className="p-16 text-center text-slate-400 text-xs">배정된 매입 데이터가 없습니다.</td></tr>
-                ) : paginatedPurchases.map((p, idx) => {
-                  const isSelected = selectedPurchaseIds.has(p.id);
-                  const pDate = getKSTDateString(p.purchase_date);
-                  const reverseNo = finalFilteredPurchases.length - ((currentPurchasePage - 1) * itemsPerPage + idx);
-                  const vendorLabel = p.old_vendor || (typeof p.vendor === 'string' ? p.vendor : '') || '-';
-                  let extraCost = Number(p.extra_cost) || 0;
-                  if (!p.extra_cost && typeof p.note === 'string' && p.note.trim().startsWith('{')) {
-                    try {
-                      const parsed = JSON.parse(p.note);
-                      extraCost = Number(parsed?.extra_cost) || 0;
-                    } catch { /* keep plain note */ }
-                  }
-
-                  return (
-                    <tr key={p.id} className={`transition-colors h-12 ${isSelected ? 'bg-emerald-50/50' : 'hover:bg-slate-50/50'}`}>
-                      <td className="pl-4 text-center" onClick={(e)=>e.stopPropagation()}>
-                        <input type="checkbox" checked={isSelected} onChange={() => { const next = new Set(selectedPurchaseIds); next.has(p.id) ? next.delete(p.id) : next.add(p.id); setSelectedPurchaseIds(next); }} className="w-3 h-3 accent-emerald-600 cursor-pointer" />
-                      </td>
-                      <td className="px-2 text-center font-mono text-slate-500 tabular-nums">{reverseNo}</td>
-                      <td className="px-2 text-center text-slate-800 whitespace-nowrap tabular-nums">{pDate}</td>
-                      <td className="px-2 text-left">
-                        <span className="inline-block bg-slate-100 text-slate-700 border border-slate-200 px-1.5 py-0.5 rounded text-[10px] font-bold whitespace-nowrap">{p.item?.owner_dept || '-'}</span>
-                      </td>
-                      <td className="px-2 text-left text-emerald-700 truncate max-w-[160px]" title={p.item?.name || ''}>{p.item?.name || '(삭제됨)'}</td>
-                      <td className="px-2 text-center font-mono text-slate-700 whitespace-nowrap tabular-nums">{p.unit_price?.toLocaleString()}</td>
-                      <td className="px-2 text-center font-mono text-slate-700 whitespace-nowrap tabular-nums">
-                        {p.qty}
-                        <span className="text-[10px] text-slate-500 font-sans ml-0.5">{p.item?.unit || 'EA'}</span>
-                      </td>
-                      <td className="px-2 text-center font-mono text-slate-700 whitespace-nowrap tabular-nums">{extraCost.toLocaleString()}</td>
-                      <td className="px-2 text-center font-mono text-emerald-600 whitespace-nowrap tabular-nums">{(p.total_price || 0).toLocaleString()}</td>
-                      <td className="px-2 text-left text-slate-800 truncate max-w-[130px]" title={vendorLabel}>{vendorLabel}</td>
-                      <td className="px-2 text-left text-slate-700">
-                        <div className="flex flex-col items-start justify-center leading-tight min-w-[7rem]">
-                          <span className="truncate max-w-[120px]" title={p.purchaser_name || ''}>
-                            {p.purchaser_name || '-'}
-                          </span>
-                          <span className="text-[10px] text-slate-500 truncate max-w-[120px]" title={p.purchaser_dept || ''}>
-                            ({p.purchaser_dept || '-'})
-                          </span>
-                        </div>
-                      </td>
-                      <td className="px-2 text-left text-slate-700 truncate max-w-[120px]" title={p.purchaser_email || ''}>{p.purchaser_email || '-'}</td>
-                      <td className="pr-4 text-center" onClick={(e)=>e.stopPropagation()}>
-                        {checkEditPermission(p.item?.owner_dept, p.item?.owner_unit_id) ? (
-                          <button onClick={() => handleCancelPurchase(p.id, p.item?.owner_dept, p.item?.owner_unit_id)} className="w-full py-1.5 bg-red-50 text-red-500 border border-red-100 rounded-md text-[10px] font-black hover:bg-red-500 hover:text-white transition-colors shadow-sm whitespace-nowrap">
-                            입고 취소
-                          </button>
-                        ) : (
-                          <span className="text-[10px] text-slate-300 font-bold">열람만</span>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-
-          {finalFilteredPurchases.length > 0 && (
-            <WindowedPagination
-              currentPage={currentPurchasePage}
-              totalPages={totalPurchasePages}
-              onPageChange={setCurrentPurchasePage}
-            />
-          )}
-        </div>
-      )}
-
-      {/* ========================================================================= */}
-      {/* 🚀 [탭 3] 종료된 물품 화면 (물품소속 위치 이동 및 필터 적용) */}
+      {/* 종료된 물품 화면 (물품소속 위치 이동 및 필터 적용) */}
       {/* ========================================================================= */}
       {activeTab === 'ARCHIVED' && (
         <div className="bg-white border border-slate-200 rounded-[2.5rem] shadow-sm overflow-hidden animate-in fade-in slide-in-from-bottom-4 duration-500">
@@ -2411,7 +1956,7 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
           </HeaderLight>
 
           <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse min-w-[1100px]">
+            <table className="w-full text-left border-collapse min-w-[1080px]">
               <thead className="bg-slate-100 text-slate-700 text-[10px] font-black uppercase tracking-widest border-b border-slate-200">
                 <tr>
                   <th className="h-12 pl-4 w-10 text-center">
@@ -2423,8 +1968,10 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
                   <th className="h-12 px-2 w-48 text-left">물품명</th>
                   <th className="h-12 px-2 w-[72px] text-center whitespace-nowrap">단가(원)</th>
                   <th className="h-12 px-2 w-14 text-center whitespace-nowrap">재고수량</th>
-                  <th className="h-12 px-2 w-32 text-left whitespace-nowrap">종료처리자(소속)</th>
-                  <th className="h-12 px-2 w-28 text-left whitespace-nowrap">이메일</th>
+                  <th className="h-12 px-2 w-52 text-left whitespace-nowrap" title="비고 (입고량 / 기타사항 등)">
+                    비고 (입고량 / 기타사항 등)
+                  </th>
+                  <th className="h-12 px-2 w-32 text-left whitespace-nowrap">종료처리자</th>
                   <th className="h-12 pr-4 text-center w-28 whitespace-nowrap">관리액션(Edit)</th>
                 </tr>
               </thead>
@@ -2435,7 +1982,8 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
                      const reverseNo = filteredEndedItems.length - ((endedPage - 1) * itemsPerPage + index);
                      const endDate = getKSTDateString(item.updatedAt || item.createdAt);
                      const isSelected = selectedEndedIds.has(item.id);
-                     const { name: regName, dept: regDept, email: regEmail } = resolveItemRegistrant(item);
+                     const { name: regName, dept: regDept } = resolveItemRegistrant(item);
+                     const canEditMemo = checkEditPermission(item.owner_dept, item.owner_unit_id);
 
                      return (
                       <tr key={item.id} className={`transition-colors h-12 ${isSelected ? 'bg-slate-100' : 'hover:bg-slate-50'}`}>
@@ -2453,17 +2001,42 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
                           {item.current_stock}
                           <span className="text-[10px] text-slate-500 font-sans ml-0.5">{item.unit || 'EA'}</span>
                         </td>
-                        <td className="px-2 text-left text-slate-700">
-                          <div className="flex flex-col items-start justify-center leading-tight min-w-[7rem]">
-                            <span className="truncate max-w-[120px]" title={regName}>{regName}</span>
-                            <span className="text-[10px] text-slate-500 truncate max-w-[120px]" title={regDept}>({regDept})</span>
-                          </div>
+                        <td
+                          className="px-2 text-left"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          {canEditMemo ? (
+                            <input
+                              type="text"
+                              value={memoValue(item)}
+                              disabled={memoSavingId === item.id}
+                              maxLength={200}
+                              placeholder="비고 (입고량 / 기타사항 등)"
+                              onChange={(e) =>
+                                setMemoDrafts((s) => ({ ...s, [item.id]: e.target.value }))
+                              }
+                              onBlur={() => void saveItemMemo(item)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') e.currentTarget.blur();
+                              }}
+                              className="w-full min-w-[9rem] max-w-[14rem] h-8 px-2 bg-white border border-slate-200 rounded-lg text-[11px] font-bold text-slate-800 outline-none focus:border-indigo-400 focus:ring-1 focus:ring-indigo-100 disabled:opacity-60"
+                            />
+                          ) : (
+                            <span className="text-slate-500 truncate block max-w-[14rem]" title={item.memo || ''}>
+                              {item.memo || '-'}
+                            </span>
+                          )}
                         </td>
-                        <td className="px-2 text-left text-slate-700 truncate max-w-[120px]" title={regEmail}>
-                          {regEmail || '-'}
+                        <td className="px-2 text-left truncate">
+                          <span className="text-[10px] block truncate text-slate-500" title={regDept}>
+                            {regDept || '-'}
+                          </span>
+                          <span className="truncate block text-slate-800" title={regName}>
+                            {regName || '-'}
+                          </span>
                         </td>
                         <td className="pr-4 text-center">
-                          {checkEditPermission(item.owner_dept, item.owner_unit_id) ? (
+                          {canEditMemo ? (
                             <button onClick={() => handleRestoreItem(item.id, item.owner_dept, item.owner_unit_id)} className="px-2.5 py-1.5 bg-white border border-slate-300 text-slate-600 rounded-md text-[10px] font-black hover:bg-slate-800 hover:text-white transition-colors shadow-sm whitespace-nowrap">
                               ↺ 복구(Edit)
                             </button>
@@ -2508,14 +2081,14 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
                     pendingApprovals.length > 0 ? 'text-amber-900' : 'text-slate-800'
                   }`}
                 >
-                  <span>⏳</span> 승인 대기 요청
+                  <span>⏳</span> 예약 대기 신청
                 </h3>
                 <p
                   className={`text-[11px] font-bold mt-0.5 ${
                     pendingApprovals.length > 0 ? 'text-amber-700/80' : 'text-slate-500'
                   }`}
                 >
-                  전사(KPCQA) 물풀 · {pendingApprovals.length.toLocaleString()}건
+                  전사 · 신청가능물품 · {pendingApprovals.length.toLocaleString()}건
                   {!canProcessApprovals ? ' · 열람 전용' : ''}
                 </p>
               </div>
@@ -2537,18 +2110,17 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
                 <p className="py-16 text-center text-sm font-bold text-slate-400">대기 중인 요청이 없습니다.</p>
               ) : (
                 <>
-                <table className="w-full text-left border-collapse min-w-[860px] bg-white rounded-xl overflow-hidden border border-slate-200">
+                <table className="w-full text-left border-collapse min-w-[760px] bg-white rounded-xl overflow-hidden border border-slate-200">
                   <thead className="bg-slate-100 text-[10px] font-black text-slate-600 uppercase tracking-wider sticky top-0 border-b border-slate-200">
                     <tr>
                       <th className="py-2.5 px-2 text-center w-10">NO</th>
                       <th className="py-2.5 px-2 text-center whitespace-nowrap">신청일</th>
                       <th className="py-2.5 px-2 text-left">신청자</th>
-                      <th className="py-2.5 px-2 text-left">고객사</th>
                       <th className="py-2.5 px-2 text-left">물품</th>
                       <th className="py-2.5 px-2 text-center whitespace-nowrap">신청수량</th>
                       <th className="py-2.5 px-2 text-center whitespace-nowrap">실재고</th>
                       <th className="py-2.5 px-2 text-left">목적</th>
-                      <th className="py-2.5 px-2 text-center w-40">처리</th>
+                      <th className="py-2.5 px-2 text-center w-44">처리</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-200 text-[11px] font-bold text-slate-700 bg-white">
@@ -2572,16 +2144,6 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
                             </p>
                             <p className="text-[10px] text-slate-400 truncate max-w-[100px]">
                               {d.sender_dept || '-'}
-                            </p>
-                          </div>
-                        </td>
-                        <td className="py-3 px-2 text-left">
-                          <div className="leading-tight">
-                            <p className="truncate max-w-[120px]" title={d.client_name}>
-                              {d.client_name}
-                            </p>
-                            <p className="text-[10px] text-slate-400 truncate max-w-[120px]">
-                              {d.client_dept || '-'}
                             </p>
                           </div>
                         </td>
@@ -2618,9 +2180,9 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
                                 type="button"
                                 disabled={approvalBusyId === d.id}
                                 onClick={() => handleApprovePending(d.id)}
-                                className="px-2.5 py-1.5 rounded-lg text-[10px] font-black bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-40"
+                                className="px-2.5 py-1.5 rounded-lg text-[10px] font-black bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-40 whitespace-nowrap"
                               >
-                                승인
+                                예약확정
                               </button>
                               <button
                                 type="button"
@@ -2631,7 +2193,7 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
                                 }}
                                 className="px-2.5 py-1.5 rounded-lg text-[10px] font-black bg-white border border-red-200 text-red-500 hover:bg-red-500 hover:text-white disabled:opacity-40"
                               >
-                                반려
+                                취소
                               </button>
                             </div>
                           ) : (
@@ -2665,26 +2227,31 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
         >
           <div className="bg-white w-full max-w-md rounded-2xl shadow-2xl border border-red-100 overflow-hidden">
             <div className="px-5 py-4 border-b border-red-100 bg-red-50/70">
-              <h3 className="text-sm font-black text-red-800">반려 사유 입력</h3>
+              <h3 className="text-sm font-black text-red-800">취소 사유 선택</h3>
               <p className="text-[11px] font-bold text-red-600/80 mt-0.5">
-                이력대장에는 반려로 남으며, 신청 시 예약된 재고가 복구됩니다. (수량 집계 제외)
+                신청자 대장에는 취소로 표시되며, 예약 재고가 복구됩니다.
               </p>
             </div>
             <div className="p-5 space-y-3">
               <div className="rounded-xl bg-slate-50 border border-slate-100 px-3 py-2 text-[11px] font-bold text-slate-600">
                 <p className="truncate">{rejectTarget.item?.name || '(삭제됨)'} · {rejectTarget.qty}ea</p>
                 <p className="truncate text-slate-400 mt-0.5">
-                  {rejectTarget.client_name}
-                  {rejectTarget.client_dept ? ` / ${rejectTarget.client_dept}` : ''}
+                  {rejectTarget.sender_name || '-'}
+                  {rejectTarget.sender_dept ? ` (${rejectTarget.sender_dept})` : ''}
                 </p>
               </div>
-              <textarea
+              <select
                 value={rejectReason}
                 onChange={(e) => setRejectReason(e.target.value)}
-                rows={4}
-                placeholder="반려 사유를 입력해 주세요."
-                className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm font-bold text-slate-700 placeholder:text-slate-300 focus:outline-none focus:ring-2 focus:ring-red-200 focus:border-red-300 resize-none"
-              />
+                className="w-full h-10 rounded-xl border border-slate-200 px-3 text-sm font-bold text-slate-700 bg-white outline-none focus:ring-2 focus:ring-red-200 focus:border-red-300"
+              >
+                <option value="">사유 선택</option>
+                {CANCEL_REASON_OPTIONS.map((opt) => (
+                  <option key={opt} value={opt}>
+                    {opt}
+                  </option>
+                ))}
+              </select>
               <div className="flex gap-2 justify-end pt-1">
                 <button
                   type="button"
@@ -2695,7 +2262,7 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
                   }}
                   className="px-3.5 py-2 rounded-xl text-[11px] font-black bg-white border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:opacity-40"
                 >
-                  취소
+                  닫기
                 </button>
                 <button
                   type="button"
@@ -2703,7 +2270,7 @@ const canProcessApprovals = isLv1 || (isMgmtTree && canEdit);
                   onClick={() => handleRejectPending()}
                   className="px-3.5 py-2 rounded-xl text-[11px] font-black bg-red-600 text-white hover:bg-red-700 disabled:opacity-40"
                 >
-                  반려 확정
+                  취소 확정
                 </button>
               </div>
             </div>

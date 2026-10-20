@@ -126,7 +126,7 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
   const alertNoEditPermission = () => alert('편집 권한이 없습니다.');
   const alertNoLv1Permission = () => alert('LV_1(마스터) 권한이 필요합니다.');
   const disabledActionBtn =
-    'px-2 py-1 rounded text-[10px] font-black bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed opacity-70 whitespace-nowrap';
+    'px-2 py-1 rounded text-[10px] font-medium bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed opacity-70 whitespace-nowrap';
      
   const stats = useMemo(() => {
     const activeItems = items.filter(i => i.is_active !== false); 
@@ -577,7 +577,7 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
         </p>
       </div>
      
-      <div className="bg-white border border-slate-200 rounded-[2.5rem] shadow-sm overflow-hidden animate-in fade-in slide-in-from-top-4 duration-300">
+      <div className="bg-white border border-slate-200 rounded-md shadow-sm overflow-hidden animate-in fade-in slide-in-from-top-4 duration-300">
         <div className="p-3 px-5 bg-slate-200/70 border-b border-slate-300 flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2 flex-wrap min-w-0">
             <div className="w-2.5 h-2.5 rounded-full bg-blue-600 shrink-0"></div>
@@ -590,7 +590,7 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
               <button
                 type="button"
                 onClick={() => setStatFilter('ALL')}
-                className={`px-2.5 py-1 rounded-md text-[10px] font-black transition-colors ${
+                className={`px-2.5 py-1 rounded-md text-[10px] font-medium transition-colors ${
                   statFilter === 'ALL'
                     ? 'bg-slate-800 text-white'
                     : 'bg-white text-slate-500 border border-slate-200 hover:bg-slate-50'
@@ -601,7 +601,7 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
               <button
                 type="button"
                 onClick={() => setStatFilter((prev) => (prev === 'WARNING' ? 'ALL' : 'WARNING'))}
-                className={`px-2.5 py-1 rounded-md text-[10px] font-black transition-colors ${
+                className={`px-2.5 py-1 rounded-md text-[10px] font-medium transition-colors ${
                   statFilter === 'WARNING'
                     ? 'bg-orange-500 text-white'
                     : 'bg-orange-50 text-orange-600 border border-orange-100 hover:bg-orange-100'
@@ -612,7 +612,7 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
               <button
                 type="button"
                 onClick={() => setStatFilter((prev) => (prev === 'OUT' ? 'ALL' : 'OUT'))}
-                className={`px-2.5 py-1 rounded-md text-[10px] font-black transition-colors ${
+                className={`px-2.5 py-1 rounded-md text-[10px] font-medium transition-colors ${
                   statFilter === 'OUT'
                     ? 'bg-red-600 text-white'
                     : 'bg-red-50 text-red-600 border border-red-100 hover:bg-red-100'
@@ -633,8 +633,8 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
               }
               className={
                 canEdit
-                  ? 'px-3 py-2 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-lg text-[11px] font-black hover:bg-emerald-100 transition-all shadow-sm'
-                  : 'px-3 py-2 bg-slate-100 text-slate-400 border border-slate-200 rounded-lg text-[11px] font-black cursor-not-allowed opacity-70'
+                  ? 'px-3 py-2 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-lg text-[11px] font-medium hover:bg-emerald-100 transition-all shadow-sm'
+                  : 'px-3 py-2 bg-slate-100 text-slate-400 border border-slate-200 rounded-lg text-[11px] font-medium cursor-not-allowed opacity-70'
               }
             >
               시드 항목 복구(Edit)
@@ -645,8 +645,8 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
               title={canEdit ? '신규 물품 추가' : '편집 권한 필요'}
               className={
                 canEdit
-                  ? 'px-5 py-2 bg-blue-600 text-white rounded-lg text-[11px] font-black hover:bg-blue-700 transition-all shadow-sm flex items-center gap-1.5'
-                  : 'px-5 py-2 bg-slate-100 text-slate-400 border border-slate-200 rounded-lg text-[11px] font-black cursor-not-allowed opacity-70 flex items-center gap-1.5'
+                  ? 'px-5 py-2 bg-blue-600 text-white rounded-lg text-[11px] font-medium hover:bg-blue-700 transition-all shadow-sm flex items-center gap-1.5'
+                  : 'px-5 py-2 bg-slate-100 text-slate-400 border border-slate-200 rounded-lg text-[11px] font-medium cursor-not-allowed opacity-70 flex items-center gap-1.5'
               }
             >
               + 신규 물품 추가(Edit)
@@ -827,7 +827,7 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
                             title={canEdit ? '입고' : '편집 권한 필요'}
                             className={
                               canEdit
-                                ? 'px-2.5 py-1 rounded text-[10px] font-black bg-emerald-600 text-white shadow-sm hover:bg-emerald-700 transition-colors whitespace-nowrap'
+                                ? 'px-2.5 py-1 rounded text-[10px] font-medium bg-emerald-600 text-white shadow-sm hover:bg-emerald-700 transition-colors whitespace-nowrap'
                                 : disabledActionBtn
                             }
                           >
@@ -839,7 +839,7 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
                             title={canEdit ? '수정' : '편집 권한 필요'}
                             className={
                               canEdit
-                                ? 'px-2.5 py-1 rounded text-[10px] font-black bg-white text-blue-600 border border-blue-200 shadow-sm hover:bg-blue-50 transition-colors whitespace-nowrap'
+                                ? 'px-2.5 py-1 rounded text-[10px] font-medium bg-white text-blue-600 border border-blue-200 shadow-sm hover:bg-blue-50 transition-colors whitespace-nowrap'
                                 : disabledActionBtn
                             }
                           >
@@ -851,7 +851,7 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
                             title={canEdit ? '보관함' : '편집 권한 필요'}
                             className={
                               canEdit
-                                ? 'px-2.5 py-1 rounded text-[10px] font-black bg-white text-slate-500 border border-slate-200 shadow-sm hover:bg-slate-100 transition-colors whitespace-nowrap'
+                                ? 'px-2.5 py-1 rounded text-[10px] font-medium bg-white text-slate-500 border border-slate-200 shadow-sm hover:bg-slate-100 transition-colors whitespace-nowrap'
                                 : disabledActionBtn
                             }
                           >
@@ -863,7 +863,7 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
                             onClick={() => handleDeleteItem(item)}
                             className={
                               canEdit && !hasUsageHistory
-                                ? 'px-2.5 py-1 rounded text-[10px] font-black bg-red-50 border border-red-200 text-red-500 shadow-sm hover:bg-red-500 hover:text-white transition-colors whitespace-nowrap'
+                                ? 'px-2.5 py-1 rounded text-[10px] font-medium bg-red-50 border border-red-200 text-red-500 shadow-sm hover:bg-red-500 hover:text-white transition-colors whitespace-nowrap'
                                 : disabledActionBtn
                             }
                             title={

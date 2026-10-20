@@ -93,10 +93,20 @@ export async function PATCH(req: Request) {
     const needRededuct =
       wasNegativeClose && isStockOutSupplyRequest(nextStatus);
 
+    const providedOpinion =
+      body.admin_opinion !== undefined ? String(body.admin_opinion).trim() : undefined;
     const adminOpinion =
-      body.admin_opinion !== undefined
-        ? String(body.admin_opinion)
+      providedOpinion !== undefined
+        ? providedOpinion || null
         : existing.admin_opinion;
+
+    // 마케팅 reject_reason과 동일 — 취소(REJECTED) 시 사유 필수
+    if (nextStatus === 'REJECTED' && !String(adminOpinion || '').trim()) {
+      return NextResponse.json(
+        { error: '취소 사유를 입력해 주세요.' },
+        { status: 400 }
+      );
+    }
 
     try {
       await prisma.$transaction(async (tx) => {

@@ -1,3 +1,311 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/*
+ * 1) Global 폰트 통일 — Pretendard / Noto Sans KR / Roboto
+ *    굴림·돋움 등 레거시 서체 차단, 전 화면·팝업·폼 강제 적용
+ */
+:root {
+  --soh-font-sans: 'Pretendard', 'Noto Sans KR', var(--font-noto-sans-kr), 'Roboto',
+    var(--font-roboto), -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Apple SD Gothic Neo',
+    'Malgun Gothic', 'Helvetica Neue', Arial, sans-serif;
+  --soh-text: #333333;
+  --soh-text-strong: #222222;
+}
+
+html,
+body {
+  font-family: var(--soh-font-sans) !important;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* 폼·컨트롤: UA 기본 서체 차단 → 부모(body) 폰트 무조건 상속 */
+input,
+button,
+textarea,
+select,
+optgroup,
+option {
+  font-family: inherit !important;
+  font-size: inherit;
+}
+
+*,
+*::before,
+*::after {
+  font-family: inherit;
+}
+
+body {
+  color: var(--soh-text);
+}
+
+/*
+ * Portal / Modal / Dialog / Tooltip 루트
+ * (body 직속 포탈·fixed 오버레이·ARIA dialog 포함)
+ */
+[role='dialog'],
+[role='alertdialog'],
+[role='tooltip'],
+[data-radix-portal],
+[data-headlessui-portal],
+.modal-root,
+.MuiDialog-root,
+.MuiModal-root,
+.MuiPopover-root,
+.MuiTooltip-popper,
+.ant-modal,
+.ant-modal-root,
+.ant-popover,
+.ant-tooltip,
+.soh-portal,
+/* App Router: fixed 풀스크린 오버레이(모달 백드롭) */
+div[class*='fixed'][class*='inset-0'] {
+  font-family: var(--soh-font-sans) !important;
+}
+
+[role='dialog'] input,
+[role='dialog'] button,
+[role='dialog'] textarea,
+[role='dialog'] select,
+[role='dialog'] optgroup,
+[role='alertdialog'] input,
+[role='alertdialog'] button,
+[role='alertdialog'] textarea,
+[role='alertdialog'] select,
+[role='alertdialog'] optgroup,
+.modal-root input,
+.modal-root button,
+.modal-root textarea,
+.modal-root select,
+.MuiDialog-root input,
+.MuiDialog-root button,
+.MuiDialog-root textarea,
+.MuiDialog-root select,
+.ant-modal input,
+.ant-modal button,
+.ant-modal textarea,
+.ant-modal select {
+  font-family: inherit !important;
+}
+
+/*
+ * 1b) Modal 타이포 계층 — font-black/bold(700+) 뭉개짐 해소
+ *    Body 400 · Label 400 · Value 500 · Section 600
+ */
+div[class*='fixed'][class*='inset-0'],
+[role='dialog'],
+[role='alertdialog'],
+.modal-root,
+.MuiDialog-root,
+.MuiModal-root,
+.ant-modal,
+.ant-modal-content,
+.soh-portal {
+  font-weight: 400;
+}
+
+div[class*='fixed'][class*='inset-0'] *,
+[role='dialog'] *,
+[role='alertdialog'] *,
+.modal-root *,
+.MuiDialog-root *,
+.MuiModal-root *,
+.ant-modal *,
+.ant-modal-content *,
+.soh-portal * {
+  font-weight: 400 !important;
+}
+
+/* 폼 라벨: Regular + 회색 톤 유지 */
+div[class*='fixed'][class*='inset-0'] label,
+[role='dialog'] label,
+.modal-root label,
+div[class*='fixed'][class*='inset-0'] [class*='text-slate-400'],
+div[class*='fixed'][class*='inset-0'] [class*='text-slate-500'],
+[role='dialog'] [class*='text-slate-400'],
+[role='dialog'] [class*='text-slate-500'] {
+  font-weight: 400 !important;
+}
+
+/* 입력·선택 값: Medium (절대 700+) */
+div[class*='fixed'][class*='inset-0'] input:not([type='checkbox']):not([type='radio']):not([type='button']):not([type='submit']):not([type='reset']),
+div[class*='fixed'][class*='inset-0'] textarea,
+div[class*='fixed'][class*='inset-0'] select,
+[role='dialog'] input:not([type='checkbox']):not([type='radio']):not([type='button']):not([type='submit']):not([type='reset']),
+[role='dialog'] textarea,
+[role='dialog'] select {
+  font-weight: 500 !important;
+}
+
+/* 표시 데이터(부서명·물품명 등): Medium + #222 */
+div[class*='fixed'][class*='inset-0'] [class*='text-slate-800'],
+div[class*='fixed'][class*='inset-0'] [class*='text-slate-900'],
+[role='dialog'] [class*='text-slate-800'],
+[role='dialog'] [class*='text-slate-900'] {
+  font-weight: 500 !important;
+  color: #222222;
+}
+
+/* 섹션 타이틀(신청자 정보·물품 정보 등): Semi-bold + 파란 톤 유지 */
+div[class*='fixed'][class*='inset-0'] [class*='text-indigo-'],
+div[class*='fixed'][class*='inset-0'] [class*='text-blue-500'],
+div[class*='fixed'][class*='inset-0'] [class*='text-blue-600'],
+div[class*='fixed'][class*='inset-0'] [class*='text-blue-700'],
+[role='dialog'] [class*='text-indigo-'],
+[role='dialog'] [class*='text-blue-500'],
+[role='dialog'] [class*='text-blue-600'],
+[role='dialog'] [class*='text-blue-700'] {
+  font-weight: 600 !important;
+}
+
+/* 모달 헤더 타이틀 */
+div[class*='fixed'][class*='inset-0'] h3,
+div[class*='fixed'][class*='inset-0'] h4,
+[role='dialog'] h3,
+[role='dialog'] h4 {
+  font-weight: 600 !important;
+}
+
+/* CTA 버튼은 Medium까지만 */
+div[class*='fixed'][class*='inset-0'] button,
+[role='dialog'] button {
+  font-weight: 500 !important;
+}
+
+/*
+ * 2) 데이터 표(Table) 타이포 — 대장/집계표 공통 계층
+ *    @layer 밖(unlayered) → Tailwind font-* 유틸보다 우선
+ */
+div[class*='bg-slate-200/70'] > div > h2,
+div[class*='bg-slate-200/70'] h2 {
+  font-weight: 700;
+  color: var(--soh-text-strong);
+}
+
+table.w-full > thead > tr > th {
+  font-weight: 600 !important;
+  color: #333333 !important;
+}
+
+table.w-full > thead > tr > th[class*='text-indigo'] {
+  color: #4338ca !important;
+  font-weight: 600 !important;
+}
+
+table.w-full > tbody {
+  font-weight: 400;
+  color: #333333;
+}
+
+table.w-full > tbody > tr > td {
+  font-weight: 400;
+  color: inherit;
+}
+
+/* 핵심 열 강조(물품명·비고) */
+table.w-full > tbody > tr > td.soh-emph,
+table.w-full > tbody > tr > td.soh-emph * {
+  font-weight: 500;
+}
+
+table.w-full > tbody > tr > td[class*='text-indigo'],
+table.w-full > tbody > tr > td[class*='text-indigo'] * {
+  font-weight: 500;
+  color: #4f46e5 !important; /* indigo-600 — tbody color:inherit 덮어씀 */
+}
+
+table.w-full > tbody input[type='text'],
+table.w-full > tbody textarea {
+  font-weight: 500;
+  color: #333333;
+  font-family: var(--soh-font-sans) !important;
+}
+
+/*
+ * 3) Main Home — Pretendard 전환 후 대형 메뉴·히어로 시인성 복구
+ *    (다른 화면에는 영향 없음)
+ */
+.soh-home-title {
+  font-weight: 900 !important;
+}
+
+.soh-home-subtitle {
+  font-weight: 500 !important;
+}
+
+.soh-home-menu-title {
+  font-weight: 700 !important;
+}
+
+.soh-home-menu-desc {
+  font-weight: 500 !important;
+}
+
+/*
+ * 4) Service Shell — GNB / LNB 네비 타이포 (투박한 Black 해제)
+ */
+.soh-gnb-link {
+  font-weight: 500 !important;
+  letter-spacing: 0.02em !important;
+}
+
+.soh-lnb-active,
+.soh-lnb-active span {
+  font-weight: 600 !important;
+}
+
+.soh-lnb-inactive,
+.soh-lnb-inactive span {
+  font-weight: 400 !important;
+}
+
+/*
+ * 5) 본문 Step4 탭 스위처 — Active 600 / Inactive 400
+ *    (font-black 유틸 덮어씀, 탭 트랙 bg-slate-100/80 하위 a)
+ */
+div[class*='bg-slate-100/80'] > a[class*='px-5'][class*='rounded-md'],
+div[class*='bg-slate-100/80'] > button[class*='px-5'][class*='rounded-md'] {
+  font-weight: 400 !important;
+}
+
+div[class*='bg-slate-100/80'] > a[class*='px-5'][class*='bg-white'],
+div[class*='bg-slate-100/80'] > button[class*='px-5'][class*='bg-white'] {
+  font-weight: 600 !important;
+}
+
+/*
+ * 6) 페이지 상단 배너 핵심 타이틀 (업무 프로세스명) — 800 묵직함 복구
+ */
+div[class*='rounded-3xl'][class*='text-white'] h1,
+div[class*='rounded-3xl'][class*='text-white'] h1 [class*='font-extrabold'],
+div[class*='rounded-3xl'][class*='text-white'] > .relative [class*='font-extrabold'],
+.soh-page-banner-title {
+  font-weight: 800 !important;
+}
+
+/* Step3 인덱스 허브 타이틀 */
+.soh-step-index-title {
+  font-weight: 800 !important;
+}
+
+/*
+ * 7) 목록 상단 필터 툴바 — 연도/월/조직 · 검색 · EXCEL
+ *    font-black/bold(700+) 해제 → medium(500) 통일
+ */
+.soh-filter-bar span,
+.soh-filter-bar select,
+.soh-filter-bar option,
+.soh-filter-bar input[type='text'],
+.soh-filter-bar input[type='search'],
+.soh-filter-bar input:not([type='checkbox']):not([type='radio']):not([type='hidden']),
+.soh-filter-bar button,
+.soh-filter-bar label {
+  font-weight: 500 !important;
+}
+
+.soh-filter-bar input::placeholder {
+  font-weight: 500 !important;
+}

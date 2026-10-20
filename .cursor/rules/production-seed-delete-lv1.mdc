@@ -1,6 +1,6 @@
 ---
-description: marketing/equipment/survey/asset 버튼에 Edit·LV_1 권한 표기
-globs: src/components/{asset,marketing,equipment,survey}/**/*.{ts,tsx},src/app/(service)/{asset,marketing,equipment,survey}/**/*.{ts,tsx},src/app/api/{asset,marketing,equipment,survey}/**/*.ts
+description: marketing/equipment/survey/asset/production 버튼에 Edit·LV_1 권한 표기
+globs: src/components/{asset,production,marketing,equipment,survey}/**/*.{ts,tsx},src/app/(service)/{asset,production,marketing,equipment,survey}/**/*.{ts,tsx},src/app/api/{asset,production,marketing,equipment,survey}/**/*.ts
 alwaysApply: false
 ---
 
@@ -8,7 +8,7 @@ alwaysApply: false
 
 Users confuse who can click which button. Put the permission **in the button label**, not only in tooltips.
 
-Applies under `/asset`, `/marketing`, `/equipment`, `/survey` (and matching components).
+Applies under `/asset`, `/production`, `/marketing`, `/equipment`, `/survey` (and matching components).
 
 ## Label convention
 

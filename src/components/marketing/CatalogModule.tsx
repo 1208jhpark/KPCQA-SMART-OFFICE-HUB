@@ -3,7 +3,22 @@
 import React, { useState, useEffect, useMemo, useRef, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation'; 
 import { getKSTDateString } from '@/utils/dateUtils';
-import { resolveTopOrgName, resolveGlobalMgmtDeptName, canDistributeMarketingOwnerDept, canEditTopOrgMarketingAsset, isGlobalMgmtOrgMember, canApplyViaViewRoles } from '@/utils/orgUnits';
+import {
+  resolveTopOrgName,
+  resolveGlobalMgmtDeptName,
+  canDistributeMarketingOwnerDept,
+  canEditTopOrgMarketingAsset,
+  isGlobalMgmtOrgMember,
+  canApplyMarketingItem,
+  isSharedMarketingApplyItem,
+  normalizeViewAllowToken,
+} from '@/utils/orgUnits';
+import {
+  marketingDutyChipOptions,
+  resolveDutyLabel,
+  resolveUserDutyOptions,
+  type UserJobOption,
+} from '@/lib/user-job-options';
 import { resolveInterfaceEditState, isSystemLv1User } from '@/lib/permission-utils';
 import LoadingState from '@/components/common/LoadingState';
 
@@ -37,9 +52,82 @@ function emailsEqual(a?: string | null, b?: string | null) {
 }
 
 function normalizeRoleId(r: unknown): string {
-  const s = String(r ?? '').trim();
-  const m = s.match(/(\d+)/);
-  return m ? `LV_${m[1]}` : s;
+  return normalizeViewAllowToken(r);
+}
+
+/** 전사 허용 토글 → 저장 시 LV_1+LV_2+LV_3 */
+const ALL_LV_TOGGLE_ID = 'ALL_LV';
+const ALL_LV_IDS = ['LV_1', 'LV_2', 'LV_3'] as const;
+
+/** 본부장·센터장 묶음 토글 */
+const HQ_CENTER_TOGGLE_ID = 'HQ_CENTER';
+const HQ_CENTER_IDS = ['본부장', '센터장'] as const;
+
+function isAllLvChecked(roles: unknown): boolean {
+  const list = Array.isArray(roles) ? roles.map(normalizeRoleId) : [];
+  // 세 LV 모두, 또는 레거시 LV_3 단독(=전사 허용)
+  return ALL_LV_IDS.every((id) => list.includes(id)) || list.includes('LV_3');
+}
+
+function applyAllLvToggle(cur: string[], checked: boolean): string[] {
+  const normalized = cur.map(normalizeRoleId).filter(Boolean);
+  const withoutLv = normalized.filter((r) => !(ALL_LV_IDS as readonly string[]).includes(r));
+  if (checked) return Array.from(new Set([...withoutLv, ...ALL_LV_IDS]));
+  return withoutLv;
+}
+
+function isHqCenterChecked(roles: unknown): boolean {
+  const list = Array.isArray(roles) ? roles.map(normalizeRoleId) : [];
+  return HQ_CENTER_IDS.every((id) => list.includes(id));
+}
+
+function applyHqCenterToggle(cur: string[], checked: boolean): string[] {
+  const normalized = cur.map(normalizeRoleId).filter(Boolean);
+  const without = normalized.filter((r) => !(HQ_CENTER_IDS as readonly string[]).includes(r));
+  if (checked) return Array.from(new Set([...without, ...HQ_CENTER_IDS]));
+  return without;
+}
+
+function isComboViewRoleToggle(id: string): boolean {
+  return id === ALL_LV_TOGGLE_ID || id === HQ_CENTER_TOGGLE_ID || id === 'LV_3';
+}
+
+function isViewRoleChipChecked(id: string, roles: unknown): boolean {
+  if (id === ALL_LV_TOGGLE_ID) return isAllLvChecked(roles);
+  if (id === HQ_CENTER_TOGGLE_ID) return isHqCenterChecked(roles);
+  const list = Array.isArray(roles) ? roles.map(normalizeRoleId) : [];
+  return list.includes(id);
+}
+
+function applyViewRoleToggle(cur: string[], lv: string, checked: boolean): string[] {
+  if (lv === ALL_LV_TOGGLE_ID || lv === 'LV_3') return applyAllLvToggle(cur, checked);
+  if (lv === HQ_CENTER_TOGGLE_ID) return applyHqCenterToggle(cur, checked);
+  const normalized = cur.map(normalizeRoleId).filter(Boolean);
+  return checked
+    ? Array.from(new Set([...normalized, lv]))
+    : normalized.filter((r) => r !== lv);
+}
+
+/** 카드 배지용: 묶음 칩을 「전사 허용」「본부장·센터장」으로 표시, DUTY_* → 직책 한글 */
+function formatViewRolesDisplay(roles: unknown, dutyOptions?: UserJobOption[] | null): string {
+  const list = Array.isArray(roles) ? roles.map(normalizeRoleId).filter(Boolean) : [];
+  const has전사 = isAllLvChecked(list);
+  const hasHqCenter = isHqCenterChecked(list);
+  const rest = list
+    .filter(
+      (id) =>
+        !(ALL_LV_IDS as readonly string[]).includes(id) &&
+        !(HQ_CENTER_IDS as readonly string[]).includes(id)
+    )
+    .map((id) => (id.startsWith('DUTY_') ? resolveDutyLabel(id, dutyOptions) || id : id));
+  const parts = [
+    ...(has전사 ? ['전사 허용'] : []),
+    ...(hasHqCenter ? ['본부장·센터장'] : []),
+    // 한쪽만 남은 레거시(본부장만 / 센터장만)
+    ...(!hasHqCenter ? HQ_CENTER_IDS.filter((id) => list.includes(id)) : []),
+    ...rest,
+  ];
+  return parts.join(', ');
 }
 
 function CatalogContent() {
@@ -73,8 +161,8 @@ function CatalogContent() {
   const [unitOptions, setUnitOptions] = useState<string[]>(['EA', 'BOX', 'SET']);
       
   const [searchQuery, setSearchQuery] = useState('');
-  /** APPLICABLE = 신청가능만 / 그 외 = owner_dept 이름 (전체보기 없음) */
-  const [selectedDept, setSelectedDept] = useState<string>('APPLICABLE');
+  /** owner_dept 이름 — 우리센터 → 본부 → 전사 순 칩 */
+  const [selectedDept, setSelectedDept] = useState<string>('');
       
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editFormData, setEditFormData] = useState<any>({});
@@ -90,6 +178,16 @@ function CatalogContent() {
   });
   /** 모달 안에서 텍스트 드래그 후 배경에서 mouseup 시 닫히는 것 방지 */
   const purchaseBackdropDownRef = useRef(false);
+
+  /** 카탈로그 → 수량만 입력 후 재고 예약/승인 요청 */
+  const [reserveModal, setReserveModal] = useState<{
+    item: any;
+    needsApproval: boolean;
+  } | null>(null);
+  const [reserveQty, setReserveQty] = useState<number | ''>(1);
+  const [reservePurpose, setReservePurpose] = useState('');
+  const [reserveSaving, setReserveSaving] = useState(false);
+  const reserveBackdropDownRef = useRef(false);
       
   const initialForm = {
     name: '',
@@ -109,9 +207,7 @@ function CatalogContent() {
   const [formData, setFormData] = useState(initialForm);
       
   useEffect(() => {
-    const deptFromUrl = searchParams.get('dept');
     const searchFromUrl = searchParams.get('search');
-    if (deptFromUrl) setSelectedDept(deptFromUrl);
     if (searchFromUrl) setSearchQuery(searchFromUrl);
   }, [searchParams]);
       
@@ -267,21 +363,34 @@ function CatalogContent() {
       });
     }
 
-    // assertCanEditOwnerDept와 동일: TOTAL 전체 / OWN·DEPT는 본인 센터만
+    // assertCanEditOwnerDept와 동일: TOTAL 전체 / OWN·DEPT는 본인 + (센터면) 상위 HQ
     const scope = editState.editScope;
     if (scope === 'TOTAL') return true;
     if (scope === 'DEPT' || scope === 'OWN') {
       if (ownerId && myUnitId && ownerId === myUnitId) return true;
       if (!ownerId && itemOwnerDept === myCenter) return true;
+
+      // Center → 상위 HQ에도 신규 등록·수정 가능 (지급은 HQ 단에서 이뤄지도록)
+      const myHqId = String(
+        currentUser.unit?.parent?.id ||
+          units.find((u) => String(u.id || '').trim() === myUnitId)?.parent_id ||
+          ''
+      ).trim();
+      if (myHqId && ownerId && ownerId === myHqId) return true;
+      if (myHq && itemOwnerDept === myHq) return true;
     }
     return false;
   };
 
   /**
-   * 지급 신청(버튼):
-   * Center → 본인+상위HQ+최상위 / HQ → 본인+하위Center+최상위 / Organization → 최상위만
-   * LV_1만 전체. 타부서는 view_role_ids 지정 LV만 (열람 API와 동일).
+   * 지급 신청(버튼)·칩 카운트:
+   * 본인 소속/본부/하위 + 전사 풀은 view_role_ids(LV·직책) 게이트
    */
+  const dutyOptions = useMemo(
+    () => resolveUserDutyOptions(systemConfig?.user_duty_options),
+    [systemConfig?.user_duty_options]
+  );
+
   const checkDistributePermission = (item: {
     owner_dept?: string | null;
     owner_unit_id?: string | null;
@@ -289,26 +398,61 @@ function CatalogContent() {
     view_allow_apply?: boolean | null;
   }) => {
     if (!currentUser) return false;
-    if (
-      canDistributeMarketingOwnerDept(item.owner_dept, {
-        myUnitName: currentUser.unit?.unit_name,
-        myUnitId: currentUser.dept_id || currentUser.unit_id || currentUser.unit?.id,
-        myHqName: currentUser.unit?.parent?.unit_name,
-        topOrgName,
-        units,
-        isPower: isLv1,
-        ownerUnitId: item.owner_unit_id,
-      })
-    ) {
-      return true;
-    }
-    return canApplyViaViewRoles(item, currentUser.roles);
+    return canApplyMarketingItem(item, {
+      myUnitName: currentUser.unit?.unit_name,
+      myUnitId: currentUser.dept_id || currentUser.unit_id || currentUser.unit?.id,
+      myHqName: currentUser.unit?.parent?.unit_name,
+      topOrgName,
+      units,
+      isPower: isLv1,
+      userRoles: currentUser.roles,
+      userDuty: currentUser.duty,
+      dutyCode: currentUser.duty_code,
+      dutyOptions,
+      globalMgmtDept: systemConfig?.global_mgmt_dept,
+    });
   };
 
   /** 등록/수정 시 선택 가능한 owner_dept (편집 스코프 내만) */
   const editableOwnerUnits = useMemo(() => {
     return units.filter((u) => u?.unit_name && checkEditPermission(u.unit_name, u.id));
   }, [units, currentUser, systemConfig, topOrgName, editState.isEditor, editState.editScope]);
+
+  /** 신규 등록 드롭다운: 최상위(Organization) 제외 — 센터/본부로만 일반 등록 */
+  const registerOwnerUnits = useMemo(() => {
+    const top = String(topOrgName || '').trim();
+    const topId = top
+      ? String(units.find((u) => String(u.unit_name || '').trim() === top)?.id || '').trim()
+      : '';
+    return editableOwnerUnits.filter((u) => {
+      const name = String(u.unit_name || '').trim();
+      const id = String(u.id || '').trim();
+      if (top && name === top) return false;
+      if (topId && id === topId) return false;
+      return true;
+    });
+  }, [editableOwnerUnits, topOrgName, units]);
+
+  /** 신규 등록 기본 조직 = 로그인 소속(센터→센터, 본부→본부). 비어 있을 때만 */
+  useEffect(() => {
+    if (!canSeeAddForm || formData.owner_dept) return;
+    const myName = String(currentUser?.unit?.unit_name || '').trim();
+    const myId = String(
+      currentUser?.dept_id || currentUser?.unit_id || currentUser?.unit?.id || ''
+    ).trim();
+    const mine =
+      registerOwnerUnits.find(
+        (u) =>
+          (myId && String(u.id || '').trim() === myId) ||
+          (myName && String(u.unit_name || '').trim() === myName)
+      ) || registerOwnerUnits[0];
+    if (!mine) return;
+    setFormData((prev) =>
+      prev.owner_dept
+        ? prev
+        : { ...prev, owner_dept: mine.unit_name, owner_unit_id: mine.id || null }
+    );
+  }, [canSeeAddForm, formData.owner_dept, currentUser, registerOwnerUnits]);
 
   /** admin/settings GLOBAL_MGMT(+직속 하위)만 열람 LV 설정 */
   const canSetViewRoles = useMemo(() => {
@@ -322,22 +466,91 @@ function CatalogContent() {
     });
   }, [currentUser, systemConfig, units, isLv1]);
 
+  /** 노란 GLOBAL_MGMT 권한 패널: 관리조직(최상위) 선택 시에만 */
+  /** 관리조직(최상위) / 레거시 전사(Organization) 소유 */
+  const isTopOrgOwnerDept = (ownerDept?: string | null) =>
+    !!topOrgName && String(ownerDept || '').trim() === topOrgName;
+
+  /**
+   * GLOBAL_MGMT가 공유(view_role) 설정 가능한 소유 부서
+   * - 우리센터/본부(총괄 패밀리) 물품 + 레거시 전사 소유
+   */
+  const canShareOwnerDept = (ownerDept?: string | null, ownerUnitId?: string | null) => {
+    if (!canSetViewRoles) return false;
+    if (isTopOrgOwnerDept(ownerDept)) return true;
+    return isGlobalMgmtOrgMember({
+      myUnitName: ownerDept,
+      myUnitId: ownerUnitId,
+      globalMgmtDept: systemConfig?.global_mgmt_dept,
+      units,
+    });
+  };
+
+  /** 「전사 · 신청가능」탭 키 — owner_dept 이름과 충돌 방지 */
+  const SHARED_TAB_KEY = '__SHARED_APPLY__';
+
+  const sharedApplyOpts = () => ({
+    myUnitName: currentUser?.unit?.unit_name,
+    myUnitId: currentUser?.dept_id || currentUser?.unit_id || currentUser?.unit?.id,
+    myHqName: currentUser?.unit?.parent?.unit_name,
+    topOrgName,
+    units,
+    isPower: isLv1,
+    userRoles: currentUser?.roles,
+    userDuty: currentUser?.duty,
+    dutyCode: currentUser?.duty_code,
+    dutyOptions,
+    globalMgmtDept: systemConfig?.global_mgmt_dept,
+  });
+
   /** /admin/settings 에 지정된 GLOBAL_MGMT 부서명 */
   const globalMgmtDeptLabel = useMemo(
     () => resolveGlobalMgmtDeptName(systemConfig?.global_mgmt_dept, units) || '미지정',
     [systemConfig, units]
   );
 
-  const VIEW_ROLE_OPTIONS = [
-    { id: 'LV_1', label: 'LV_1' },
-    { id: 'LV_2', label: 'LV_2(관리자)' },
-    { id: 'LV_3', label: 'LV_3(사용자)' },
-  ] as const;
+  /** 직책 칩 = SystemConfig 코드 기준 + 전사 허용 (묶음 칩 없음) */
+  const VIEW_ROLE_OPTIONS_BASE = useMemo(() => {
+    const dutyChips = marketingDutyChipOptions(dutyOptions).map((d) => ({
+      id: String(d.code || '').trim(),
+      label: d.label,
+    }));
+    return [
+      { id: 'LV_1', label: 'LV_1' },
+      ...dutyChips.filter((c) => c.id),
+      { id: ALL_LV_TOGGLE_ID, label: '전사 허용' },
+    ];
+  }, [dutyOptions]);
+
+  /**
+   * TODO(restore): 신규등록 view_role 칩 — LV_1·원장·부원장·상무
+   * 복구 시 아래 Set을 비우거나 해당 id를 제거
+   */
+  const REGISTER_VIEW_ROLE_HIDDEN_IDS = useMemo(
+    () => new Set(['LV_1', 'DUTY_CEO', 'DUTY_VP', 'DUTY_EXEC']),
+    []
+  );
+
+  const viewRoleOptionsFor = (roles: unknown) => {
+    const list = Array.isArray(roles) ? roles.map(normalizeRoleId) : [];
+    // 전사 허용이 LV_2를 넣어도 UI는 그대로. 구버전 칩은 LV_2만 단독 저장된 레거시만
+    const onlyLegacyLv2 =
+      list.includes('LV_2') && !list.includes('LV_1') && !list.includes('LV_3');
+    if (onlyLegacyLv2) {
+      return [
+        { id: 'LV_1', label: 'LV_1' },
+        { id: 'LV_2', label: 'LV_2(구버전·전체)' },
+        ...VIEW_ROLE_OPTIONS_BASE.filter((o) => o.id !== 'LV_1' && o.id !== ALL_LV_TOGGLE_ID),
+        { id: ALL_LV_TOGGLE_ID, label: '전사 허용' },
+      ];
+    }
+    return [...VIEW_ROLE_OPTIONS_BASE];
+  };
 
   const toggleFormViewRole = (lv: string, checked: boolean) => {
     setFormData((prev) => {
-      const cur = Array.isArray(prev.view_role_ids) ? prev.view_role_ids : [];
-      const next = checked ? Array.from(new Set([...cur, lv])) : cur.filter((r) => r !== lv);
+      const cur = Array.isArray(prev.view_role_ids) ? prev.view_role_ids.map(String) : [];
+      const next = applyViewRoleToggle(cur, lv, checked);
       return {
         ...prev,
         view_role_ids: next,
@@ -349,13 +562,56 @@ function CatalogContent() {
   const toggleEditViewRole = (lv: string, checked: boolean) => {
     setEditFormData((prev: any) => {
       const cur = Array.isArray(prev.view_role_ids) ? prev.view_role_ids.map(normalizeRoleId) : [];
-      const next = checked ? Array.from(new Set([...cur, lv])) : cur.filter((r: string) => r !== lv);
+      const next = applyViewRoleToggle(cur, lv, checked);
       return {
         ...prev,
         view_role_ids: next,
         view_allow_apply: next.length > 0,
       };
     });
+  };
+
+  /** 활성 리스트(비수정): GLOBAL_MGMT가 공유 물품 열람·신청 권한을 바로 저장 */
+  const saveItemViewRoles = async (
+    item: { id: string; owner_dept?: string | null },
+    nextRoles: string[]
+  ) => {
+    // 레거시 전사 소유만 최소 1개 필수. 센터 공유는 비우면 타부서 비공개
+    if (isTopOrgOwnerDept(item.owner_dept) && nextRoles.length === 0) {
+      alert('전사(최상위) 물품은 「부서 열람 및 신청 권한 지정」을 1개 이상 선택해야 합니다.');
+      return;
+    }
+    const res = await fetch('/api/marketing/items', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: item.id,
+        view_role_ids: nextRoles,
+        view_allow_apply: nextRoles.length > 0,
+      }),
+    });
+    if (res.ok) {
+      setItems((prev) =>
+        prev.map((i) =>
+          i.id === item.id
+            ? { ...i, view_role_ids: nextRoles, view_allow_apply: nextRoles.length > 0 }
+            : i
+        )
+      );
+    } else {
+      alert(await readApiError(res, '권한 저장에 실패했습니다.'));
+      fetchData();
+    }
+  };
+
+  const toggleListViewRole = (
+    item: { id: string; owner_dept?: string | null; view_role_ids?: unknown },
+    lv: string,
+    checked: boolean
+  ) => {
+    const cur = Array.isArray(item.view_role_ids) ? item.view_role_ids.map(String) : [];
+    const next = applyViewRoleToggle(cur, lv, checked);
+    void saveItemViewRoles(item, next);
   };
 
   /** 지급 신청 이력만 — 입고만 있으면 삭제 가능(입고도 함께 삭제) */
@@ -393,12 +649,15 @@ function CatalogContent() {
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!formData.name || !formData.owner_dept) return alert("물품명과 조직은 필수입니다.");
-    const extraCost = Number(formData.extra_cost) || 0;
-    if (extraCost < 0) return alert('부대비용은 0 이상이어야 합니다.');
-    const { view_role_ids, view_allow_apply, ...rest } = formData;
-    const basePayload = canSetViewRoles
-      ? { ...formData, creator_name: currentUser?.name || null, creator_dept: currentUser?.unit?.unit_name || null }
-      : { ...rest, creator_name: currentUser?.name || null, creator_dept: currentUser?.unit?.unit_name || null };
+    // 신규 등록은 일반(센터/본부)만 — 공유 권한은 등록 후 리스트에서 지정
+    const { view_role_ids: _vr, view_allow_apply: _va, ...rest } = formData;
+    const basePayload = {
+      ...rest,
+      view_role_ids: [],
+      view_allow_apply: false,
+      creator_name: currentUser?.name || null,
+      creator_dept: currentUser?.unit?.unit_name || null,
+    };
     const payload = {
       ...basePayload,
       owner_unit_id:
@@ -406,8 +665,10 @@ function CatalogContent() {
         formData.owner_unit_id ||
         null,
       unit_price: Number(formData.unit_price) || 0,
-      extra_cost: extraCost,
+      // TODO(restore): 신규등록 부대비용 UI 복구 시 → Number(formData.extra_cost) || 0
+      extra_cost: 0,
       current_stock: Number(formData.current_stock) || 0,
+      // TODO(restore): 신규등록 재고확보기준수량 UI 복구 시 formData.alert_qty 그대로 사용
       alert_qty: Number(formData.alert_qty) || 0,
     };
     const res = await fetch('/api/marketing/items', {
@@ -439,25 +700,38 @@ function CatalogContent() {
       
   const handleSaveEdit = async () => {
     try {
-      // 재고(current_stock)는 입고/지급 API로만 변경 — 직접 PATCH 제외
       const {
-        current_stock: _omitStock,
         view_role_ids,
         view_allow_apply,
         unit_price,
         unit,
+        current_stock,
         ...safeEdit
       } = editFormData;
       const lockedByDist = editingId ? itemHasDistLedger(editingId) : false;
-      // 열람 LV는 GLOBAL_MGMT만 — 일반 편집자가 alert_qty 등만 저장할 때 403 방지
-      let payload: Record<string, unknown> = canSetViewRoles
+      const stockNum = Math.floor(Number(current_stock));
+      if (!Number.isFinite(stockNum) || stockNum < 0) {
+        return alert('재고는 0 이상 정수여야 합니다.');
+      }
+      // 열람 LV·직책: GLOBAL_MGMT + 최상위 조직 물품만(최소 1개 필수) — 그 외는 비우고 저장
+      const ownerDeptName = String(editFormData.owner_dept || '').trim();
+      const ownerUnitId = editFormData.owner_unit_id ?? null;
+      const includeViewRoles = canShareOwnerDept(ownerDeptName, ownerUnitId);
+      const roles = Array.isArray(view_role_ids) ? view_role_ids : [];
+      if (includeViewRoles && isTopOrgOwnerDept(ownerDeptName) && roles.length === 0) {
+        return alert('전사(최상위) 물품은 「부서 열람 및 신청 권한 지정」을 1개 이상 선택해야 합니다.');
+      }
+      let payload: Record<string, unknown> = includeViewRoles
         ? {
             ...safeEdit,
-            view_role_ids,
-            view_allow_apply:
-              Array.isArray(view_role_ids) && view_role_ids.length > 0,
+            view_role_ids: roles,
+            view_allow_apply: roles.length > 0,
           }
-        : { ...safeEdit };
+        : canSetViewRoles
+          ? { ...safeEdit, view_role_ids: [], view_allow_apply: false }
+          : { ...safeEdit };
+      // 입고 버튼 숨김 대체: 수정에서 재고 직접 변경
+      payload.current_stock = stockNum;
       if (payload.owner_dept && !payload.owner_unit_id) {
         payload.owner_unit_id =
           units.find((u) => u.unit_name === payload.owner_dept)?.id || null;
@@ -530,7 +804,7 @@ function CatalogContent() {
     const extraCost = Number(purchaseForm.extra_cost) || 0;
     if (inboundPrice !== catalogPrice) {
       return alert(
-        '물품 순수 단가는 등록된 단가와 같아야 합니다.\n단가가 변경된 경우 신규 기념품으로 등록해 주세요.'
+        '물품 단가는 등록된 단가와 같아야 합니다.\n단가가 변경된 경우 신규 기념품으로 등록해 주세요.'
       );
     }
     if (extraCost < 0) return alert('부대비용은 0 이상이어야 합니다.');
@@ -556,10 +830,7 @@ function CatalogContent() {
       if (res.ok) {
         setPurchaseModal(null);
         fetchData();
-        const go = confirm(
-          '입고(재고보충)가 완료되었습니다.\n부서지급대장 > 입고 장부로 이동할까요?'
-        );
-        if (go) router.push('/marketing/distribution/dept?tab=PURCHASE');
+        alert('입고(재고보충)가 완료되었습니다.');
       } else {
         alert(await readApiError(res, '입고 처리에 실패했습니다.'));
       }
@@ -567,68 +838,124 @@ function CatalogContent() {
       alert('오류가 발생했습니다.');
     }
   };
+
+  const openReserveModal = (item: any, needsApproval: boolean) => {
+    setReserveModal({ item, needsApproval });
+    setReserveQty(1);
+    setReservePurpose('');
+  };
+
+  const handleReserveSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!reserveModal?.item) return;
+    const item = reserveModal.item;
+    const needsApproval = reserveModal.needsApproval;
+    const qty = Number(reserveQty);
+    if (!qty || qty < 1) return alert('지급 개수는 1개 이상이어야 합니다.');
+    if (qty > Number(item.current_stock || 0)) {
+      return alert('입력 수량이 현재 재고보다 많습니다!');
+    }
+    setReserveSaving(true);
+    try {
+      const res = await fetch('/api/marketing/distributions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          item_id: item.id,
+          qty,
+          purpose: reservePurpose.trim(),
+          dist_date: getKSTDateString(),
+          client_id: null,
+          client_name: '',
+          client_dept: '',
+          requires_approval: needsApproval,
+        }),
+      });
+      if (res.ok) {
+        setReserveModal(null);
+        await fetchData();
+        alert(
+          needsApproval
+            ? '✅ 예약 대기가 등록되었습니다.\n재고는 즉시 예약(차감)되며, 관리자 확정 후 지급이 완료됩니다.\n\n이력은 「재고 예약」 화면에서 확인할 수 있습니다.'
+            : '✅ 재고 예약이 등록되었습니다.\n\n이력은 「재고 예약」 화면에서 확인할 수 있습니다.'
+        );
+      } else {
+        alert(await readApiError(res, '재고 예약에 실패했습니다.'));
+      }
+    } catch {
+      alert('통신 오류가 발생했습니다.');
+    } finally {
+      setReserveSaving(false);
+    }
+  };
       
   const activeItems = useMemo(() => items.filter(item => !item.is_archived), [items]);
 
-  /** units 정렬 순으로, 활성 물품이 있는 부서만 */
-  const availableDepts = useMemo(() => {
-    const activeDeptsInItems = new Set(activeItems.map(i => i.owner_dept).filter(Boolean) as string[]);
-    const ordered: string[] = [];
-    units.forEach(u => {
-      if (u.unit_name && activeDeptsInItems.has(u.unit_name) && !ordered.includes(u.unit_name)) {
-        ordered.push(u.unit_name);
-      }
-    });
-    activeDeptsInItems.forEach(d => {
-      if (!ordered.includes(d)) ordered.push(d);
-    });
-    return ordered;
-  }, [activeItems, units]);
-
   /**
-   * 윗줄(신청가능): 지급신청 가능한 물품이 1건이라도 있는 부서
-   * (소속 범위 + GLOBAL_MGMT 신청허용 포함 — 같은 부서가 위·아래로 쪼개지지 않음)
+   * 칩 순서: 1) 우리센터 2) 본부 3) 전사 · 신청가능(공유 풀)
+   * - 공유 풀: 타부서 view_role로 열린 물품 (소유는 경영센터 등, 재고·비용은 소유부서)
    */
-  const primaryDepts = useMemo(() => {
-    const names = new Set<string>();
-    for (const item of activeItems) {
-      if (item.owner_dept && checkDistributePermission(item)) {
-        names.add(item.owner_dept);
-      }
+  const scopeTabs = useMemo(() => {
+    type Tab = { key: string; label: string; hint: string };
+    const tabs: Tab[] = [];
+    const myUnit = String(currentUser?.unit?.unit_name || '').trim();
+    const myHq = String(currentUser?.unit?.parent?.unit_name || '').trim();
+    const top = String(topOrgName || '').trim();
+    const seen = new Set<string>();
+
+    const push = (key: string, label: string, hint: string) => {
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      tabs.push({ key, label, hint });
+    };
+
+    if (myUnit && myUnit === top) {
+      push(myUnit, myUnit, '우리조직');
+      push(SHARED_TAB_KEY, '전사 · 신청가능', '공유된 신청가능 물품');
+      return tabs;
     }
-    const ordered: string[] = [];
-    units.forEach((u) => {
-      if (u.unit_name && names.has(u.unit_name) && !ordered.includes(u.unit_name)) {
-        ordered.push(u.unit_name);
-      }
-    });
-    names.forEach((n) => {
-      if (!ordered.includes(n)) ordered.push(n);
-    });
-    return ordered;
-  }, [activeItems, currentUser, topOrgName, units, isLv1]);
 
-  /** 아랫줄(신청 불가능·열람): 신청 가능 물품이 없는 타 부서 */
-  const otherDepts = useMemo(
-    () => availableDepts.filter((d) => !primaryDepts.includes(d)),
-    [availableDepts, primaryDepts]
-  );
+    if (myUnit && myHq && myHq !== top) {
+      push(myUnit, myUnit, '우리센터');
+      push(myHq, myHq, '본부');
+      push(SHARED_TAB_KEY, '전사 · 신청가능', '공유된 신청가능 물품');
+      return tabs;
+    }
 
-  const applicableCount = useMemo(
-    () => activeItems.filter((i) => checkDistributePermission(i)).length,
-    [activeItems, currentUser, topOrgName, units, isLv1]
-  );
+    if (myUnit) push(myUnit, myUnit, myHq === top || !myHq ? '우리본부' : '우리센터');
+    push(SHARED_TAB_KEY, '전사 · 신청가능', '공유된 신청가능 물품');
+    return tabs;
+  }, [currentUser, topOrgName]);
+
+  // 기본 선택: 1순위(우리센터). URL dept가 칩에 있으면 유지
+  useEffect(() => {
+    if (scopeTabs.length === 0) return;
+    const keys = scopeTabs.map((t) => t.key);
+    if (selectedDept && keys.includes(selectedDept)) return;
+    const fromUrl = searchParams.get('dept');
+    if (fromUrl && keys.includes(fromUrl)) {
+      setSelectedDept(fromUrl);
+      return;
+    }
+    setSelectedDept(keys[0]);
+  }, [scopeTabs, selectedDept, searchParams]);
 
   const filteredActiveItems = useMemo(() => {
-    return activeItems.filter(item => {
+    return activeItems.filter((item) => {
       const matchSearch = !searchQuery || item.name.toLowerCase().includes(searchQuery.toLowerCase());
-      const matchDept =
-        selectedDept === 'APPLICABLE'
-          ? checkDistributePermission(item)
-          : item.owner_dept === selectedDept;
-      return matchSearch && matchDept;
+      if (!matchSearch) return false;
+
+      if (selectedDept === SHARED_TAB_KEY) {
+        return isSharedMarketingApplyItem(item, sharedApplyOpts());
+      }
+
+      const matchDept = !selectedDept || item.owner_dept === selectedDept;
+      if (!matchDept) return false;
+
+      // 신청가능만 노출 (+ Edit 가능 본인 관리 물품은 구조적으로 포함)
+      return checkDistributePermission(item);
     });
-  }, [activeItems, searchQuery, selectedDept, currentUser, topOrgName, units, isLv1]);
+  }, [activeItems, searchQuery, selectedDept, currentUser, topOrgName, units, isLv1, systemConfig, editState]);
       
   if (loading) return <LoadingState />;
       
@@ -704,14 +1031,14 @@ function CatalogContent() {
             </div>
             <input type="file" ref={fileInputRef} className="hidden" accept="image/*" onChange={(e) => handleImageUpload(e, false)} />
 
-            <div className="flex-1 w-full grid grid-cols-2 lg:grid-cols-8 gap-2.5">
+            <div className="flex-1 w-full grid grid-cols-2 lg:grid-cols-7 gap-2.5">
               <input required placeholder="물품명 *" value={formData.name} onChange={e=>setFormData({...formData, name: e.target.value})} className="w-full h-10 px-2.5 text-xs font-bold border border-slate-200 rounded-xl outline-none focus:ring-2 ring-indigo-500 focus:bg-white transition-all" />
               <select
                 required
                 value={formData.owner_dept}
                 onChange={(e) => {
                   const name = e.target.value;
-                  const u = editableOwnerUnits.find((x) => x.unit_name === name);
+                  const u = registerOwnerUnits.find((x) => x.unit_name === name);
                   setFormData({
                     ...formData,
                     owner_dept: name,
@@ -721,157 +1048,82 @@ function CatalogContent() {
                 className="w-full h-10 px-2.5 text-xs font-bold border border-slate-200 rounded-xl outline-none bg-white focus:ring-2 ring-indigo-500 transition-all"
               >
                 <option value="">관리 조직 선택 *</option>
-                {editableOwnerUnits.map(u => <option key={u.id} value={u.unit_name}>{u.unit_name}</option>)}
+                {registerOwnerUnits.map((u) => (
+                  <option key={u.id} value={u.unit_name}>
+                    {u.unit_name}
+                  </option>
+                ))}
               </select>
-              <input type="number" min="0" placeholder="물품 순수 단가(원)" value={formData.unit_price ?? ''} onChange={e=>setFormData({...formData, unit_price: e.target.value})} className="w-full h-10 px-2.5 text-xs font-bold border border-slate-200 rounded-xl outline-none focus:ring-2 ring-indigo-500 transition-all" title="개당 순수 단가 (부대비용 제외)" />
+              <input type="number" min="0" placeholder="물품 단가(원)" value={formData.unit_price ?? ''} onChange={e=>setFormData({...formData, unit_price: e.target.value})} className="w-full h-10 px-2.5 text-xs font-bold border border-slate-200 rounded-xl outline-none focus:ring-2 ring-indigo-500 transition-all" title="개당 단가" />
+              {/* TODO(restore): 신규등록 부대비용 — 복구 시 아래 주석 해제 + handleRegister extra_cost를 formData 값으로
               <input type="number" min="0" placeholder="부대비용(원)" value={formData.extra_cost ?? ''} onChange={e=>setFormData({...formData, extra_cost: e.target.value})} className="w-full h-10 px-2.5 text-xs font-bold border border-orange-200 rounded-xl outline-none focus:ring-2 ring-orange-400 transition-all" title="배송비, 인쇄비, 세금 등 (없으면 0)" />
-              <input type="number" min="0" placeholder="초기수량" value={formData.current_stock ?? ''} onChange={e=>setFormData({...formData, current_stock: e.target.value})} className="w-full h-10 px-2.5 text-xs font-bold border border-slate-200 rounded-xl outline-none focus:ring-2 ring-indigo-500 transition-all" />
+              */}
+              <input type="number" min="0" placeholder="재고수량" value={formData.current_stock ?? ''} onChange={e=>setFormData({...formData, current_stock: e.target.value})} className="w-full h-10 px-2.5 text-xs font-bold border border-slate-200 rounded-xl outline-none focus:ring-2 ring-indigo-500 transition-all" />
+              {/* TODO(restore): 신규등록 재고확보기준수량 — 복구 시 아래 주석 해제 (payload는 이미 formData.alert_qty 사용)
               <input type="number" min="0" placeholder="재고확보기준수량" value={formData.alert_qty ?? ''} onChange={e=>setFormData({...formData, alert_qty: e.target.value})} className="w-full h-10 px-2.5 text-xs font-bold border border-slate-200 rounded-xl outline-none focus:ring-2 ring-indigo-500 transition-all" title="이 수량 이하로 떨어지면 알림이 뜹니다." />
+              */}
               <select value={formData.unit || ''} onChange={e=>setFormData({...formData, unit: e.target.value})} className="w-full h-10 px-2.5 text-xs font-bold border border-slate-200 rounded-xl outline-none bg-white focus:ring-2 ring-indigo-500 transition-all cursor-pointer">
                 {unitOptions.map(u => <option key={u} value={u}>{u}</option>)}
               </select>
-              <input placeholder="상세 설명 (선택)" value={formData.description} onChange={e=>setFormData({...formData, description: e.target.value})} className="w-full h-10 px-2.5 text-xs font-bold border border-slate-200 rounded-xl outline-none focus:ring-2 ring-indigo-500 transition-all" />
+              <input placeholder="상세 설명 (선택)" value={formData.description} onChange={e=>setFormData({...formData, description: e.target.value})} className="w-full h-10 px-2.5 text-xs font-bold border border-slate-200 rounded-xl outline-none focus:ring-2 ring-indigo-500 transition-all col-span-2" />
             </div>
 
             <button type="submit" className="w-full lg:w-24 shrink-0 h-10 bg-slate-900 text-white rounded-xl text-[11px] font-black shadow-lg hover:bg-indigo-600 transition-all active:scale-95">신규등록(Edit)</button>
           </form>
-          {canSetViewRoles && (
-            <div className="mt-3 px-1 space-y-2 rounded-xl border border-amber-200/80 bg-amber-50/40 p-3">
-              <div className="text-[10px] font-black text-amber-800 tracking-tight">
-                GLOBAL_MGMT ({globalMgmtDeptLabel}) 권한
-              </div>
-              <p className="text-[9px] font-bold text-slate-500 leading-relaxed">
-                1) 관리조직 [{topOrgName || '최상위'}] 설정시 전사에게 공유되는 물품
-              </p>
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-[9px] font-black text-slate-600">2) 타부서 열람 및 신청허용 레벨</span>
-                {VIEW_ROLE_OPTIONS.map(({ id, label }) => {
-                  const checked = (formData.view_role_ids || []).includes(id);
-                  return (
-                    <label
-                      key={id}
-                      className={`px-2.5 py-1 rounded-lg border text-[10px] font-black cursor-pointer transition-all ${
-                        checked
-                          ? 'bg-amber-500 border-amber-500 text-white shadow-sm'
-                          : 'bg-white border-slate-200 text-slate-500 hover:border-amber-300'
-                      }`}
-                    >
-                      <input
-                        type="checkbox"
-                        className="hidden"
-                        checked={checked}
-                        onChange={(e) => toggleFormViewRole(id, e.target.checked)}
-                      />
-                      {label}
-                    </label>
-                  );
-                })}
-                <span className="text-[9px] font-bold text-slate-400">(지정 LV는 열람·신청 가능 / 미지정시 타부서 불가)</span>
-              </div>
-            </div>
-          )}
         </div>
       )}
       
-      <div className="flex justify-between items-end pl-2 mt-8 gap-4 flex-wrap">
-        <h3 className="font-black text-sm text-slate-800 flex items-center gap-2">
-          <span>🛍️</span> 활성 물품 리스트
-        </h3>
-      </div>
-      
-      <div className="bg-slate-100 p-5 rounded-[2rem] border border-slate-200 shadow-inner flex flex-col gap-4 mt-2 mb-6">
-        <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-4">
-          <div className="flex-1 min-w-0 space-y-3">
-            {/* 윗줄: 신청가능 + 내 소속/상위HQ 또는 하위센터 */}
-            <div>
-              <div className="text-[9px] font-black text-indigo-500 uppercase tracking-wider mb-1.5 px-0.5">
-                신청가능
-              </div>
-              <div className="flex gap-2 overflow-x-auto scrollbar-hide pb-0.5">
+      <div className="mt-8 mb-5 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+        <div className="min-w-0">
+          <h3 className="font-medium text-sm text-slate-800 flex items-center gap-2 pl-0.5">
+            <span>🛍️</span> 활성 물품 리스트
+          </h3>
+          <div className="mt-2.5 flex flex-wrap gap-1.5">
+            {scopeTabs.map((tab) => {
+              const count = activeItems.filter((i) => {
+                if (tab.key === SHARED_TAB_KEY) {
+                  return isSharedMarketingApplyItem(i, sharedApplyOpts());
+                }
+                if (i.owner_dept !== tab.key) return false;
+                return checkDistributePermission(i);
+              }).length;
+              const selected = selectedDept === tab.key;
+              return (
                 <button
+                  key={tab.key}
                   type="button"
-                  onClick={() => setSelectedDept('APPLICABLE')}
-                  className={`px-4 py-2.5 rounded-xl text-xs font-black transition-all border whitespace-nowrap ${
-                    selectedDept === 'APPLICABLE'
-                      ? 'bg-indigo-600 text-white border-indigo-600 shadow-md'
-                      : 'bg-white text-indigo-600 border-indigo-200 hover:bg-indigo-50 shadow-sm'
+                  onClick={() => setSelectedDept(tab.key)}
+                  title={tab.hint}
+
+                  className={`inline-flex items-baseline gap-1.5 px-3.5 py-2 rounded-lg text-xs font-bold border transition-colors ${
+                    selected
+                      ? 'bg-indigo-600 text-white border-indigo-600'
+                      : 'bg-white text-slate-700 border-slate-200 hover:border-indigo-300 hover:text-indigo-700'
                   }`}
                 >
-                  신청가능보기 ({applicableCount})
+                  <span className="leading-none">{tab.label}</span>
+                  <span
+                    className={`text-[10px] font-mono font-bold tabular-nums leading-none ${
+                      selected ? 'text-indigo-200' : 'text-slate-400'
+                    }`}
+                  >
+                    {count}
+                  </span>
                 </button>
-                {primaryDepts.map((dept) => {
-                  const count = activeItems.filter((i) => i.owner_dept === dept).length;
-                  const selected = selectedDept === dept;
-                  return (
-                    <button
-                      key={`p-${dept}`}
-                      type="button"
-                      onClick={() => setSelectedDept(dept)}
-                      title={`${dept} 보유 물품 ${count}개`}
-                      className={`px-4 py-2.5 rounded-xl text-xs font-black transition-all border whitespace-nowrap ${
-                        selected
-                          ? 'bg-indigo-600 text-white border-indigo-600 shadow-md'
-                          : 'bg-white text-slate-900 border-slate-200 hover:bg-slate-50 shadow-sm'
-                      }`}
-                    >
-                      {dept}
-                      <span className={selected ? 'text-indigo-200 mx-0.5' : 'text-slate-400 mx-0.5'}>
-                        ·
-                      </span>
-                      <span className={selected ? 'text-indigo-100 font-mono' : 'text-slate-600 font-mono'}>
-                        {count}
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* 아랫줄: 타 부서 (units order) */}
-            {otherDepts.length > 0 && (
-              <div>
-                <div className="text-[9px] font-black text-slate-400 uppercase tracking-wider mb-1.5 px-0.5">타 부서 물품 열람(신청 불가능)</div>
-                <div className="flex gap-2 overflow-x-auto scrollbar-hide pb-0.5">
-                  {otherDepts.map((dept) => {
-                    const count = activeItems.filter((i) => i.owner_dept === dept).length;
-                    const selected = selectedDept === dept;
-                    return (
-                      <button
-                        key={`o-${dept}`}
-                        type="button"
-                        onClick={() => setSelectedDept(dept)}
-                        title={`${dept} 보유 물품 ${count}개`}
-                        className={`px-4 py-2.5 rounded-xl text-xs font-black transition-all border whitespace-nowrap ${
-                          selected
-                            ? 'bg-slate-500 text-white border-slate-500 shadow-sm'
-                            : 'bg-slate-100 text-slate-500 border-slate-200 hover:bg-slate-200/80'
-                        }`}
-                      >
-                        {dept}
-                        <span className={selected ? 'text-slate-300 mx-0.5' : 'text-slate-300 mx-0.5'}>
-                          ·
-                        </span>
-                        <span className={selected ? 'text-slate-200 font-mono' : 'text-slate-400 font-mono'}>
-                          {count}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
+              );
+            })}
           </div>
+        </div>
 
-          <div className="relative w-full lg:w-80 shrink-0">
-            <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400">🔍</span>
-            <input
-              type="text"
-              placeholder="물품명 통합 검색..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full pl-10 pr-4 py-3 bg-white border border-slate-200 rounded-xl text-xs font-bold outline-none focus:border-indigo-500 shadow-sm transition-all"
-            />
-          </div>
+        <div className="relative w-full sm:w-72 shrink-0">
+          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm pointer-events-none">🔍</span>
+          <input
+            type="text"
+            placeholder="물품명 검색"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="w-full h-10 pl-9 pr-3 bg-white border border-slate-200 rounded-lg text-xs font-normal outline-none focus:border-indigo-500 transition-colors"
+          />
         </div>
       </div>
       
@@ -881,12 +1133,21 @@ function CatalogContent() {
           const currentData = isEditing ? editFormData : item;
           const canDistribute = checkDistributePermission(item);
           const canEditThisItem = checkEditPermission(item.owner_dept, item.owner_unit_id);
+          const myUnitName = String(currentUser?.unit?.unit_name || '').trim();
+          const myUnitId = String(
+            currentUser?.dept_id || currentUser?.unit_id || currentUser?.unit?.id || ''
+          ).trim();
+          const itemOwnerId = String(item.owner_unit_id || '').trim();
+          const itemOwnerDept = String(item.owner_dept || '').trim();
+          // 단가: 본인 소속 물품만 (HQ·전사는 재고만)
+          const showUnitPrice =
+            (!!myUnitId && !!itemOwnerId && itemOwnerId === myUnitId) ||
+            (!!myUnitName && !!itemOwnerDept && itemOwnerDept === myUnitName);
           
           const currentUnit = currentData.unit || 'EA';
           const hasLedger = itemHasDistLedger(item.id);
           const inStock = canDistribute && item.current_stock > 0;
-          const isTopOrgItem = !!(topOrgName && item.owner_dept === topOrgName);
-          const viaOwner = canDistributeMarketingOwnerDept(item.owner_dept, {
+          const viaStructural = canDistributeMarketingOwnerDept(item.owner_dept, {
             myUnitName: currentUser?.unit?.unit_name,
             myUnitId: currentUser?.dept_id || currentUser?.unit_id || currentUser?.unit?.id,
             myHqName: currentUser?.unit?.parent?.unit_name,
@@ -894,80 +1155,70 @@ function CatalogContent() {
             units,
             isPower: isLv1,
             ownerUnitId: item.owner_unit_id,
+            excludeTopOrgPool: true,
           });
-          const viaViewApply = canApplyViaViewRoles(item, currentUser?.roles);
-          // Organization 풀 · 타부서 열람·신청 LV → 승인 요청(앰버). 승인 단계는 지급대장에서 예정
-          const needsApprovalRequest = inStock && (isTopOrgItem || (viaViewApply && !viaOwner));
+          // 전사 풀·타부서 LV/직책 개방 → 승인 요청(앰버)
+          const needsApprovalRequest = inStock && canDistribute && !viaStructural;
       
           return (
-            <div key={item.id} className={`flex flex-col sm:flex-row p-6 bg-white border rounded-[2rem] transition-all shadow-sm relative group ${isEditing ? 'border-indigo-500 ring-4 ring-indigo-50 z-50' : 'border-slate-200 hover:shadow-md'}`}>
+            <div key={item.id} className={`flex flex-col sm:flex-row sm:items-stretch gap-0 p-5 bg-white border rounded-[2rem] transition-all shadow-sm relative group ${isEditing ? 'border-indigo-500 ring-4 ring-indigo-50 z-50' : 'border-slate-200 hover:shadow-md'}`}>
               
               <div 
                 onClick={() => isEditing && editFileInputRef.current?.click()}
-                className={`w-full sm:w-36 h-36 shrink-0 bg-slate-50 rounded-2xl flex items-center justify-center overflow-hidden border border-slate-100 relative ${isEditing ? 'cursor-pointer' : ''}`}
+                className={`w-full sm:w-32 sm:h-32 h-36 shrink-0 bg-slate-50 rounded-2xl flex items-center justify-center overflow-hidden border border-slate-100 relative ${isEditing ? 'cursor-pointer' : ''}`}
               >
                 {currentData.image_url ? (
                   <img src={currentData.image_url} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" alt="img" />
-                ) : <span className="text-slate-300 font-black text-[10px] uppercase tracking-widest">No Image</span>}
+                ) : <span className="text-slate-300 font-medium text-[10px] uppercase tracking-widest">No Image</span>}
                 
                 {isEditing && (
-                  <div className="absolute inset-0 bg-black/50 flex flex-col items-center justify-center text-white font-black text-xs animate-in fade-in gap-0.5 px-2 text-center">
+                  <div className="absolute inset-0 bg-black/50 flex flex-col items-center justify-center text-white font-medium text-xs animate-in fade-in gap-0.5 px-2 text-center">
                     <span>📸 사진 변경</span>
-                    <span className="text-[9px] font-bold opacity-80">≤{MAX_IMAGE_LABEL}</span>
+                    <span className="text-[9px] font-normal opacity-80">≤{MAX_IMAGE_LABEL}</span>
                   </div>
                 )}
                 
-                {!isEditing &&
-                  canDistribute &&
-                  currentData.alert_qty > 0 &&
-                  currentData.current_stock <= currentData.alert_qty && (
-                  <div className="absolute top-2 left-2 bg-red-500 text-white px-2 py-1 rounded-lg text-[9px] font-black animate-pulse shadow-sm">
-                    🚨 재고 부족!
-                  </div>
-                )}
               </div>
       
-              <div className="flex-1 flex flex-col justify-between sm:ml-6 mt-4 sm:mt-0">
-                <div className="space-y-3">
-                  <div className="flex items-start justify-between">
-                    {isEditing ? (
-                      <input value={currentData.name} onChange={e=>setEditFormData({...editFormData, name: e.target.value})} className="w-full font-black text-lg text-blue-600 bg-blue-50 px-2 py-1 rounded outline-none border-b border-blue-200" />
-                    ) : (
-                      <h4 className={`text-lg font-black line-clamp-1 ${canDistribute ? 'text-slate-900' : 'text-slate-400'}`}>{currentData.name}</h4>
-                    )}
-                    {!isEditing && (
-                      <div className="flex flex-col items-end gap-1 ml-2 shrink-0">
-                        <span className={`text-[9px] font-black px-2.5 py-1 rounded-md border whitespace-nowrap ${canDistribute ? 'bg-indigo-50 text-indigo-600 border-indigo-100' : 'bg-slate-50 text-slate-400 border-slate-100'}`}>
-                          {item.owner_dept}
+              <div className="min-w-0 flex-1 flex flex-col justify-between gap-3 sm:ml-4 mt-4 sm:mt-0 sm:min-h-[8rem]">
+                <div className="flex items-start gap-2 min-w-0">
+                  {isEditing ? (
+                    <input value={currentData.name} onChange={e=>setEditFormData({...editFormData, name: e.target.value})} className="min-w-0 flex-1 font-bold text-base text-blue-600 bg-blue-50 px-2 py-1 rounded outline-none border-b border-blue-200" />
+                  ) : (
+                    <h4 className={`min-w-0 flex-1 text-base font-bold leading-snug line-clamp-2 ${canDistribute ? 'text-slate-900' : 'text-slate-400'}`}>{currentData.name}</h4>
+                  )}
+                  {!isEditing && (
+                    <div className="flex flex-col items-end gap-1 shrink-0 max-w-[42%]">
+                      <span className={`text-[9px] font-medium px-2 py-0.5 rounded-md border truncate max-w-full ${canDistribute ? 'bg-indigo-50 text-indigo-600 border-indigo-100' : 'bg-slate-50 text-slate-400 border-slate-100'}`}>
+                        {item.owner_dept}
+                      </span>
+                      {!(canShareOwnerDept(item.owner_dept, item.owner_unit_id)) &&
+                        Array.isArray(item.view_role_ids) &&
+                        item.view_role_ids.length > 0 && (
+                        <span
+                          className="text-[8px] font-medium px-1.5 py-0.5 rounded-md bg-amber-50 text-amber-700 border border-amber-200 text-right leading-tight break-words"
+                          title="체크한 LV·직책만 열람·신청 (전사 물품은 최소 1개 필수)"
+                        >
+                          열람·신청 {formatViewRolesDisplay(item.view_role_ids, dutyOptions)}
                         </span>
-                        {Array.isArray(item.view_role_ids) && item.view_role_ids.length > 0 && (
-                          <span
-                            className="text-[8px] font-black px-2 py-0.5 rounded-md bg-amber-50 text-amber-700 border border-amber-200 whitespace-nowrap"
-                            title="지정 LV의 타부서 사용자가 열람·신청(예약) 가능"
-                          >
-                            타부서 열람·신청 ({' '}
-                            {item.view_role_ids.map(normalizeRoleId).join(', ')}
-                            {' '}
-                            )
-                          </span>
-                        )}
-                      </div>
-                    )}
-                  </div>
-        
-                  <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-[11px]">
-                    {/* 신청 불가(타부서 열람만): 단가 라벨·값 모두 숨김 — 자리는 유지해 재고 위치 고정 */}
-                    <div
-                      className={`flex flex-col ${!isEditing && !canDistribute ? 'invisible' : ''}`}
-                      aria-hidden={!isEditing && !canDistribute}
-                    >
-                      <span className="text-slate-400 font-bold uppercase text-[9px] mb-0.5">
-                        물품 순수 단가(원)
-                        {isEditing && hasLedger && (
-                          <span className="text-amber-600 font-black ml-1 normal-case">
-                            — 지급이력 있음, 단가변경 불가
-                          </span>
-                        )}
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {/* 재고~상세설명: 제목과 간격 두고 카드 하단으로 */}
+                <div className="flex flex-col gap-2.5 w-full mt-1">
+                {/* 단가·재고·단위·부서 — 한 줄 (라벨 상단 정렬 · 값 글자 크기 통일) */}
+                <div
+                  className={`grid gap-x-3 gap-y-1.5 w-full items-start ${
+                    showUnitPrice ? 'grid-cols-2 sm:grid-cols-4' : 'grid-cols-2 sm:grid-cols-3'
+                  }`}
+                >
+                  {showUnitPrice && (
+                    <div className="flex flex-col min-w-0 gap-0.5">
+                      <span className="text-slate-400 font-normal text-[9px] leading-none h-3 truncate">
+                        물품 단가(원)
+                        {isEditing && hasLedger ? ' ·잠금' : ''}
                       </span>
                       {isEditing ? (
                         <input
@@ -982,165 +1233,229 @@ function CatalogContent() {
                           onChange={(e) =>
                             setEditFormData({ ...editFormData, unit_price: e.target.value })
                           }
-                          className={`font-mono font-black text-slate-700 bg-slate-50 p-1.5 rounded outline-none border border-slate-200 ${
+                          className={`font-mono font-medium text-slate-700 bg-slate-50 p-1.5 rounded outline-none border border-slate-200 w-full text-[11px] leading-none ${
                             hasLedger ? 'cursor-not-allowed opacity-60' : ''
                           }`}
                         />
                       ) : (
-                        <span className="font-mono font-black text-slate-700 text-sm">
-                          {Number(currentData.unit_price || 0).toLocaleString()}{' '}
-                          <span className="text-[9px] font-bold">KRW</span>
+                        <span className="font-mono font-medium text-slate-700 text-[11px] leading-none truncate">
+                          {Number(currentData.unit_price || 0).toLocaleString()}
+                          <span className="text-[9px] font-normal ml-0.5">원</span>
                         </span>
                       )}
                     </div>
-                    
-                    <div className="flex flex-col">
-                      <span className="text-slate-400 font-bold uppercase text-[9px] mb-0.5">재고 {isEditing && <span className="text-amber-500">(입고로만 변경)</span>}</span>
+                  )}
+
+                  <div className="flex flex-col min-w-0 gap-0.5">
+                    <span className="text-slate-400 font-normal text-[9px] leading-none h-3">재고</span>
+                    {isEditing ? (
+                      <input
+                        type="number"
+                        min="0"
+                        step="1"
+                        value={currentData.current_stock ?? ''}
+                        onChange={(e) =>
+                          setEditFormData({ ...editFormData, current_stock: e.target.value })
+                        }
+                        className="font-mono font-medium text-indigo-600 bg-slate-50 p-1.5 rounded outline-none border border-slate-200 text-[11px] leading-none w-full"
+                      />
+                    ) : (
                       <span
-                        className={`font-mono font-black text-sm ${
-                          !canDistribute
-                            ? 'text-slate-400'
-                            : currentData.current_stock <= (currentData.alert_qty || 0) &&
-                                currentData.alert_qty > 0
-                              ? 'text-red-500'
-                              : 'text-indigo-600'
+                        className={`font-mono font-medium text-[11px] leading-none ${
+                          !canDistribute ? 'text-slate-400' : 'text-indigo-600'
                         }`}
                       >
-                        {currentData.current_stock}{' '}
-                        <span className="text-[10px] font-bold pl-1">{currentUnit}</span>
+                        {currentData.current_stock}
                       </span>
-                    </div>
+                    )}
                   </div>
-      
-                  {!isEditing && (
-                    <div className="text-[10px] text-slate-500 font-medium line-clamp-1 bg-slate-50 p-1.5 rounded">
+
+                  <div className="flex flex-col min-w-0 gap-0.5">
+                    <span className="text-slate-400 font-normal text-[9px] leading-none h-3 truncate">
+                      물품 단위
+                      {isEditing && hasLedger ? ' ·잠금' : ''}
+                    </span>
+                    {isEditing ? (
+                      <select
+                        disabled={hasLedger}
+                        title={
+                          hasLedger
+                            ? '지급 신청 이력이 있어 단위를 변경할 수 없습니다. 단위가 바뀐 상품은 신규 등록해 주세요.'
+                            : undefined
+                        }
+                        value={currentData.unit || ''}
+                        onChange={(e) => setEditFormData({ ...editFormData, unit: e.target.value })}
+                        className={`font-medium text-slate-700 bg-slate-50 p-1.5 rounded outline-none border border-slate-200 text-[11px] leading-none w-full ${
+                          hasLedger ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'
+                        }`}
+                      >
+                        {currentData.unit &&
+                          !unitOptions.includes(String(currentData.unit)) && (
+                            <option value={currentData.unit}>{currentData.unit}</option>
+                          )}
+                        {unitOptions.map((u) => (
+                          <option key={u} value={u}>
+                            {u}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <span className="font-medium text-slate-700 text-[11px] leading-none truncate">
+                        {currentUnit}
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="flex flex-col min-w-0 gap-0.5">
+                    <span className="text-slate-400 font-normal text-[9px] leading-none h-3 truncate">
+                      {isEditing ? '부서 변경' : '관리 부서'}
+                    </span>
+                    {isEditing ? (
+                      <select
+                        value={currentData.owner_dept}
+                        onChange={(e) => {
+                          const name = e.target.value;
+                          const u = editableOwnerUnits.find((x) => x.unit_name === name);
+                          setEditFormData({
+                            ...editFormData,
+                            owner_dept: name,
+                            owner_unit_id: u?.id || null,
+                          });
+                        }}
+                        className="font-medium text-slate-700 bg-slate-50 p-1.5 rounded outline-none border border-slate-200 text-[11px] leading-none w-full"
+                      >
+                        {editableOwnerUnits.map((u) => (
+                          <option key={u.id} value={u.unit_name}>
+                            {u.unit_name}
+                          </option>
+                        ))}
+                        {currentData.owner_dept &&
+                          !editableOwnerUnits.some((u) => u.unit_name === currentData.owner_dept) && (
+                            <option value={currentData.owner_dept}>
+                              {currentData.owner_dept} (권한 외)
+                            </option>
+                          )}
+                      </select>
+                    ) : (
+                      <span className="font-medium text-slate-700 text-[11px] leading-none truncate">
+                        {item.owner_dept}
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {!isEditing && (
+                  <>
+                    <div className="w-full text-[10px] text-slate-500 font-medium line-clamp-2 bg-slate-50 px-2 py-1.5 rounded">
                       {currentData.description || '상세 설명 없음'}
                     </div>
-                  )}
-      
-                  {isEditing && (
-                    <div className="grid grid-cols-2 gap-2 mt-2 pt-2 border-t border-slate-100">
-                      <div className="flex flex-col">
-                        <span className="text-red-400 font-bold text-[9px] mb-0.5">재고확보 기준수량</span>
-                        <input type="number" value={currentData.alert_qty} onChange={e=>setEditFormData({...editFormData, alert_qty: Number(e.target.value)})} className="font-mono font-black text-red-600 bg-red-50 p-1.5 rounded outline-none border border-red-100 text-[10px]" />
-                      </div>
-                      
-                      <div className="flex flex-col">
-                        <span className="text-slate-400 font-bold text-[9px] mb-0.5">
-                          물품 단위
-                          {hasLedger && (
-                            <span className="text-amber-600 font-black ml-1">
-                              — 지급이력 있음, 단위변경 불가
-                            </span>
-                          )}
+                    {canShareOwnerDept(item.owner_dept, item.owner_unit_id) && (
+                      <div className="w-full flex flex-col gap-1.5 rounded-lg border border-amber-200/80 bg-amber-50/40 p-2">
+                        <span className="text-amber-800 font-medium text-[9px]">
+                          GLOBAL_MGMT ({globalMgmtDeptLabel}) 권한
                         </span>
-                        <select
-                          disabled={hasLedger}
-                          title={
-                            hasLedger
-                              ? '지급 신청 이력이 있어 단위를 변경할 수 없습니다. 단위가 바뀐 상품은 신규 등록해 주세요.'
-                              : undefined
-                          }
-                          value={currentData.unit || ''}
-                          onChange={(e) => setEditFormData({ ...editFormData, unit: e.target.value })}
-                          className={`font-black text-slate-700 bg-slate-50 p-1.5 rounded outline-none border border-slate-200 text-[10px] w-full ${
-                            hasLedger ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'
-                          }`}
-                        >
-                          {currentData.unit &&
-                            !unitOptions.includes(String(currentData.unit)) && (
-                              <option value={currentData.unit}>{currentData.unit}</option>
-                            )}
-                          {unitOptions.map((u) => (
-                            <option key={u} value={u}>
-                              {u}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-      
-                      <div className="col-span-2 flex flex-col">
-                        <span className="text-slate-400 font-bold text-[9px] mb-0.5">부서 변경</span>
-                        <select
-                          value={currentData.owner_dept}
-                          onChange={(e) => {
-                            const name = e.target.value;
-                            const u = editableOwnerUnits.find((x) => x.unit_name === name);
-                            setEditFormData({
-                              ...editFormData,
-                              owner_dept: name,
-                              owner_unit_id: u?.id || null,
-                            });
-                          }}
-                          className="font-black text-slate-700 bg-slate-50 p-1.5 rounded outline-none border border-slate-200 text-[10px]"
-                        >
-                          {editableOwnerUnits.map(u => <option key={u.id} value={u.unit_name}>{u.unit_name}</option>)}
-                          {currentData.owner_dept && !editableOwnerUnits.some((u) => u.unit_name === currentData.owner_dept) && (
-                            <option value={currentData.owner_dept}>{currentData.owner_dept} (권한 외)</option>
-                          )}
-                        </select>
-                      </div>
-                      
-                      <div className="col-span-2 flex flex-col mt-1">
-                        <span className="text-slate-400 font-bold text-[9px] mb-0.5">상세 설명</span>
-                        <textarea 
-                          value={currentData.description || ''} 
-                          onChange={e=>setEditFormData({...editFormData, description: e.target.value})} 
-                          className="font-bold text-slate-600 bg-slate-50 p-1.5 rounded outline-none border border-slate-200 text-[10px] h-12 resize-none" 
-                        />
-                      </div>
-                      {canSetViewRoles && (
-                        <div className="col-span-2 flex flex-col mt-1 gap-1.5 rounded-lg border border-amber-200/80 bg-amber-50/40 p-2">
-                          <span className="text-amber-800 font-black text-[9px]">
-                            GLOBAL_MGMT ({globalMgmtDeptLabel}) 권한
+                        <div className="flex flex-wrap gap-1.5 items-center">
+                          <span className="text-slate-600 font-medium text-[9px]">
+                            부서 열람 및 신청 권한
+                            {isTopOrgOwnerDept(item.owner_dept) ? ' *' : ''}
                           </span>
-                          <span className="text-slate-500 font-bold text-[9px] leading-relaxed">
-                            1) 관리조직 [{topOrgName || '최상위'}] 설정시 전사에게 공유되는 물품
-                          </span>
-                          <div className="flex flex-wrap gap-1.5 items-center">
-                            <span className="text-slate-600 font-black text-[9px]">2) 타부서 열람 및 신청허용 레벨</span>
-                            {VIEW_ROLE_OPTIONS.map(({ id, label }) => {
-                              const roles = Array.isArray(currentData.view_role_ids)
-                                ? currentData.view_role_ids.map(normalizeRoleId)
-                                : [];
-                              const checked = roles.includes(id);
+                          {(() => {
+                            const checkedOpts = viewRoleOptionsFor(item.view_role_ids).filter(
+                              ({ id }) =>
+                                !REGISTER_VIEW_ROLE_HIDDEN_IDS.has(id) &&
+                                isViewRoleChipChecked(id, item.view_role_ids)
+                            );
+                            if (checkedOpts.length === 0) {
                               return (
-                                <label
-                                  key={id}
-                                  className={`px-2 py-1 rounded-md border text-[9px] font-black cursor-pointer ${
-                                    checked
-                                      ? 'bg-amber-500 border-amber-500 text-white'
-                                      : 'bg-white border-slate-200 text-slate-500'
-                                  }`}
-                                >
-                                  <input
-                                    type="checkbox"
-                                    className="hidden"
-                                    checked={checked}
-                                    onChange={(e) => toggleEditViewRole(id, e.target.checked)}
-                                  />
-                                  {label}
-                                </label>
+                                <span className="px-2 py-1 rounded-md border border-dashed border-slate-200 bg-white text-[9px] font-normal text-slate-400">
+                                  미지정
+                                </span>
                               );
-                            })}
-                            <span className="text-[8px] font-bold text-slate-400">(지정 LV는 열람·신청 가능 / 미지정시 타부서 불가)</span>
-                          </div>
+                            }
+                            return checkedOpts.map(({ id, label }) => (
+                              <span
+                                key={id}
+                                className="px-2 py-1 rounded-md border border-amber-500 bg-amber-500 text-white text-[9px] font-medium"
+                              >
+                                {label}
+                              </span>
+                            ));
+                          })()}
                         </div>
-                      )}
+                      </div>
+                    )}
+                  </>
+                )}
+
+                {isEditing && (
+                  <div className="flex flex-col gap-2 mt-1 pt-2 border-t border-slate-100 w-full">
+                    <div className="flex flex-col min-w-0">
+                      <span className="text-slate-400 font-normal text-[9px] mb-0.5">상세 설명</span>
+                      <textarea
+                        value={currentData.description || ''}
+                        onChange={e=>setEditFormData({...editFormData, description: e.target.value})}
+                        className="font-normal text-slate-600 bg-slate-50 p-1.5 rounded outline-none border border-slate-200 text-[10px] h-12 resize-none w-full"
+                      />
                     </div>
-                  )}
+                    {canShareOwnerDept(currentData.owner_dept, currentData.owner_unit_id) && (
+                      <div className="flex flex-col gap-1.5 rounded-lg border border-amber-200/80 bg-amber-50/40 p-2">
+                        <span className="text-amber-800 font-medium text-[9px]">
+                          GLOBAL_MGMT ({globalMgmtDeptLabel}) 권한
+                        </span>
+                        <span className="text-slate-500 font-normal text-[9px] leading-relaxed">
+                          공유 시 「전사 · 신청가능」에 노출. 타부서는 예약 대기, 소유 부서는 즉시 예약.
+                        </span>
+                        <div className="flex flex-wrap gap-1.5 items-center">
+                          <span className="text-slate-600 font-medium text-[9px]">
+                            부서 열람 및 신청 권한 지정
+                            {isTopOrgOwnerDept(currentData.owner_dept) ? ' *' : ''}
+                          </span>
+                          {viewRoleOptionsFor(currentData.view_role_ids)
+                            .filter(({ id }) => !REGISTER_VIEW_ROLE_HIDDEN_IDS.has(id))
+                            .map(({ id, label }) => {
+                            const checked = isViewRoleChipChecked(id, currentData.view_role_ids);
+                            return (
+                              <label
+                                key={id}
+                                className={`px-2 py-1 rounded-md border text-[9px] font-medium cursor-pointer ${
+                                  checked
+                                    ? 'bg-amber-500 border-amber-500 text-white'
+                                    : 'bg-white border-slate-200 text-slate-500'
+                                }`}
+                              >
+                                <input
+                                  type="checkbox"
+                                  className="hidden"
+                                  checked={checked}
+                                  onChange={(e) => toggleEditViewRole(id, e.target.checked)}
+                                />
+                                {label}
+                              </label>
+                            );
+                          })}
+                          <span className="text-[8px] font-normal text-rose-500">
+                            {isTopOrgOwnerDept(currentData.owner_dept)
+                              ? '(필수 · 최소 1개 · 저장 시 반영)'
+                              : '(선택 · 지정 시 전사·신청가능에 공유 · 저장 시 반영)'}
+                          </span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
                 </div>
-      
-                <div className="mt-4 pt-3 border-t border-slate-100 flex gap-2">
-                  {isEditing ? (
-                    <>
-                      <button onClick={handleSaveEdit} className="px-4 py-1.5 bg-emerald-600 text-white rounded-lg font-black text-[10px] shadow-sm hover:bg-emerald-700">💾 저장</button>
-                      <button onClick={() => setEditingId(null)} className="px-4 py-1.5 bg-slate-100 text-slate-500 rounded-lg font-black text-[10px] hover:bg-slate-200">취소</button>
-                    </>
-                  ) : (
-                    canEditThisItem && (
+
+                {(isEditing || canEditThisItem) && (
+                  <div className="pt-2 border-t border-slate-100 flex flex-wrap gap-2">
+                    {isEditing ? (
                       <>
-                        <button 
+                        <button onClick={handleSaveEdit} className="px-4 py-1.5 bg-emerald-600 text-white rounded-lg font-medium text-[10px] shadow-sm hover:bg-emerald-700">💾 저장</button>
+                        <button onClick={() => setEditingId(null)} className="px-4 py-1.5 bg-slate-100 text-slate-500 rounded-lg font-medium text-[10px] hover:bg-slate-200">취소</button>
+                      </>
+                    ) : (
+                      <>
+                        {/* TODO(restore): 활성 물품 리스트 입고(Edit) — 사용자 요청 시 주석 해제
+                        <button
                           onClick={() => {
                             setPurchaseModal(item);
                             setPurchaseForm({
@@ -1152,27 +1467,28 @@ function CatalogContent() {
                               stock_in_date: getKSTDateString(),
                             });
                           }}
-                          className="px-3 py-1.5 bg-emerald-50 text-emerald-600 rounded-md text-[10px] font-black hover:bg-emerald-600 hover:text-white transition-colors"
+                          className="px-3 py-1.5 bg-emerald-50 text-emerald-600 rounded-md text-[10px] font-medium hover:bg-emerald-600 hover:text-white transition-colors"
                         >📦 입고(Edit)</button>
-                        <button onClick={() => handleOpenEdit(item)} className="px-3 py-1.5 bg-white border border-slate-200 text-slate-600 rounded-md text-[10px] font-black hover:bg-slate-100 transition-colors">✏️ 수정(Edit)</button>
-                        
+                        */}
+                        <button onClick={() => handleOpenEdit(item)} className="px-3 py-1.5 bg-white border border-slate-200 text-slate-600 rounded-md text-[10px] font-medium hover:bg-slate-100 transition-colors">✏️ 수정(Edit)</button>
+
                         {!hasLedger ? (
-                          <button onClick={() => handleDelete(item.id)} className="px-3 py-1.5 bg-red-50 text-red-500 rounded-md text-[10px] font-black hover:bg-red-500 hover:text-white transition-colors">🗑️ 삭제(Edit·신청이력X)</button>
+                          <button onClick={() => handleDelete(item.id)} className="px-3 py-1.5 bg-red-50 text-red-500 rounded-md text-[10px] font-medium hover:bg-red-500 hover:text-white transition-colors">🗑️ 삭제(Edit·신청이력 없음)</button>
                         ) : (
-                          <button onClick={() => handleEndItem(item.id)} className="px-3 py-1.5 bg-slate-800 text-white rounded-md text-[10px] font-black hover:bg-black transition-colors">🛑 종료(Edit)</button>
+                          <button onClick={() => handleEndItem(item.id)} className="px-3 py-1.5 bg-slate-800 text-white rounded-md text-[10px] font-medium hover:bg-black transition-colors">🛑 종료(Edit)</button>
                         )}
                       </>
-                    )
-                  )}
-                </div>
+                    )}
+                  </div>
+                )}
               </div>
       
               {!isEditing && (
-                <div className="w-full sm:w-36 shrink-0 flex flex-col justify-center border-t sm:border-t-0 sm:border-l border-slate-100 pt-5 sm:pt-0 sm:pl-6 mt-4 sm:mt-0">
+                <div className="w-full sm:w-28 shrink-0 flex flex-col justify-center border-t sm:border-t-0 sm:border-l border-slate-100 pt-4 sm:pt-0 sm:pl-4 mt-3 sm:mt-0">
                   <button 
-                    onClick={() => router.push(`/marketing/distribution/register?itemId=${item.id}`)}
+                    onClick={() => openReserveModal(item, needsApprovalRequest)}
                     disabled={!canDistribute || item.current_stock <= 0}
-                    className={`w-full py-4 rounded-2xl text-[12px] font-black shadow-md transition-all flex flex-col items-center justify-center gap-1
+                    className={`w-full py-3.5 rounded-2xl text-[11px] font-medium shadow-md transition-all flex flex-col items-center justify-center gap-0.5
                       ${
                         !inStock
                           ? 'bg-slate-100 text-slate-300 cursor-not-allowed shadow-none'
@@ -1187,12 +1503,12 @@ function CatalogContent() {
                         : item.current_stock <= 0
                           ? '품절 (Sold Out)'
                           : needsApprovalRequest
-                            ? '승인 요청하기'
+                            ? '예약 대기'
                             : '재고 예약하기'}
                     </span>
                     {inStock && (
                       <span className="text-[9px] font-medium opacity-70">
-                        {needsApprovalRequest ? '승인 후 예약 확정' : '즉시 예약 확정'}
+                        {needsApprovalRequest ? '확정 후 예약 완료' : '즉시 예약 확정'}
                       </span>
                     )}
                   </button>
@@ -1209,7 +1525,7 @@ function CatalogContent() {
       )}
       
       {filteredActiveItems.length === 0 && (
-        <div className="py-20 text-center font-black text-slate-400 bg-slate-50 border border-dashed border-slate-200 rounded-[2rem]">
+        <div className="py-20 text-center font-medium text-slate-400 bg-slate-50 border border-dashed border-slate-200 rounded-[2rem]">
           조건에 맞는 활성 물품이 없습니다.
         </div>
       )}
@@ -1296,7 +1612,7 @@ function CatalogContent() {
                     </div>
                   </div>
                   <div>
-                    <label className="text-[10px] font-black text-slate-500 block mb-1.5">물품 순수 단가(개당)</label>
+                    <label className="text-[10px] font-black text-slate-500 block mb-1.5">물품 단가(개당)</label>
                     <input
                       type="number"
                       required
@@ -1355,6 +1671,110 @@ function CatalogContent() {
                   className="flex-[2] py-3.5 bg-emerald-600 text-white rounded-xl font-black text-[12px] shadow-md hover:bg-emerald-700 flex justify-center items-center gap-2"
                 >
                   <span>📥</span> 서버 DB 입고 승인
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {reserveModal && (
+        <div
+          className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[200] flex items-center justify-center p-4 overscroll-none"
+          onMouseDown={(e) => {
+            reserveBackdropDownRef.current = e.target === e.currentTarget;
+          }}
+          onClick={(e) => {
+            if (reserveBackdropDownRef.current && e.target === e.currentTarget) {
+              setReserveModal(null);
+            }
+            reserveBackdropDownRef.current = false;
+          }}
+        >
+          <div
+            className="bg-white w-[400px] max-w-[95vw] border border-slate-200 shadow-2xl p-7 rounded-2xl"
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <h4 className="text-[14px] font-black text-slate-900 tracking-tight mb-1">
+              {reserveModal.needsApproval ? '예약 대기' : '재고 예약'}
+            </h4>
+            <p className="text-[11px] font-bold text-slate-400 mb-5">
+              수량을 입력한 뒤 등록하면 「재고 예약」 이력에 반영됩니다.
+            </p>
+            <div className="bg-slate-50 border border-slate-100 rounded-xl px-3.5 py-3 mb-5 space-y-1">
+              <div className="text-sm font-black text-slate-800 truncate">{reserveModal.item.name}</div>
+              <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[10px] font-bold text-slate-500">
+                <span>{reserveModal.item.owner_dept || '-'}</span>
+                <span>
+                  재고 {reserveModal.item.current_stock}
+                  {reserveModal.item.unit || 'EA'}
+                </span>
+              </div>
+            </div>
+            <form onSubmit={handleReserveSubmit} className="space-y-4">
+              <div>
+                <label className="text-[10px] font-black text-indigo-600 uppercase block mb-1.5 ml-0.5">
+                  지급 개수 *
+                </label>
+                <div className="relative">
+                  <input
+                    type="number"
+                    min={1}
+                    max={Number(reserveModal.item.current_stock) || 1}
+                    required
+                    autoFocus
+                    value={reserveQty}
+                    onChange={(e) =>
+                      setReserveQty(e.target.value === '' ? '' : Number(e.target.value))
+                    }
+                    className="w-full h-11 px-3 pr-16 bg-white border border-slate-200 rounded-xl text-sm font-black outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-400"
+                  />
+                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[10px] font-black text-slate-400">
+                    / {reserveModal.item.current_stock || 0}
+                  </span>
+                </div>
+              </div>
+              <div>
+                <label className="text-[10px] font-black text-slate-500 uppercase block mb-1.5 ml-0.5">
+                  비고 (사용 목적 / 배포처 등)
+                </label>
+                <input
+                  type="text"
+                  value={reservePurpose}
+                  onChange={(e) => setReservePurpose(e.target.value)}
+                  maxLength={200}
+                  placeholder="예: 고객사 방문 기념품 / ○○기업"
+                  className="w-full h-11 px-3 bg-white border border-slate-200 rounded-xl text-sm font-bold outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-400"
+                />
+              </div>
+              {reserveModal.needsApproval && (
+                <p className="text-[10px] font-bold text-amber-600 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">
+                  타부서 공유 물품입니다. 등록 시 예약 대기로 접수되며 재고는 즉시 예약(차감)됩니다.
+                </p>
+              )}
+              <div className="flex gap-2 pt-1">
+                <button
+                  type="button"
+                  disabled={reserveSaving}
+                  onClick={() => setReserveModal(null)}
+                  className="flex-1 py-3 bg-slate-100 text-slate-500 rounded-xl font-bold text-[11px] hover:bg-slate-200 disabled:opacity-50"
+                >
+                  취소
+                </button>
+                <button
+                  type="submit"
+                  disabled={reserveSaving}
+                  className={`flex-[2] py-3 text-white rounded-xl font-black text-[12px] shadow-md disabled:opacity-50 ${
+                    reserveModal.needsApproval
+                      ? 'bg-amber-500 hover:bg-amber-600'
+                      : 'bg-indigo-600 hover:bg-indigo-700'
+                  }`}
+                >
+                  {reserveSaving
+                    ? '처리 중…'
+                    : reserveModal.needsApproval
+                      ? '예약 대기 등록'
+                      : '재고 예약 등록'}
                 </button>
               </div>
             </form>

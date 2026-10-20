@@ -28,14 +28,74 @@ export async function GET(req: Request) {
       orderBy: { id: 'desc' },
     });
 
+    // prisma generate 미반영 시에도 DB 컬럼 읽기
+    const dispatchRows = await prisma.$queryRaw<
+      Array<{ id: string; dispatchedDate: string | null }>
+    >`SELECT id, "dispatchedDate" FROM "BusinessCardOrderBatch" WHERE "isArchived" = ${
+      isArchivedParam === 'true'
+    }`;
+    const dispatchMap = new Map(
+      dispatchRows.map((r) => [r.id, r.dispatchedDate ?? null] as const)
+    );
+
+    // prisma generate 미반영 시에도 시안·확정 컬럼 읽기
+    const itemIds = batches.flatMap((b) => (b.items || []).map((i) => i.id));
+    const proofMap = new Map<
+      string,
+      {
+        proofFileName: string | null;
+        proofConfirmedAt: Date | null;
+        proofConfirmedBy: string | null;
+      }
+    >();
+    if (itemIds.length > 0) {
+      const placeholders = itemIds.map((_, i) => `$${i + 1}`).join(', ');
+      const proofRows = await prisma.$queryRawUnsafe<
+        Array<{
+          id: string;
+          proofFileName: string | null;
+          proofConfirmedAt: Date | null;
+          proofConfirmedBy: string | null;
+        }>
+      >(
+        `SELECT id, "proofFileName", "proofConfirmedAt", "proofConfirmedBy"
+         FROM "BusinessCardRequest"
+         WHERE id IN (${placeholders})`,
+        ...itemIds
+      );
+      for (const r of proofRows) {
+        proofMap.set(r.id, {
+          proofFileName: r.proofFileName,
+          proofConfirmedAt: r.proofConfirmedAt,
+          proofConfirmedBy: r.proofConfirmedBy,
+        });
+      }
+    }
+
     const merged = batches.map((b) => ({
       ...b,
+      dispatchedDate: dispatchMap.get(b.id) ?? (b as { dispatchedDate?: string | null }).dispatchedDate ?? null,
       inspectStatus: b.inspectStatus || 'idle',
-      items: (b.items || []).map((item) => ({
-        ...item,
-        applicantType: item.applicantType || '본인',
-        applicantName: item.applicantName || null,
-      })),
+      items: (b.items || []).map((item) => {
+        const proof = proofMap.get(item.id);
+        return {
+          ...item,
+          applicantType: item.applicantType || '본인',
+          applicantName: item.applicantName || null,
+          proofFileName:
+            proof?.proofFileName ??
+            (item as { proofFileName?: string | null }).proofFileName ??
+            null,
+          proofConfirmedAt:
+            proof?.proofConfirmedAt ??
+            (item as { proofConfirmedAt?: Date | null }).proofConfirmedAt ??
+            null,
+          proofConfirmedBy:
+            proof?.proofConfirmedBy ??
+            (item as { proofConfirmedBy?: string | null }).proofConfirmedBy ??
+            null,
+        };
+      }),
     }));
 
     return NextResponse.json(merged, {
@@ -163,6 +223,7 @@ export async function PUT(req: Request) {
 
 /**
  * PATCH
+ * - action: 'confirm-dispatch' + batchId + dispatchedDate → 발주완료일 기록
  * - action: 'confirm-receive' + requestId → 건별 수령확인 (발주완료 → 수령완료)
  * - batchId (기본) → 묶음 지급완료 (전 건 수령완료 후)
  */
@@ -171,6 +232,76 @@ export async function PATCH(req: Request) {
     await authorizeApi(MENU_PATH, { requireEditor: true });
     const body = await req.json();
     const action = String(body.action || '').trim();
+
+    /** 발주완료일 기록 (제작물 inspection confirm-dispatch 대응) */
+    if (action === 'confirm-dispatch') {
+      const batchId = String(body.batchId || '').trim();
+      const dispatchedDate =
+        typeof body.dispatchedDate === 'string' && body.dispatchedDate.trim()
+          ? body.dispatchedDate.trim()
+          : '';
+      if (!batchId) {
+        return NextResponse.json({ message: '묶음 ID가 없습니다.' }, { status: 400 });
+      }
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(dispatchedDate)) {
+        return NextResponse.json({ message: '발주완료일을 선택해주세요.' }, { status: 400 });
+      }
+
+      const batch = await prisma.businessCardOrderBatch.findUnique({
+        where: { id: batchId },
+        include: { items: { select: { id: true } } },
+      });
+      if (!batch) {
+        return NextResponse.json({ message: '묶음을 찾을 수 없습니다.' }, { status: 404 });
+      }
+      if (batch.isArchived) {
+        return NextResponse.json({ message: '보관된 묶음은 발주완료일을 기록할 수 없습니다.' }, { status: 400 });
+      }
+
+      // prisma generate 미반영 대비 — 시안확정 여부 raw 확인
+      const itemIds = (batch.items || []).map((i) => i.id);
+      let unconfirmed = 0;
+      if (itemIds.length === 0) {
+        return NextResponse.json(
+          { message: '묶음에 신청 건이 없어 발주확정할 수 없습니다.' },
+          { status: 400 }
+        );
+      }
+      const placeholders = itemIds.map((_, i) => `$${i + 1}`).join(', ');
+      const proofRows = await prisma.$queryRawUnsafe<
+        Array<{ id: string; proofConfirmedAt: Date | null }>
+      >(
+        `SELECT id, "proofConfirmedAt" FROM "BusinessCardRequest" WHERE id IN (${placeholders})`,
+        ...itemIds
+      );
+      unconfirmed = proofRows.filter((r) => !r.proofConfirmedAt).length;
+      // include 결과가 있으면 raw 없을 때 fallback
+      if (proofRows.length === 0) {
+        unconfirmed = (batch.items || []).filter(
+          (i) => !(i as { proofConfirmedAt?: Date | null }).proofConfirmedAt
+        ).length;
+      }
+      if (unconfirmed > 0) {
+        return NextResponse.json(
+          {
+            message: `시안확정이 끝나지 않은 건이 ${unconfirmed}건 있습니다. 상세보기에서 시안확정 후 발주확정해 주세요.`,
+          },
+          { status: 400 }
+        );
+      }
+
+      await prisma.$executeRaw`
+        UPDATE "BusinessCardOrderBatch"
+        SET "dispatchedDate" = ${dispatchedDate}, "updatedAt" = CURRENT_TIMESTAMP
+        WHERE id = ${batchId}
+      `;
+
+      return NextResponse.json({
+        success: true,
+        message: '발주완료 처리되었습니다.',
+        batch: { ...batch, dispatchedDate },
+      });
+    }
 
     /** 건별 수령확인 */
     if (action === 'confirm-receive') {
@@ -197,6 +328,16 @@ export async function PATCH(req: Request) {
         }
         if (!item.orderGroupId) {
           throw Object.assign(new Error('발주 묶음에 속하지 않은 건입니다.'), { status: 400 });
+        }
+
+        const dispatchCheck = await tx.$queryRaw<Array<{ dispatchedDate: string | null }>>`
+          SELECT "dispatchedDate" FROM "BusinessCardOrderBatch" WHERE id = ${item.orderGroupId} LIMIT 1
+        `;
+        if (!dispatchCheck[0]?.dispatchedDate) {
+          throw Object.assign(
+            new Error('발주완료일을 먼저 기록한 뒤 수령확인할 수 있습니다.'),
+            { status: 400 }
+          );
         }
 
         await tx.businessCardRequest.update({

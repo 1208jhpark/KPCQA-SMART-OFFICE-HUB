@@ -4,6 +4,7 @@ import { cookies } from 'next/headers';
 import jwt from 'jsonwebtoken';
 
 import { JWT_SECRET } from '@/lib/jwt';
+import { resolveDutyCode, resolveUserDutyOptions } from '@/lib/user-job-options';
 
 export async function GET() {
   try {
@@ -40,16 +41,32 @@ export async function GET() {
       return [];
     };
 
+    let dutyOptions = resolveUserDutyOptions(undefined);
+    try {
+      const cfg = await prisma.systemConfig.findUnique({
+        where: { id: 'global' },
+        select: { user_duty_options: true },
+      });
+      dutyOptions = resolveUserDutyOptions(cfg?.user_duty_options);
+    } catch {
+      /* defaults */
+    }
+
+    const duty = user.duty || '';
+    const duty_code = resolveDutyCode(duty, dutyOptions);
+
     return NextResponse.json({
       id: user.id,
       name: user.name,
       name_en: user.name_en || '',
       email: user.email,
       employee_no: user.employee_no || '',
+      extension: user.extension || '',
       roles: safeParseRoles(user.roles),
       dept_id: user.unit_id,
       unit: user.unit,
-      duty: user.duty || '',
+      duty,
+      duty_code,
       duty_en: user.duty_en || '',
       grade: user.grade || '',
       grade_en: user.grade_en || '',

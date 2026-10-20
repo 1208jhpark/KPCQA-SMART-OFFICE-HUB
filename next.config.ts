@@ -14,6 +14,25 @@ const nextConfig: NextConfig = {
     'localhost',
     'qa.kpcqa.or.kr',
   ],
+  async redirects() {
+    return [
+      { source: '/asset/it', destination: '/equipment/it/personal', permanent: false },
+      { source: '/asset/it/personal', destination: '/equipment/it/personal', permanent: false },
+      { source: '/asset/it/dept', destination: '/equipment/it/dept', permanent: false },
+      { source: '/asset/it/master', destination: '/equipment/it/master/dashboard', permanent: false },
+      {
+        source: '/asset/it/master/:path*',
+        destination: '/equipment/it/master/:path*',
+        permanent: false,
+      },
+      { source: '/api/asset/it', destination: '/api/equipment/it', permanent: false },
+      {
+        source: '/api/asset/it/:path*',
+        destination: '/api/equipment/it/:path*',
+        permanent: false,
+      },
+    ];
+  },
 };
 
 export default nextConfig;

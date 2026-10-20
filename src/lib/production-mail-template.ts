@@ -7,6 +7,10 @@ export const PROD_MAIL_PLACEHOLDERS = {
   VENDOR_MANAGER: '{{VENDOR_MANAGER}}',
 } as const;
 
+/** 그룹웨어 메일 작성 기본 URL — DB 미설정·빈 값일 때 사용 (개인설정에서 변경 가능) */
+export const DEFAULT_PROD_MAIL_SHORTCUT_URL =
+  'https://ep.kpcqa.or.kr/mail2/writeMailView.do?';
+
 export const DEFAULT_PROD_MAIL_SUBJECT =
   `[제작물발주] 한국생산성본부인증원 제작 요청 (${PROD_MAIL_PLACEHOLDERS.BATCH_NO})`;
 
@@ -40,6 +44,11 @@ export function applyProdMailTemplate(
       PROD_MAIL_PLACEHOLDERS.VENDOR_MANAGER,
       String(vars.vendorManager || '담당자')
     );
+}
+
+export function resolveProdMailShortcutUrl(raw?: string | null): string {
+  const t = String(raw || '').trim();
+  return t || DEFAULT_PROD_MAIL_SHORTCUT_URL;
 }
 
 export function resolveProdMailSubjectTemplate(raw?: string | null): string {

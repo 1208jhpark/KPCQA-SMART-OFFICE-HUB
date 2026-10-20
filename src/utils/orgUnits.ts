@@ -1,3 +1,10 @@
+import {
+  LEGACY_DUTY_LABEL_TO_CODE,
+  normalizeDutyCode,
+  resolveDutyCode,
+  type UserJobOption,
+} from '@/lib/user-job-options';
+
 /**
  * units 목록에서 최상위 조직(Organization) 명칭을 해석합니다.
  * 1) unit_type === 'ORGANIZATION'
@@ -223,6 +230,8 @@ export function canDistributeMarketingOwnerDept(
     units?: OrgUnitLike[] | null;
     isPower?: boolean;
     ownerUnitId?: string | null;
+    /** true면 Organization(전사) 풀 자동개방 제외 — view_role_ids 게이트용 */
+    excludeTopOrgPool?: boolean;
   }
 ): boolean {
   if (opts.isPower) return true;
@@ -232,6 +241,7 @@ export function canDistributeMarketingOwnerDept(
   const top = (opts.topOrgName || '').trim();
   const me = String(opts.myUnitName || '').trim();
   const units = opts.units;
+  const skipTopPool = !!opts.excludeTopOrgPool;
 
   // id 경로: owner_unit_id 있는 행
   if (ownerId) {
@@ -261,7 +271,7 @@ export function canDistributeMarketingOwnerDept(
       if (hqId && ownerId === hqId) return true;
     }
 
-    if (topId && ownerId === topId) return true;
+    if (!skipTopPool && topId && ownerId === topId) return true;
 
     const childIds = getChildUnitIds(myId || null, units);
     return childIds.includes(ownerId);
@@ -278,9 +288,149 @@ export function canDistributeMarketingOwnerDept(
 
   if (owner === me) return true;
   if (opts.myHqName && owner === opts.myHqName.trim()) return true;
-  if (top && owner === top) return true;
+  if (!skipTopPool && top && owner === top) return true;
   const children = getChildUnitNames(opts.myUnitName, opts.myUnitId, opts.units);
   return children.includes(owner);
+}
+
+/** 전사(Organization) 소유 물품인지 */
+export function isMarketingTopOrgItem(
+  item: { owner_dept?: string | null; owner_unit_id?: string | null },
+  topOrgName?: string | null,
+  units?: OrgUnitLike[] | null
+): boolean {
+  const top = String(topOrgName || '').trim();
+  if (!top) return false;
+  const owner = String(item.owner_dept || '').trim();
+  if (owner && owner === top) return true;
+  const ownerId = String(item.owner_unit_id || '').trim();
+  if (!ownerId || !units?.length) return false;
+  const topId = String(units.find((u) => String(u.unit_name || '').trim() === top)?.id || '').trim();
+  return !!topId && ownerId === topId;
+}
+
+/**
+ * 지급 신청·카탈로그 카드 노출용 최종 판정
+ * - 본인 소속/본부/하위: 구조적 즉시 신청
+ * - view_role_ids 지정 물품(센터·본부·전사 소유 무관): 타부서 LV·직책 공유 신청
+ * - 레거시 전사(Organization) 소유: GLOBAL_MGMT는 전체, 그 외는 view_role 필수
+ */
+export function canApplyMarketingItem(
+  item: {
+    owner_dept?: string | null;
+    owner_unit_id?: string | null;
+    view_role_ids?: unknown;
+    view_allow_apply?: boolean | null;
+  },
+  opts: {
+    myUnitName?: string | null;
+    myUnitId?: string | null;
+    myHqName?: string | null;
+    topOrgName?: string | null;
+    units?: OrgUnitLike[] | null;
+    isPower?: boolean;
+    userRoles?: unknown;
+    userDuty?: string | null;
+    dutyCode?: string | null;
+    dutyOptions?: UserJobOption[] | null;
+    globalMgmtDept?: string | null;
+  }
+): boolean {
+  if (opts.isPower) return true;
+
+  if (
+    canDistributeMarketingOwnerDept(item.owner_dept, {
+      myUnitName: opts.myUnitName,
+      myUnitId: opts.myUnitId,
+      myHqName: opts.myHqName,
+      topOrgName: opts.topOrgName,
+      units: opts.units,
+      isPower: false,
+      ownerUnitId: item.owner_unit_id,
+      excludeTopOrgPool: true,
+    })
+  ) {
+    return true;
+  }
+
+  const viewOpts = {
+    dutyCode: opts.dutyCode,
+    dutyOptions: opts.dutyOptions,
+  };
+
+  if (isMarketingTopOrgItem(item, opts.topOrgName, opts.units)) {
+    // 레거시 전사 소유: GLOBAL_MGMT 전체 개방
+    if (
+      isGlobalMgmtOrgMember({
+        myUnitName: opts.myUnitName,
+        myUnitId: opts.myUnitId,
+        globalMgmtDept: opts.globalMgmtDept,
+        units: opts.units,
+      })
+    ) {
+      return true;
+    }
+    const tokens = parseViewAllowTokens(item.view_role_ids);
+    if (tokens.length === 0) return false;
+    return canApplyViaViewRoles(item, opts.userRoles, opts.userDuty, viewOpts);
+  }
+
+  // 센터/본부 소유 + view_role 공유 → 타부서 신청가능
+  return canApplyViaViewRoles(item, opts.userRoles, opts.userDuty, viewOpts);
+}
+
+/**
+ * 「전사 · 신청가능」풀: 구조적 소속이 아닌 view_role 공유로만 신청 가능한 물품
+ */
+export function isSharedMarketingApplyItem(
+  item: {
+    owner_dept?: string | null;
+    owner_unit_id?: string | null;
+    view_role_ids?: unknown;
+    view_allow_apply?: boolean | null;
+  },
+  opts: {
+    myUnitName?: string | null;
+    myUnitId?: string | null;
+    myHqName?: string | null;
+    topOrgName?: string | null;
+    units?: OrgUnitLike[] | null;
+    isPower?: boolean;
+    userRoles?: unknown;
+    userDuty?: string | null;
+    dutyCode?: string | null;
+    dutyOptions?: UserJobOption[] | null;
+    globalMgmtDept?: string | null;
+  }
+): boolean {
+  if (!canApplyMarketingItem(item, opts)) return false;
+  if (opts.isPower) {
+    // LV_1: 구조적 범위 밖 + view_role 있는 물품만 공유 탭에
+    const structural = canDistributeMarketingOwnerDept(item.owner_dept, {
+      myUnitName: opts.myUnitName,
+      myUnitId: opts.myUnitId,
+      myHqName: opts.myHqName,
+      topOrgName: opts.topOrgName,
+      units: opts.units,
+      isPower: false,
+      ownerUnitId: item.owner_unit_id,
+      excludeTopOrgPool: true,
+    });
+    if (structural) return false;
+    return parseViewAllowTokens(item.view_role_ids).length > 0 ||
+      isMarketingTopOrgItem(item, opts.topOrgName, opts.units);
+  }
+  const structural = canDistributeMarketingOwnerDept(item.owner_dept, {
+    myUnitName: opts.myUnitName,
+    myUnitId: opts.myUnitId,
+    myHqName: opts.myHqName,
+    topOrgName: opts.topOrgName,
+    units: opts.units,
+    isPower: false,
+    ownerUnitId: item.owner_unit_id,
+    excludeTopOrgPool: true,
+  });
+  return !structural;
 }
 
 /**
@@ -432,32 +582,94 @@ export function isGlobalMgmtOrgMember(opts: {
   return false;
 }
 
+/** @deprecated 레거시 한글 라벨 — 신규는 DUTY_* 코드 사용 */
+export const MARKETING_LV2_DUTY_LABELS = [
+  '원장',
+  '부원장',
+  '상무',
+  '본부장',
+  '센터장',
+] as const;
+
+const MARKETING_VIEW_LV_SET = new Set(['LV_1', 'LV_2', 'LV_3']);
+const MARKETING_LV2_DUTY_LABEL_SET = new Set<string>(MARKETING_LV2_DUTY_LABELS);
+
+/** view_role_ids 토큰 정규화: LV_n / DUTY_* / 레거시 직책 한글 */
+export function normalizeViewAllowToken(raw: unknown): string {
+  const s = String(raw ?? '').trim();
+  if (!s) return '';
+  const lv = s.match(/^LV[_\s-]?(\d+)$/i);
+  if (lv) return `LV_${lv[1]}`;
+  if (/^\d+$/.test(s)) return `LV_${s}`;
+  const asDuty = normalizeDutyCode(s);
+  if (asDuty.startsWith('DUTY_')) return asDuty;
+  const legacy = LEGACY_DUTY_LABEL_TO_CODE[s];
+  if (legacy) return legacy;
+  return s;
+}
+
+/** 저장·판정용 허용 토큰 (LV_1~3 + DUTY_* + 레거시 한글) */
+export function parseViewAllowTokens(raw: unknown): string[] {
+  if (raw == null) return [];
+  const arr = Array.isArray(raw) ? raw : [raw];
+  const out: string[] = [];
+  for (const r of arr) {
+    const t = normalizeViewAllowToken(r);
+    if (!t) continue;
+    if (
+      MARKETING_VIEW_LV_SET.has(t) ||
+      t.startsWith('DUTY_') ||
+      MARKETING_LV2_DUTY_LABEL_SET.has(t)
+    ) {
+      out.push(t);
+    }
+  }
+  return Array.from(new Set(out));
+}
+
 /**
- * 타부서 열람·신청 LV로 지정된 인원인지
- * (view_role_ids 지정 = 열람+신청 동일 / 미지정 = 타부서 개방 없음)
+ * 타부서 열람·신청 허용 대상인지
+ * - LV_1 / LV_2 / LV_3: roles 매칭
+ * - 「전사 허용」: LV_1·2·3 전원
+ * - 직책: User.duty → duty_code(DUTY_*) 매칭 (레거시 한글 view_role도 허용)
  */
 export function canApplyViaViewRoles(
   item: { view_role_ids?: unknown; view_allow_apply?: boolean | null },
-  userRoles: unknown
+  userRoles: unknown,
+  userDuty?: string | null,
+  opts?: {
+    dutyCode?: string | null;
+    dutyOptions?: UserJobOption[] | null;
+  }
 ): boolean {
-  const raw = item?.view_role_ids;
-  if (!raw) return false;
-  const arr = Array.isArray(raw) ? raw : [raw];
-  const required = Array.from(
-    new Set(
-      arr
-        .map((r) => {
-          const m = String(r ?? '').trim().match(/(\d+)/);
-          return m ? `LV_${m[1]}` : '';
-        })
-        .filter(Boolean)
-    )
-  );
+  const required = parseViewAllowTokens(item?.view_role_ids);
   if (required.length === 0) return false;
+
   const rolesArr = !userRoles ? [] : Array.isArray(userRoles) ? userRoles : [userRoles];
-  const mine = rolesArr.map((r) => {
-    const m = String(r ?? '').trim().match(/(\d+)/);
-    return m ? `LV_${m[1]}` : String(r);
-  });
-  return mine.some((r) => required.includes(r));
+  const mine = rolesArr.map((r) => normalizeViewAllowToken(r)).filter(Boolean);
+  if (mine.some((r) => required.includes(r))) return true;
+
+  const companyWide =
+    required.includes('LV_3') ||
+    (required.includes('LV_1') && required.includes('LV_2') && required.includes('LV_3'));
+  if (companyWide && mine.some((r) => r === 'LV_1' || r === 'LV_2' || r === 'LV_3')) {
+    return true;
+  }
+
+  if (required.includes('LV_2') && mine.includes('LV_2')) return true;
+
+  const dutyLabel = String(userDuty || '').trim();
+  const dutyCode =
+    String(opts?.dutyCode || '').trim() ||
+    resolveDutyCode(dutyLabel || opts?.dutyCode, opts?.dutyOptions);
+
+  if (dutyCode && required.includes(dutyCode)) return true;
+  // 레거시: view_role에 한글 직책이 남아 있는 경우
+  if (dutyLabel && required.includes(dutyLabel)) return true;
+  if (dutyLabel) {
+    const mapped = LEGACY_DUTY_LABEL_TO_CODE[dutyLabel];
+    if (mapped && required.includes(mapped)) return true;
+  }
+
+  return false;
 }

@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { checkMenuPermission } from '@/lib/permission-utils';
 import { resolveEntryHref } from '@/lib/resolve-entry-href';
 
-type HubDomainKey = 'supplies' | 'it' | 'businesscard' | 'production' | 'other';
+type HubDomainKey = 'supplies' | 'it' | 'businesscard' | 'other';
 
 type L2Menu = {
   id: string;
@@ -21,24 +21,11 @@ type L2Menu = {
   parent_id?: string | null;
 };
 
-const LoadingSkeleton = () => (
-  <div className="w-full max-w-[1600px] mx-auto py-16 px-4 space-y-6 animate-pulse">
-    <div className="w-64 h-10 bg-slate-200 rounded-lg mb-12" />
-    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-5">
-      <div className="w-full h-72 bg-slate-200 rounded-[1.75rem]" />
-      <div className="w-full h-72 bg-slate-200 rounded-[1.75rem]" />
-      <div className="w-full h-72 bg-slate-200 rounded-[1.75rem]" />
-      <div className="w-full h-72 bg-slate-200 rounded-[1.75rem]" />
-    </div>
-  </div>
-);
-
 function resolveDomainKey(path: string): HubDomainKey {
   const p = String(path || '').toLowerCase();
   if (p.includes('/asset/supplies')) return 'supplies';
-  if (p.includes('/asset/it')) return 'it';
+  if (p.includes('/equipment/it')) return 'it';
   if (p.includes('/asset/businesscard')) return 'businesscard';
-  if (p.includes('/asset/production')) return 'production';
   return 'other';
 }
 
@@ -86,20 +73,14 @@ const DOMAIN_META: Record<
   it: {
     titleEn: 'IT Infrastructure Assets',
     theme: 'indigo',
-    userLink: '/asset/it/personal',
-    adminLink: '/asset/it/master/dashboard',
+    userLink: '/equipment/it/personal',
+    adminLink: '/equipment/it/master/dashboard',
   },
   businesscard: {
     titleEn: 'Business Card Request',
     theme: 'teal',
     userLink: '/asset/businesscard/my-page',
     adminLink: '/asset/businesscard/master/requests',
-  },
-  production: {
-    titleEn: 'Dept Custom Production',
-    theme: 'sky',
-    userLink: '/asset/production/apply/request',
-    adminLink: '/asset/production/master/dashboard',
   },
   other: {
     titleEn: 'Asset Service',
@@ -113,10 +94,8 @@ export default function AssetIntegratedDashboard() {
   const [stats, setStats] = useState({
     supplies: { myPending: 0, readyPickup: 0 },
     bizcard: { myPending: 0, readyPickup: 0 },
-    production: { myPending: 0, inProgress: 0 },
   });
   const [itActiveSurvey, setItActiveSurvey] = useState<any | null>(null);
-  const [loading, setLoading] = useState(true);
   const [originUrl, setOriginUrl] = useState('');
   const [auditLinkCopied, setAuditLinkCopied] = useState(false);
   const [isManager, setIsManager] = useState(false);
@@ -146,7 +125,7 @@ export default function AssetIntegratedDashboard() {
           fetch(`/api/admin/interface?t=${ts}`, { cache: 'no-store' }).catch(() => null),
           fetch(`/api/admin/units?active=true&t=${ts}`, { cache: 'no-store' }).catch(() => null),
           fetch(`/api/asset/hub-metrics?t=${ts}`, { cache: 'no-store' }).catch(() => null),
-          fetch(`/api/asset/it/audit?t=${ts}`, { cache: 'no-store' }).catch(() => null),
+          fetch(`/api/equipment/it/audit?t=${ts}`, { cache: 'no-store' }).catch(() => null),
         ]);
 
         const menus = await getSafeArray(menuRes);
@@ -209,16 +188,10 @@ export default function AssetIntegratedDashboard() {
               myPending: Number(hubMetrics?.bizcard?.myPending) || 0,
               readyPickup: Number(hubMetrics?.bizcard?.readyPickup) || 0,
             },
-            production: {
-              myPending: Number(hubMetrics?.production?.myPending) || 0,
-              inProgress: Number(hubMetrics?.production?.inProgress) || 0,
-            },
           });
         }
       } catch (err) {
         console.error('Asset Dashboard Sync Error:', err);
-      } finally {
-        setLoading(false);
       }
     };
     syncDashboardMetrics();
@@ -232,11 +205,9 @@ export default function AssetIntegratedDashboard() {
         currentUser && allMenus.length > 0
           ? resolveEntryHref(menu, allMenus, currentUser, unitsList)
           : meta.userLink;
-      // supplies: 신규 신청 → inventory / production: 신청 경로 유지
+      // supplies: 신규 신청 → inventory
       const resolvedUserLink =
-        key === 'supplies' || key === 'production'
-          ? meta.userLink
-          : userLink || meta.userLink;
+        key === 'supplies' ? meta.userLink : userLink || meta.userLink;
 
       return {
         id: menu.id,
@@ -256,9 +227,7 @@ export default function AssetIntegratedDashboard() {
               ? '나의 IT·업무자산 →'
               : key === 'businesscard'
                 ? '신규 신청하기 →'
-                : key === 'production'
-                  ? '신규 신청하기 →'
-                  : '나의 신청 / 현황 →',
+                : '나의 신청 / 현황 →',
         showAdminButton: canAccessAdminPath(
           meta.adminLink,
           currentUser,
@@ -268,8 +237,6 @@ export default function AssetIntegratedDashboard() {
       };
     });
   }, [l2Menus, currentUser, allMenus, unitsList]);
-
-  if (loading) return <LoadingSkeleton />;
 
   return (
     <div className="min-h-screen bg-slate-50 font-sans pb-24">
@@ -282,16 +249,19 @@ export default function AssetIntegratedDashboard() {
             전사 경영·업무자산 대시보드
           </h1>
           <p className="text-slate-400 mt-4 font-medium leading-relaxed md:whitespace-nowrap">
-            사내 공통 소모품부터 부서별 IT S/W·장비, 맞춤 제작물까지 전사 업무 자원을 통합 관리합니다.
+            공통 소모품·명함·IT 업무자산 등 경영·업무 자원을 한곳에서 신청·관리합니다.
           </p>
         </div>
       </div>
 
       <div className="max-w-[1600px] mx-auto px-4 md:px-6 -mt-16 relative z-10">
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-5">
+        <div className="flex flex-wrap justify-center gap-5">
           {cards.map((card) => (
-            <HubCard
+            <div
               key={card.id}
+              className="w-full max-w-sm md:w-[calc(50%-0.625rem)] xl:w-[calc(25%-0.9375rem)] xl:max-w-[22rem]"
+            >
+            <HubCard
               title={card.title}
               titleEn={card.titleEn}
               desc={card.desc}
@@ -302,30 +272,22 @@ export default function AssetIntegratedDashboard() {
                   ? stats.supplies.myPending
                   : card.key === 'businesscard'
                     ? stats.bizcard.myPending
-                    : card.key === 'production'
-                      ? stats.production.myPending
-                      : undefined
+                    : undefined
               }
-              myPendingLabel={
-                card.key === 'production' ? '나의 접수·발주대기' : '나의 신청대기'
-              }
+              myPendingLabel="나의 신청대기"
               rightCount={
                 card.key === 'supplies'
                   ? stats.supplies.readyPickup
                   : card.key === 'businesscard'
                     ? stats.bizcard.readyPickup
-                    : card.key === 'production'
-                      ? stats.production.inProgress
-                      : undefined
+                    : undefined
               }
               rightLabel={
                 card.key === 'supplies'
-                  ? '수령대기'
+                  ? '이번달 지급완료'
                   : card.key === 'businesscard'
                     ? '수령대기'
-                    : card.key === 'production'
-                      ? '제작진행'
-                      : '전사 신청대기'
+                    : '전사 신청대기'
               }
               userLink={card.userLink}
               adminLink={card.adminLink}
@@ -384,6 +346,7 @@ export default function AssetIntegratedDashboard() {
                 ) : undefined
               }
             />
+            </div>
           ))}
         </div>
       </div>
@@ -526,14 +489,14 @@ const HubCard = ({
       <div className="flex flex-col gap-2 mt-auto">
         <Link
           href={userLink}
-          className={`w-full flex items-center justify-center gap-1.5 py-2.5 rounded-xl font-black text-[11px] shadow-sm uppercase tracking-wider transition-all active:scale-[0.98] ${c.btnPrimary}`}
+          className={`w-full flex items-center justify-center gap-1.5 py-2.5 rounded-xl font-medium text-[11px] shadow-sm uppercase tracking-wider transition-all active:scale-[0.98] ${c.btnPrimary}`}
         >
           {userButtonLabel}
         </Link>
         {showAdminButton ? (
           <Link
             href={adminLink}
-            className="w-full flex items-center justify-center gap-1.5 py-2.5 rounded-xl font-black text-[11px] text-slate-200 bg-slate-800 hover:bg-slate-900 border border-slate-700/60 shadow-sm uppercase tracking-wider transition-all active:scale-[0.98]"
+            className="w-full flex items-center justify-center gap-1.5 py-2.5 rounded-xl font-medium text-[11px] text-slate-200 bg-slate-800 hover:bg-slate-900 border border-slate-700/60 shadow-sm uppercase tracking-wider transition-all active:scale-[0.98]"
           >
             관리자 패널 제어 →
           </Link>

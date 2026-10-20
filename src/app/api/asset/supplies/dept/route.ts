@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { Prisma } from '@prisma/client';
 import prisma from '@/lib/prisma';
 import { authorizeApi, authErrorToResponse } from '@/lib/server-auth-guard';
 
@@ -7,6 +8,43 @@ export const dynamic = 'force-dynamic';
 const MENU_PATH = '/asset/supplies/dept';
 
 type ScopeUnit = { id: string; unit_name: string };
+
+/** 부서 품목 재고 신호등 — supply_item_locations JSON value에 함께 저장 */
+const STOCK_LEVELS = ['OK', 'LOW', 'OUT'] as const;
+type StockLevel = (typeof STOCK_LEVELS)[number];
+
+type ItemLocEntry = { location: string; level: StockLevel | '' };
+
+function normalizeStockLevel(raw: unknown): StockLevel | '' {
+  const s = String(raw || '').trim().toUpperCase();
+  if (s === 'OK' || s === 'SUFFICIENT' || s === '충분') return 'OK';
+  if (s === 'LOW' || s === '소량' || s === '소량남음') return 'LOW';
+  if (s === 'OUT' || s === 'EMPTY' || s === '바닥' || s === '바닥남') return 'OUT';
+  return '';
+}
+
+function parseItemLocEntry(raw: unknown): ItemLocEntry {
+  if (typeof raw === 'string') {
+    return { location: raw.trim(), level: '' };
+  }
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    const o = raw as Record<string, unknown>;
+    return {
+      location: String(o.location ?? o.l ?? '').trim(),
+      level: normalizeStockLevel(o.level ?? o.s ?? o.status ?? o.stock_level),
+    };
+  }
+  return { location: '', level: '' };
+}
+
+function serializeItemLocEntry(entry: ItemLocEntry): ItemLocEntry | string | null {
+  const location = entry.location.trim();
+  const level = entry.level;
+  if (!location && !level) return null;
+  // 위치만 있으면 레거시 문자열 유지 가능하나, level이 있으면 객체로 통일
+  if (location && !level) return location;
+  return { location, level };
+}
 
 /**
  * 세션 유저 + viewScope 기준 연계 조직
@@ -98,6 +136,8 @@ export async function GET() {
         myUnitId: scope.myUnit.id,
         storageNotes: {},
         storageNotesByUnitId: {},
+        storageItemLocationsByUnitId: {},
+        storageItemLevelsByUnitId: {},
         viewScope: scope.viewScope,
         editScope: String(auth.permission.editScope || 'NONE').toUpperCase(),
         editableUnitIds: [],
@@ -151,7 +191,7 @@ export async function GET() {
             where: requestWhere,
             include: {
               item: {
-                select: { name: true, description: true },
+                select: { id: true, name: true, description: true },
               },
               unit: { select: { id: true, unit_name: true } },
             },
@@ -159,15 +199,36 @@ export async function GET() {
           }),
       prisma.orgUnit.findMany({
         where: { id: { in: scopeIds } },
-        select: { id: true, unit_name: true, supply_storage_note: true },
+        select: {
+          id: true,
+          unit_name: true,
+          supply_storage_note: true,
+          supply_item_locations: true,
+        },
       }),
     ]);
 
     const storageNotes: Record<string, string> = {};
     const storageNotesByUnitId: Record<string, string> = {};
+    const storageItemLocationsByUnitId: Record<string, Record<string, string>> = {};
+    const storageItemLevelsByUnitId: Record<string, Record<string, StockLevel>> = {};
     for (const row of noteRows) {
       storageNotes[row.unit_name] = row.supply_storage_note || '';
       storageNotesByUnitId[row.id] = row.supply_storage_note || '';
+      const locRaw = row.supply_item_locations;
+      const locMap: Record<string, string> = {};
+      const levelMap: Record<string, StockLevel> = {};
+      if (locRaw && typeof locRaw === 'object' && !Array.isArray(locRaw)) {
+        for (const [k, v] of Object.entries(locRaw as Record<string, unknown>)) {
+          const key = String(k || '').trim();
+          if (!key) continue;
+          const parsed = parseItemLocEntry(v);
+          if (parsed.location) locMap[key] = parsed.location;
+          if (parsed.level) levelMap[key] = parsed.level;
+        }
+      }
+      storageItemLocationsByUnitId[row.id] = locMap;
+      storageItemLevelsByUnitId[row.id] = levelMap;
     }
 
     // 클라에 OrgUnit 객체를 넣지 않음 — {id,unit_name}이 JSX 자식으로 새는 런타임 오류 방지
@@ -189,6 +250,8 @@ export async function GET() {
       myUnitId: scope.myUnit.id,
       storageNotes,
       storageNotesByUnitId,
+      storageItemLocationsByUnitId,
+      storageItemLevelsByUnitId,
       viewScope: scope.viewScope,
       editScope: editScopeRaw,
       editableUnitIds,
@@ -208,6 +271,9 @@ export async function GET() {
  * [PATCH] 두 가지 용도
  * 1) action: 'cancel' — 본인 PENDING 신청 취소(CANCELLED) + 선차감 재고 복구
  * 2) 보관 위치 메모 저장 — Access + viewScope
+ *    - note: 부서 공통 보관 안내
+ *    - item_key + item_location: 품목별 보관 위치
+ *    - item_key + item_stock_level: 품목별 재고 신호등 (OK|LOW|OUT|"")
  */
 export async function PATCH(req: Request) {
   try {
@@ -310,6 +376,28 @@ export async function PATCH(req: Request) {
 
     const unitId = String(body.unit_id || body.dept_id || '').trim();
     const deptName = String(body.dept_name || body.deptName || '').trim();
+    const itemKey = String(body.item_key || body.itemKey || '').trim();
+    const hasItemLocation =
+      Object.prototype.hasOwnProperty.call(body, 'item_location') ||
+      Object.prototype.hasOwnProperty.call(body, 'itemLocation');
+    const itemLocation = String(body.item_location ?? body.itemLocation ?? '').trim();
+    const hasItemStockLevel =
+      Object.prototype.hasOwnProperty.call(body, 'item_stock_level') ||
+      Object.prototype.hasOwnProperty.call(body, 'itemStockLevel');
+    const rawStockLevel = body.item_stock_level ?? body.itemStockLevel;
+    const itemStockLevel =
+      rawStockLevel === '' || rawStockLevel == null
+        ? ''
+        : normalizeStockLevel(rawStockLevel);
+    if (hasItemStockLevel && rawStockLevel !== '' && rawStockLevel != null && !itemStockLevel) {
+      return NextResponse.json(
+        { error: '허용되지 않은 재고 상태입니다. (OK|LOW|OUT)' },
+        { status: 400 }
+      );
+    }
+    const hasBoardNote =
+      Object.prototype.hasOwnProperty.call(body, 'note') ||
+      Object.prototype.hasOwnProperty.call(body, 'supply_storage_note');
     const note = String(body.note ?? body.supply_storage_note ?? '');
 
     if (!unitId && !deptName) {
@@ -327,6 +415,66 @@ export async function PATCH(req: Request) {
       return NextResponse.json(
         { error: '해당 조직의 보관 안내는 수정할 수 없습니다.' },
         { status: 403 }
+      );
+    }
+
+    // 품목별 보관 위치 / 재고 신호등
+    if (itemKey && (hasItemLocation || hasItemStockLevel)) {
+      if (hasItemLocation && itemLocation.length > 200) {
+        return NextResponse.json(
+          { error: '품목 보관 위치는 200자 이내로 작성해 주세요.' },
+          { status: 400 }
+        );
+      }
+      const current = await prisma.orgUnit.findUnique({
+        where: { id: target.id },
+        select: { supply_item_locations: true },
+      });
+      const prevRaw =
+        current?.supply_item_locations &&
+        typeof current.supply_item_locations === 'object' &&
+        !Array.isArray(current.supply_item_locations)
+          ? { ...(current.supply_item_locations as Record<string, unknown>) }
+          : {};
+      const existing = parseItemLocEntry(prevRaw[itemKey]);
+      const nextEntry: ItemLocEntry = {
+        location: hasItemLocation ? itemLocation : existing.location,
+        level: hasItemStockLevel ? itemStockLevel : existing.level,
+      };
+      const serialized = serializeItemLocEntry(nextEntry);
+      if (serialized == null) delete prevRaw[itemKey];
+      else prevRaw[itemKey] = serialized;
+
+      const updated = await prisma.orgUnit.update({
+        where: { id: target.id },
+        data: {
+          supply_item_locations: prevRaw as Prisma.InputJsonValue,
+        },
+        select: { id: true, unit_name: true, supply_item_locations: true },
+      });
+
+      const parsedNext = parseItemLocEntry(
+        updated.supply_item_locations &&
+          typeof updated.supply_item_locations === 'object' &&
+          !Array.isArray(updated.supply_item_locations)
+          ? (updated.supply_item_locations as Record<string, unknown>)[itemKey]
+          : null
+      );
+
+      return NextResponse.json({
+        success: true,
+        unit_id: updated.id,
+        dept_name: updated.unit_name,
+        item_key: itemKey,
+        item_location: parsedNext.location,
+        item_stock_level: parsedNext.level,
+      });
+    }
+
+    if (!hasBoardNote) {
+      return NextResponse.json(
+        { error: '저장할 보관 안내·품목 위치·재고 상태가 없습니다.' },
+        { status: 400 }
       );
     }
 

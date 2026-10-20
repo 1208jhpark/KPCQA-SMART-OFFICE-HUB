@@ -276,7 +276,7 @@ export async function buildHomeAlarms(user: SessionUser): Promise<HomeAlarm[]> {
       });
     })(),
     (async () => {
-      if (!special('/asset/it/master/dashboard')) return;
+      if (!special('/equipment/it/master/dashboard')) return;
       const USER_INCOMING = ['의견전송', '답변 대기중', '답변회신', '대기중'];
       const [assets, requests] = await Promise.all([
         prisma.iTAsset.findMany({
@@ -308,12 +308,12 @@ export async function buildHomeAlarms(user: SessionUser): Promise<HomeAlarm[]> {
         id: 'it-inbox',
         label: '[IT자산] 사용자 의견 도착',
         count,
-        href: '/asset/it/master/dashboard',
+        href: '/equipment/it/master/dashboard',
         at: latestAt,
       });
     })(),
     (async () => {
-      if (!special('/asset/it/master/dashboard')) return;
+      if (!special('/equipment/it/master/dashboard')) return;
       const assets = await prisma.iTAsset.findMany({
         where: { is_active: true },
         select: {
@@ -347,14 +347,14 @@ export async function buildHomeAlarms(user: SessionUser): Promise<HomeAlarm[]> {
         id: 'it-replace-d30',
         label: '[IT자산] 교체 예정 장비 (D-30)',
         count: d30,
-        href: '/asset/it/master/dashboard',
+        href: '/equipment/it/master/dashboard',
         at: d30At,
       });
       pushAlarm(alarms, {
         id: 'it-replace-overdue',
         label: '[IT자산] 교체 기한 초과 (D+)',
         count: overdue,
-        href: '/asset/it/master/dashboard',
+        href: '/equipment/it/master/dashboard',
         at: overdueAt,
       });
     })(),
@@ -373,7 +373,7 @@ export async function buildHomeAlarms(user: SessionUser): Promise<HomeAlarm[]> {
       });
     })(),
     (async () => {
-      if (!special('/asset/production/dept-master/order') || scopeIds.size === 0) return;
+      if (!special('/production/custom/dept-master/order') || scopeIds.size === 0) return;
       const names = units
         .filter((u) => scopeIds.has(u.id))
         .map((u) => String(u.unit_name || '').trim())
@@ -393,12 +393,12 @@ export async function buildHomeAlarms(user: SessionUser): Promise<HomeAlarm[]> {
         id: 'prod-new',
         label: '[제작물] 신규 신청 대기',
         count: rows.length,
-        href: '/asset/production/dept-master/order',
+        href: '/production/custom/dept-master/order',
         at: maxAt(...rows.map((r) => r.createdAt)),
       });
     })(),
     (async () => {
-      if (!special('/asset/production/dept-master/settlement')) return;
+      if (!special('/production/custom/dept-master/settlement')) return;
       const dir = path.join(process.cwd(), 'public', 'uploads', 'production-statement');
       const [meta, publish, confirms] = await Promise.all([
         readJsonFile(path.join(dir, 'meta.json')),
@@ -419,7 +419,7 @@ export async function buildHomeAlarms(user: SessionUser): Promise<HomeAlarm[]> {
         id: 'prod-statement',
         label: '[제작물] 명세서 대조 대기',
         count: fileCount,
-        href: '/asset/production/dept-master/settlement',
+        href: '/production/custom/dept-master/settlement',
         at: fileAt,
       });
       const memoRows = Object.values((confirms && typeof confirms === 'object' ? confirms : {}) as Record<string, any>).filter(
@@ -429,7 +429,7 @@ export async function buildHomeAlarms(user: SessionUser): Promise<HomeAlarm[]> {
         id: 'prod-statement-memo',
         label: '[제작물] 관리자 메모 도착',
         count: memoRows.length,
-        href: '/asset/production/dept-master/settlement',
+        href: '/production/custom/dept-master/settlement',
         at: maxAt(...memoRows.map((row: any) => row?.updatedAt || row?.requestedAt)),
       });
     })(),
@@ -518,16 +518,22 @@ export async function buildHomeAlarms(user: SessionUser): Promise<HomeAlarm[]> {
       });
     })(),
     (async () => {
+      // 마스터 지급승인(→COMPLETED) 후 신청자에게 안내 · 최근 7일
+      const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
       const rows = await prisma.supplyRequest.findMany({
-        where: { user_email: { equals: email, mode: 'insensitive' }, status: 'READY' },
-        select: { updatedAt: true, createdAt: true },
+        where: {
+          user_email: { equals: email, mode: 'insensitive' },
+          status: 'COMPLETED',
+          processedAt: { gte: since },
+        },
+        select: { processedAt: true, updatedAt: true, createdAt: true },
       });
       pushAlarm(alarms, {
-        id: 'supply-ready',
-        label: '[소모품] 물품 수령 대기',
+        id: 'supply-approved',
+        label: '[소모품] 지급승인 완료',
         count: rows.length,
         href: '/asset/supplies/dept',
-        at: maxAt(...rows.map((r) => maxAt(r.updatedAt, r.createdAt))),
+        at: maxAt(...rows.map((r) => maxAt(r.processedAt, r.updatedAt, r.createdAt))),
       });
     })(),
     (async () => {
@@ -542,7 +548,7 @@ export async function buildHomeAlarms(user: SessionUser): Promise<HomeAlarm[]> {
         id: 'it-opinion',
         label: '[IT자산] 관리자 의견 도착',
         count: rows.length,
-        href: '/asset/it/personal',
+        href: '/equipment/it/personal',
         at: maxAt(...rows.map((r) => maxAt(r.updatedAt, r.createdAt))),
       });
     })(),
@@ -559,12 +565,12 @@ export async function buildHomeAlarms(user: SessionUser): Promise<HomeAlarm[]> {
         id: 'it-nudge',
         label: '[IT자산] 실사 참여 요청',
         count: rows.length,
-        href: '/asset/it/personal',
+        href: '/equipment/it/personal',
         at: maxAt(...rows.map((r) => maxAt(r.audit_request_date, r.updatedAt))),
       });
     })(),
     (async () => {
-      // 본인 대상 실사(진행중) — 미실사 자산이 있을 때만 /asset/it/personal
+      // 본인 대상 실사(진행중) — 미실사 자산이 있을 때만 /equipment/it/personal
       // D-3 구간이면 「실사 마감 임박」, 그 외에는 「신규 실사 안내」(둘 중 하나만)
       const audits = await prisma.iTAudit.findMany({
         where: { status: '진행중' },
@@ -638,7 +644,7 @@ export async function buildHomeAlarms(user: SessionUser): Promise<HomeAlarm[]> {
           id: 'it-audit-d3',
           label: '[IT자산] 실사 마감 임박 (D-3)',
           count: d3PendingCount,
-          href: '/asset/it/personal',
+          href: '/equipment/it/personal',
           at: maxAt(
             pendingAt,
             ...mine
@@ -656,7 +662,7 @@ export async function buildHomeAlarms(user: SessionUser): Promise<HomeAlarm[]> {
         id: 'it-audit-new',
         label: '[IT자산] 신규 실사 안내',
         count: pendingCount,
-        href: '/asset/it/personal',
+        href: '/equipment/it/personal',
         at: maxAt(
           pendingAt,
           ...mine.map((a) => maxAt(a.postDate, a.updatedAt, a.createdAt))
@@ -664,7 +670,7 @@ export async function buildHomeAlarms(user: SessionUser): Promise<HomeAlarm[]> {
       });
     })(),
     (async () => {
-      // my-page 「수령대기」(사무실 도착·찾아가기)만 — 「제작중」(발주완료)은 제외
+      // my-page 「수령대기」(사무실 도착·찾아가기)만 — 「발주중」(발주완료)은 제외
       const rows = await prisma.businessCardRequest.findMany({
         where: {
           isArchived: false,
@@ -682,6 +688,57 @@ export async function buildHomeAlarms(user: SessionUser): Promise<HomeAlarm[]> {
       });
     })(),
     (async () => {
+      // my-page 「시안 검수요청」— 시안 업로드·미확정
+      const rows = await prisma.businessCardRequest.findMany({
+        where: {
+          isArchived: false,
+          userEmail: { equals: email, mode: 'insensitive' },
+          adminStatus: '발주완료',
+          proofFileName: { not: null },
+          proofConfirmedAt: null,
+        },
+        select: { proofUploadedAt: true, updatedAt: true, createdAt: true },
+      });
+      pushAlarm(alarms, {
+        id: 'bc-proof-review',
+        label: '[명함] 시안 검수 요청',
+        count: rows.length,
+        href: '/asset/businesscard/my-page',
+        at: maxAt(...rows.map((r) => maxAt(r.proofUploadedAt, r.updatedAt, r.createdAt))),
+      });
+    })(),
+    (async () => {
+      // order: 신청자가 시안확정 → 관리자 알림 (관리자 대행 확정은 제외)
+      if (!special('/asset/businesscard/master/order')) return;
+      const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+      const rows = await prisma.businessCardRequest.findMany({
+        where: {
+          isArchived: false,
+          adminStatus: '발주완료',
+          proofConfirmedAt: { gte: since },
+        },
+        select: {
+          id: true,
+          userName: true,
+          proofConfirmedAt: true,
+          proofConfirmedBy: true,
+        },
+        orderBy: { proofConfirmedAt: 'desc' },
+      });
+      for (const r of rows) {
+        const by = String(r.proofConfirmedBy || '').trim();
+        if (by.startsWith('관리자')) continue;
+        const name = String(r.userName || '').trim() || '신청자';
+        pushAlarm(alarms, {
+          id: `bc-proof-done-${r.id}`,
+          label: `[명함] ${name}님 시안검수 완료`,
+          count: 1,
+          href: '/asset/businesscard/master/order',
+          at: toAt(r.proofConfirmedAt),
+        });
+      }
+    })(),
+    (async () => {
       // apply/history 「수령완료」(VERIFIED) · inspection에서 명세대조(보관) 이동 전
       const rows = await prisma.productionRequest.findMany({
         where: {
@@ -695,7 +752,7 @@ export async function buildHomeAlarms(user: SessionUser): Promise<HomeAlarm[]> {
         id: 'prod-receive',
         label: '[제작물] 물품 수령 대기',
         count: rows.length,
-        href: '/asset/production/apply/history',
+        href: '/production/custom/my-orders/history',
         at: maxAt(...rows.map((r) => maxAt(r.updatedAt, r.createdAt))),
       });
     })(),

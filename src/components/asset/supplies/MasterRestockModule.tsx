@@ -78,6 +78,7 @@ function MasterRestockContent() {
   const [selectedItemFilter, setSelectedItemFilter] = useState<string | null>(null);
   /** 입고 주기 보드: 현재고 ≤ 안전재고만 보기 */
   const [stockWarnOnly, setStockWarnOnly] = useState(false);
+  const [ledgerOpen, setLedgerOpen] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 10;
      
@@ -405,7 +406,7 @@ function MasterRestockContent() {
 
   const alertNoEditPermission = () => alert('편집 권한이 없습니다.');
   const disabledActionBtn =
-    'px-1.5 py-1.5 bg-slate-100 text-slate-400 border border-slate-200 rounded-md text-[10px] font-black cursor-not-allowed whitespace-nowrap opacity-70';
+    'px-1.5 py-1.5 bg-slate-100 text-slate-400 border border-slate-200 rounded-md text-[10px] font-medium cursor-not-allowed whitespace-nowrap opacity-70';
 
   if (loading) return <LoadingState />;
      
@@ -483,18 +484,18 @@ function MasterRestockContent() {
       </div>
   
       {/* 입고 주기 보드 — 장부 카드 밖 */}
-      <section className="mt-6 bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+      <section className="mt-6 bg-white rounded-md border border-slate-200 shadow-sm overflow-hidden">
         <div className="px-5 py-4 border-b border-slate-100 flex flex-wrap items-center justify-between gap-3">
           <div className="flex flex-wrap items-center gap-3 min-w-0">
-            <h2 className="text-sm font-black text-slate-800 tracking-tight">입고 주기 보드</h2>
-            <span className="text-[11px] font-bold text-slate-500">
-              등록 물품 <strong className="text-slate-800 tabular-nums">{itemCycleStats.length}</strong>
+            <h2 className="text-sm font-medium text-slate-800 tracking-tight">입고 주기 보드</h2>
+            <span className="text-[11px] font-medium text-slate-500">
+              등록 물품 <span className="text-slate-800 tabular-nums font-medium">{itemCycleStats.length}</span>
             </span>
             <button
               type="button"
               onClick={() => setStockWarnOnly((prev) => !prev)}
               title="현재고 ≤ 안전재고 품목만 보기"
-              className={`text-[11px] font-black px-2.5 py-1 rounded-md border transition-colors tabular-nums ${
+              className={`text-[11px] font-medium px-2.5 py-1 rounded-md border transition-colors tabular-nums ${
                 stockWarnOnly
                   ? 'bg-amber-500 text-white border-amber-500'
                   : stockWarnCount > 0
@@ -504,7 +505,7 @@ function MasterRestockContent() {
             >
               재고 주의 {stockWarnCount}
             </button>
-            <span className="text-[10px] font-bold text-slate-400 hidden sm:inline">
+            <span className="text-[10px] font-medium text-slate-400 hidden sm:inline">
               · 행 클릭 시 아래 장부 필터
             </span>
           </div>
@@ -515,7 +516,7 @@ function MasterRestockContent() {
                 setSelectedItemFilter(null);
                 setStockWarnOnly(false);
               }}
-              className="text-[11px] font-black text-indigo-600 hover:underline"
+              className="text-[11px] font-medium text-indigo-600 hover:underline"
             >
               필터 초기화 ✕
             </button>
@@ -523,21 +524,21 @@ function MasterRestockContent() {
         </div>
 
         {itemCycleStats.length === 0 ? (
-          <p className="px-5 py-8 text-xs text-slate-400 font-bold text-center">
+          <p className="px-5 py-8 text-xs text-slate-400 font-medium text-center">
             등록된 활성 물품이 없습니다. 대시보드에서 물품을 등록하세요.
           </p>
         ) : visibleCycleStats.length === 0 ? (
-          <p className="px-5 py-8 text-xs text-slate-400 font-bold text-center">
+          <p className="px-5 py-8 text-xs text-slate-400 font-medium text-center">
             재고 주의 품목이 없습니다.
           </p>
         ) : (
           <div className="divide-y divide-slate-100">
-            <div className="hidden sm:grid grid-cols-[minmax(0,1.4fr)_11rem_64px_64px_108px_68px_92px_76px] gap-3 px-5 py-1.5 bg-slate-50 text-[10px] font-black uppercase tracking-wider text-slate-400">
+            <div className="hidden sm:grid grid-cols-[minmax(0,1.4fr)_11rem_64px_64px_108px_68px_92px_76px] gap-3 px-5 py-1.5 bg-slate-50 text-[10px] font-medium uppercase tracking-wider text-slate-400">
               <span>물품명</span>
               <span className="text-center inline-flex items-center justify-center gap-0.5">
                 재고 수준
                 <span
-                  className="normal-case tracking-normal font-bold text-slate-400 cursor-help"
+                  className="normal-case tracking-normal font-medium text-slate-400 cursor-help"
                   title="안전재고 대비 현재고 보유 비율 (현재고 / 안전재고)"
                   aria-label="안전재고 대비 현재고 보유 비율 (현재고 / 안전재고)"
                 >
@@ -546,12 +547,12 @@ function MasterRestockContent() {
               </span>
               <span className="text-right">현재고</span>
               <span className="text-right">안전재고</span>
-              <span className="text-center">최근 입고</span>
+              <span className="text-center">최근입고일</span>
               <span className="text-right">경과일</span>
               <span className="text-right inline-flex items-center justify-end gap-0.5">
-                평균간격
+                평균입고간격
                 <span
-                  className="normal-case tracking-normal font-bold text-slate-400 cursor-help"
+                  className="normal-case tracking-normal font-medium text-slate-400 cursor-help"
                   title="2회 이상 입고 시 자동 계산"
                   aria-label="2회 이상 입고 시 자동 계산"
                 >
@@ -567,7 +568,13 @@ function MasterRestockContent() {
                 <button
                   type="button"
                   key={stat.id}
-                  onClick={() => setSelectedItemFilter((prev) => (prev === stat.name ? null : stat.name))}
+                  onClick={() => {
+                    setSelectedItemFilter((prev) => {
+                      const next = prev === stat.name ? null : stat.name;
+                      if (next) setLedgerOpen(true);
+                      return next;
+                    });
+                  }}
                   className={`w-full text-left px-5 py-1.5 transition-colors sm:grid sm:grid-cols-[minmax(0,1.4fr)_11rem_64px_64px_108px_68px_92px_76px] sm:gap-3 sm:items-center ${
                     isSelected
                       ? 'bg-indigo-50 ring-1 ring-inset ring-indigo-200'
@@ -581,7 +588,7 @@ function MasterRestockContent() {
                       <span className="shrink-0 w-1.5 h-1.5 rounded-full bg-amber-500" title="재고 주의 (현재고 ≤ 안전재고)" />
                     )}
                     <span
-                      className={`text-[12px] font-black truncate ${isSelected ? 'text-indigo-800' : 'text-slate-800'}`}
+                      className={`text-[12px] font-medium truncate ${isSelected ? 'text-indigo-800' : 'text-slate-800'}`}
                       title={stat.name}
                     >
                       {stat.name}
@@ -600,14 +607,14 @@ function MasterRestockContent() {
                       />
                     </div>
                     <span
-                      className={`shrink-0 text-[10px] font-black tabular-nums w-9 text-right ${
+                      className={`shrink-0 text-[10px] font-medium tabular-nums w-9 text-right ${
                         level.healthy ? 'text-emerald-600' : 'text-amber-600'
                       }`}
                     >
                       {level.label}
                     </span>
                   </div>
-                  <div className="mt-1 sm:mt-0 flex flex-wrap sm:contents gap-x-4 gap-y-0.5 text-[11px] font-bold tabular-nums">
+                  <div className="mt-1 sm:mt-0 flex flex-wrap sm:contents gap-x-4 gap-y-0.5 text-[11px] font-medium tabular-nums">
                     <span className={`sm:text-right ${stat.isStockWarn ? 'text-amber-700' : 'text-slate-600'}`}>
                       <span className="sm:hidden text-slate-400 mr-1">현재고</span>
                       {stat.currentStock.toLocaleString()}
@@ -645,14 +652,46 @@ function MasterRestockContent() {
 
       <section className="bg-white rounded-[2.5rem] border border-slate-200 shadow-sm overflow-hidden mt-6">
         
-        <div className="p-4 px-6 bg-slate-200/70 border-b border-slate-300 flex flex-wrap items-center justify-between gap-4">
+        <div
+          className={`p-4 px-6 bg-slate-200/70 flex flex-wrap items-center justify-between gap-4 ${
+            ledgerOpen ? 'border-b border-slate-300' : ''
+          }`}
+        >
           <div className="flex items-center gap-2 flex-wrap min-w-0">
-            <div className="w-2.5 h-2.5 rounded-full bg-blue-600 shrink-0"></div>
-            <h2 className="text-sm font-black text-slate-800 tracking-tight">입고 내역 장부</h2>
-            <span className="text-[11px] font-bold bg-slate-300/80 text-slate-700 px-2 py-0.5 rounded-md">{finalFilteredPurchases.length}건</span>
+            <button
+              type="button"
+              onClick={() => setLedgerOpen((v) => !v)}
+              className="inline-flex items-center gap-2 min-w-0 rounded-lg hover:bg-white/50 px-1.5 py-1 -ml-1.5 transition-colors"
+              aria-expanded={ledgerOpen}
+              title={ledgerOpen ? '내역 접기' : '내역 펼치기'}
+            >
+              <span
+                className={`text-slate-500 text-[10px] font-medium transition-transform ${
+                  ledgerOpen ? 'rotate-90' : ''
+                }`}
+                aria-hidden
+              >
+                ▶
+              </span>
+              <span className="w-2.5 h-2.5 rounded-full bg-blue-600 shrink-0" />
+              <h2 className="text-sm font-medium text-slate-800 tracking-tight">입고 내역 장부</h2>
+            </button>
+            <span className="text-[11px] font-medium bg-slate-300/80 text-slate-700 px-2 py-0.5 rounded-md">
+              {finalFilteredPurchases.length}건
+            </span>
+            {!ledgerOpen && (
+              <button
+                type="button"
+                onClick={() => setLedgerOpen(true)}
+                className="text-[10px] font-medium text-indigo-600 hover:underline"
+              >
+                펼치기
+              </button>
+            )}
           </div>
           
-          <div className="flex items-center gap-2 flex-wrap">
+          {ledgerOpen && (
+          <div className="soh-filter-bar flex items-center gap-2 flex-wrap">
             {isLv1 && (
               <button
                 type="button"
@@ -665,7 +704,7 @@ function MasterRestockContent() {
                       ? '체크박스로 삭제할 입고 내역을 선택해 주세요'
                       : '체크한 입고 내역 영구 삭제 — LV_1 전용'
                 }
-                className={`px-3 py-1.5 rounded-lg text-[10px] font-black shadow-sm whitespace-nowrap border transition-all ${
+                className={`px-3 py-1.5 rounded-lg text-[10px] font-medium shadow-sm whitespace-nowrap border transition-all ${
                   canEdit && selectedIds.size > 0
                     ? 'bg-white text-rose-600 border-rose-200 hover:bg-rose-50'
                     : 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed opacity-70'
@@ -675,41 +714,40 @@ function MasterRestockContent() {
               </button>
             )}
             <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm">
-              <span className="text-[10px] font-black text-slate-400 uppercase">연도</span>
-              <select value={selectedYear} onChange={e => setSelectedYear(e.target.value)} className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent">
+              <span className="text-[10px] font-medium text-slate-400 uppercase">연도</span>
+              <select value={selectedYear} onChange={e => setSelectedYear(e.target.value)} className="text-[11px] font-medium text-slate-800 outline-none cursor-pointer bg-transparent">
                 <option value="ALL">전체</option>
                 {availableYears.map(y => <option key={y} value={y}>{y}년</option>)}
               </select>
               <div className="w-px h-3.5 bg-slate-300 mx-0.5"></div>
-              <span className="text-[10px] font-black text-slate-400 uppercase">월별</span>
-              <select value={selectedMonth} onChange={e => setSelectedMonth(e.target.value)} className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent">
+              <span className="text-[10px] font-medium text-slate-400 uppercase">월별</span>
+              <select value={selectedMonth} onChange={e => setSelectedMonth(e.target.value)} className="text-[11px] font-medium text-slate-800 outline-none cursor-pointer bg-transparent">
                 <option value="ALL">전체</option>
                 {availableMonths.map(m => <option key={m} value={m}>{m}월</option>)}
               </select>
             </div>
             <div className="relative w-48">
               <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-[10px]">🔍</span>
-              <input type="text" placeholder="물품, 등록자 검색..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} className="w-full pl-7 pr-3 py-1.5 bg-white border border-slate-200 rounded-lg text-[11px] font-bold outline-none focus:border-indigo-500 shadow-sm transition-colors" />
+              <input type="text" placeholder="물품, 등록자 검색..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} className="w-full pl-7 pr-3 py-1.5 bg-white border border-slate-200 rounded-lg text-[11px] font-medium outline-none focus:border-indigo-500 shadow-sm transition-colors placeholder:font-medium" />
             </div>
-            <button onClick={handleDownloadExcel} className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-[10px] font-black shadow-sm hover:bg-emerald-700 transition-all whitespace-nowrap">
+            <button onClick={handleDownloadExcel} className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-[10px] font-medium shadow-sm hover:bg-emerald-700 transition-all whitespace-nowrap">
               {selectedIds.size > 0 ? `선택 EXCEL 다운로드(${selectedIds.size})` : '화면 목록 EXCEL 다운로드'}
             </button>
           </div>
+          )}
         </div>
         
+        {ledgerOpen && (
         <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse table-fixed min-w-[1240px]">
+          <table className="w-full text-left border-collapse table-fixed min-w-[940px]">
             <colgroup>
               <col className="w-[40px]" />
               <col className="w-[48px]" />
               <col className="w-[100px]" />
-              <col className="w-[150px]" />
-              <col className="w-[72px]" />
-              <col className="w-[88px]" />
-              <col className="w-[150px]" />
-              <col className="w-[80px]" />
-              <col className="w-[88px]" />
+              <col className="w-[170px]" />
+              <col className="w-[110px]" />
               <col className="w-[120px]" />
+              <col className="w-[130px]" />
               <col className="w-[110px]" />
             </colgroup>
             <thead className="bg-slate-100 text-slate-700 text-[10px] font-black uppercase tracking-widest border-b border-slate-200">
@@ -727,24 +765,20 @@ function MasterRestockContent() {
                 <th className="h-12 px-2 text-center whitespace-nowrap">창고 입고 일자</th>
                 <th className="h-12 px-2 text-left text-indigo-600">물품명</th>
                 <th className="h-12 px-2 text-center whitespace-nowrap">입고수량</th>
-                <th className="h-12 px-2 text-center whitespace-nowrap">입고단위</th>
-                <th className="h-12 px-2 text-center whitespace-nowrap">환산수량 (지급/입고)</th>
                 <th className="h-12 px-2 text-center text-indigo-600 whitespace-nowrap">환산 입고수량</th>
-                <th className="h-12 px-2 text-center whitespace-nowrap">지급단위</th>
                 <th className="h-12 px-2 text-left border-l border-slate-200 whitespace-nowrap">부서 / 등록자</th>
                 <th className="h-12 px-2 text-center whitespace-nowrap border-l border-slate-200">관리액션(Edit)</th>
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-slate-100 text-[11px] font-bold text-slate-700">
               {paginatedPurchases.length === 0 ? (
-                <tr><td colSpan={11} className="p-16 text-center text-slate-400 text-xs">조건에 맞는 입고 내역이 없습니다.</td></tr>
+                <tr><td colSpan={8} className="p-16 text-center text-slate-400 text-xs">조건에 맞는 입고 내역이 없습니다.</td></tr>
               ) : paginatedPurchases.map((p, i) => {
                 const isSelected = selectedIds.has(p.id);
                 const itemName = p.item?.name || '(삭제된 품목)';
                 
                 let pQty = Number(p.qty) || 0;
                 let pUnit = '-';
-                let linkQty = 1;
                 let sUnit = '';
                 let stockQty = Number(p.qty) || 0;
 
@@ -761,7 +795,6 @@ function MasterRestockContent() {
                     const parsedNote = JSON.parse(p.note);
                     if (Number(parsedNote.p_qty) > 0) pQty = Number(parsedNote.p_qty);
                     if (parsedNote.p_unit) pUnit = parsedNote.p_unit;
-                    if (Number(parsedNote.link_qty) > 0) linkQty = Number(parsedNote.link_qty);
                     if (parsedNote.s_unit) sUnit = parsedNote.s_unit;
                     if (Number(parsedNote.stock_qty) > 0) stockQty = Number(parsedNote.stock_qty);
                   }
@@ -778,14 +811,19 @@ function MasterRestockContent() {
                     <td className="px-2 text-center whitespace-nowrap tabular-nums text-slate-800">
                       {p.purchase_date ? getKSTDateString(p.purchase_date) : '-'}
                     </td>
-                    <td className="px-2 text-left text-indigo-700 truncate" title={itemName}>{itemName}</td>
-                    <td className="px-2 text-center font-mono whitespace-nowrap tabular-nums text-slate-900">{pQty}</td>
-                    <td className="px-2 text-center text-slate-900">{pUnit}</td>
-                    <td className="px-2 text-center font-mono tabular-nums text-slate-600">{linkQty}</td>
-                    <td className="px-2 text-center font-mono whitespace-nowrap tabular-nums text-indigo-600">
-                      {stockQty}
+                    <td className="px-2 text-left text-indigo-600 truncate" title={itemName}>{itemName}</td>
+                    <td className="px-2 text-center whitespace-nowrap tabular-nums text-slate-900">
+                      <span className="font-mono">{pQty}</span>
+                      {pUnit && pUnit !== '-' ? (
+                        <span className="text-[10px] font-sans ml-0.5 text-slate-500">{pUnit}</span>
+                      ) : null}
                     </td>
-                    <td className="px-2 text-center text-slate-900 whitespace-nowrap">{sUnit || '-'}</td>
+                    <td className="px-2 text-center whitespace-nowrap tabular-nums text-indigo-600">
+                      <span className="font-mono">{stockQty}</span>
+                      {sUnit ? (
+                        <span className="text-[10px] font-sans ml-0.5">{sUnit}</span>
+                      ) : null}
+                    </td>
                     <td className="px-2 text-left border-l border-slate-200">
                       <div className="truncate">
                         <span className="text-[10px] text-slate-500 block truncate">{p.purchaser_dept || '-'}</span>
@@ -800,7 +838,7 @@ function MasterRestockContent() {
                         title={canEdit ? '입고 철회 (재고 차감)' : '편집 권한 필요'}
                         className={
                           canEdit
-                            ? 'px-1.5 py-1.5 bg-orange-50 text-orange-600 border border-orange-200 rounded-md text-[10px] font-black hover:bg-orange-100 shadow-sm whitespace-nowrap'
+                            ? 'px-1.5 py-1.5 bg-orange-50 text-orange-600 border border-orange-200 rounded-md text-[10px] font-medium hover:bg-orange-100 shadow-sm whitespace-nowrap'
                             : disabledActionBtn
                         }
                       >
@@ -813,8 +851,9 @@ function MasterRestockContent() {
             </tbody>
           </table>
         </div>
+        )}
      
-        {finalFilteredPurchases.length > 0 && (
+        {ledgerOpen && finalFilteredPurchases.length > 0 && (
           <WindowedPagination
             currentPage={currentPage}
             totalPages={totalPages}

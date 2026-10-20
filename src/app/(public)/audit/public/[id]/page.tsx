@@ -62,7 +62,7 @@ export default function MobilePublicAuditPage() {
   const fetchInitialData = async () => {
     try {
       const ts = Date.now();
-      const auditRes = await fetch(`/api/asset/it/audit?id=${encodeURIComponent(id)}&t=${ts}`, {
+      const auditRes = await fetch(`/api/equipment/it/audit?id=${encodeURIComponent(id)}&t=${ts}`, {
         cache: 'no-store',
       });
 
@@ -93,7 +93,7 @@ export default function MobilePublicAuditPage() {
   const refreshMyAssets = async (userEmail: string) => {
     const ts = Date.now();
     const assetRes = await fetch(
-      `/api/asset/it?email=${encodeURIComponent(userEmail)}&auditId=${encodeURIComponent(id)}&t=${ts}`,
+      `/api/equipment/it?email=${encodeURIComponent(userEmail)}&auditId=${encodeURIComponent(id)}&t=${ts}`,
       {
         cache: 'no-store',
         credentials: 'include',
@@ -119,7 +119,7 @@ export default function MobilePublicAuditPage() {
     if (!isVerified || !id) return;
     const refreshStatus = async () => {
       try {
-        const res = await fetch(`/api/asset/it/audit?id=${encodeURIComponent(id)}&t=${Date.now()}`, {
+        const res = await fetch(`/api/equipment/it/audit?id=${encodeURIComponent(id)}&t=${Date.now()}`, {
           cache: 'no-store',
         });
         if (!res.ok) return;
@@ -221,7 +221,7 @@ export default function MobilePublicAuditPage() {
       let latest: any = null;
       try {
         const res = await fetch(
-          `/api/asset/it?code=${encodeURIComponent(scannedCode)}&t=${Date.now()}`,
+          `/api/equipment/it?code=${encodeURIComponent(scannedCode)}&t=${Date.now()}`,
           { cache: 'no-store' }
         );
         if (res.ok) latest = await res.json();
@@ -293,7 +293,7 @@ export default function MobilePublicAuditPage() {
     }
     try {
       const accessToken = readMobileAccessToken();
-      const res = await fetch('/api/asset/it', {
+      const res = await fetch('/api/equipment/it', {
         method: 'PATCH',
         credentials: 'include',
         headers: mobileAuthHeaders({ 'Content-Type': 'application/json' }),
@@ -332,7 +332,7 @@ export default function MobilePublicAuditPage() {
     if (!confirm('정보수정 요청을 취소하고 실사 대기 상태로 되돌릴까요?')) return;
     try {
       const accessToken = readMobileAccessToken();
-      const res = await fetch('/api/asset/it', {
+      const res = await fetch('/api/equipment/it', {
         method: 'PATCH',
         credentials: 'include',
         headers: mobileAuthHeaders({ 'Content-Type': 'application/json' }),
@@ -370,7 +370,7 @@ export default function MobilePublicAuditPage() {
 
     try {
       const accessToken = readMobileAccessToken();
-      const assetUpdate = await fetch('/api/asset/it', {
+      const assetUpdate = await fetch('/api/equipment/it', {
         method: 'PATCH',
         credentials: 'include',
         headers: mobileAuthHeaders({ 'Content-Type': 'application/json' }),
@@ -392,7 +392,7 @@ export default function MobilePublicAuditPage() {
         );
       }
 
-      const auditRes = await fetch('/api/asset/it/audit', {
+      const auditRes = await fetch('/api/equipment/it/audit', {
         method: 'PATCH',
         credentials: 'include',
         headers: mobileAuthHeaders({ 'Content-Type': 'application/json' }),
@@ -462,7 +462,7 @@ export default function MobilePublicAuditPage() {
 
     try {
       const accessToken = readMobileAccessToken();
-      const assetUpdate = await fetch('/api/asset/it', {
+      const assetUpdate = await fetch('/api/equipment/it', {
         method: 'PATCH',
         credentials: 'include',
         headers: mobileAuthHeaders({ 'Content-Type': 'application/json' }),
@@ -484,7 +484,7 @@ export default function MobilePublicAuditPage() {
         );
       }
 
-      await fetch('/api/asset/it/audit', {
+      await fetch('/api/equipment/it/audit', {
         method: 'PATCH',
         credentials: 'include',
         headers: mobileAuthHeaders({ 'Content-Type': 'application/json' }),

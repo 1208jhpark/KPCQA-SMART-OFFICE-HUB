@@ -29,8 +29,8 @@ model SystemConfig {
   it_master_group         String   @default("") // IT·업무자산 > 품목
   job_duty_group          String   @default("")
   job_grade_group         String   @default("")
-  user_duty_options       Json?    // /admin/users 직책 옵션 [{label,value}]
-  user_grade_options      Json?    // /admin/users 직급 옵션 [{label,value}]
+  user_duty_options       Json?    // /admin/users 직책 옵션 [{code,label,value}]
+  user_grade_options      Json?    // /admin/users 직급 옵션 [{code,label,value}]
   bc_sheets_per_pack      Int      @default(200) // 명함 1통당 장수 (업체별 상이)
   bc_statement_col_map    Json?    // 거래명세표 칼럼 제목(이름/소속/수량/공급가액)
   bc_mail_shortcut_url    String   @default("")
@@ -54,6 +54,8 @@ model User {
   name         String   // 한글 성명
   name_en      String   @default("") // 영문 성명
   employee_no  String   @default("") // 사번 (비어있지 않으면 partial unique — migration)
+  /// 내선번호 (/admin/users)
+  extension    String   @default("")
   password     String
   roles        Json     @default("[\"LV_3\"]")
   status       String   @default("Pending")
@@ -122,6 +124,8 @@ model OrgUnit {
   is_deleted      Boolean   @default(false)
   /// 부서 소모품 보관 위치 안내 (부서 대장 페이지에서 편집)
   supply_storage_note String @default("") @db.Text
+  /// 품목별 보관 위치 메모 — { [itemKey]: "선반 A-3" }
+  supply_item_locations Json @default("{}")
 }
  
 // -----------------------------------------------------------------
@@ -367,6 +371,8 @@ id            String   @id @default(cuid())
   alert_qty     Int      @default(0) 
   image_url     String?  @default("") 
   description   String?  @default("") 
+  /// 부서 종료장부 등 비고(입고량/기타사항 등) — 카탈로그 description과 별도
+  memo          String?  @default("")
   unit          String?  @default("EA")   
   is_archived   Boolean? @default(false)  
 
@@ -436,6 +442,8 @@ model MarketingClient {
   /// 상세주소 — shippingAddressDetail 연동용
   address_detail String?
   category    String?
+  /// 비고 (제작물 고객사 주소관리 등)
+  note        String?  @db.Text
   departments Json?    @default("[]")
   is_active   Boolean  @default(true)
   is_archived Boolean  @default(false) // 보관함 (운영목록에서만 숨김)
@@ -471,6 +479,35 @@ model MarketingPurchase {
   // 🚀 외주 업체 테이블과 ID로 정식 연결 관계 구축
   vendor_id       String?
   vendor          Vendor?    @relation(fields: [vendor_id], references: [id], onDelete: SetNull)
+}
+
+/// 마케팅·일정 대시보드 — 소속(unit) 전용 공유 일정 (상위 본부·하위 센터 미포함)
+model MarketingDeptCalendarEvent {
+  id             String   @id @default(cuid())
+  unit_id        String
+  unit_name      String?
+  /// 내용(제목)
+  title          String
+  note           String?  @default("")
+  /// 위치
+  location       String?  @default("")
+  /// 시간 (예: 14:00~16:00)
+  time_text      String?  @default("")
+  /// 참석자 (자유 텍스트)
+  attendees      String?  @default("")
+  /// YYYY-MM-DD (KST)
+  start_date     String
+  /// YYYY-MM-DD (KST) — 미입력이면 start_date와 동일
+  end_date       String?
+  all_day        Boolean  @default(true)
+  color          String?  @default("#4f46e5")
+  creator_name   String?
+  creator_dept   String?
+  creator_email  String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([unit_id, start_date])
 }
      
 // -----------------------------------------------------------------
@@ -835,7 +872,7 @@ model ITDeptProgramAccount {
 // 📦 [교정 완료] 명함 신청 및 제작 상태 관리 테이블 스키마
 model BusinessCardRequest {
   id                String                  @id @default(cuid())
-  postNumber        String                  // 관리 번호 (예: BC-2026-0001)
+  postNumber        String                  // 관리 번호 (예: BC-20261007-01 · 발주 PO-BC-… 와 동일 규칙)
   userEmail         String                  // 신청자 계정
   createdAt         DateTime                @default(now())
   isArchived        Boolean                 @default(false) // 🚀 보관함 숨김 스위치 완벽 장착
@@ -897,7 +934,17 @@ model BusinessCardRequest {
   // 신청 주체: 본인(/my-page) | 관리자대행(/requests)
   applicantType     String                  @default("본인")
   applicantName     String?
-  applicantEmail    String? 
+  applicantEmail    String?
+
+  // ── [7] 시안 파일 · 신청자 확정 ──
+  proofFileName       String?
+  proofStoredFileName String?
+  proofMimeType       String?
+  proofFileSize       Int?
+  proofUploadedAt     DateTime?
+  proofUploadedBy     String?
+  proofConfirmedAt    DateTime?
+  proofConfirmedBy    String?
 
   @@index([userEmail])
   @@index([orderGroupId])
@@ -908,7 +955,9 @@ model BusinessCardRequest {
 // 📦 [교정 완료] 명함 외주 발주 묶음(Batch) 마스터 통제 테이블
 model BusinessCardOrderBatch {
   id            String                @id // 묶음 관리번호 (예: PO-BC-20260707-01)
-  orderDate     String                // 발주 확정 일자 (YYYY-MM-DD)
+  orderDate     String                // 발주 생성일 (묶음 생성 YYYY-MM-DD)
+  /// 실제 외주 발주 요청일(메일 발송 등) — 제작물 inspection dispatchedAt 대응
+  dispatchedDate String?
   totalCount    Int                   // 묶음에 포함된 명함 총 건수
   deptHeadGroup String                // 기준 소속 (필터링용 대표 조직명)
   status        String                @default("발주완료") // 발주완료 / 지급완료 등

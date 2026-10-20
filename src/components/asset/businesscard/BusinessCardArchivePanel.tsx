@@ -29,6 +29,10 @@ interface RequestItem {
   title: string;
   quantity: number;
   adminStatus: string;
+  proofFileName?: string | null;
+  proofUploadedAt?: string | null;
+  proofConfirmedAt?: string | null;
+  proofConfirmedBy?: string | null;
   applicantType?: string | null;
   applicantName?: string | null;
   additionalKo?: string | null;
@@ -58,12 +62,19 @@ interface InspectSnapshot {
 interface ArchivedBatch {
   id: string;
   orderDate: string;
+  /** 외주 발주완료일 (YYYY-MM-DD) */
+  dispatchedDate?: string | null;
   deptHeadGroup: string;
   totalCount: number;
   status: string;
   items: RequestItem[];
   displayItems?: RequestItem[];
   inspectResult?: InspectSnapshot | null;
+}
+
+/** 보관함 기간 필터·표시용 — 발주완료일 우선, 없으면 발주생성일 */
+function archiveDateKey(batch: ArchivedBatch): string {
+  return String(batch.dispatchedDate || batch.orderDate || '').trim();
 }
 
 function formatBatchNo(id: string) {
@@ -182,6 +193,31 @@ function formatPriceWon(price: number | null) {
   return `₩${price.toLocaleString()}`;
 }
 
+/** 묶음 시안확인 상태: 업로드대기 → 확정대기 → 확정완료 */
+function getBatchProofStatus(
+  batch: ArchivedBatch,
+  items?: RequestItem[]
+): '업로드대기' | '확정대기' | '확정완료' {
+  const list = items || batch.items || [];
+  if (list.length === 0) return '업로드대기';
+  const allUploaded = list.every((it) => Boolean(it.proofFileName));
+  if (!allUploaded) return '업로드대기';
+  const allConfirmed = list.every((it) => Boolean(it.proofConfirmedAt));
+  if (!allConfirmed) return '확정대기';
+  return '확정완료';
+}
+
+function patchBatchItemProof(
+  batches: ArchivedBatch[],
+  itemId: string,
+  patch: Partial<RequestItem>
+) {
+  return batches.map((b) => ({
+    ...b,
+    items: (b.items || []).map((it) => (it.id === itemId ? { ...it, ...patch } : it)),
+  }));
+}
+
 function sumKnownPrices(batch: ArchivedBatch, items: RequestItem[] | undefined) {
   let sum = 0;
   let known = 0;
@@ -234,6 +270,98 @@ export default function BusinessCardArchivePanel() {
   }, [currentUser]);
   const alertNoEditPermission = () => alert('편집 권한이 없습니다.');
   const [deletingBulk, setDeletingBulk] = useState(false);
+  const proofFileInputRef = useRef<HTMLInputElement>(null);
+  const [proofUploadTargetId, setProofUploadTargetId] = useState<string | null>(null);
+  const [proofUploadingId, setProofUploadingId] = useState<string | null>(null);
+  const [detailTarget, setDetailTarget] = useState<RequestItem | null>(null);
+
+  const openProofUpload = (itemId: string) => {
+    if (!canEditMaster) return alertNoEditPermission();
+    setProofUploadTargetId(itemId);
+    window.setTimeout(() => proofFileInputRef.current?.click(), 0);
+  };
+
+  const handleProofFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    const requestId = proofUploadTargetId;
+    setProofUploadTargetId(null);
+    if (!file || !requestId) return;
+    if (!canEditMaster) return alertNoEditPermission();
+
+    setProofUploadingId(requestId);
+    try {
+      const fd = new FormData();
+      fd.append('requestId', requestId);
+      fd.append('file', file);
+      const res = await fetch('/api/asset/businesscard/proof', { method: 'POST', body: fd });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(data.message || '시안 업로드에 실패했습니다.');
+        return;
+      }
+      setArchivedBatches((prev) =>
+        patchBatchItemProof(prev, requestId, {
+          proofFileName: data.proofFileName || file.name,
+          proofUploadedAt: data.proofUploadedAt || new Date().toISOString(),
+          proofConfirmedAt: null,
+          proofConfirmedBy: null,
+        })
+      );
+      alert(data.message || '시안이 업로드되었습니다.');
+    } catch {
+      alert('시안 업로드 중 오류가 발생했습니다.');
+    } finally {
+      setProofUploadingId(null);
+    }
+  };
+
+  const handleProofDownloadAdmin = (itemId: string, fileName?: string | null) => {
+    const a = document.createElement('a');
+    a.href = `/api/asset/businesscard/proof?id=${encodeURIComponent(itemId)}&download=1`;
+    a.download = fileName || '시안';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  };
+
+  const handleAdminProofConfirm = async (item: RequestItem) => {
+    if (!canEditMaster) return alertNoEditPermission();
+    if (!item.proofFileName) {
+      return alert('업로드된 시안이 없습니다. 먼저 시안을 업로드해 주세요.');
+    }
+    if (item.proofConfirmedAt) {
+      return alert('이미 시안이 확정되었습니다.');
+    }
+    if (
+      !confirm(
+        `[${item.postNumber}] ${item.userName || ''} 님 시안을 관리자 권한으로 확정할까요?`
+      )
+    ) {
+      return;
+    }
+    try {
+      const res = await fetch('/api/asset/businesscard/proof', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: item.id }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(data.message || '시안 확정에 실패했습니다.');
+        return;
+      }
+      setArchivedBatches((prev) =>
+        patchBatchItemProof(prev, item.id, {
+          proofConfirmedAt: data.proofConfirmedAt || new Date().toISOString(),
+          proofConfirmedBy: data.proofConfirmedBy || null,
+        })
+      );
+      alert(data.message || '시안이 확정되었습니다.');
+    } catch {
+      alert('시안 확정 중 오류가 발생했습니다.');
+    }
+  };
 
   useEffect(() => {
     const fetchArchivedData = async () => {
@@ -303,7 +431,7 @@ export default function BusinessCardArchivePanel() {
 
   const availableYears = useMemo(() => {
     const years = archivedBatches
-      .map((b) => String(b.orderDate || '').substring(0, 4))
+      .map((b) => archiveDateKey(b).substring(0, 4))
       .filter((y) => y.length === 4);
     const current = String(getKSTNowYearMonth().year);
     return Array.from(new Set([current, ...years])).sort((a, b) => b.localeCompare(a));
@@ -311,19 +439,19 @@ export default function BusinessCardArchivePanel() {
 
   const afterYearList = useMemo(() => {
     if (yearFilter === 'ALL') return archivedBatches;
-    return archivedBatches.filter((b) => String(b.orderDate || '').startsWith(yearFilter));
+    return archivedBatches.filter((b) => archiveDateKey(b).startsWith(yearFilter));
   }, [archivedBatches, yearFilter]);
 
   const availableMonths = useMemo(() => {
     const months = afterYearList
-      .map((b) => String(b.orderDate || '').substring(5, 7))
+      .map((b) => archiveDateKey(b).substring(5, 7))
       .filter(Boolean);
     return Array.from(new Set(months)).sort((a, b) => a.localeCompare(b));
   }, [afterYearList]);
 
   const afterPeriodList = useMemo(() => {
     if (monthFilter === 'ALL') return afterYearList;
-    return afterYearList.filter((b) => String(b.orderDate || '').substring(5, 7) === monthFilter);
+    return afterYearList.filter((b) => archiveDateKey(b).substring(5, 7) === monthFilter);
   }, [afterYearList, monthFilter]);
 
   const orgOptions = useMemo(() => flattenUnitsInSortOrder(units), [units]);
@@ -395,8 +523,6 @@ export default function BusinessCardArchivePanel() {
   const pageBatchIds = paginatedBatches.map((b) => b.id);
   const allPageBatchesSelected =
     pageBatchIds.length > 0 && pageBatchIds.every((id) => selectedBatchIds.has(id));
-  const allFilteredBatchesSelected =
-    processedBatches.length > 0 && processedBatches.every((b) => selectedBatchIds.has(b.id));
 
   const handleSelectAllBatches = () => {
     // 테이블 헤더: 현재 페이지분만 토글
@@ -406,12 +532,6 @@ export default function BusinessCardArchivePanel() {
       else pageBatchIds.forEach((id) => next.add(id));
       return next;
     });
-  };
-
-  const handleSelectAllFiltered = () => {
-    // 상단 「전체」: 필터된 전체 건 선택/해제
-    if (allFilteredBatchesSelected) setSelectedBatchIds(new Set());
-    else setSelectedBatchIds(new Set(processedBatches.map((b) => b.id)));
   };
 
   const handleSelectBatchRow = (id: string, e: React.MouseEvent | React.ChangeEvent) => {
@@ -493,6 +613,13 @@ export default function BusinessCardArchivePanel() {
 
   return (
     <div className="w-full max-w-[1600px] mx-auto space-y-6 p-8 font-sans text-slate-900 pb-24 animate-fade-in">
+      <input
+        ref={proofFileInputRef}
+        type="file"
+        className="hidden"
+        accept=".pdf,.png,.jpg,.jpeg,.gif,.webp,.ai,.zip"
+        onChange={handleProofFileChange}
+      />
       <div className="w-full bg-gradient-to-r from-emerald-900 to-teal-900 rounded-3xl text-white shadow-lg relative overflow-hidden px-6 md:px-8 py-6">
         <div className="absolute right-0 top-0 w-64 h-64 bg-emerald-400/15 rounded-full blur-3xl -translate-y-1/3 translate-x-1/4 pointer-events-none" />
         <div className="absolute left-1/4 bottom-0 w-48 h-48 bg-teal-800/20 rounded-full blur-3xl translate-y-1/2 pointer-events-none" />
@@ -630,18 +757,6 @@ export default function BusinessCardArchivePanel() {
       <div className={`bg-white border border-indigo-200 rounded-[2.5rem] shadow-sm ${orgMenuOpen ? 'overflow-visible' : 'overflow-hidden'}`}>
         <div className={`p-4 px-6 bg-indigo-50 border-b border-indigo-200 flex flex-wrap items-center justify-between gap-4 relative ${orgMenuOpen ? 'z-[80] overflow-visible' : ''}`}>
           <div className="flex items-center gap-2">
-            <label
-              className="flex items-center gap-1 cursor-pointer shrink-0"
-              title={`필터된 전체 ${processedBatches.length}건 선택/해제`}
-            >
-              <input
-                type="checkbox"
-                checked={allFilteredBatchesSelected}
-                onChange={handleSelectAllFiltered}
-                className="w-3.5 h-3.5 accent-indigo-600 cursor-pointer"
-              />
-              <span className="text-[10px] font-black text-indigo-700 whitespace-nowrap">전체</span>
-            </label>
             <div className="w-2.5 h-2.5 rounded-full bg-indigo-600 shrink-0" />
             <h2 className="text-sm font-black text-slate-800 tracking-tight">검수 완료 보관함 대장</h2>
             <span className="text-[11px] font-bold bg-indigo-200/80 text-indigo-800 px-2 py-0.5 rounded-md">{processedBatches.length}건</span>
@@ -669,14 +784,14 @@ export default function BusinessCardArchivePanel() {
               >
                 연도 → 월 · 연계필터 / 조직은 마스터 정렬
               </span>
-              <span className="text-[10px] font-black text-slate-400 uppercase leading-none">연도</span>
+              <span className="text-[10px] font-medium text-slate-400 uppercase leading-none">연도</span>
               <select
                 value={yearFilter}
                 onChange={(e) => {
                   setYearFilter(e.target.value);
                   setMonthFilter('ALL');
                 }}
-                className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent h-4 leading-none py-0"
+                className="text-[11px] font-medium text-slate-800 outline-none cursor-pointer bg-transparent h-4 leading-none py-0"
               >
                 <option value="ALL">전체</option>
                 {availableYears.map((year) => (
@@ -684,13 +799,13 @@ export default function BusinessCardArchivePanel() {
                 ))}
               </select>
               <div className="w-px h-3 bg-slate-300 shrink-0" />
-              <span className="text-[10px] font-black text-slate-400 uppercase leading-none">월별</span>
+              <span className="text-[10px] font-medium text-slate-400 uppercase leading-none">월별</span>
               <select
                 value={monthFilter}
                 onChange={(e) => {
                   setMonthFilter(e.target.value);
                 }}
-                className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent h-4 leading-none py-0"
+                className="text-[11px] font-medium text-slate-800 outline-none cursor-pointer bg-transparent h-4 leading-none py-0"
               >
                 <option value="ALL">전체</option>
                 {availableMonths.map((month) => (
@@ -698,14 +813,12 @@ export default function BusinessCardArchivePanel() {
                 ))}
               </select>
               <div className="w-px h-3 bg-slate-300 shrink-0" />
-              <span className="text-[10px] font-black text-slate-400 uppercase leading-none">조직</span>
+              <span className="text-[10px] font-medium text-slate-400 uppercase leading-none">조직</span>
               <div className="relative inline-flex items-center" ref={orgMenuRef}>
                 <button
                   type="button"
                   onClick={() => setOrgMenuOpen((open) => !open)}
-                  className={`max-w-[220px] truncate text-left text-[11px] leading-none py-0 px-0 m-0 h-4 inline-flex items-center border-0 appearance-none outline-none cursor-pointer bg-transparent ${
-                    selectedOrg && isBoldOrgType(selectedOrg.unit_type) ? 'font-black text-slate-900' : 'font-bold text-slate-800'
-                  }`}
+                  className="max-w-[220px] truncate text-left text-[11px] font-medium text-slate-800 leading-none py-0 px-0 m-0 h-4 inline-flex items-center border-0 appearance-none outline-none cursor-pointer bg-transparent"
                 >
                   {selectedOrg ? selectedOrg.unit_name : organizationUnit?.unit_name || '조직 선택'}
                 </button>
@@ -741,7 +854,7 @@ export default function BusinessCardArchivePanel() {
                 placeholder="대상자 검색..."
                 value={nameSearch}
                 onChange={(e) => setNameSearch(e.target.value)}
-                className="w-full h-7 box-border pl-7 pr-3 py-0 bg-white border border-indigo-200 rounded-lg text-[11px] font-bold outline-none focus:border-indigo-500 shadow-sm transition-colors"
+                className="w-full h-7 box-border pl-7 pr-3 py-0 bg-white border border-indigo-200 rounded-lg text-[11px] font-medium outline-none focus:border-indigo-500 shadow-sm transition-colors"
               />
             </div>
             <button
@@ -749,7 +862,7 @@ export default function BusinessCardArchivePanel() {
               disabled={!canEditMaster}
               title={!canEditMaster ? '편집 권한 필요' : undefined}
               onClick={handleListExcelDownload}
-              className={`h-7 px-3 rounded-lg text-[10px] font-black shadow-sm transition-all whitespace-nowrap leading-none ${
+              className={`h-7 px-3 rounded-lg text-[10px] font-medium shadow-sm transition-all whitespace-nowrap leading-none ${
                 canEditMaster
                   ? 'bg-emerald-600 text-white hover:bg-emerald-700'
                   : DISABLED_ACTION_BTN
@@ -765,18 +878,20 @@ export default function BusinessCardArchivePanel() {
         <div className="overflow-x-auto">
           <table className="w-full table-fixed text-left border-collapse">
             <colgroup>
-              <col className="w-[50px]" />
-              <col className="w-[48px]" />
-              <col className="w-[160px]" />
-              <col className="w-[120px]" />
+              <col style={{ width: '40px' }} />
+              <col style={{ width: '40px' }} />
+              <col style={{ width: '168px' }} />
+              <col style={{ width: '120px' }} />
+              {/* 신청 상세: 남는 폭 흡수 (이름·건수 텍스트) · pl로 발주완료일과 간격 맞춤 */}
               <col />
-              <col className="w-[110px]" />
-              <col className="w-[100px]" />
-              <col className="w-[100px]" />
+              <col style={{ width: '88px' }} />
+              <col style={{ width: '88px' }} />
+              <col style={{ width: '112px' }} />
+              <col style={{ width: '108px' }} />
             </colgroup>
             <thead className="bg-indigo-100 text-indigo-900 text-[10px] font-black uppercase tracking-widest border-b border-indigo-200">
               <tr>
-                <th className="h-12 px-4 text-center">
+                <th className="h-12 px-2 text-center">
                   <input
                     type="checkbox"
                     title="현재 페이지(최대 10건)만 선택"
@@ -785,15 +900,23 @@ export default function BusinessCardArchivePanel() {
                     className="w-3 h-3 accent-indigo-600 cursor-pointer"
                   />
                 </th>
-                <th className="h-12 px-2 text-center">NO</th>
+                <th className="h-12 px-1 text-center">NO</th>
                 <th className="h-12 px-2 text-left">묶음 번호</th>
-                <th className="h-12 px-4 text-center">발주 일자</th>
-                <th className="h-12 px-4 text-center">신청 상세</th>
-                <th className="h-12 px-2 text-center">
+                <th className="h-12 px-2 text-center">발주완료일</th>
+                <th className="h-12 pl-8 pr-2 text-left">신청 상세</th>
+                <th className="h-12 px-1 text-center">
                   <div className="flex flex-col items-center justify-center gap-0.5 leading-tight">
-                    <span className="whitespace-nowrap">건 / 통</span>
-                    <span className="text-[9px] font-bold text-indigo-700/80 normal-case tracking-normal whitespace-nowrap">
-                      (신청 / 수량)
+                    <span className="whitespace-nowrap">원문</span>
+                    <span className="text-[10px] font-bold text-indigo-700/80 normal-case tracking-normal whitespace-nowrap">
+                      (Edit)
+                    </span>
+                  </div>
+                </th>
+                <th className="h-12 px-1 text-center">
+                  <div className="flex flex-col items-center justify-center gap-0.5 leading-tight">
+                    <span className="whitespace-nowrap">시안확인</span>
+                    <span className="text-[10px] font-bold text-indigo-700/80 normal-case tracking-normal whitespace-nowrap">
+                      (Edit)
                     </span>
                   </div>
                 </th>
@@ -801,11 +924,11 @@ export default function BusinessCardArchivePanel() {
                 <th className="h-12 px-2 text-center">상태</th>
               </tr>
             </thead>
-            <tbody className="bg-white text-xs font-bold text-slate-700 divide-y divide-slate-100">
+            <tbody className="bg-white text-xs font-bold text-slate-900 divide-y divide-slate-100">
               {isLoading ? (
-                <tr><td colSpan={8} className="p-16 text-center text-slate-400 text-xs">데이터를 불러오는 중입니다...</td></tr>
+                <tr><td colSpan={9} className="p-16 text-center text-slate-400 text-xs">데이터를 불러오는 중입니다...</td></tr>
               ) : paginatedBatches.length === 0 ? (
-                <tr><td colSpan={8} className="p-16 text-center text-slate-400 text-xs">조건에 맞는 보관 내역이 없습니다.</td></tr>
+                <tr><td colSpan={9} className="p-16 text-center text-slate-400 text-xs">조건에 맞는 보관 내역이 없습니다.</td></tr>
               ) : (
                 paginatedBatches.map((batch, index) => {
                   const rowNo = processedBatches.length - ((currentPage - 1) * itemsPerPage + index);
@@ -818,7 +941,7 @@ export default function BusinessCardArchivePanel() {
                       <tr
                         className={`h-16 hover:bg-indigo-50/40 transition-colors ${selectedBatchIds.has(batch.id) ? 'bg-indigo-50/50' : ''}`}
                       >
-                        <td className="px-4 text-center">
+                        <td className="px-2 text-center">
                           <input
                             type="checkbox"
                             checked={selectedBatchIds.has(batch.id)}
@@ -826,20 +949,24 @@ export default function BusinessCardArchivePanel() {
                             className="w-3 h-3 accent-indigo-600 cursor-pointer"
                           />
                         </td>
-                        <td className="px-2 text-center font-mono text-slate-500 tabular-nums">{rowNo}</td>
+                        <td className="px-1 text-center font-mono text-slate-900 tabular-nums">{rowNo}</td>
                         <td
-                          className="px-2 text-left font-mono text-indigo-600 cursor-pointer whitespace-nowrap tabular-nums truncate overflow-hidden"
+                          className="px-2 text-left font-mono text-slate-900 cursor-pointer whitespace-nowrap tabular-nums truncate overflow-hidden"
                           title={formatBatchNo(batch.id)}
                           onClick={() => toggleBatchExpand(batch.id)}
                         >
                           {formatBatchNo(batch.id)}
                         </td>
-                        <td className="px-4 text-center text-slate-600 font-mono tabular-nums">{batch.orderDate}</td>
+                        <td className="px-2 text-center text-slate-900 font-mono tabular-nums">
+                          {batch.dispatchedDate || '-'}
+                        </td>
                         <td
-                          className="px-4 text-center cursor-pointer"
+                          className="pl-8 pr-2 text-left cursor-pointer"
                           onClick={() => toggleBatchExpand(batch.id)}
                         >
-                          <span className="text-indigo-600 underline underline-offset-2">상세보기</span>
+                          <span className="text-slate-700 underline underline-offset-2 whitespace-nowrap">
+                            상세보기({batchCount}건/{batchQty}통)
+                          </span>
                           {(() => {
                             const names = Array.from(new Set(batch.displayItems?.map((i) => i.userName).filter(Boolean)));
                             if (names.length === 0) return null;
@@ -851,86 +978,196 @@ export default function BusinessCardArchivePanel() {
                             );
                           })()}
                         </td>
-                        <td className="px-2 text-center whitespace-nowrap">
-                          <span className="text-slate-900 font-black tabular-nums">
-                            {batchCount}
-                            <span className="text-[10px] font-bold text-slate-500 ml-0.5">건</span>
-                            <span className="mx-1 text-slate-300 font-bold">/</span>
-                            {batchQty}
-                            <span className="text-[10px] font-bold text-slate-500 ml-0.5">통</span>
-                          </span>
+                        <td className="px-1 text-center text-slate-300">—</td>
+                        <td
+                          className="px-1 text-center cursor-pointer"
+                          onClick={() => toggleBatchExpand(batch.id)}
+                          title="클릭하면 상세에서 시안 확인"
+                        >
+                          {(() => {
+                            const proofStatus = getBatchProofStatus(batch, displayItems);
+                            const cls =
+                              proofStatus === '확정완료'
+                                ? 'text-emerald-600'
+                                : proofStatus === '확정대기'
+                                  ? 'text-amber-600'
+                                  : 'text-slate-500';
+                            return (
+                              <span className={`text-[10px] font-medium whitespace-nowrap ${cls}`}>
+                                {proofStatus}
+                              </span>
+                            );
+                          })()}
                         </td>
-                        <td className="px-4 text-center font-mono tabular-nums text-slate-800">
+                        <td className="px-2 text-center font-mono tabular-nums text-slate-900">
                           {batchPriceKnown > 0 ? `₩${batchPriceSum.toLocaleString()}` : '-'}
                         </td>
-                        <td className="px-4 text-center">
-                          <span className="text-[10px] font-bold whitespace-nowrap text-slate-900">검수완료</span>
+                        <td className="px-2 text-center">
+                          <span className="text-[10px] font-bold whitespace-nowrap text-slate-900">명세대조완료</span>
                         </td>
                       </tr>
                       {expandedBatchIds.has(batch.id) && (
-                        <tr className="bg-transparent">
-                          <td className="bg-slate-100/70 border-y border-slate-200" />
-                          <td className="bg-slate-100/70 border-y border-slate-200" />
-                          <td
-                            colSpan={6}
-                            className="bg-slate-100/70 py-3 px-0 border-y border-slate-200 border-l-4 border-l-blue-500"
-                          >
-                            <div className="overflow-hidden bg-transparent">
-                              <table className="w-full table-fixed text-left text-xs border-collapse bg-transparent">
-                                <colgroup>
-                                  {/* NO+관리번호 = 묶음160+일자120 − border4 → 신청주체 = 신청 상세 */}
-                                  <col className="w-[48px]" />
-                                  <col className="w-[228px]" />
-                                  <col className="w-[96px]" />
-                                  <col />
-                                  <col />
-                                  <col />
-                                  <col />
-                                  <col className="w-[110px]" />
-                                  <col className="w-[100px]" />
-                                  <col className="w-[100px]" />
-                                </colgroup>
-                                <thead>
-                                  <tr className="bg-slate-200/80 text-slate-700 font-semibold border-b border-slate-300 text-[10px] tracking-widest">
-                                    <th className="h-10 px-1 text-center bg-transparent">NO</th>
-                                    <th className="h-10 px-2 text-center whitespace-nowrap bg-transparent">관리번호</th>
-                                    <th className="h-10 px-1 text-center whitespace-nowrap bg-transparent">신청주체</th>
-                                    <th className="h-10 px-2 text-left bg-transparent">본부 (상위 조직)</th>
-                                    <th className="h-10 px-2 text-left bg-transparent">센터 (하위 조직)</th>
-                                    <th className="h-10 px-2 text-left bg-transparent">대상자</th>
-                                    <th className="h-10 px-2 text-left bg-transparent">직책 / 직급</th>
-                                    <th className="h-10 px-1 text-center whitespace-nowrap bg-transparent">수량(통)</th>
-                                    <th className="h-10 px-1 text-center whitespace-nowrap bg-transparent">정산액</th>
-                                    <th className="h-10 px-1 bg-transparent" aria-hidden />
-                                  </tr>
-                                </thead>
-                                <tbody className="divide-y divide-slate-200/80 font-bold text-slate-700 bg-transparent">
-                                  {batch.displayItems?.map((item, idx) => (
-                                    <tr key={item.id} className="h-12 bg-transparent hover:bg-slate-200/40 text-[11px] font-bold text-slate-700 transition-colors">
-                                      <td className="px-1 text-center font-mono text-slate-500 tabular-nums bg-transparent">{idx + 1}</td>
-                                      <td className="px-2 text-center font-mono text-slate-900 tabular-nums truncate bg-transparent" title={item.postNumber}>{item.postNumber}</td>
-                                      <td className="px-1 text-center bg-transparent">
-                                        {item.applicantType === '관리자대행' ? (
-                                          <span className="text-[10px] font-bold whitespace-nowrap text-indigo-700" title={item.applicantName || ''}>관리자대행</span>
-                                        ) : (
-                                          <span className="text-[10px] font-bold whitespace-nowrap text-slate-600">본인</span>
-                                        )}
-                                      </td>
-                                      <td className="px-2 text-left truncate bg-transparent" title={item.deptHead || ''}>{item.deptHead || '-'}</td>
-                                      <td className="px-2 text-left truncate bg-transparent" title={displayDeptName(item, units) || ''}>{displayDeptName(item, units) || <span className="text-slate-300">-</span>}</td>
-                                      <td className="px-2 text-left text-slate-800 truncate bg-transparent">{item.userName || '-'}</td>
-                                      <td className="px-2 text-left text-slate-800 truncate bg-transparent" title={item.title || ''}>{item.title || '-'}</td>
-                                      <td className="px-1 text-center font-mono tabular-nums text-slate-900 bg-transparent">{item.quantity || 1}</td>
-                                      <td className="px-1 text-center font-mono tabular-nums text-slate-800 bg-transparent">{formatPriceWon(itemInspectPrice(batch, item))}</td>
-                                      <td className="bg-transparent" aria-hidden />
-                                    </tr>
-                                  ))}
-                                </tbody>
-                              </table>
-                            </div>
-                          </td>
+                        <tr className="bg-slate-200/90 text-slate-700 text-[10px] font-semibold tracking-wide border-y border-slate-300">
+                          <td className="h-9 px-2 text-center border-l-4 border-l-blue-500 bg-slate-200/90">NO</td>
+                          <td className="h-9 px-1 text-center text-slate-400">—</td>
+                          <td className="h-9 px-2 text-left whitespace-nowrap">관리번호</td>
+                          <td className="h-9 px-2 text-center whitespace-nowrap">신청일</td>
+                          <td className="h-9 pl-8 pr-2 text-left whitespace-nowrap">신청주체 / 부서·이름</td>
+                          <td className="h-9 px-1 text-center whitespace-nowrap">원문확인</td>
+                          <td className="h-9 px-1 text-center whitespace-nowrap">시안확인</td>
+                          <td className="h-9 px-2 text-center whitespace-nowrap">정산액</td>
+                          <td className="h-9 px-2 text-center text-slate-400">—</td>
                         </tr>
                       )}
+                      {expandedBatchIds.has(batch.id) &&
+                        displayItems.map((item, idx) => {
+                          const deptLabel =
+                            displayDeptName(item, units) ||
+                            String(item.deptHead || '').trim() ||
+                            '-';
+                          return (
+                            <tr
+                              key={item.id}
+                              className="h-12 bg-slate-50/80 hover:bg-slate-100/80 text-[11px] font-medium text-slate-700 border-y border-slate-200"
+                            >
+                              <td className="px-2 text-center border-l-4 border-l-blue-500 bg-slate-100/70">
+                                <span className="text-[10px] font-mono text-slate-400 tabular-nums">
+                                  {idx + 1}
+                                </span>
+                              </td>
+                              <td className="px-1 text-center text-slate-300 bg-slate-50/80">—</td>
+                              <td
+                                className="px-2 text-left font-mono text-slate-900 tabular-nums truncate bg-slate-50/80"
+                                title={item.postNumber}
+                              >
+                                {item.postNumber}
+                              </td>
+                              <td className="px-2 text-center whitespace-nowrap tabular-nums text-slate-800 bg-slate-50/80">
+                                {item.applyDate || '-'}
+                              </td>
+                              <td
+                                className="pl-8 pr-2 text-left min-w-0 bg-slate-50/80"
+                                title={[item.deptHead, displayDeptName(item, units), item.title]
+                                  .filter(Boolean)
+                                  .join(' · ')}
+                              >
+                                <span className="text-[10px] font-medium whitespace-nowrap block">
+                                  {item.applicantType === '관리자대행' ? (
+                                    <span className="text-indigo-700">관리자대행</span>
+                                  ) : (
+                                    <span className="text-slate-500">본인</span>
+                                  )}
+                                  <span className="text-slate-300 mx-1">·</span>
+                                  <span className="text-slate-500">{deptLabel}</span>
+                                </span>
+                                <span className="text-slate-800 block truncate">
+                                  {item.userName || '-'}
+                                  <span className="text-[9px] font-medium text-slate-400 ml-1 tabular-nums">
+                                    {item.quantity || 1}통
+                                  </span>
+                                </span>
+                              </td>
+                              <td className="px-1 text-center bg-slate-50/80">
+                                <button
+                                  type="button"
+                                  disabled={!canEditMaster}
+                                  title={!canEditMaster ? '편집 권한 필요' : '신청 원문 확인'}
+                                  onClick={() => {
+                                    if (!canEditMaster) return alertNoEditPermission();
+                                    setDetailTarget(item);
+                                  }}
+                                  className={`px-2 py-1 text-[10px] font-medium rounded-lg transition-colors whitespace-nowrap ${
+                                    canEditMaster
+                                      ? 'bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200'
+                                      : DISABLED_ACTION_BTN
+                                  }`}
+                                >
+                                  원문보기
+                                </button>
+                              </td>
+                              <td className="px-1 text-center bg-slate-50/80">
+                                <div className="inline-flex flex-col items-center gap-1">
+                                  {!item.proofFileName ? (
+                                    <button
+                                      type="button"
+                                      disabled={!canEditMaster || proofUploadingId === item.id}
+                                      title={!canEditMaster ? '편집 권한 필요' : '시안 파일 업로드'}
+                                      onClick={() => {
+                                        if (!canEditMaster) return alertNoEditPermission();
+                                        openProofUpload(item.id);
+                                      }}
+                                      className={`px-2 py-0.5 text-[10px] font-medium rounded-md transition-colors whitespace-nowrap ${
+                                        canEditMaster
+                                          ? 'bg-blue-600 text-white hover:bg-blue-700'
+                                          : DISABLED_ACTION_BTN
+                                      }`}
+                                    >
+                                      {proofUploadingId === item.id ? '업로드중…' : '시안업로드'}
+                                    </button>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      disabled={!canEditMaster}
+                                      title={
+                                        !canEditMaster
+                                          ? '편집 권한 필요'
+                                          : item.proofFileName || '시안 다운로드'
+                                      }
+                                      onClick={() => {
+                                        if (!canEditMaster) return alertNoEditPermission();
+                                        handleProofDownloadAdmin(item.id, item.proofFileName);
+                                      }}
+                                      className={`px-2 py-0.5 text-[10px] font-medium rounded-md transition-colors whitespace-nowrap ${
+                                        canEditMaster
+                                          ? 'bg-indigo-50 text-indigo-700 border border-indigo-200 hover:bg-indigo-100'
+                                          : DISABLED_ACTION_BTN
+                                      }`}
+                                    >
+                                      다운로드
+                                    </button>
+                                  )}
+                                  {item.proofConfirmedAt ? (
+                                    <span
+                                      className="text-[9px] font-medium text-emerald-600 whitespace-nowrap"
+                                      title={item.proofConfirmedBy || undefined}
+                                    >
+                                      확정
+                                      <span className="text-slate-400 mx-0.5">·</span>
+                                      {String(item.proofConfirmedBy || '').startsWith('관리자')
+                                        ? '관리자'
+                                        : '신청자'}
+                                    </span>
+                                  ) : item.proofFileName ? (
+                                    <button
+                                      type="button"
+                                      disabled={!canEditMaster}
+                                      title={
+                                        !canEditMaster
+                                          ? '편집 권한 필요'
+                                          : '관리자가 시안을 직접 확정'
+                                      }
+                                      onClick={() => {
+                                        if (!canEditMaster) return alertNoEditPermission();
+                                        void handleAdminProofConfirm(item);
+                                      }}
+                                      className={`px-2 py-0.5 text-[10px] font-medium rounded-md transition-colors whitespace-nowrap ${
+                                        canEditMaster
+                                          ? 'bg-emerald-600 text-white hover:bg-emerald-700'
+                                          : DISABLED_ACTION_BTN
+                                      }`}
+                                    >
+                                      확정
+                                    </button>
+                                  ) : null}
+                                </div>
+                              </td>
+                              <td className="px-2 text-center font-mono tabular-nums text-slate-800 bg-slate-50/80">
+                                {formatPriceWon(itemInspectPrice(batch, item))}
+                              </td>
+                              <td className="px-2 text-center text-slate-300 bg-slate-50/80">—</td>
+                            </tr>
+                          );
+                        })}
                     </React.Fragment>
                   );
                 })
@@ -947,6 +1184,119 @@ export default function BusinessCardArchivePanel() {
           />
         )}
       </div>
+
+      {detailTarget && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-50 p-4 animate-fade-in">
+          <div className="bg-white border border-slate-200 rounded-[2.5rem] shadow-2xl max-w-5xl w-full max-h-[90vh] overflow-y-auto p-6 space-y-4">
+            <div className="flex justify-between items-center border-b border-slate-100 pb-3">
+              <div>
+                <span className="text-[10px] font-black text-blue-600 font-mono tracking-widest">
+                  🔎 원문 확인
+                </span>
+                <h2 className="text-base font-black text-slate-900 mt-1">
+                  명함 신청 원문 확인 ({detailTarget.userName || '-'} 님)
+                </h2>
+                <p className="text-[10px] font-medium text-slate-400 mt-0.5 font-mono">
+                  {detailTarget.postNumber}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setDetailTarget(null)}
+                className="w-8 h-8 rounded-full bg-slate-100 text-slate-500 hover:bg-slate-200 font-black text-sm transition-colors"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-slate-50 p-5 rounded-2xl border border-slate-100">
+              <div className="space-y-2 border-r border-slate-200 pr-5 flex flex-col">
+                <h3 className="text-xs font-black text-slate-800 border-b pb-1.5">1. 국문 조판 데이터</h3>
+                <div className="space-y-1.5 text-xs font-bold text-slate-600 flex-1">
+                  <label className="block text-[10px] text-slate-400 mt-1">성명</label>
+                  <p className="text-slate-900 font-black">{detailTarget.userName || '-'}</p>
+                  <label className="block text-[10px] text-slate-400 mt-1">본부 (상위 조직)</label>
+                  <p className="text-slate-900 font-black">{detailTarget.deptHead || '-'}</p>
+                  <label className="block text-[10px] text-slate-400 mt-1">센터 (하위 조직)</label>
+                  <p className="text-slate-900 font-black">
+                    {displayDeptName(detailTarget, units) || detailTarget.deptName || '-'}
+                  </p>
+                  <label className="block text-[10px] text-slate-400 mt-1">직책/직급</label>
+                  <p className="text-slate-900 font-black">{detailTarget.title || '-'}</p>
+                  <label className="block text-[10px] text-slate-400 mt-1">자격사항</label>
+                  <p className="text-slate-900 font-black">{detailTarget.additionalKo || '-'}</p>
+                  <label className="block text-[10px] text-slate-400 mt-1">휴대전화</label>
+                  <p className="text-slate-900 font-mono font-black">{detailTarget.mobile || '-'}</p>
+                  <label className="block text-[10px] text-slate-400 mt-1">내선전화</label>
+                  <p className="text-slate-900 font-mono">{detailTarget.phone || '-'}</p>
+                  <label className="block text-[10px] text-slate-400 mt-1">이메일</label>
+                  <p className="text-slate-900 font-mono">{detailTarget.email || '-'}</p>
+                </div>
+                <div className="mt-4 p-3 bg-white rounded-xl border border-slate-200 space-y-1.5">
+                  <p className="text-[11px] font-bold text-slate-600 mb-1">
+                    팩스: <span className="font-mono text-slate-900">{detailTarget.fax || '-'}</span>
+                  </p>
+                  <p className="text-[11px] font-bold text-slate-600 leading-relaxed">
+                    주소:{' '}
+                    <span className="text-slate-900">
+                      [{detailTarget.zipCode || '-'}] {detailTarget.addressKo || '-'}
+                    </span>
+                  </p>
+                </div>
+              </div>
+
+              <div className="space-y-2 pl-1 flex flex-col">
+                <h3 className="text-xs font-black text-indigo-800 border-b border-indigo-100 pb-1.5">
+                  2. 영문 조판 데이터
+                </h3>
+                <div className="space-y-1.5 text-xs font-bold text-slate-600 flex-1">
+                  <label className="block text-[10px] text-slate-400 mt-1">영문 성명</label>
+                  <p className="text-indigo-900 font-black">{detailTarget.userNameEn || '-'}</p>
+                  <label className="block text-[10px] text-slate-400 mt-1">영문 본부</label>
+                  <p className="text-indigo-900 font-black">{detailTarget.deptHeadEn || '-'}</p>
+                  <label className="block text-[10px] text-slate-400 mt-1">영문 센터</label>
+                  <p className="text-indigo-900 font-black">{detailTarget.deptNameEn || '-'}</p>
+                  <label className="block text-[10px] text-slate-400 mt-1">영문 직책/직급</label>
+                  <p className="text-indigo-900 font-black">{detailTarget.titleEn || '-'}</p>
+                  <label className="block text-[10px] text-slate-400 mt-1">영문 자격사항</label>
+                  <p className="text-indigo-900 font-black">{detailTarget.additionalEn || '-'}</p>
+                  <label className="block text-[10px] text-slate-400 mt-1">영문 휴대전화</label>
+                  <p className="text-indigo-900 font-mono font-black">
+                    {stripBusinessCardEnPlus(detailTarget.mobileEn) || '-'}
+                  </p>
+                  <label className="block text-[10px] text-slate-400 mt-1">영문 내선전화</label>
+                  <p className="text-indigo-900 font-mono">
+                    {stripBusinessCardEnPlus(detailTarget.phoneEn) || '-'}
+                  </p>
+                  <label className="block text-[10px] text-slate-400 mt-1">영문 이메일</label>
+                  <p className="text-indigo-900 font-mono">{detailTarget.emailEn || '-'}</p>
+                </div>
+                <div className="mt-4 p-3 bg-white rounded-xl border border-indigo-100">
+                  <p className="text-[11px] font-bold text-slate-600 mb-1">
+                    영문 팩스:{' '}
+                    <span className="font-mono text-indigo-900">
+                      {stripBusinessCardEnPlus(detailTarget.faxEn) || '-'}
+                    </span>
+                  </p>
+                  <p className="text-[11px] font-bold text-slate-600 leading-relaxed">
+                    영문 주소: <span className="text-indigo-900">{detailTarget.addressEn || '-'}</span>
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex justify-end pt-1">
+              <button
+                type="button"
+                onClick={() => setDetailTarget(null)}
+                className="px-5 py-2 text-xs font-medium rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 transition-colors"
+              >
+                닫기
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

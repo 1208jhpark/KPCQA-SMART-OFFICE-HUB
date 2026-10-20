@@ -11,8 +11,32 @@ import {
   canDistributeMarketingOwnerDept,
   resolveTopOrgName,
   canApplyViaViewRoles,
+  canApplyMarketingItem,
+  isMarketingTopOrgItem,
+  parseViewAllowTokens,
   resolveGlobalMgmtDeptName,
 } from '@/utils/orgUnits';
+import { resolveDutyCode, resolveUserDutyOptions } from '@/lib/user-job-options';
+
+function assertTopOrgViewRolesRequired(
+  auth: MarketingAuth,
+  ownerDept: string | null | undefined,
+  ownerUnitId: string | null | undefined,
+  viewRoleIds: string[]
+) {
+  const top = resolveTopOrgName(auth.unitsList);
+  if (
+    !isMarketingTopOrgItem(
+      { owner_dept: ownerDept, owner_unit_id: ownerUnitId },
+      top,
+      auth.unitsList
+    )
+  ) {
+    return null;
+  }
+  if (viewRoleIds.length > 0) return null;
+  return '전사(최상위) 물품은 타부서 열람·신청허용을 1개 이상 선택해야 합니다.';
+}
 import { buildUnitIdOrLegacyNameWhere } from '@/lib/org-unit-match';
 
 export const dynamic = 'force-dynamic';
@@ -52,19 +76,8 @@ function assertImageUrlWithinLimit(imageUrl: unknown): string | null {
   return null;
 }
 
-function normalizeRoleIds(raw: unknown): string[] {
-  if (!raw) return [];
-  const arr = Array.isArray(raw) ? raw : [raw];
-  const out: string[] = [];
-  for (const r of arr) {
-    const m = String(r ?? '').trim().match(/(\d+)/);
-    if (m) out.push(`LV_${m[1]}`);
-  }
-  return Array.from(new Set(out));
-}
-
 function parseViewRoleIds(raw: unknown): string[] {
-  return normalizeRoleIds(raw).filter((r) => ['LV_1', 'LV_2', 'LV_3'].includes(r));
+  return parseViewAllowTokens(raw);
 }
 
 function canSetItemViewRoles(auth: MarketingAuth) {
@@ -92,7 +105,8 @@ function canViewMarketingItem(
   },
   auth: MarketingAuth
 ) {
-  if (auth.permission.myRole === 'LV_1' || auth.permission.isMaster) return true;
+  // LV_1만 전체 열람. 메뉴 Master도 전사 view_role·GLOBAL_MGMT 규칙을 따름
+  if (auth.permission.myRole === 'LV_1') return true;
 
   const myDept = auth.user.unit?.unit_name || '';
   const myHq = (auth.user.unit as { parent?: { unit_name?: string } } | null)?.parent?.unit_name;
@@ -104,16 +118,26 @@ function canViewMarketingItem(
   const ownerUnitId = String((item as { owner_unit_id?: string | null }).owner_unit_id || '').trim();
   const owner = String(item.owner_dept || '').trim();
 
-  // 신청 가능 범위(본인 소속·상위본부·전사 풀 등) → 항상 노출
+  const duty = (auth.user as { duty?: string | null }).duty;
+  const dutyOptions = resolveUserDutyOptions(
+    (auth.systemConfig as { user_duty_options?: unknown } | null)?.user_duty_options
+  );
+  const dutyCode = resolveDutyCode(duty, dutyOptions);
+
+  // 신청·카드 노출과 동일 (전사=허용 LV·직책 필수)
   if (
-    canDistributeMarketingOwnerDept(item.owner_dept, {
+    canApplyMarketingItem(item, {
       myUnitName: myDept,
       myUnitId: auth.user.unit_id,
       myHqName: myHq,
       topOrgName,
       units: auth.unitsList,
       isPower: false,
-      ownerUnitId: ownerUnitId || null,
+      userRoles: auth.user.roles,
+      userDuty: duty,
+      dutyCode,
+      dutyOptions,
+      globalMgmtDept: mgmtDept,
     })
   ) {
     return true;
@@ -121,25 +145,36 @@ function canViewMarketingItem(
 
   if (ownerUnitId && auth.user.unit_id && ownerUnitId === auth.user.unit_id) return true;
   if (item.owner_dept && item.owner_dept === myDept) return true;
+
+  // GLOBAL_MGMT Edit: 총괄 패밀리·레거시 전사 물품 관리용 노출
   if (
+    auth.permission.isEditor &&
     isGlobalMgmtOrgMember({
       myUnitName: myDept,
       myUnitId: auth.user.unit_id,
       globalMgmtDept: mgmtDept,
       units: auth.unitsList,
-    })
+    }) &&
+    (isMarketingTopOrgItem(item, topOrgName, auth.unitsList) ||
+      isGlobalMgmtOrgMember({
+        myUnitName: owner || null,
+        myUnitId: ownerUnitId || null,
+        globalMgmtDept: mgmtDept,
+        units: auth.unitsList,
+      }))
   ) {
     return true;
   }
 
-  // 지정 LV 있음 → 해당 LV만 열람 (경영기획센터 등 직속 하위 포함)
+  // 지정 LV·직책 불일치·미지정 전사는 숨김
+  if (isMarketingTopOrgItem(item, topOrgName, auth.unitsList)) return false;
+
   const required = parseViewRoleIds(item.view_role_ids);
   if (required.length > 0) {
-    return canApplyViaViewRoles(item, auth.user.roles);
+    return canApplyViaViewRoles(item, auth.user.roles, duty, { dutyCode, dutyOptions });
   }
 
-  // 미지정: GLOBAL_MGMT·직속하위·전사 풀 → 타부서 숨김 / 그외 부서 → 열람만 개방
-  const isTopOrgAsset = !!topOrgName && owner === topOrgName;
+  // GLOBAL_MGMT 패밀리 물품: view_role 없으면 타부서 비공개 (소유·구조만)
   const isGlobalMgmtFamilyAsset =
     (!!mgmtDeptName && owner === mgmtDeptName) ||
     isGlobalMgmtOrgMember({
@@ -148,7 +183,7 @@ function canViewMarketingItem(
       globalMgmtDept: mgmtDept,
       units: auth.unitsList,
     });
-  if (isTopOrgAsset || isGlobalMgmtFamilyAsset) return false;
+  if (isGlobalMgmtFamilyAsset) return false;
 
   return true;
 }
@@ -255,6 +290,14 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: '초기수량은 0 이상이어야 합니다.' }, { status: 400 });
     }
 
+    const topViewErr = assertTopOrgViewRolesRequired(
+      auth,
+      body.owner_dept,
+      owner_unit_id,
+      viewRoleIds
+    );
+    if (topViewErr) return NextResponse.json({ error: topViewErr }, { status: 400 });
+
     const newItem = await prisma.$transaction(async (tx) => {
       const item = await tx.marketingItem.create({
         data: {
@@ -324,6 +367,7 @@ export async function PATCH(req: Request) {
       unit_price,
       alert_qty,
       description,
+      memo,
       image_url,
       owner_dept,
       unit,
@@ -352,19 +396,19 @@ export async function PATCH(req: Request) {
       return authErrorToResponse(e);
     }
 
-    if (body.current_stock !== undefined) {
-      return NextResponse.json(
-        { error: '재고 수량은 수정할 수 없습니다. 입고 또는 지급으로만 변경됩니다.' },
-        { status: 400 }
-      );
-    }
-
     if (image_url !== undefined) {
       const imageErr = assertImageUrlWithinLimit(image_url);
       if (imageErr) return NextResponse.json({ error: imageErr }, { status: 400 });
     }
 
     const data: Record<string, unknown> = {};
+    if (body.current_stock !== undefined) {
+      const stockNum = Math.floor(Number(body.current_stock));
+      if (!Number.isFinite(stockNum) || stockNum < 0) {
+        return NextResponse.json({ error: '재고는 0 이상 정수여야 합니다.' }, { status: 400 });
+      }
+      data.current_stock = stockNum;
+    }
     if (name !== undefined) data.name = name;
     if (owner_dept !== undefined) {
       data.owner_dept = owner_dept;
@@ -376,6 +420,7 @@ export async function PATCH(req: Request) {
       data.owner_unit_id = resolveOwnerUnitId(body, auth.unitsList);
     }
     if (description !== undefined) data.description = description;
+    if (memo !== undefined) data.memo = String(memo ?? '').trim().slice(0, 200);
     if (image_url !== undefined) data.image_url = image_url;
     if (alert_qty !== undefined) data.alert_qty = Number(alert_qty) || 0;
 
@@ -448,6 +493,28 @@ export async function PATCH(req: Request) {
       data.archived_by_email = null;
     } else if (is_archived !== undefined) {
       data.is_archived = is_archived;
+    }
+
+    const finalOwnerDept =
+      data.owner_dept !== undefined
+        ? String(data.owner_dept || '')
+        : String(existing.owner_dept || '');
+    const finalOwnerUnitId =
+      data.owner_unit_id !== undefined
+        ? (data.owner_unit_id as string | null)
+        : ((existing as { owner_unit_id?: string | null }).owner_unit_id ?? null);
+    const finalViewRoles =
+      data.view_role_ids !== undefined
+        ? parseViewRoleIds(data.view_role_ids)
+        : parseViewRoleIds((existing as typeof existing & ItemViewFields).view_role_ids);
+    const patchTopViewErr = assertTopOrgViewRolesRequired(
+      auth,
+      finalOwnerDept,
+      finalOwnerUnitId,
+      finalViewRoles
+    );
+    if (patchTopViewErr) {
+      return NextResponse.json({ error: patchTopViewErr }, { status: 400 });
     }
 
     const updatedItem = await prisma.marketingItem.update({

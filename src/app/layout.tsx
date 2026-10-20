@@ -1,7 +1,19 @@
 import './globals.css';
-import { Inter } from 'next/font/google';
+import { Noto_Sans_KR, Roboto } from 'next/font/google';
 
-const inter = Inter({ subsets: ['latin'] });
+const notoSansKr = Noto_Sans_KR({
+  subsets: ['latin'],
+  weight: ['300', '400', '500', '600', '700'],
+  variable: '--font-noto-sans-kr',
+  display: 'swap',
+});
+
+const roboto = Roboto({
+  subsets: ['latin'],
+  weight: ['300', '400', '500', '700'],
+  variable: '--font-roboto',
+  display: 'swap',
+});
 
 export const metadata = {
   title: 'KPCQA WISE',
@@ -23,9 +35,15 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="ko" suppressHydrationWarning>
-      <body className={`${inter.className} antialiased`} suppressHydrationWarning>
-        {/* 루트 레이아웃에는 헤더를 넣지 않습니다. 하위 레이아웃에서 담당합니다. */}
+    <html lang="ko" className={`${notoSansKr.variable} ${roboto.variable}`} suppressHydrationWarning>
+      <head>
+        {/* Pretendard — 한글 SaaS 표준 스택의 1순위 */}
+        <link
+          rel="stylesheet"
+          href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css"
+        />
+      </head>
+      <body className="font-sans antialiased" suppressHydrationWarning>
         {children}
       </body>
     </html>

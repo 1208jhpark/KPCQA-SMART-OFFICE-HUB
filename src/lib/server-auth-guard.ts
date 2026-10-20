@@ -22,6 +22,9 @@ export const MARKETING_MENU = {
   clientSearch: '/marketing/distribution/client-search',
 } as const;
 
+/** 제작물 코너 고객사 주소관리 (동일 clients API 공유) */
+export const PRODUCTION_CLIENT_ADDRESS = '/production/custom/clients' as const;
+
 /**
  * @deprecated 전 마케팅 OR — leaf별 authorizeMarketing* 사용 권장.
  * 하위 호환·대시보드 등 광역 조회용으로만 유지.
@@ -74,7 +77,7 @@ export function authorizeMarketingPurchasesWrite(options?: MarketingAuthOptions)
   );
 }
 
-/** 고객사 조회: client-search(+ register lite 선택용) */
+/** 고객사 조회: client-search · 제작물 client(+ register lite 선택용) */
 export function authorizeMarketingClientsRead(options?: {
   requireEditor?: boolean;
   /** lite=지급신청·제작 실배송지 고객사 주소 — register·production apply 접근도 허용 */
@@ -83,25 +86,32 @@ export function authorizeMarketingClientsRead(options?: {
   const { forRegisterLite, ...authOpts } = options || {};
   const paths = forRegisterLite
     ? [
+        PRODUCTION_CLIENT_ADDRESS,
+        '/production/custom/my-orders/request',
         MARKETING_MENU.clientSearch,
         MARKETING_MENU.register,
-        '/asset/production/apply/request',
       ]
-    : [MARKETING_MENU.clientSearch];
+    : [PRODUCTION_CLIENT_ADDRESS, MARKETING_MENU.clientSearch];
   return authorizeAnyMenuPaths(paths, authOpts);
 }
 
-/** 고객사 쓰기: client-search만 */
+/** 고객사 쓰기: client-search · 제작물 client */
 export function authorizeMarketingClientsWrite(options?: MarketingAuthOptions) {
-  return authorizeAnyMenuPaths([MARKETING_MENU.clientSearch], {
-    ...options,
-    requireEditor: true,
-  });
+  return authorizeAnyMenuPaths(
+    [MARKETING_MENU.clientSearch, PRODUCTION_CLIENT_ADDRESS],
+    {
+      ...options,
+      requireEditor: true,
+    }
+  );
 }
 
-/** 고객사 신규 등록: client-search 접근자 전원 (편집자 불필요) */
+/** 고객사 신규 등록: client-search · 제작물 client 접근자 전원 (편집자 불필요) */
 export function authorizeMarketingClientsCreate(options?: MarketingAuthOptions) {
-  return authorizeAnyMenuPaths([MARKETING_MENU.clientSearch], options);
+  return authorizeAnyMenuPaths(
+    [MARKETING_MENU.clientSearch, PRODUCTION_CLIENT_ADDRESS],
+    options
+  );
 }
 
 /** 지급 이력 조회: register·dept·catalog·client-search·dashboard */
@@ -175,7 +185,7 @@ export async function authorizeApi(
   const isSurveyOpenLink =
     cleanPath.includes('/survey/') && !cleanPath.includes('/admin') && !cleanPath.includes('/my-submissions');
   const isItAuditQrLink =
-    cleanPath.includes('/asset/it/master/audit') || cleanPath.includes('/asset/it/audit');
+    cleanPath.includes('/equipment/it/master/audit') || cleanPath.includes('/equipment/it/audit');
 
   const cookieStore = await cookies();
   const token = cookieStore.get('token')?.value;
@@ -611,7 +621,7 @@ export function assertCanEditEquipmentDepartment(
  * 물품 owner_dept 기준 편집 스코프 (Catalog FE와 동일)
  * - owner_unit_id 우선, 없으면 명칭 폴백
  * - Organization(최상위) 자산: LV_1 제외 global_mgmt_dept만 (TOTAL이어도 동일)
- * - 그 외: TOTAL → 전체 / DEPT → 내 센터·본부
+ * - 그 외: TOTAL → 전체 / DEPT·OWN → 본인 소속 + (센터면) 상위 HQ
  * - HQ가 하위 센터 자산을 편집하진 않음 (지급 신청만)
  */
 export function assertCanEditOwnerDept(
@@ -626,6 +636,11 @@ export function assertCanEditOwnerDept(
   const myCenter = user.unit?.unit_name;
   const myUnitId = String(user.unit_id || '').trim();
   const myHq = (user.unit as any)?.parent?.unit_name as string | undefined;
+  const myHqId = String(
+    (user.unit as any)?.parent?.id ||
+      unitsList?.find((u: any) => String(u.id || '').trim() === myUnitId)?.parent_id ||
+      ''
+  ).trim();
   const topOrg = resolveTopOrgName(unitsList);
   const topOrgId = topOrg
     ? String(unitsList?.find((u: any) => String(u.unit_name || '').trim() === topOrg)?.id || '').trim()
@@ -657,12 +672,14 @@ export function assertCanEditOwnerDept(
   const scope = String(permission.editScope || 'NONE').toUpperCase();
   if (scope === 'TOTAL') return;
 
-  // 본인 소속 조직만 CRUD (센터→HQ, HQ→하위센터 편집 불가 — 지급 신청만)
+  // 본인 소속 + Center면 상위 HQ (HQ→하위센터 편집 불가 — 지급 신청만)
   if (ownerUnitId) {
     if (myUnitId && ownerUnitId === myUnitId) return;
+    if (myHqId && ownerUnitId === myHqId) return;
     throw new Error('FORBIDDEN_EDIT');
   }
   if (ownerDept && ownerDept === myCenter) return;
+  if (ownerDept && myHq && ownerDept === myHq) return;
 
   throw new Error('FORBIDDEN_EDIT');
 }

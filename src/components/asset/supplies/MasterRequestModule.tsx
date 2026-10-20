@@ -34,13 +34,23 @@ import {
 
 const MENU_PATH = '/asset/supplies/master/requests';
 
+/** 마케팅 예약대기 취소와 동일 — 드롭다운 고정 사유 · 자유 입력 없음 */
+const CANCEL_REASON_OPTIONS = [
+  '재고부족',
+  '물품단종',
+  '입고지연',
+  '물품불량/파손',
+  '중복신청',
+  '기타',
+] as const;
+
 const FOLDER_TAB_IDLE =
   'bg-slate-100 text-slate-500 border-slate-200 border-b-transparent hover:bg-slate-50 hover:text-slate-700';
 
 const FOLDER_TABS = [
   {
     id: 'ACTIVE' as const,
-    label: '신청·지급 대기',
+    label: '접수 대기',
     icon: '📄',
     activeClass:
       'bg-slate-900 text-white border-slate-900 border-b-white z-10 -mb-px',
@@ -60,6 +70,41 @@ function isBoldOrgType(unitType?: string | null) {
   const t = String(unitType || '').trim().toUpperCase();
   return t === 'ORGANIZATION' || t === 'HQ';
 }
+
+function normalizeOrgUnitType(unitType?: string | null) {
+  return String(unitType || '').trim().toUpperCase();
+}
+
+/** admin/units sort_order 기준 정렬 (하드코딩 없음) */
+function sortUnitsByOrder<T extends { sort_order?: number | null; unit_name?: string | null }>(
+  units: T[]
+) {
+  return [...units].sort((a, b) => {
+    const ao = Number(a.sort_order) || 0;
+    const bo = Number(b.sort_order) || 0;
+    if (ao !== bo) return ao - bo;
+    return String(a.unit_name || '').localeCompare(String(b.unit_name || ''), 'ko');
+  });
+}
+
+/** 특정 조직의 하위(재귀) 조직명 집합 */
+function collectDescendantUnitNames(
+  rootId: string,
+  units: Array<{ id: string; unit_name?: string | null; parent_id?: string | null }>
+) {
+  const names = new Set<string>();
+  const walk = (parentId: string) => {
+    for (const child of units.filter((u) => u.parent_id === parentId)) {
+      const n = String(child.unit_name || '').trim();
+      if (n) names.add(n);
+      walk(child.id);
+    }
+  };
+  walk(rootId);
+  return names;
+}
+
+type ChartOrgMode = 'CENTER' | 'HQ';
 
 function flattenUnitsInSortOrder<T extends { id: string; parent_id?: string | null; sort_order?: number | null; unit_name?: string | null }>(units: T[]) {
   const byId = new Map(units.map((u) => [u.id, u]));
@@ -134,11 +179,25 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
   
   // 하단 장부 상태 관리
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  /** 장부(표) 물품 필터 */
   const [selectedItem, setSelectedItem] = useState('ALL');
+  /** 상단 지급 수량 차트 물품 선택 (장부와 분리) */
+  const [chartSelectedItem, setChartSelectedItem] = useState('ALL');
   const [searchUserQuery, setSearchUserQuery] = useState('');
-  /** 진입 시점 KST 연도 (하드코딩 아님) */
+  /** 장부(서류철)용 연·월 — 접수대기는 월 ALL, 처리완료는 접속월 */
   const [selectedYear, setSelectedYear] = useState(() => String(getKSTNowYearMonth().year));
   const [selectedMonth, setSelectedMonth] = useState('ALL');
+  /**
+   * 상단 센터별 지급 수량 차트 전용 연·월.
+   * 지급완료만 집계 · 서류철(접수대기↔처리완료) 전환과 무관하게 유지.
+   * 처리완료 장부에서 연·월을 바꾸면 동기화.
+   */
+  const [chartYear, setChartYear] = useState(() => String(getKSTNowYearMonth().year));
+  const [chartMonth, setChartMonth] = useState(() =>
+    String(getKSTNowYearMonth().month).padStart(2, '0')
+  );
+  /** 상단 차트: 센터별(CENTER) / 본부별(HQ·하위센터 합산) */
+  const [chartOrgMode, setChartOrgMode] = useState<ChartOrgMode>('CENTER');
   const [selectedDept, setSelectedDept] = useState('ALL');
   const [orgUnits, setOrgUnits] = useState<any[]>([]);
   const [orgMenuOpen, setOrgMenuOpen] = useState(false);
@@ -148,8 +207,10 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
   const [activeFolder, setActiveFolder] = useState<LedgerFolder>('ACTIVE');
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 10;
-  const [processOpinion, setProcessOpinion] = useState<{ [key: string]: string }>({});
   const [processingId, setProcessingId] = useState<string | null>(null);
+  /** 마케팅 기념품 반려(취소) 모달과 동일 — 사유 → admin_opinion */
+  const [cancelTarget, setCancelTarget] = useState<any | null>(null);
+  const [cancelReason, setCancelReason] = useState('');
      
   useEffect(() => { 
     fetchRequestsData(); 
@@ -334,12 +395,12 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
       .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   }, [requests, selectedYear, selectedMonth, selectedDept, selectedStatus, selectedItem, searchUserQuery, selectedDeptNames, orgUnits, isOrgWideFilter, activeFolder]);
 
-  /** 차트: 지급완료(수령완료)만 · 물품·조직은 차트 모드에서 따로 적용 */
+  /** 차트: 지급완료만 · 접수대기/반려 제외 · 연·월은 chartYear/chartMonth (서류철과 분리) */
   const matchesChartBaseFilters = (r: any) => {
     if (!isCompletedSupplyRequest(r.status)) return false;
     const ym = getKSTYearMonthParts(r.createdAt);
-    const yearMatch = selectedYear === 'ALL' || ym?.year === selectedYear;
-    const monthMatch = selectedMonth === 'ALL' || ym?.month === selectedMonth;
+    const yearMatch = chartYear === 'ALL' || ym?.year === chartYear;
+    const monthMatch = chartMonth === 'ALL' || ym?.month === chartMonth;
     const userMatch =
       !searchUserQuery ||
       (r.user_name || '').toLowerCase().includes(searchUserQuery.toLowerCase());
@@ -357,34 +418,89 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
     return Array.from(byItem.entries())
       .map(([name, qty]) => ({ name, qty }))
       .sort((a, b) => a.name.localeCompare(b.name, 'ko'));
-  }, [requests, selectedYear, selectedMonth, searchUserQuery]);
+  }, [requests, chartYear, chartMonth, searchUserQuery]);
 
-  /** 선택한 물품의 센터(조직)별 지급 수량 — 동일 물품·동일 단위라 비교 가능 */
+  // 지급완료 물품이 있으면 차트는 첫 항목을 기본 선택 (빈 차트 방지)
+  useEffect(() => {
+    if (paidItemOptions.length === 0) {
+      if (chartSelectedItem !== 'ALL') setChartSelectedItem('ALL');
+      return;
+    }
+    const stillValid = paidItemOptions.some((o) => o.name === chartSelectedItem);
+    if (!stillValid) setChartSelectedItem(paidItemOptions[0].name);
+  }, [paidItemOptions, chartSelectedItem]);
+
+  /**
+   * 선택한 물품 지급 수량 차트
+   * - CENTER: admin/units 의 CENTER 전부(0포함) · sort_order
+   * - HQ: HQ 전부 · 하위 조직 신청 수량 합산 · sort_order
+   */
   const itemOrgChartData = useMemo(() => {
-    if (selectedItem === 'ALL') return [];
-    const byDept = new Map<string, number>();
+    if (chartSelectedItem === 'ALL') return [];
+
+    const qtyByDept = new Map<string, number>();
     requests.forEach((r) => {
       if (!matchesChartBaseFilters(r)) return;
       const item = String(r.item_name || r.item?.name || '').trim();
-      if (item !== selectedItem) return;
-      const dept = r.dept_name || '미지정';
-      byDept.set(dept, (byDept.get(dept) || 0) + (Number(r.qty) || 0));
+      if (item !== chartSelectedItem) return;
+      const dept = String(r.dept_name || '').trim() || '미지정';
+      qtyByDept.set(dept, (qtyByDept.get(dept) || 0) + (Number(r.qty) || 0));
     });
-    const rows = Array.from(byDept.entries()).map(([dept, qty]) => ({ name: dept, qty }));
+
+    const axisUnits = sortUnitsByOrder(
+      orgUnits.filter((u) => {
+        const t = normalizeOrgUnitType(u.unit_type);
+        if (chartOrgMode === 'CENTER') return t === 'CENTER';
+        if (t !== 'HQ') return false;
+        // 본부별 조회: 직함성 HQ(원장/부원장/상무) 제외 — units 명칭에 해당 글자 있으면 거름
+        const name = String(u.unit_name || '');
+        if (/원장|부원장|상무/.test(name)) return false;
+        return true;
+      })
+    );
+
+    const rows = axisUnits.map((unit) => {
+      const name = String(unit.unit_name || '').trim() || '(이름없음)';
+      let qty = 0;
+      if (chartOrgMode === 'CENTER') {
+        qty = qtyByDept.get(name) || 0;
+      } else {
+        const childNames = collectDescendantUnitNames(unit.id, orgUnits);
+        childNames.add(name);
+        for (const n of childNames) {
+          qty += qtyByDept.get(n) || 0;
+        }
+      }
+      return { name, qty, unitId: unit.id };
+    });
+
     const total = rows.reduce((sum, row) => sum + row.qty, 0);
-    const orderOf = (name: string) => {
-      const unit = orgUnits.find((u) => String(u.unit_name || '').trim() === name);
-      return unit?.sort_order != null ? Number(unit.sort_order) : Number.MAX_SAFE_INTEGER;
-    };
-    return rows
-      .map((row) => ({
-        ...row,
-        percent: total > 0 ? (row.qty / total) * 100 : 0,
-        label: `${row.qty.toLocaleString()} · ${total > 0 ? ((row.qty / total) * 100).toFixed(1) : '0.0'}%`,
-        isSelected: !isOrgWideFilter && matchesDeptFilter(row.name),
-      }))
-      .sort((a, b) => b.qty - a.qty || orderOf(a.name) - orderOf(b.name) || a.name.localeCompare(b.name, 'ko'));
-  }, [requests, selectedYear, selectedMonth, searchUserQuery, selectedItem, selectedDept, selectedDeptNames, orgUnits, isOrgWideFilter]);
+    return rows.map((row) => ({
+      ...row,
+      percent: total > 0 ? (row.qty / total) * 100 : 0,
+      label:
+        row.qty > 0
+          ? `${row.qty.toLocaleString()}${total > 0 ? ` · ${((row.qty / total) * 100).toFixed(1)}%` : ''}`
+          : '0',
+      isSelected: !isOrgWideFilter && matchesDeptFilter(row.name),
+      hasQty: row.qty > 0,
+    }));
+  }, [
+    requests,
+    chartYear,
+    chartMonth,
+    searchUserQuery,
+    chartSelectedItem,
+    selectedDept,
+    selectedDeptNames,
+    orgUnits,
+    isOrgWideFilter,
+    chartOrgMode,
+  ]);
+
+  const chartPeriodLabel = `${chartYear === 'ALL' ? '전체 연도' : `${chartYear}년`}${
+    chartMonth === 'ALL' ? '' : ` ${Number(chartMonth)}월`
+  }`;
 
   const chartRows = itemOrgChartData;
 
@@ -393,7 +509,9 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
     [chartRows]
   );
 
-  const chartHeight = Math.max(140, chartRows.length * 22 + 28);
+  const chartAxisCount = chartRows.length;
+  const chartHeight = 180;
+  const chartMinWidth = Math.max(560, chartAxisCount * 52);
      
   const totalPages = Math.max(1, Math.ceil(filteredRequests.length / itemsPerPage));
   const paginatedRequests = filteredRequests.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
@@ -404,14 +522,34 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
   }, [selectedYear, selectedMonth, selectedDept, selectedStatus, selectedItem, searchUserQuery, activeFolder]);
 
   useEffect(() => {
-    // 서류철 전환 시 다른 탭용 상태칩이 남아 있으면 전체로 리셋
-    if (activeFolder === 'ACTIVE' && (selectedStatus === 'COMPLETED' || selectedStatus === 'REJECTED')) {
+    // 서류철 전환 시 장부(표)용 상태칩·월별만 조정
+    // 접수 대기: 상태 ALL · 월 ALL (차트 연·월은 유지)
+    // 처리 완료: 접속월(KST) + 차트도 동일 기간으로 맞춤
+    if (activeFolder === 'ACTIVE') {
+      if (selectedStatus !== 'ALL') setSelectedStatus('ALL');
+      setSelectedMonth('ALL');
+      return;
+    }
+    if (
+      selectedStatus === 'PENDING' ||
+      selectedStatus === 'READY'
+    ) {
       setSelectedStatus('ALL');
     }
-    if (activeFolder === 'COMPLETED' && (selectedStatus === 'PENDING' || selectedStatus === 'READY')) {
-      setSelectedStatus('ALL');
-    }
+    const m = String(getKSTNowYearMonth().month).padStart(2, '0');
+    setSelectedMonth(m);
+    setChartYear(selectedYear);
+    setChartMonth(m);
   }, [activeFolder]);
+
+  // 처리완료 장부에서 연·월을 수동 변경할 때 차트 동기화 (접수대기에서는 차트 유지)
+  useEffect(() => {
+    if (activeFolder !== 'COMPLETED') return;
+    setChartYear(selectedYear);
+    setChartMonth(selectedMonth);
+    // activeFolder는 가드만 — 서류철 전환 시 selectedMonth=ALL로 차트를 덮지 않도록 deps에서 제외
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional
+  }, [selectedYear, selectedMonth]);
      
   const toggleSelectAll = () => {
     const currentPageIds = paginatedRequests.map(r => r.id);
@@ -443,11 +581,11 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
         신청자: r.user_name || '',
         물품명: itemName,
         신청수량: sUnit ? `${r.qty} ${sUnit}` : r.qty,
-        '사용자 의견': r.note || '',
-        '관리자 답변': r.admin_opinion || '',
+        '신청자 특이요청 사항': r.note || '',
         처리자: r.admin_name || '',
         처리일시: r.processedAt ? formatKSTDateTime(r.processedAt) : '',
         상태: statusKo,
+        취소사유: r.admin_opinion || '',
       };
     });
 
@@ -465,40 +603,54 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
   };
      
   // 상태 변경 — 재고 복구/재차감은 서버가 이전 status 기준으로 처리
+  // 지급승인 = PENDING → COMPLETED (지급대기 단계 없음)
+  // 취소 = REJECTED + admin_opinion (마케팅 reject_reason 패턴)
   const handleProcessRequest = async (
     req: any,
-    status: Extract<SupplyRequestStatus, 'READY' | 'COMPLETED' | 'REJECTED'>
+    status: Extract<SupplyRequestStatus, 'COMPLETED' | 'REJECTED'>,
+    adminOpinion?: string
   ) => {
     if (!canEdit) return alertNoEditPermission();
     const reqId = req.id;
     if (processingId) return;
-    const opinion = processOpinion[reqId] || '';
-    const confirmMsg =
-      status === 'READY'
-        ? '지급승인 처리하시겠습니까?\n(사용자 화면에 수령대기로 표시됩니다.)'
-        : status === 'COMPLETED'
-          ? '지급완료 처리하시겠습니까?'
-          : '요청을 반려하시겠습니까?\n(선차감된 재고가 다시 창고로 복구됩니다.)';
-    if (!confirm(confirmMsg)) return;
+    const fromPending = isPendingSupplyRequest(req.status);
+
+    if (status === 'REJECTED') {
+      const reason = String(adminOpinion || '').trim();
+      if (!reason || !(CANCEL_REASON_OPTIONS as readonly string[]).includes(reason)) {
+        alert('취소 사유를 선택해 주세요.');
+        return;
+      }
+    } else {
+      const confirmMsg = fromPending
+        ? '지급승인 처리하시겠습니까?\n(즉시 지급완료로 처리됩니다.)'
+        : '지급완료 처리하시겠습니까?';
+      if (!confirm(confirmMsg)) return;
+    }
 
     setProcessingId(reqId);
     try {
+      const body: Record<string, unknown> = { id: reqId, status };
+      if (status === 'REJECTED') {
+        body.admin_opinion = String(adminOpinion || '').trim();
+      }
       const res = await fetch('/api/asset/supplies/master/requests', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: reqId, status, admin_opinion: opinion }),
+        body: JSON.stringify(body),
       });
 
       if (res.ok) {
         alert(
-          status === 'READY'
-            ? '✅ 지급승인 완료 (수령대기)'
-            : status === 'COMPLETED'
-              ? '✅ 지급완료 처리됨'
-              : '🚨 반려 및 재고 복구 완료'
+          status === 'COMPLETED'
+            ? fromPending
+              ? '✅ 지급승인 · 지급완료 처리됨'
+              : '✅ 지급완료 처리됨'
+            : '✅ 취소 처리 · 재고 복구 완료'
         );
+        setCancelTarget(null);
+        setCancelReason('');
         fetchRequestsData();
-        setProcessOpinion({ ...processOpinion, [reqId]: '' });
       } else {
         const err = await res.json().catch(() => ({}));
         alert(`🚨 처리 실패: ${err.error || '알 수 없는 오류'}`);
@@ -508,6 +660,17 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
     } finally {
       setProcessingId(null);
     }
+  };
+
+  const openCancelModal = (req: any) => {
+    if (!canEdit) return alertNoEditPermission();
+    setCancelTarget(req);
+    setCancelReason('');
+  };
+
+  const submitCancelWithReason = () => {
+    if (!cancelTarget) return;
+    void handleProcessRequest(cancelTarget, 'REJECTED', cancelReason);
   };
 
   /** LV_1 전용 — 체크 선택 건 일괄 삭제 */
@@ -570,8 +733,6 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
     return yearMatch && monthMatch && deptMatch && itemMatch && folderMatch;
   });
   const countAll = scopedForStatusChips.length;
-  const countPending = scopedForStatusChips.filter((r) => isPendingSupplyRequest(r.status)).length;
-  const countReady = scopedForStatusChips.filter((r) => isReadySupplyRequest(r.status)).length;
   const countCompletedInFolder = scopedForStatusChips.filter((r) =>
     isCompletedSupplyRequest(r.status)
   ).length;
@@ -580,9 +741,6 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
   ).length;
   const countActiveFolder = requests.filter(
     (r) => isPendingSupplyRequest(r.status) || isReadySupplyRequest(r.status)
-  ).length;
-  const countDoneFolder = requests.filter(
-    (r) => isCompletedSupplyRequest(r.status) || isRejectedSupplyRequest(r.status)
   ).length;
   // 탭 배지: 전사 대기건 (필터 무관)
   const tabPendingCount = requests.filter((r) => isPendingSupplyRequest(r.status)).length;
@@ -602,7 +760,7 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
       소모품 마스터 관리 통제실
     </h1>
     <p className="text-emerald-100/90 text-xs mt-3 leading-relaxed">
-      임직원의 소모품 신청내역을 검토하고 승인/반려 등 관리합니다.
+      임직원의 소모품 신청내역을 검토하고 지급승인·취소 등 관리합니다.
     </p>
     {permissionSummary && isSystemLv1User(currentUser) && (
       <div className="flex flex-wrap items-center gap-2 mt-4 pt-3 border-t border-white/15">
@@ -660,47 +818,57 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
         </p>
       </div>
      
-      {/* 물품 선택 → 센터별 지급 수량 (동일 물품만 비교) */}
-      <div className="bg-white border border-slate-200 rounded-[2.5rem] shadow-sm overflow-hidden mt-6">
-        <div className="px-4 py-2.5 bg-slate-100/80 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+      {/* 물품 선택 → 센터/본부별 지급 수량 (admin/units 축 · 세로 막대) */}
+      <div className="bg-white border border-slate-200 rounded-md shadow-sm overflow-hidden mt-4">
+        <div className="px-3 py-1.5 bg-slate-100/80 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-1.5">
           <div className="flex items-center gap-2 min-w-0">
             <div className="w-2 h-2 rounded-full bg-emerald-500 shrink-0"></div>
             <div className="min-w-0">
-              <h2 className="text-[12px] font-black text-slate-800 tracking-tight">
-                {selectedItem !== 'ALL'
-                  ? `📊 ${selectedItem} · 센터별 지급 수량`
-                  : '📊 센터별 지급 수량'}
-                <span className="ml-2 text-[9px] font-bold text-slate-500">
-                  지급완료 기준 · 물품을 고르면 센터별 수량을 비교합니다 (단위가 같은 동일 물품만)
+              <h2 className="text-[11px] font-medium text-slate-800 tracking-tight">
+                {chartSelectedItem !== 'ALL'
+                  ? `📊 ${chartSelectedItem} · ${chartOrgMode === 'HQ' ? '본부별' : '센터별'} 지급 수량`
+                  : `📊 ${chartOrgMode === 'HQ' ? '본부별' : '센터별'} 지급 수량`}
+                <span className="ml-2 text-[9px] font-medium text-slate-500">
+                  지급완료만 · {chartPeriodLabel} · units 순서 · 0건 포함
                 </span>
               </h2>
             </div>
           </div>
-          <div className="flex items-center gap-1.5 shrink-0">
-            {selectedItem !== 'ALL' && (
-              <>
-                <span className="text-[10px] font-bold bg-slate-300/80 text-slate-700 px-1.5 py-0.5 rounded-md">
-                  {chartRows.length}개 센터
-                </span>
-                <span className="text-[10px] font-black text-indigo-600 bg-indigo-50 border border-indigo-100 px-1.5 py-0.5 rounded-md">
-                  합계 {chartTotalQty.toLocaleString()}
-                </span>
-              </>
-            )}
-            {selectedItem !== 'ALL' && (
+          <div className="flex items-center gap-1.5 shrink-0 flex-wrap justify-end">
+            <div className="inline-flex rounded-md border border-slate-200 bg-white p-0.5 shadow-sm">
               <button
                 type="button"
-                onClick={() => setSelectedItem('ALL')}
-                className="text-[9px] font-black text-slate-500 hover:text-indigo-600 underline"
+                onClick={() => setChartOrgMode('CENTER')}
+                className={`px-2 py-1 rounded-md text-[9px] font-medium transition-colors ${
+                  chartOrgMode === 'CENTER'
+                    ? 'bg-slate-800 text-white'
+                    : 'text-slate-500 hover:text-slate-800'
+                }`}
               >
-                물품 선택 해제
+                센터별조회
               </button>
+              <button
+                type="button"
+                onClick={() => setChartOrgMode('HQ')}
+                className={`px-2 py-1 rounded-md text-[9px] font-medium transition-colors ${
+                  chartOrgMode === 'HQ'
+                    ? 'bg-slate-800 text-white'
+                    : 'text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                본부별조회
+              </button>
+            </div>
+            {chartSelectedItem !== 'ALL' && (
+              <span className="text-[10px] font-medium text-indigo-600 bg-indigo-50 border border-indigo-100 px-1.5 py-0.5 rounded-md">
+                총 지급 합계 {chartTotalQty.toLocaleString()}
+              </span>
             )}
             {!isOrgWideFilter && (
               <button
                 type="button"
                 onClick={resetOrgFilter}
-                className="text-[9px] font-black text-slate-500 hover:text-indigo-600 underline"
+                className="text-[9px] font-medium text-slate-500 hover:text-indigo-600 underline"
               >
                 조직 필터 해제
               </button>
@@ -708,22 +876,22 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
           </div>
         </div>
 
-        <div className="px-4 pt-3 pb-2 border-b border-slate-100">
-          <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-2">
+        <div className="px-3 pt-1.5 pb-1.5 border-b border-slate-100">
+          <p className="text-[9px] font-medium text-slate-400 uppercase tracking-widest mb-1">
             지급 물품 선택
           </p>
           {paidItemOptions.length === 0 ? (
-            <p className="text-[10px] font-bold text-slate-400 py-1">지급완료된 물품이 없습니다.</p>
+            <p className="text-[10px] font-medium text-slate-400 py-0.5">지급완료된 물품이 없습니다.</p>
           ) : (
-            <div className="flex flex-wrap gap-1.5">
+            <div className="flex flex-wrap gap-1">
               {paidItemOptions.map((opt) => {
-                const active = selectedItem === opt.name;
+                const active = chartSelectedItem === opt.name;
                 return (
                   <button
                     key={opt.name}
                     type="button"
-                    onClick={() => setSelectedItem(active ? 'ALL' : opt.name)}
-                    className={`inline-flex items-center gap-1.5 max-w-full px-2.5 py-1 rounded-lg text-[10px] font-black border transition-colors ${
+                    onClick={() => setChartSelectedItem(opt.name)}
+                    className={`inline-flex items-center gap-1.5 max-w-full px-2 py-0.5 rounded-md text-[10px] font-medium border transition-colors ${
                       active
                         ? 'bg-indigo-600 text-white border-indigo-700 shadow-sm'
                         : 'bg-white text-slate-600 border-slate-200 hover:border-indigo-300 hover:text-indigo-700'
@@ -741,114 +909,121 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
           )}
         </div>
 
-        <div className="px-3 py-2">
-          {selectedItem === 'ALL' ? (
-            <div className="h-[100px] flex items-center justify-center rounded-xl border border-dashed border-slate-200 bg-slate-50/60">
-              <p className="text-[10px] font-bold text-slate-400">
-                위에서 물품을 선택하면 센터별 지급 수량 그래프가 표시됩니다.
+        <div className="px-2 py-1">
+          {chartSelectedItem === 'ALL' ? (
+            <div className="h-[72px] flex items-center justify-center border border-dashed border-slate-200 bg-slate-50/60">
+              <p className="text-[10px] font-medium text-slate-400">
+                지급완료 물품이 없으면 그래프를 표시할 수 없습니다.
               </p>
             </div>
           ) : chartRows.length === 0 ? (
-            <div className="h-[100px] flex items-center justify-center rounded-xl border border-dashed border-slate-200 bg-slate-50/60">
-              <p className="text-[10px] font-bold text-slate-400">조건에 맞는 집계 데이터가 없습니다.</p>
+            <div className="h-[72px] flex items-center justify-center border border-dashed border-slate-200 bg-slate-50/60">
+              <p className="text-[10px] font-medium text-slate-400">
+                admin/units에 {chartOrgMode === 'HQ' ? 'HQ(본부)' : 'CENTER'} 조직이 없습니다.
+              </p>
             </div>
           ) : (
-            <div style={{ height: chartHeight }} className="w-full">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart
-                  layout="vertical"
-                  data={chartRows}
-                  margin={{ top: 2, right: 72, left: 0, bottom: 0 }}
-                  barCategoryGap="32%"
-                >
-                  <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#e2e8f0" />
-                  <XAxis
-                    type="number"
-                    allowDecimals={false}
-                    tick={{ fontSize: 9, fontWeight: 700, fill: '#94a3b8' }}
-                    tickLine={false}
-                    axisLine={{ stroke: '#e2e8f0' }}
-                    height={22}
-                  />
-                  <YAxis
-                    type="category"
-                    dataKey="name"
-                    width={148}
-                    tick={{ fontSize: 9, fontWeight: 700, fill: '#334155' }}
-                    tickLine={false}
-                    axisLine={false}
-                    interval={0}
-                  />
-                  <Tooltip
-                    cursor={{ fill: 'rgba(99, 102, 241, 0.06)' }}
-                    content={({ active, payload }) => {
-                      if (!active || !payload?.length) return null;
-                      const row = payload[0].payload as {
-                        name: string;
-                        qty: number;
-                        percent: number;
-                      };
-                      return (
-                        <div className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 shadow-md">
-                          <p className="text-[10px] font-black text-slate-800">{row.name}</p>
-                          <p className="text-[10px] font-bold text-indigo-600 mt-0.5">
-                            {row.qty.toLocaleString()} · {row.percent.toFixed(1)}%
-                          </p>
-                          <p className="text-[9px] font-bold text-slate-400 mt-0.5">
-                            클릭하면 장부 조직 필터
-                          </p>
-                        </div>
-                      );
-                    }}
-                  />
-                  <Bar
-                    dataKey="qty"
-                    radius={[0, 3, 3, 0]}
-                    maxBarSize={12}
-                    cursor="pointer"
-                    onClick={(data: any) => {
-                      const name = data?.name || data?.payload?.name;
-                      if (!name) return;
-                      const orgWideName = String(organizationUnit?.unit_name || 'ALL');
-                      setSelectedDept((prev) => (prev === name ? orgWideName : name));
-                    }}
+            <div className="w-full overflow-x-auto">
+              <div style={{ height: chartHeight, minWidth: chartMinWidth }} className="w-full">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart
+                    data={chartRows}
+                    margin={{ top: 16, right: 8, left: 4, bottom: 4 }}
+                    barCategoryGap="18%"
                   >
-                    {chartRows.map((row) => (
-                      <Cell
-                        key={row.name}
-                        fill={row.isSelected ? '#4f46e5' : '#34d399'}
-                      />
-                    ))}
-                    <LabelList
-                      dataKey="label"
-                      position="right"
-                      content={(props: any) => {
-                        const { x, y, width, height, value } = props;
-                        if (x == null || y == null || value == null) return null;
-                        const text = String(value);
-                        const sep = ' · ';
-                        const sepIdx = text.lastIndexOf(sep);
-                        const left = sepIdx >= 0 ? text.slice(0, sepIdx + sep.length) : text;
-                        const right = sepIdx >= 0 ? text.slice(sepIdx + sep.length) : '';
-                        const tx = Number(x) + Number(width || 0) + 6;
-                        const ty = Number(y) + Number(height || 0) / 2;
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
+                    <XAxis
+                      type="category"
+                      dataKey="name"
+                      interval={0}
+                      angle={-28}
+                      textAnchor="end"
+                      height={54}
+                      tick={{ fontSize: 8, fontWeight: 500, fill: '#334155' }}
+                      tickLine={false}
+                      axisLine={{ stroke: '#e2e8f0' }}
+                    />
+                    <YAxis
+                      type="number"
+                      allowDecimals={false}
+                      tick={{ fontSize: 8, fontWeight: 500, fill: '#94a3b8' }}
+                      tickLine={false}
+                      axisLine={{ stroke: '#e2e8f0' }}
+                      width={28}
+                    />
+                    <Tooltip
+                      cursor={{ fill: 'rgba(99, 102, 241, 0.06)' }}
+                      content={({ active, payload }) => {
+                        if (!active || !payload?.length) return null;
+                        const row = payload[0].payload as {
+                          name: string;
+                          qty: number;
+                          percent: number;
+                          hasQty: boolean;
+                        };
                         return (
-                          <text
-                            x={tx}
-                            y={ty}
-                            dominantBaseline="central"
-                            fontSize={9}
-                            fontWeight={800}
-                          >
-                            <tspan fill="#334155">{left}</tspan>
-                            {right ? <tspan fill="#4f46e5">{right}</tspan> : null}
-                          </text>
+                          <div className="rounded-md border border-slate-200 bg-white px-2.5 py-1.5 shadow-md">
+                            <p className="text-[10px] font-medium text-slate-800">{row.name}</p>
+                            <p className="text-[10px] font-medium text-indigo-600 mt-0.5">
+                              {row.qty.toLocaleString()}
+                              {row.hasQty ? ` · ${row.percent.toFixed(1)}%` : ' · 미지급'}
+                            </p>
+                            <p className="text-[9px] font-medium text-slate-400 mt-0.5">
+                              클릭하면 장부 조직 필터
+                            </p>
+                          </div>
                         );
                       }}
                     />
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
+                    <Bar
+                      dataKey="qty"
+                      radius={[0, 0, 0, 0]}
+                      maxBarSize={28}
+                      cursor="pointer"
+                      onClick={(data: any) => {
+                        const name = data?.name || data?.payload?.name;
+                        if (!name) return;
+                        const orgWideName = String(organizationUnit?.unit_name || 'ALL');
+                        setSelectedDept((prev) => (prev === name ? orgWideName : name));
+                      }}
+                    >
+                      {chartRows.map((row) => (
+                        <Cell
+                          key={row.unitId || row.name}
+                          fill={
+                            row.isSelected
+                              ? '#4f46e5'
+                              : row.hasQty
+                                ? '#34d399'
+                                : '#e2e8f0'
+                          }
+                        />
+                      ))}
+                      <LabelList
+                        dataKey="qty"
+                        position="top"
+                        content={(props: any) => {
+                          const { x, y, width, value } = props;
+                          if (x == null || y == null || value == null) return null;
+                          const n = Number(value) || 0;
+                          return (
+                            <text
+                              x={Number(x) + Number(width || 0) / 2}
+                              y={Number(y) - 4}
+                              textAnchor="middle"
+                              fontSize={9}
+                              fontWeight={500}
+                              fill={n > 0 ? '#334155' : '#cbd5e1'}
+                            >
+                              {n.toLocaleString()}
+                            </text>
+                          );
+                        }}
+                      />
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
             </div>
           )}
         </div>
@@ -863,8 +1038,8 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
         >
           {FOLDER_TABS.map((tab) => {
             const active = activeFolder === tab.id;
-            const badgeCount =
-              tab.id === 'ACTIVE' ? countActiveFolder : countDoneFolder;
+            // 처리 완료 내역 탭은 건수 미표시 (칩으로 충분)
+            const badgeCount = tab.id === 'ACTIVE' ? countActiveFolder : null;
             return (
               <button
                 key={tab.id}
@@ -882,9 +1057,11 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
                 <span className="text-sm leading-none">{tab.icon}</span>
                 <span className="flex items-center gap-1">
                   <span>{tab.label}</span>
-                  <span className={`tabular-nums ${active ? 'opacity-95' : 'text-indigo-600'}`}>
-                    ({badgeCount})
-                  </span>
+                  {badgeCount != null && (
+                    <span className={`tabular-nums ${active ? 'opacity-95' : 'text-indigo-600'}`}>
+                      ({badgeCount})
+                    </span>
+                  )}
                 </span>
               </button>
             );
@@ -899,53 +1076,13 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
               <h2 className="text-sm font-black text-slate-800 tracking-tight">
                 {activeFolder === 'COMPLETED'
                   ? selectedStatus === 'REJECTED'
-                    ? '반려 처리건'
+                    ? '취소 처리건'
                     : selectedStatus === 'COMPLETED'
                       ? '지급 완료건'
                       : '처리 완료 내역'
-                  : selectedStatus === 'ALL'
-                    ? '신청·지급 대기'
-                    : selectedStatus === 'PENDING'
-                      ? '접수 대기건'
-                      : '지급 대기건'}
+                  : '접수 대기'}
               </h2>
-              {activeFolder === 'ACTIVE' ? (
-              <div className="flex items-center gap-1 ml-1">
-                <button
-                  type="button"
-                  onClick={() => setSelectedStatus('ALL')}
-                  className={`px-2.5 py-1 rounded-md text-[10px] font-black transition-colors ${
-                    selectedStatus === 'ALL'
-                      ? 'bg-slate-800 text-white'
-                      : 'bg-white text-slate-500 border border-slate-200 hover:bg-slate-50'
-                  }`}
-                >
-                  전체 {countAll}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setSelectedStatus((prev) => (prev === 'PENDING' ? 'ALL' : 'PENDING'))}
-                  className={`px-2.5 py-1 rounded-md text-[10px] font-black transition-colors ${
-                    selectedStatus === 'PENDING'
-                      ? 'bg-orange-500 text-white'
-                      : 'bg-orange-50 text-orange-600 border border-orange-100 hover:bg-orange-100'
-                  }`}
-                >
-                  접수대기 {countPending}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setSelectedStatus((prev) => (prev === 'READY' ? 'ALL' : 'READY'))}
-                  className={`px-2.5 py-1 rounded-md text-[10px] font-black transition-colors ${
-                    selectedStatus === 'READY'
-                      ? 'bg-sky-600 text-white'
-                      : 'bg-sky-50 text-sky-700 border border-sky-100 hover:bg-sky-100'
-                  }`}
-                >
-                  지급대기 {countReady}
-                </button>
-              </div>
-              ) : (
+              {activeFolder === 'COMPLETED' && (
               <div className="flex items-center gap-1 ml-1">
                 <button
                   type="button"
@@ -978,19 +1115,19 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
                       : 'bg-red-50 text-red-600 border border-red-100 hover:bg-red-100'
                   }`}
                 >
-                  반려 {countRejected}
+                  취소 {countRejected}
                 </button>
               </div>
               )}
             </div>
 
-            <div className="flex items-center gap-2 flex-wrap">
+            <div className="soh-filter-bar flex items-center gap-2 flex-wrap">
               {isLV1 && (
                 <button
                   type="button"
                   disabled={selectedIds.size === 0 || processingId === 'bulk'}
                   onClick={handleBulkDelete}
-                  className="h-7 px-2.5 rounded-lg text-[10px] font-black border border-red-200 bg-red-50 text-red-600 hover:bg-red-100 disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
+                  className="h-7 px-2.5 rounded-lg text-[10px] font-medium border border-red-200 bg-red-50 text-red-600 hover:bg-red-100 disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
                   title="체크한 신청을 영구 삭제 (LV_1 전용)"
                 >
                   {processingId === 'bulk'
@@ -1001,16 +1138,12 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
                 </button>
               )}
               <div className={`flex items-center gap-1.5 bg-white px-2.5 rounded-lg border border-slate-200 shadow-sm h-7 box-border ${orgMenuOpen ? 'relative z-[90]' : ''}`}>
-                <span className="text-[10px] font-black text-slate-400 uppercase leading-none">조직</span>
+                <span className="text-[10px] font-medium text-slate-400 uppercase leading-none">조직</span>
                 <div className="relative inline-flex items-center" ref={orgMenuRef}>
                   <button
                     type="button"
                     onClick={() => setOrgMenuOpen((open) => !open)}
-                    className={`max-w-[160px] truncate text-left text-[11px] leading-none py-0 px-0 m-0 h-4 inline-flex items-center border-0 appearance-none outline-none cursor-pointer bg-transparent ${
-                      selectedOrgUnit && isBoldOrgType(selectedOrgUnit.unit_type)
-                        ? 'font-black text-slate-900'
-                        : 'font-bold text-slate-800'
-                    }`}
+                    className="max-w-[160px] truncate text-left text-[11px] font-medium leading-none py-0 px-0 m-0 h-4 inline-flex items-center border-0 appearance-none outline-none cursor-pointer bg-transparent text-slate-800"
                   >
                     {selectedOrgUnit?.unit_name || organizationUnit?.unit_name || '조직 선택'}
                   </button>
@@ -1029,8 +1162,8 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
                               setSelectedDept(String(o.unit_name || ''));
                               setOrgMenuOpen(false);
                             }}
-                            className={`w-full text-left pr-3 py-1.5 text-[11px] ${
-                              bold ? 'font-black text-slate-900' : 'font-medium text-slate-600'
+                            className={`w-full text-left pr-3 py-1.5 text-[11px] font-medium ${
+                              bold ? 'text-slate-900' : 'text-slate-600'
                             } ${active ? 'bg-slate-100' : 'hover:bg-slate-50'}`}
                             style={{ paddingLeft: `${12 + o.depth * 12}px` }}
                           >
@@ -1044,11 +1177,11 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
 
                 <div className="w-px h-3 bg-slate-300 shrink-0" />
 
-                <span className="text-[10px] font-black text-slate-400 uppercase leading-none">연도</span>
+                <span className="text-[10px] font-medium text-slate-400 uppercase leading-none">연도</span>
                 <select
                   value={selectedYear}
                   onChange={(e) => setSelectedYear(e.target.value)}
-                  className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent h-4 leading-none py-0"
+                  className="text-[11px] font-medium text-slate-800 outline-none cursor-pointer bg-transparent h-4 leading-none py-0"
                 >
                   <option value="ALL">전체</option>
                   {availableYears.map((year) => (
@@ -1058,11 +1191,11 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
 
                 <div className="w-px h-3 bg-slate-300 shrink-0" />
 
-                <span className="text-[10px] font-black text-slate-400 uppercase leading-none">월별</span>
+                <span className="text-[10px] font-medium text-slate-400 uppercase leading-none">월별</span>
                 <select
                   value={selectedMonth}
                   onChange={(e) => setSelectedMonth(e.target.value)}
-                  className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent h-4 leading-none py-0"
+                  className="text-[11px] font-medium text-slate-800 outline-none cursor-pointer bg-transparent h-4 leading-none py-0"
                 >
                   <option value="ALL">전체</option>
                   {availableMonths.map((month) => (
@@ -1073,11 +1206,11 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
 
               <div className="flex items-center gap-2">
                 <div className="flex items-center gap-1.5 bg-white px-2.5 rounded-lg border border-slate-200 shadow-sm h-7 box-border">
-                  <span className="text-[10px] font-black text-slate-400 uppercase leading-none">물품</span>
+                  <span className="text-[10px] font-medium text-slate-400 uppercase leading-none">물품</span>
                   <select
                     value={selectedItem}
                     onChange={(e) => setSelectedItem(e.target.value)}
-                    className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent max-w-[160px] h-4 leading-none py-0"
+                    className="text-[11px] font-medium text-slate-800 outline-none cursor-pointer bg-transparent max-w-[160px] h-4 leading-none py-0"
                   >
                     <option value="ALL">전체 물품</option>
                     {availableItems.map((name) => (
@@ -1092,7 +1225,7 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
                     placeholder="신청자 검색..."
                     value={searchUserQuery}
                     onChange={(e) => setSearchUserQuery(e.target.value)}
-                    className="w-full h-7 box-border pl-7 pr-3 py-0 bg-white border border-slate-200 rounded-lg text-[11px] font-bold outline-none focus:border-indigo-500 shadow-sm transition-colors"
+                    className="w-full h-7 box-border pl-7 pr-3 py-0 bg-white border border-slate-200 rounded-lg text-[11px] font-medium outline-none focus:border-indigo-500 shadow-sm transition-colors placeholder:font-medium"
                   />
                 </div>
               </div>
@@ -1100,7 +1233,7 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
               <button
                 type="button"
                 onClick={handleExportExcel}
-                className="h-7 px-3 bg-emerald-600 text-white rounded-lg text-[10px] font-black shadow-sm hover:bg-emerald-700 transition-all whitespace-nowrap leading-none"
+                className="h-7 px-3 bg-emerald-600 text-white rounded-lg text-[10px] font-medium shadow-sm hover:bg-emerald-700 transition-all whitespace-nowrap leading-none"
               >
                 {selectedIds.size > 0
                   ? `선택 EXCEL 다운로드(${selectedIds.size})`
@@ -1110,20 +1243,26 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
           </div>
      
           <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse table-fixed min-w-[1300px]">
+            <table
+              className={`w-full text-left border-collapse table-fixed ${
+                activeFolder === 'COMPLETED' ? 'min-w-[1080px]' : 'min-w-[920px]'
+              }`}
+            >
             <colgroup>
               <col className="w-[40px]" />
               <col className="w-[48px]" />
               <col className="w-[90px]" />
               <col className="w-[120px]" />
-              <col className="w-[180px]" />
-              <col className="w-[100px]" />
-              <col className="w-[180px]" />
-              <col className="w-[180px]" />
-              <col className="w-[110px]" />
-              <col className="w-[90px]" />
-              <col className="w-[64px]" />
-              <col className="w-[168px]" />
+              <col className="w-[150px]" />
+              <col className="w-[88px]" />
+              <col className={activeFolder === 'COMPLETED' ? 'w-[280px]' : 'w-[300px]'} />
+              {activeFolder === 'COMPLETED' && (
+                <>
+                  <col className="w-[110px]" />
+                  <col className="w-[88px]" />
+                </>
+              )}
+              <col className="w-[130px]" />
             </colgroup>
               <thead className="bg-slate-100 text-slate-700 text-[10px] font-black uppercase tracking-widest border-b border-slate-200">
                 <tr>
@@ -1131,19 +1270,30 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
                   <th className="h-12 px-2 text-center">NO</th>
                   <th className="h-12 px-2 text-center whitespace-nowrap">신청 일자</th>
                   <th className="h-12 px-2 text-left">부서 / 신청자</th>
-                  <th className="h-12 px-2 text-left text-indigo-600">물품명</th>
-                  <th className="h-12 px-2 text-center text-indigo-600 whitespace-nowrap">신청수량</th>
-                  <th className="h-12 px-2 text-left">사용자 의견</th>
-                  <th className="h-12 px-2 text-left border-l border-slate-200">관리자 답변</th>
-                  <th className="h-12 px-2 text-left whitespace-nowrap">부서 / 처리자</th>
-                  <th className="h-12 px-2 text-center whitespace-nowrap">처리 일자</th>
-                  <th className="h-12 px-2 text-center">상태</th>
-                  <th className="h-12 px-2 text-center whitespace-nowrap border-l border-slate-200">관리액션(Edit)</th>
+                  <th className="h-12 px-2 text-left">물품명</th>
+                  <th className="h-12 px-2 text-center whitespace-nowrap">신청수량</th>
+                  <th className="h-12 px-2 text-left">신청자 특이요청 사항</th>
+                  {activeFolder === 'COMPLETED' && (
+                    <>
+                      <th className="h-12 px-2 text-left whitespace-nowrap border-l border-slate-200">부서 / 처리자</th>
+                      <th className="h-12 px-2 text-center whitespace-nowrap">처리 일자</th>
+                    </>
+                  )}
+                  <th className="h-12 px-2 text-center whitespace-nowrap border-l border-slate-200">
+                    {activeFolder === 'COMPLETED' ? '상태' : '관리액션(Edit)'}
+                  </th>
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-slate-100 text-[11px] font-bold text-slate-700">
                 {paginatedRequests.length === 0 ? (
-                  <tr><td colSpan={12} className="p-16 text-center text-slate-400 text-xs">조건에 맞는 내역이 없습니다.</td></tr>
+                  <tr>
+                    <td
+                      colSpan={activeFolder === 'COMPLETED' ? 10 : 8}
+                      className="p-16 text-center text-slate-400 text-xs"
+                    >
+                      조건에 맞는 내역이 없습니다.
+                    </td>
+                  </tr>
                 ) : paginatedRequests.map((req, i) => {
                   const isPending = isPendingSupplyRequest(req.status);
                   const isReady = isReadySupplyRequest(req.status);
@@ -1158,88 +1308,69 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
                   const createdDate = getKSTDateString(req.createdAt) || '-';
                   const rowNo = filteredRequests.length - ((currentPage - 1) * itemsPerPage + i);
      
+                  const isSelected = selectedIds.has(req.id);
+
                   return (
-                    <tr key={req.id} className={`hover:bg-slate-50/50 h-12 transition-colors ${selectedIds.has(req.id) ? 'bg-indigo-50/50' : ''}`}>
-                      <td className="pl-4 text-center"><input type="checkbox" checked={selectedIds.has(req.id)} onChange={() => { const next = new Set(selectedIds); selectedIds.has(req.id) ? next.delete(req.id) : next.add(req.id); setSelectedIds(next); }} className="w-3 h-3 accent-indigo-600 cursor-pointer" /></td>
-                      <td className="px-2 text-center font-mono text-slate-500 tabular-nums">{rowNo}</td>
-                      <td className="px-2 text-center whitespace-nowrap tabular-nums text-slate-800">{createdDate}</td>
+                    <tr
+                      key={req.id}
+                      className={`h-12 transition-colors ${
+                        isRejected
+                          ? isSelected
+                            ? 'bg-slate-200/80 text-red-500 [&_td]:text-red-500 [&_td]:line-through'
+                            : 'bg-slate-100/80 text-red-500 hover:bg-slate-100 [&_td]:text-red-500 [&_td]:line-through'
+                          : isSelected
+                            ? 'bg-indigo-50/50 hover:bg-slate-50/50'
+                            : 'hover:bg-slate-50/50'
+                      }`}
+                    >
+                      <td className="pl-4 text-center !no-underline" style={isRejected ? { textDecoration: 'none' } : undefined}>
+                        <input type="checkbox" checked={isSelected} onChange={() => { const next = new Set(selectedIds); isSelected ? next.delete(req.id) : next.add(req.id); setSelectedIds(next); }} className="w-3 h-3 accent-indigo-600 cursor-pointer" />
+                      </td>
+                      <td className="px-2 text-center font-mono tabular-nums !text-slate-500 !no-underline" style={isRejected ? { textDecoration: 'none' } : undefined}>{rowNo}</td>
+                      <td className={`px-2 text-center whitespace-nowrap tabular-nums ${isRejected ? '' : 'text-slate-800'}`}>{createdDate}</td>
                       <td className="px-2 text-left truncate">
-                        <span className="text-[10px] text-slate-500 block truncate">{req.dept_name || '-'}</span>
-                        <span className="text-slate-800 truncate">{req.user_name || '-'}</span>
+                        <span className={`text-[10px] block truncate ${isRejected ? '' : 'text-slate-500'}`}>{req.dept_name || '-'}</span>
+                        <span className={`truncate ${isRejected ? '' : 'text-slate-800'}`}>{req.user_name || '-'}</span>
                       </td>
-                      <td className="px-2 text-left text-indigo-700 truncate" title={itemName}>{itemName}</td>
-                      <td className="px-2 text-center font-mono whitespace-nowrap tabular-nums text-indigo-600">
+                      <td className={`px-2 text-left truncate ${isRejected ? '' : 'text-slate-800'}`} title={itemName}>{itemName}</td>
+                      <td className={`px-2 text-center font-mono whitespace-nowrap tabular-nums ${isRejected ? '' : 'text-slate-800'}`}>
                         {req.qty}
-                        <span className="text-[10px] font-sans ml-0.5 text-slate-500">{sUnit}</span>
+                        <span className={`text-[10px] font-sans ml-0.5 ${isRejected ? '' : 'text-slate-500'}`}>{sUnit}</span>
                       </td>
-                      <td className="px-2 text-left text-slate-700 truncate" title={req.note}>{req.note ? `"${req.note}"` : '-'}</td>
-                      <td className="px-2 text-left border-l border-slate-200">
-                        {isPending ? (
-                          <input 
-                            placeholder="답변..." 
-                            value={processOpinion[req.id] || ''} 
-                            onChange={(e)=>setProcessOpinion({...processOpinion, [req.id]: e.target.value})} 
-                            className="w-full min-w-0 p-1.5 border border-slate-300 rounded-md text-[10px] font-bold text-slate-700 outline-none focus:border-indigo-500 shadow-inner bg-white" 
-                          />
-                        ) : (
-                          <span className="text-slate-700 truncate block w-full" title={req.admin_opinion}>
-                            {req.admin_opinion ? `" ${req.admin_opinion} "` : '-'}
-                          </span>
-                        )}
-                      </td>
+                      <td className={`px-2 text-left truncate ${isRejected ? '' : 'text-slate-700'}`} title={req.note}>{req.note ? `"${req.note}"` : '-'}</td>
+                      {activeFolder === 'COMPLETED' && (
+                        <>
+                          <td className="px-2 text-left border-l border-slate-200">
+                            <div className="truncate">
+                              <span className={`text-[10px] block truncate ${isRejected ? '' : 'text-slate-500'}`}>{req.admin_dept || '-'}</span>
+                              <span className={`truncate ${isRejected ? '' : 'text-slate-800'}`}>{req.admin_name || '관리자'}</span>
+                            </div>
+                          </td>
+                          <td className={`px-2 text-center whitespace-nowrap tabular-nums ${isRejected ? '' : 'text-slate-800'}`}>
+                            {processDate}
+                          </td>
+                        </>
+                      )}
      
-                      <td className="px-2 text-left">
-                        {!isPending ? (
-                          <div className="truncate">
-                            <span className="text-[10px] text-slate-500 block truncate">{req.admin_dept || '-'}</span>
-                            <span className="text-slate-800 truncate">{req.admin_name || '관리자'}</span>
-                          </div>
-                        ) : (
-                          <span className="text-slate-300">-</span>
-                        )}
-                      </td>
-
-                      <td className="px-2 text-center whitespace-nowrap tabular-nums text-slate-800">
-                        {!isPending ? processDate : <span className="text-slate-300">-</span>}
-                      </td>
-
-                      <td className="px-2 text-center">
-                        <span
-                          className={`text-[10px] font-bold whitespace-nowrap ${
-                            isPending
-                              ? 'text-orange-600'
-                              : isReady
-                                ? 'text-sky-700'
-                                : isCancelled
-                                  ? 'text-slate-500'
-                                  : isRejected
-                                    ? 'text-red-600'
-                                    : 'text-emerald-600'
-                          }`}
-                        >
-                          {statusLabel}
-                        </span>
-                      </td>
-     
-                      <td className="px-1 text-center border-l border-slate-200">
+                      <td className="px-1 text-center border-l border-slate-200 !no-underline" style={isRejected ? { textDecoration: 'none' } : undefined}>
                         {isPending ? (
                           <div className="inline-flex items-center justify-center gap-0.5 whitespace-nowrap">
                             <button
                               type="button"
-                              onClick={() => handleProcessRequest(req, 'REJECTED')}
-                              title={canEdit ? '반려' : '편집 권한 필요'}
+                              onClick={() => openCancelModal(req)}
+                              title={canEdit ? '취소 (사유 선택)' : '편집 권한 필요'}
                               className={
                                 canEdit
                                   ? 'inline-block border px-1.5 py-0.5 rounded text-[10px] font-bold whitespace-nowrap bg-red-50 text-red-500 border-red-100 hover:bg-red-500 hover:text-white transition-colors shadow-sm'
                                   : 'inline-block border px-1.5 py-0.5 rounded text-[10px] font-bold whitespace-nowrap bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed opacity-70'
                               }
                             >
-                              반려
+                              취소
                             </button>
                             <button
                               type="button"
-                              onClick={() => handleProcessRequest(req, 'READY')}
-                              title={canEdit ? '지급승인 → 수령대기' : '편집 권한 필요'}
+                              onClick={() => handleProcessRequest(req, 'COMPLETED')}
+                              title={canEdit ? '지급승인 → 지급완료' : '편집 권한 필요'}
                               className={
                                 canEdit
                                   ? 'inline-block border px-1.5 py-0.5 rounded text-[10px] font-bold whitespace-nowrap bg-indigo-600 text-white border-indigo-700 shadow-sm hover:bg-indigo-700'
@@ -1253,8 +1384,20 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
                           <div className="inline-flex items-center justify-center gap-0.5 whitespace-nowrap">
                             <button
                               type="button"
+                              onClick={() => openCancelModal(req)}
+                              title={canEdit ? '취소 (사유 선택)' : '편집 권한 필요'}
+                              className={
+                                canEdit
+                                  ? 'inline-block border px-1.5 py-0.5 rounded text-[10px] font-bold whitespace-nowrap bg-red-50 text-red-500 border-red-100 hover:bg-red-500 hover:text-white transition-colors shadow-sm'
+                                  : 'inline-block border px-1.5 py-0.5 rounded text-[10px] font-bold whitespace-nowrap bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed opacity-70'
+                              }
+                            >
+                              취소
+                            </button>
+                            <button
+                              type="button"
                               onClick={() => handleProcessRequest(req, 'COMPLETED')}
-                              title={canEdit ? '지급완료' : '편집 권한 필요'}
+                              title={canEdit ? '지급완료 (레거시 READY 잔여)' : '편집 권한 필요'}
                               className={
                                 canEdit
                                   ? 'inline-block border px-1.5 py-0.5 rounded text-[10px] font-bold whitespace-nowrap bg-emerald-600 text-white border-emerald-700 shadow-sm hover:bg-emerald-700'
@@ -1264,8 +1407,32 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
                               지급완료
                             </button>
                           </div>
+                        ) : isRejected ? (
+                          <span
+                            className="inline-flex flex-col items-center leading-tight"
+                            title={req.admin_opinion || ''}
+                          >
+                            <span className="text-[10px] font-medium tracking-normal whitespace-nowrap text-red-600">
+                              취소
+                            </span>
+                            {req.admin_opinion ? (
+                              <span className="text-[9px] font-medium text-red-400 truncate max-w-[88px] mt-0.5">
+                                {req.admin_opinion}
+                              </span>
+                            ) : null}
+                          </span>
                         ) : (
-                          <span className="text-[10px] font-bold text-slate-500 whitespace-nowrap">처리완료</span>
+                          <span
+                            className={`text-[10px] font-bold whitespace-nowrap ${
+                              isCancelled
+                                ? 'text-slate-500'
+                                : isCompleted
+                                  ? 'text-emerald-600'
+                                  : 'text-slate-500'
+                            }`}
+                          >
+                            {isCompleted ? '지급완료' : statusLabel}
+                          </span>
                         )}
                       </td>
      
@@ -1285,6 +1452,67 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
           )}
         </section>
       </div>
+
+      {cancelTarget && (
+        <div
+          className="fixed inset-0 z-[500] flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-[1px]"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="bg-white w-full max-w-md rounded-2xl shadow-2xl border border-red-100 overflow-hidden">
+            <div className="px-5 py-4 border-b border-red-100 bg-red-50/70">
+              <h3 className="text-sm font-semibold text-red-800">취소 사유 선택</h3>
+              <p className="text-[11px] font-normal text-red-600/80 mt-0.5">
+                센터 소모품 현황에 취소로 표시되며, 선차감 재고가 복구됩니다.
+              </p>
+            </div>
+            <div className="p-5 space-y-3">
+              <div className="rounded-xl bg-slate-50 border border-slate-100 px-3 py-2 text-[11px] font-medium text-slate-600">
+                <p className="truncate">
+                  {cancelTarget.item_name || cancelTarget.item?.name || '(삭제된 물품)'} · {cancelTarget.qty}
+                  건
+                </p>
+                <p className="truncate text-slate-400 mt-0.5">
+                  {cancelTarget.dept_name || '-'} / {cancelTarget.user_name || '-'}
+                </p>
+              </div>
+              <select
+                value={cancelReason}
+                onChange={(e) => setCancelReason(e.target.value)}
+                autoFocus
+                className="w-full h-10 rounded-xl border border-slate-200 px-3 text-sm font-medium text-slate-700 bg-white outline-none focus:ring-2 focus:ring-red-200 focus:border-red-300"
+              >
+                <option value="">사유 선택</option>
+                {CANCEL_REASON_OPTIONS.map((opt) => (
+                  <option key={opt} value={opt}>
+                    {opt}
+                  </option>
+                ))}
+              </select>
+              <div className="flex gap-2 justify-end pt-1">
+                <button
+                  type="button"
+                  disabled={processingId === cancelTarget.id}
+                  onClick={() => {
+                    setCancelTarget(null);
+                    setCancelReason('');
+                  }}
+                  className="px-3.5 py-2 rounded-xl text-[11px] font-medium bg-white border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:opacity-40"
+                >
+                  닫기
+                </button>
+                <button
+                  type="button"
+                  disabled={processingId === cancelTarget.id || !cancelReason.trim()}
+                  onClick={() => submitCancelWithReason()}
+                  className="px-3.5 py-2 rounded-xl text-[11px] font-medium bg-red-600 text-white hover:bg-red-700 disabled:opacity-40"
+                >
+                  취소 확정
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

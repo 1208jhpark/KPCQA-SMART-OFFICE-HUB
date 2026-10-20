@@ -2,9 +2,9 @@
 
 export const SUPPLY_REQUEST_STATUS = {
   PENDING: 'PENDING',
-  /** 지급승인 후 · 사용자 수령 대기 */
+  /** @deprecated 지급대기 단계 폐지 — 잔여건만 마스터에서 지급완료/반려 */
   READY: 'READY',
-  /** 지급완료(최종) */
+  /** 지급완료(최종) — 마스터 지급승인 */
   COMPLETED: 'COMPLETED',
   REJECTED: 'REJECTED',
   CANCELLED: 'CANCELLED',
@@ -23,17 +23,19 @@ const KO_TO_EN: Record<string, SupplyRequestStatus> = {
   지급승인: 'READY',
   지급완료: 'COMPLETED',
   수령완료: 'COMPLETED', // 레거시·부서 표기
-  반려: 'REJECTED',
-  취소: 'CANCELLED',
+  반려: 'REJECTED', // 레거시 표기
+  취소: 'REJECTED', // 마스터 취소 처리 (마케팅 취소와 동일 계열)
   신청취소: 'CANCELLED',
 };
 
 const EN_LABEL: Record<SupplyRequestStatus, string> = {
   PENDING: '접수대기',
-  READY: '지급대기',
+  /** 레거시 잔여건 — UI는 접수대기로 통일 */
+  READY: '접수대기',
   COMPLETED: '지급완료',
-  REJECTED: '반려',
-  CANCELLED: '취소',
+  /** 마스터 취소 처리 — 마케팅 기념품「취소」표기와 동일 */
+  REJECTED: '취소',
+  CANCELLED: '신청취소',
 };
 
 /** 알람·대기건수 집계용 (영문 + 구 한글) */
@@ -68,14 +70,21 @@ export function supplyRequestStatusLabel(raw: unknown): string {
   return en ? EN_LABEL[en] : '-';
 }
 
-/** 부서(신청자) 화면용 — PENDING→대기중, READY→수령대기, COMPLETED→수령완료 */
+/** 부서(신청자) 화면용 — PENDING·READY→지급대기, REJECTED→취소(+사유는 admin_opinion) */
 export function supplyRequestStatusLabelDept(raw: unknown): string {
   const en = normalizeSupplyRequestStatus(raw);
   if (!en) return '-';
-  if (en === 'PENDING') return '대기중';
-  if (en === 'READY') return '수령대기';
-  if (en === 'COMPLETED') return '수령완료';
+  if (en === 'PENDING' || en === 'READY') return '지급대기';
+  if (en === 'COMPLETED') return '지급완료';
+  if (en === 'REJECTED') return '취소';
+  if (en === 'CANCELLED') return '신청취소';
   return EN_LABEL[en];
+}
+
+/** 부서 화면: 마스터 처리 전(PENDING) + 과거 READY 잔여 = 지급대기 */
+export function isWaitingSupplyRequest(raw: unknown) {
+  const en = normalizeSupplyRequestStatus(raw);
+  return en === 'PENDING' || en === 'READY';
 }
 
 export function isSupplyRequestStatus(
@@ -119,12 +128,12 @@ export function isStockOutSupplyRequest(raw: unknown) {
 
 /**
  * 마스터 신청 대장 PATCH 허용 전이
- * PENDING → READY | COMPLETED | REJECTED
- * READY → COMPLETED | REJECTED
+ * PENDING → COMPLETED | REJECTED  (지급승인 = 즉시 지급완료)
+ * READY → COMPLETED | REJECTED    (과거 지급대기 잔여건 정리용)
  * COMPLETED / REJECTED / CANCELLED → 불가 (CANCELLED는 부서 신청취소 전용)
  */
 const MASTER_ALLOWED_TRANSITIONS: Record<SupplyRequestStatus, SupplyRequestStatus[]> = {
-  PENDING: ['READY', 'COMPLETED', 'REJECTED'],
+  PENDING: ['COMPLETED', 'REJECTED'],
   READY: ['COMPLETED', 'REJECTED'],
   COMPLETED: [],
   REJECTED: [],

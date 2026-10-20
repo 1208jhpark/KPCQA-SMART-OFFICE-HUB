@@ -8,7 +8,12 @@ import {
   DEFAULT_USER_DUTY_OPTIONS,
   DEFAULT_USER_GRADE_OPTIONS,
   compareUsersByDutyGrade,
-  normalizeUserJobOptions,
+  findJobOptionRenames,
+  matchJobOptionForStored,
+  normalizeDutyCode,
+  normalizeGradeCode,
+  normalizeUserDutyOptions,
+  normalizeUserGradeOptions,
   resolveUserDutyOptions,
   resolveUserGradeOptions,
   type UserJobOption,
@@ -18,6 +23,7 @@ const USER_UPDATE_WHITELIST = [
   'name',
   'name_en',
   'employee_no',
+  'extension',
   'unit_id',
   'duty',
   'duty_en',
@@ -111,6 +117,101 @@ async function writeJobOptions(duties: UserJobOption[], grades: UserJobOption[])
   );
 }
 
+/** 시드 코드가 빠졌으면 기본값으로 보강 (한글·영문은 요청값이 있으면 유지) */
+function ensureSeedJobOptions(
+  list: UserJobOption[],
+  seeds: UserJobOption[],
+  normalizeCode: (c: unknown) => string
+): UserJobOption[] {
+  const byCode = new Map(
+    list
+      .filter((o) => o.code)
+      .map((o) => [normalizeCode(o.code), o] as const)
+  );
+  const merged: UserJobOption[] = [];
+  for (const seed of seeds) {
+    const code = normalizeCode(seed.code);
+    const hit = byCode.get(code);
+    if (hit) {
+      merged.push({ ...hit, code: seed.code });
+      byCode.delete(code);
+    } else {
+      merged.push({ ...seed });
+    }
+  }
+  for (const o of list) {
+    const code = normalizeCode(o.code);
+    if (code && byCode.has(code)) {
+      merged.push(o);
+      byCode.delete(code);
+    } else if (!code) {
+      merged.push(o);
+    }
+  }
+  return merged;
+}
+
+/**
+ * 옵션 한글/영문 변경 → 기존 사용자 duty·grade 동기화
+ * 1) 이전 옵션→새 옵션 rename (코드·영문 매칭)
+ * 2) 이미 어긋난 사용자: 레거시 한글·영문·코드로 현재 옵션에 재매핑
+ */
+async function syncUsersToJobOptions(
+  prev: { duties: UserJobOption[]; grades: UserJobOption[] },
+  nextDuties: UserJobOption[],
+  nextGrades: UserJobOption[]
+): Promise<{ dutyUpdated: number; gradeUpdated: number }> {
+  let dutyUpdated = 0;
+  let gradeUpdated = 0;
+
+  for (const r of findJobOptionRenames(prev.duties, nextDuties, 'duty')) {
+    const res = await prisma.user.updateMany({
+      where: { duty: r.fromLabel },
+      data: { duty: r.toLabel, duty_en: r.toEn },
+    });
+    dutyUpdated += res.count;
+  }
+  for (const r of findJobOptionRenames(prev.grades, nextGrades, 'grade')) {
+    const res = await prisma.user.updateMany({
+      where: { grade: r.fromLabel },
+      data: { grade: r.toLabel, grade_en: r.toEn },
+    });
+    gradeUpdated += res.count;
+  }
+
+  const users = await prisma.user.findMany({
+    where: {
+      OR: [
+        { duty: { not: '' } },
+        { grade: { not: '' } },
+        { duty_en: { not: '' } },
+        { grade_en: { not: '' } },
+      ],
+    },
+    select: { id: true, duty: true, duty_en: true, grade: true, grade_en: true },
+  });
+
+  for (const u of users) {
+    const data: { duty?: string; duty_en?: string; grade?: string; grade_en?: string } = {};
+    const dutyOpt = matchJobOptionForStored(u.duty, u.duty_en, nextDuties, 'duty');
+    if (dutyOpt && (u.duty !== dutyOpt.label || (u.duty_en || '') !== (dutyOpt.value || ''))) {
+      data.duty = dutyOpt.label;
+      data.duty_en = dutyOpt.value || '';
+    }
+    const gradeOpt = matchJobOptionForStored(u.grade, u.grade_en, nextGrades, 'grade');
+    if (gradeOpt && (u.grade !== gradeOpt.label || (u.grade_en || '') !== (gradeOpt.value || ''))) {
+      data.grade = gradeOpt.label;
+      data.grade_en = gradeOpt.value || '';
+    }
+    if (Object.keys(data).length === 0) continue;
+    await prisma.user.update({ where: { id: u.id }, data });
+    if (data.duty !== undefined) dutyUpdated += 1;
+    if (data.grade !== undefined) gradeUpdated += 1;
+  }
+
+  return { dutyUpdated, gradeUpdated };
+}
+
 // ==========================================
 // [GET] 전체 사용자 목록 + 직책/직급 옵션
 // ==========================================
@@ -162,6 +263,7 @@ export async function POST(req: Request) {
     const name = String(body.name ?? '').trim();
     const name_en = String(body.name_en ?? '').trim();
     const employee_no = String(body.employee_no ?? '').trim();
+    const extension = String(body.extension ?? '').trim();
     const email = resolveCompanyEmail(body.email ?? body.emailLocal);
     const unit_id = body.unit_id ? String(body.unit_id) : null;
     const duty = String(body.duty ?? '').trim();
@@ -223,6 +325,7 @@ export async function POST(req: Request) {
         name,
         name_en,
         employee_no,
+        extension,
         password: hashed,
         roles: [role],
         status,
@@ -264,26 +367,52 @@ export async function PATCH(req: Request) {
 
     // 직책·직급 옵션 저장 (/admin/users 전용)
     if (action === 'saveJobOptions') {
-      const duties = normalizeUserJobOptions(body.duties);
-      const grades = normalizeUserJobOptions(body.grades);
+      const duties = normalizeUserDutyOptions(body.duties);
+      const grades = normalizeUserGradeOptions(body.grades);
       if (duties.length === 0 && grades.length === 0) {
         return NextResponse.json({ message: '직책/직급 옵션이 비어 있습니다.' }, { status: 400 });
       }
-      await writeJobOptions(
+      const nextDuties = ensureSeedJobOptions(
         duties.length > 0 ? duties : [...DEFAULT_USER_DUTY_OPTIONS],
-        grades.length > 0 ? grades : [...DEFAULT_USER_GRADE_OPTIONS]
+        DEFAULT_USER_DUTY_OPTIONS,
+        normalizeDutyCode
       );
+      const nextGrades = ensureSeedJobOptions(
+        grades.length > 0 ? grades : [...DEFAULT_USER_GRADE_OPTIONS],
+        DEFAULT_USER_GRADE_OPTIONS,
+        normalizeGradeCode
+      );
+      const prev = await readJobOptions();
+      const synced = await syncUsersToJobOptions(prev, nextDuties, nextGrades);
+      await writeJobOptions(nextDuties, nextGrades);
       const saved = await readJobOptions();
-      return NextResponse.json({ message: '직책·직급 옵션이 저장되었습니다.', ...saved });
+      const syncNote =
+        synced.dutyUpdated + synced.gradeUpdated > 0
+          ? ` (사용자 직책 ${synced.dutyUpdated}명·직급 ${synced.gradeUpdated}명 동기화)`
+          : '';
+      return NextResponse.json({
+        message: `직책·직급 옵션이 저장되었습니다.${syncNote}`,
+        ...saved,
+        synced,
+      });
     }
 
     // 시드 기본값으로 복구
     if (action === 'restoreJobOptions') {
-      await writeJobOptions([...DEFAULT_USER_DUTY_OPTIONS], [...DEFAULT_USER_GRADE_OPTIONS]);
+      const prev = await readJobOptions();
+      const nextDuties = [...DEFAULT_USER_DUTY_OPTIONS];
+      const nextGrades = [...DEFAULT_USER_GRADE_OPTIONS];
+      const synced = await syncUsersToJobOptions(prev, nextDuties, nextGrades);
+      await writeJobOptions(nextDuties, nextGrades);
       const saved = await readJobOptions();
+      const syncNote =
+        synced.dutyUpdated + synced.gradeUpdated > 0
+          ? ` (사용자 직책 ${synced.dutyUpdated}명·직급 ${synced.gradeUpdated}명 동기화)`
+          : '';
       return NextResponse.json({
-        message: '시드 기본 직책·직급 옵션으로 복구했습니다.',
+        message: `시드 기본 직책·직급 옵션으로 복구했습니다.${syncNote}`,
         ...saved,
+        synced,
       });
     }
 
@@ -343,6 +472,10 @@ export async function PATCH(req: Request) {
         }
         throw e;
       }
+    }
+
+    if (typeof updateData.extension === 'string') {
+      updateData.extension = updateData.extension.trim();
     }
 
     if (Object.keys(updateData).length === 0) {

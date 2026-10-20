@@ -33,7 +33,7 @@ function VerifyContent() {
     (async () => {
       try {
         const res = await fetch(
-          `/api/asset/it?code=${encodeURIComponent(assetCode)}&t=${Date.now()}`,
+          `/api/equipment/it?code=${encodeURIComponent(assetCode)}&t=${Date.now()}`,
           { cache: 'no-store' }
         );
         if (!res.ok) {

@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { formatBusinessCardEnNumber, stripBusinessCardEnPlus } from '@/lib/businesscard-phone';
 import { formatCompanyAddressKo } from '@/lib/businesscard-seed-addresses';
+import { formatKrPhoneInput } from '@/lib/format-kr-phone';
 
 interface UnitItem {
   id: string;
@@ -337,10 +338,11 @@ export default function BusinessCardAdminApplyModal({
 
   const handleTextChange = (field: string, value: string) => {
     setForm((prev) => {
-      const updated = { ...prev, [field]: value } as typeof prev;
-      if (field === 'email') updated.emailEn = value;
-      if (field === 'mobile') updated.mobileEn = formatEnNumber('mobile', value);
-      if (field === 'phone') updated.phoneEn = formatEnNumber('phone', value);
+      const nextValue = field === 'mobile' ? formatKrPhoneInput(value) : value;
+      const updated = { ...prev, [field]: nextValue } as typeof prev;
+      if (field === 'email') updated.emailEn = nextValue;
+      if (field === 'mobile') updated.mobileEn = formatEnNumber('mobile', nextValue);
+      if (field === 'phone') updated.phoneEn = formatEnNumber('phone', nextValue);
       return updated;
     });
   };
@@ -601,7 +603,7 @@ export default function BusinessCardAdminApplyModal({
             <div className="grid grid-cols-1 md:grid-cols-4 gap-x-4 gap-y-3">
               <div>
                 <label className="block text-[10px] font-black text-blue-600 mb-1">휴대전화 *</label>
-                <input type="text" required value={form.mobile} onChange={(e) => handleTextChange('mobile', e.target.value)} placeholder="ex. 010-0000-0000" className={manualFieldCls} />
+                <input type="text" required value={form.mobile} onChange={(e) => handleTextChange('mobile', e.target.value)} className={manualFieldCls} />
               </div>
               <div>
                 <label className="block text-[10px] font-black text-blue-600 mb-1">전화번호 (내선) *</label>

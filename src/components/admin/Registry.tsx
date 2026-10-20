@@ -9,12 +9,12 @@ const ModuleLoader = () => <LoadingState />;
   
 // 2. 각 도메인 모듈 dynamic 컴포넌트 레이지 로딩 선언
 // --- [IT 업무자산] ---
-const ITDeptModule = dynamic(() => import('../asset/it/DeptModule').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
-const ITPersonalModule = dynamic(() => import('../asset/it/PersonalModule').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
-const ITMasterDashboardModule = dynamic(() => import('../asset/it/MasterDashboardModule').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
-const ITMasterArchiveModule = dynamic(() => import('../asset/it/MasterArchiveModule').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
-const ITMasterRequestModule = dynamic(() => import('../asset/it/MasterRequestModule').then(m => m.default || m).catch(() => import('../asset/it/MasterRequestModule').then(m => m.default || m)), { loading: ModuleLoader, ssr: false });
-const ITAuditModule = dynamic(() => import('../asset/it/AuditModule').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
+const ITDeptModule = dynamic(() => import('../equipment/it/DeptModule').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
+const ITPersonalModule = dynamic(() => import('../equipment/it/PersonalModule').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
+const ITMasterDashboardModule = dynamic(() => import('../equipment/it/MasterDashboardModule').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
+const ITMasterArchiveModule = dynamic(() => import('../equipment/it/MasterArchiveModule').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
+const ITMasterRequestModule = dynamic(() => import('../equipment/it/MasterRequestModule').then(m => m.default || m).catch(() => import('../equipment/it/MasterRequestModule').then(m => m.default || m)), { loading: ModuleLoader, ssr: false });
+const ITAuditModule = dynamic(() => import('../equipment/it/AuditModule').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
      
 // --- [일반 소모품] ---
 const SuppliesInventoryModule = dynamic(() => import('../asset/supplies/InventoryModule').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
@@ -32,18 +32,20 @@ const BusinessCardArchivePanel = dynamic(() => import('../asset/businesscard/Bus
 
 
 // --- [부서 맞춤 제작물] ---
-const ProductionApplyForm = dynamic(() => import('../asset/production/ProductionApplyForm').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
-const ProductionApplyHistory = dynamic(() => import('../asset/production/ProductionApplyHistory').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
-const DeptOrderPanel = dynamic(() => import('../asset/production/DeptOrderPanel').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
-const DeptInspectionPanel = dynamic(() => import('../asset/production/DeptInspectionPanel').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
-const DeptSettlementPanel = dynamic(() => import('../asset/production/DeptSettlementPanel').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
-const DeptSettledArchive = dynamic(() => import('../asset/production/DeptSettledArchive').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
-const MasterOrderDashboard = dynamic(() => import('../asset/production/MasterOrderDashboard').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
-const MasterSettledArchive = dynamic(() => import('../asset/production/MasterSettledArchive').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
+const ProductionApplyForm = dynamic(() => import('../production/ProductionApplyForm').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
+const ProductionApplyHistory = dynamic(() => import('../production/ProductionApplyHistory').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
+const DeptOrderPanel = dynamic(() => import('../production/DeptOrderPanel').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
+const DeptInspectionPanel = dynamic(() => import('../production/DeptInspectionPanel').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
+const DeptSettlementPanel = dynamic(() => import('../production/DeptSettlementPanel').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
+const DeptSettledArchive = dynamic(() => import('../production/DeptSettledArchive').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
+const MasterOrderDashboard = dynamic(() => import('../production/MasterOrderDashboard').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
+const MasterSettledArchive = dynamic(() => import('../production/MasterSettledArchive').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
+const ProductionClientAddressModule = dynamic(() => import('../production/ProductionClientAddressModule').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
 
 
 // --- [마케팅] ---
 const MarketingDashboard = dynamic(() => import('../../components/marketing/DashboardModule').then(m => m.default || m), { loading: ModuleLoader, ssr: false }); // 👈 절대경로(@/)나 상위 상대경로(../../)로 명확히 지정해 줍니다.
+const ScheduleDashboard = dynamic(() => import('../schedule/ScheduleDashboardModule').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
 const MarketingCatalog = dynamic(() => import('../marketing/CatalogModule').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
 const MarketingClientSearch = dynamic(() => import('../marketing/ClientSearchModule').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
 const MarketingRegister = dynamic(() => import('../marketing/RegisterModule').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
@@ -70,12 +72,12 @@ const EquipmentDashboardModule = dynamic(() => import('../equipment/EquipmentDas
 // 3. 레지스트리 객체 명세 (🚀 스탭3 상위 경로와 하위 스탭4 컴포넌트 간의 고정 결합 원천 제거)
 export const ModuleRegistry: Record<string, React.ComponentType<any>> = {
   // [IT 자산 관리]
-  '/asset/it/dept': ITDeptModule,
-  '/asset/it/personal': ITPersonalModule,
-  '/asset/it/master/audit': ITAuditModule,
-  '/asset/it/master/dashboard': ITMasterDashboardModule,
-  '/asset/it/master/archive': ITMasterArchiveModule,
-  '/asset/it/master/requests': ITMasterRequestModule,
+  '/equipment/it/dept': ITDeptModule,
+  '/equipment/it/personal': ITPersonalModule,
+  '/equipment/it/master/audit': ITAuditModule,
+  '/equipment/it/master/dashboard': ITMasterDashboardModule,
+  '/equipment/it/master/archive': ITMasterArchiveModule,
+  '/equipment/it/master/requests': ITMasterRequestModule,
   
   // [일반 소모품 관리]
   '/asset/supplies/inventory': SuppliesInventoryModule,
@@ -93,15 +95,19 @@ export const ModuleRegistry: Record<string, React.ComponentType<any>> = {
   '/asset/businesscard/master/archive': BusinessCardArchivePanel,
 
   // [부서 맞춤 제작물]
-  '/asset/production/apply/request': ProductionApplyForm,
-  '/asset/production/apply/history': ProductionApplyHistory,
-  '/asset/production/dept-master/order': DeptOrderPanel,
-  '/asset/production/dept-master/inspection': DeptInspectionPanel,
-  '/asset/production/dept-master/settlement': DeptSettlementPanel,
-  '/asset/production/dept-master/archive': DeptSettledArchive,
-  '/asset/production/master/dashboard': MasterOrderDashboard,
-  '/asset/production/master/archive': MasterSettledArchive,
+  '/production/custom/my-orders/request': ProductionApplyForm,
+  '/production/custom/my-orders/history': ProductionApplyHistory,
+  '/production/custom/dept-master/order': DeptOrderPanel,
+  '/production/custom/dept-master/inspection': DeptInspectionPanel,
+  '/production/custom/dept-master/settlement': DeptSettlementPanel,
+  '/production/custom/dept-master/archive': DeptSettledArchive,
+  '/production/custom/admin/dashboard': MasterOrderDashboard,
+  '/production/custom/admin/archive': MasterSettledArchive,
+  '/production/custom/clients': ProductionClientAddressModule,
   
+  // [일정]
+  '/schedule/dashboard': ScheduleDashboard,
+
   // [마케팅]
   '/marketing/dashboard': MarketingDashboard,
   '/marketing/distribution/catalog': MarketingCatalog,

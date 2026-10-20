@@ -105,9 +105,12 @@ export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
     const lite = searchParams.get('lite') === '1';
+    /** 제작물 고객사 주소관리 등 — 보관 구분 없이 전체 */
+    const includeArchived = searchParams.get('includeArchived') === '1';
     const deptStatsClientId = String(searchParams.get('deptStatsClientId') || '').trim();
-    // lite(지급신청)·열람만: 보관함 제외. Edit만 보관 포함
-    const canSeeArchived = !lite && !!auth.permission?.isEditor;
+    // lite·열람만: 보관함 제외. Edit 또는 includeArchived=1 이면 보관 포함
+    const canSeeArchived =
+      includeArchived || (!lite && !!auth.permission?.isEditor);
 
     // ── 펼침: 한 고객사 부서 집계만 ───────────────────────────────
     if (deptStatsClientId) {
@@ -300,7 +303,8 @@ export async function POST(req: Request) {
   }
 
   try {
-    const { name, location, category, zip_code, address_road, address_detail } = await req.json();
+    const { name, location, category, zip_code, address_road, address_detail, note } =
+      await req.json();
     const clientName = normalizeClientName(name);
     if (!clientName) {
       return NextResponse.json({ error: '고객사명은 필수입니다.' }, { status: 400 });
@@ -333,6 +337,7 @@ export async function POST(req: Request) {
         name: clientName,
         ...address,
         category,
+        note: note !== undefined ? String(note || '').trim() || null : null,
         departments: [{ name: '전사', is_hidden: false }],
         is_active: true,
         is_archived: false,
@@ -350,7 +355,9 @@ export async function POST(req: Request) {
 export async function PATCH(req: Request) {
   let auth;
   try {
-    auth = await authorizeMarketingClientsWrite();
+    // 주소·기본정보 수정: 메뉴 접근자 전원 (제작물 고객사 주소관리 Access = 수정 가능)
+    // 부서관리·보관 등 Edit 전용 UI는 마케팅 FE에서 계속 편집자만 노출
+    auth = await authorizeMarketingClientsCreate();
   } catch (e) {
     return authErrorToResponse(e);
   }
@@ -365,6 +372,7 @@ export async function PATCH(req: Request) {
       address_road,
       address_detail,
       category,
+      note,
       departments,
       oldDeptName,
       newDeptName,
@@ -440,6 +448,7 @@ export async function PATCH(req: Request) {
       Object.assign(data, address);
     }
     if (category !== undefined) data.category = category;
+    if (note !== undefined) data.note = String(note || '').trim() || null;
     if (departments !== undefined) {
       const dupDept = findDuplicateDeptName(departments);
       if (dupDept) {
@@ -505,13 +514,13 @@ export async function PATCH(req: Request) {
 }
 
 /**
- * 영구 삭제 (지급 이력 있으면 거부).
- * 허용: LV_1만. 보관은 PATCH is_archived
+ * 삭제 (지급 이력 있으면 거부).
+ * 허용: Edit 권한 (제작물 고객사 주소관리 · 마케팅 client-search)
  */
 export async function DELETE(req: Request) {
   let auth;
   try {
-    auth = await authorizeMarketingClientsCreate();
+    auth = await authorizeMarketingClientsWrite();
   } catch (e) {
     return authErrorToResponse(e);
   }
@@ -523,21 +532,14 @@ export async function DELETE(req: Request) {
   const existing = await prisma.marketingClient.findUnique({ where: { id } });
   if (!existing) return NextResponse.json({ error: '고객사 미존재' }, { status: 404 });
 
-  if (auth.permission.myRole !== 'LV_1') {
-    return NextResponse.json(
-      { error: '영구 삭제는 최고 관리자(LV_1)만 가능합니다.' },
-      { status: 403 }
-    );
-  }
-
   const distCount = await prisma.marketingDistribution.count({ where: { client_id: id } });
   if (distCount > 0) {
     return NextResponse.json(
-      { error: `지급 이력이 ${distCount}건 있어 영구 삭제할 수 없습니다. 보관 처리만 가능합니다.` },
+      { error: `지급 이력이 ${distCount}건 있어 삭제할 수 없습니다.` },
       { status: 400 }
     );
   }
 
   await prisma.marketingClient.delete({ where: { id } });
-  return NextResponse.json({ message: '영구 삭제 완료' });
+  return NextResponse.json({ message: '삭제 완료' });
 }

@@ -265,12 +265,12 @@ export default function ServiceLayout({ children }: { children: React.ReactNode 
                   key={l2.id} 
                   href={href} 
                   onClick={(e) => !l2.is_active && handleInactiveClick(e, l2.name)}
-                  className={`text-[11px] font-black tracking-tighter transition-all relative py-5 uppercase flex items-center gap-1 whitespace-nowrap ${
+                  className={`soh-gnb-link text-[11px] transition-all relative py-5 uppercase flex items-center gap-1 whitespace-nowrap ${
                     !l2.is_active ? 'opacity-20 cursor-not-allowed text-slate-400' :
                     isActive ? 'text-indigo-400 after:absolute after:bottom-0 after:left-0 after:right-0 after:h-0.5 after:bg-indigo-400' : 'text-slate-400 hover:text-slate-200'
                   }`}
                 >
-                  {l2.name} {!l2.is_active && <span className="px-1.5 py-0.5 bg-red-900/40 text-red-400 rounded text-[8px] font-black leading-none">OFF</span>}
+                  {l2.name} {!l2.is_active && <span className="px-1.5 py-0.5 bg-red-900/40 text-red-400 rounded text-[8px] font-medium leading-none">OFF</span>}
                 </Link>
               );
             })}
@@ -363,7 +363,7 @@ export default function ServiceLayout({ children }: { children: React.ReactNode 
       <div className="flex flex-1 overflow-hidden">
         {!isHomePage && l3Menus.length > 0 && (
           <aside className="w-64 bg-white border-r border-slate-100 flex flex-col p-6 shrink-0 shadow-sm animate-in slide-in-from-left duration-300">
-            <p className="text-[10px] font-black text-slate-300 uppercase px-3 mb-6 tracking-[0.2em]">Section Menu</p>
+            <p className="text-[10px] font-medium text-slate-300 uppercase px-3 mb-6 tracking-[0.2em]">Section Menu</p>
             <nav className="space-y-1.5">
               {l3Menus.map(l3 => {
                 const isActive = pathname.startsWith(l3.path);
@@ -373,16 +373,16 @@ export default function ServiceLayout({ children }: { children: React.ReactNode 
                     key={l3.id} 
                     href={href} 
                     onClick={(e) => !l3.is_active && handleInactiveClick(e, l3.name)}
-                    className={`flex items-center justify-between p-4 rounded-2xl transition-all ${
-                      !l3.is_active ? 'opacity-40 grayscale cursor-not-allowed' :
-                      isActive ? 'bg-slate-900 text-white shadow-xl translate-x-1' : 'text-slate-400 hover:bg-slate-50'
+                    className={`soh-lnb-link flex items-center justify-between p-4 rounded-2xl transition-all ${
+                      !l3.is_active ? 'opacity-40 grayscale cursor-not-allowed soh-lnb-inactive' :
+                      isActive ? 'bg-slate-900 text-white shadow-xl translate-x-1 soh-lnb-active' : 'text-slate-400 hover:bg-slate-50 soh-lnb-inactive'
                     }`}
                   >
                     <div className="flex items-center gap-4">
                       <span className={`text-lg ${isActive ? 'opacity-100' : 'opacity-40'}`}>{l3.icon}</span>
-                      <span className="text-[11px] font-black tracking-tighter uppercase">{l3.name}</span>
+                      <span className="text-[11px] tracking-tight uppercase">{l3.name}</span>
                     </div>
-                    {!l3.is_active && <span className="px-1.5 py-0.5 bg-red-100 text-red-600 rounded text-[8px] font-black">OFF</span>}
+                    {!l3.is_active && <span className="px-1.5 py-0.5 bg-red-100 text-red-600 rounded text-[8px] font-medium">OFF</span>}
                   </Link>
                 );
               })}
@@ -407,7 +407,7 @@ export default function ServiceLayout({ children }: { children: React.ReactNode 
               <div className="pb-4 border-b border-slate-200">
                 <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mb-1">Management Workspace Hub</p>
                 {showIndexTitle && (
-                  <h2 className="text-2xl font-black tracking-tight text-slate-900">{indexTitle}</h2>
+                  <h2 className="soh-step-index-title text-2xl tracking-tight text-slate-900">{indexTitle}</h2>
                 )}
                 {showIndexDesc && indexDescription && (
                   <p className="text-slate-500 text-[11px] font-medium mt-1 whitespace-pre-wrap">{indexDescription}</p>

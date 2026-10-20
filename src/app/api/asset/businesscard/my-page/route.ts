@@ -144,6 +144,13 @@ export async function GET() {
         applicantType: true,
         applicantName: true,
         applicantEmail: true,
+        proofFileName: true,
+        proofMimeType: true,
+        proofFileSize: true,
+        proofUploadedAt: true,
+        proofUploadedBy: true,
+        proofConfirmedAt: true,
+        proofConfirmedBy: true,
       } as any,
     });
 
@@ -152,6 +159,8 @@ export async function GET() {
         ...r,
         applicantType: r.applicantType || '본인',
         applicantName: r.applicantName || null,
+        hasProof: Boolean((r as any).proofFileName),
+        proofConfirmed: Boolean((r as any).proofConfirmedAt),
       })),
       { headers: { 'Cache-Control': 'no-store, max-age=0' } }
     );

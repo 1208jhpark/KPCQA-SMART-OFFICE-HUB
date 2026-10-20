@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
 import prisma from '@/lib/prisma';
 import { parseKSTDateOnly, getKSTYearMonth, getDistBusinessDate } from '@/utils/dateUtils';
-import { resolveTopOrgName, canDistributeMarketingOwnerDept, canApplyViaViewRoles, getChildUnitNames, getChildUnitIds, isGlobalMgmtOrgMember } from '@/utils/orgUnits';
+import { resolveTopOrgName, canApplyMarketingItem, getChildUnitNames, getChildUnitIds, isGlobalMgmtOrgMember } from '@/utils/orgUnits';
+import { resolveDutyCode, resolveUserDutyOptions } from '@/lib/user-job-options';
 import { buildUnitIdOrLegacyNameWhere } from '@/lib/org-unit-match';
 import {
   authorizeMarketingDistributionsRead,
@@ -377,7 +378,6 @@ export async function POST(req: Request) {
 
     if (!itemId) return NextResponse.json({ error: '물품 ID가 필요합니다.' }, { status: 400 });
     if (qty <= 0) return NextResponse.json({ error: '지급 수량은 1 이상이어야 합니다.' }, { status: 400 });
-    if (!body.client_name) return NextResponse.json({ error: '고객사명은 필수입니다.' }, { status: 400 });
 
     const newDist = await prisma.$transaction(async (tx) => {
       const item = await tx.marketingItem.findUnique({ where: { id: itemId } });
@@ -389,20 +389,31 @@ export async function POST(req: Request) {
       const myCenter = auth.user.unit?.unit_name;
       const myHq = (auth.user.unit as any)?.parent?.unit_name as string | undefined;
       const topOrg = resolveTopOrgName(auth.unitsList);
-      const allowed =
-        canDistributeMarketingOwnerDept(item.owner_dept, {
+      const duty = (auth.user as { duty?: string | null }).duty;
+      const dutyOptions = resolveUserDutyOptions(
+        (auth.systemConfig as { user_duty_options?: unknown } | null)?.user_duty_options
+      );
+      const allowed = canApplyMarketingItem(
+        item as {
+          owner_dept?: string | null;
+          owner_unit_id?: string | null;
+          view_role_ids?: unknown;
+          view_allow_apply?: boolean | null;
+        },
+        {
           myUnitName: myCenter,
           myUnitId: auth.user.unit_id || (auth.user.unit as any)?.id,
           myHqName: myHq,
           topOrgName: topOrg,
           units: auth.unitsList,
           isPower,
-          ownerUnitId: (item as { owner_unit_id?: string | null }).owner_unit_id,
-        }) ||
-        canApplyViaViewRoles(
-          item as { view_role_ids?: unknown; view_allow_apply?: boolean | null },
-          auth.user.roles
-        );
+          userRoles: auth.user.roles,
+          userDuty: duty,
+          dutyCode: resolveDutyCode(duty, dutyOptions),
+          dutyOptions,
+          globalMgmtDept: (auth.systemConfig as { global_mgmt_dept?: string } | null)?.global_mgmt_dept,
+        }
+      );
       if (!allowed) throw new Error('FORBIDDEN_DISTRIBUTE');
 
       // 즉시예약·승인대기 모두 신청 시점에 재고 예약(차감) — catalog/register 과신청 방지
@@ -421,12 +432,15 @@ export async function POST(req: Request) {
       const isPending =
         body.requires_approval === true || body.status === 'PENDING';
 
+      const clientName = String(body.client_name || '').trim();
+      const clientDept = String(body.client_dept || '').trim();
+
       const created = await tx.marketingDistribution.create({
         data: {
           item_id: itemId,
           client_id: body.client_id || null,
-          client_name: body.client_name,
-          client_dept: body.client_dept || '전사',
+          client_name: clientName,
+          client_dept: clientDept,
           qty,
           purpose: body.purpose || '',
           // 신원은 서버 세션 기준으로 고정 (클라이언트 spoof 방지)
@@ -439,16 +453,16 @@ export async function POST(req: Request) {
         },
       });
 
-      if (body.client_id && body.client_dept) {
+      if (body.client_id && clientDept) {
         const client = await tx.marketingClient.findUnique({ where: { id: body.client_id } });
         if (client) {
           const currentDepts = Array.isArray(client.departments) ? (client.departments as any[]) : [];
           const existingDeptNames = currentDepts.map((d) => (typeof d === 'string' ? d : d.name));
-          if (!existingDeptNames.includes(body.client_dept)) {
+          if (!existingDeptNames.includes(clientDept)) {
             await tx.marketingClient.update({
               where: { id: body.client_id },
               data: {
-                departments: [...currentDepts, { name: body.client_dept, is_hidden: false }],
+                departments: [...currentDepts, { name: clientDept, is_hidden: false }],
               },
             });
           }
@@ -486,14 +500,15 @@ export async function POST(req: Request) {
 export async function PATCH(req: Request) {
   let auth;
   try {
-    auth = await authorizeMarketingDistributionsManage({ requireEditor: true });
+    // 본인 purpose 수정은 편집자 불필요 · 승인/반려·타인 건은 아래에서 검증
+    auth = await authorizeMarketingDistributionsManage();
   } catch (e) {
     return authErrorToResponse(e);
   }
 
   try {
     const body = await req.json();
-    const { id, client_name, client_dept, dist_date, action } = body;
+    const { id, client_name, client_dept, dist_date, purpose, action } = body;
     if (!id) return NextResponse.json({ error: 'ID가 없습니다.' }, { status: 400 });
 
     const existing = await prisma.marketingDistribution.findUnique({
@@ -502,18 +517,29 @@ export async function PATCH(req: Request) {
     });
     if (!existing) return NextResponse.json({ error: '이력을 찾을 수 없습니다.' }, { status: 404 });
 
-    assertCanEditOwnerDept(auth, {
-      unitId: existing.item?.owner_unit_id,
-      deptName: existing.item?.owner_dept,
-    });
+    const own = isOwnDistribution(existing, auth.user);
+    const canManageOwner = (() => {
+      try {
+        assertCanEditOwnerDept(auth, {
+          unitId: existing.item?.owner_unit_id,
+          deptName: existing.item?.owner_dept,
+        });
+        return true;
+      } catch {
+        return false;
+      }
+    })();
 
-    // GLOBAL_MGMT 등: Organization 풀 승인요청 처리
+    // GLOBAL_MGMT 등: Organization 풀 승인요청 처리 / 예약확정 후 관리자 취소
     if (action === 'approve' || action === 'reject') {
-      if (existing.status !== 'PENDING') {
-        return NextResponse.json({ error: '승인 대기 건만 처리할 수 있습니다.' }, { status: 400 });
+      if (!canManageOwner) {
+        return NextResponse.json({ error: '예약확정·취소 권한이 없습니다.' }, { status: 403 });
       }
 
       if (action === 'approve') {
+        if (existing.status !== 'PENDING') {
+          return NextResponse.json({ error: '예약 대기 건만 확정할 수 있습니다.' }, { status: 400 });
+        }
         // 신청 시점에 이미 재고 예약됨 — 승인은 확정만
         const d = dist_date ? parseKSTDateOnly(dist_date) : new Date();
         const updated = await prisma.marketingDistribution.update({
@@ -528,10 +554,28 @@ export async function PATCH(req: Request) {
         return NextResponse.json(updated);
       }
 
-      // reject: 이력 유지(REJECTED) + 예약 재고 복구
+      // reject: 예약대기 · 승인 후 예약확정(approved_at)만 — 즉시확정은 신청자 DELETE
+      if (existing.status === 'PENDING') {
+        // ok — 승인함에서 취소
+      } else if (existing.status === 'CONFIRMED' && existing.approved_at) {
+        // ok — 부서 대장 관리자 취소
+      } else if (existing.status === 'CONFIRMED' && !existing.approved_at) {
+        return NextResponse.json(
+          {
+            error:
+              '승인 없이 확정된 예약은 신청자가 나의지급대장에서 취소해 주세요.',
+          },
+          { status: 400 }
+        );
+      } else {
+        return NextResponse.json(
+          { error: '예약대기·승인 후 예약확정 건만 취소할 수 있습니다.' },
+          { status: 400 }
+        );
+      }
       const reason = String(body.reject_reason || body.reason || '').trim();
       if (!reason) {
-        return NextResponse.json({ error: '반려 사유를 입력해 주세요.' }, { status: 400 });
+        return NextResponse.json({ error: '취소 사유를 선택해 주세요.' }, { status: 400 });
       }
       const rejected = await prisma.$transaction(async (tx) => {
         const updated = await tx.marketingDistribution.update({
@@ -554,11 +598,22 @@ export async function PATCH(req: Request) {
     }
 
     const data: Record<string, unknown> = {};
-    if (client_name !== undefined) data.client_name = client_name;
-    if (client_dept !== undefined) data.client_dept = client_dept;
-    if (dist_date) {
-      const d = parseKSTDateOnly(dist_date);
-      if (!Number.isNaN(d.getTime())) data.dist_date = d;
+    if (purpose !== undefined) {
+      if (!own && !canManageOwner) {
+        return NextResponse.json({ error: '본인 신청만 수정할 수 있습니다.' }, { status: 403 });
+      }
+      data.purpose = String(purpose ?? '').trim();
+    }
+    if (client_name !== undefined || client_dept !== undefined || dist_date) {
+      if (!canManageOwner) {
+        return NextResponse.json({ error: '수정 권한이 없습니다.' }, { status: 403 });
+      }
+      if (client_name !== undefined) data.client_name = client_name;
+      if (client_dept !== undefined) data.client_dept = client_dept;
+      if (dist_date) {
+        const d = parseKSTDateOnly(dist_date);
+        if (!Number.isNaN(d.getTime())) data.dist_date = d;
+      }
     }
 
     if (Object.keys(data).length === 0) {
@@ -604,11 +659,17 @@ export async function DELETE(req: Request) {
       const canCancelOthers =
         auth.permission.isMaster || isLv1;
 
-      // 반려 이력 삭제: LV_1 전용 (재고는 반려 시 이미 복구됨)
+      // 취소(REJECTED) 이력 삭제: LV_1 전용 (재고는 취소 시 이미 복구됨)
       if (dist.status === 'REJECTED') {
         if (!isLv1) throw new Error('FORBIDDEN_REJECT_PURGE');
+      } else if (dist.status === 'CONFIRMED') {
+        // 승인 없이 즉시 확정(자기부서·approved_at 없음): 본인 DELETE 허용
+        // 승인 후 확정(approved_at): 부서 대장 PATCH reject(사유)만
+        if (!(own && !dist.approved_at)) {
+          throw new Error('FORBIDDEN_CONFIRMED_DELETE');
+        }
       } else if (own) {
-        // 본인 신청 철회: 메뉴 접근만으로 허용
+        // 본인 예약대기 철회: 메뉴 접근만으로 허용
       } else if (canCancelOthers) {
         assertCanEditOwnerDept(auth, {
           unitId: (dist.item as { owner_unit_id?: string | null } | null)?.owner_unit_id,
@@ -635,13 +696,22 @@ export async function DELETE(req: Request) {
     }
     if (error?.message === 'FORBIDDEN_REJECT_PURGE') {
       return NextResponse.json(
-        { error: '반려 이력 삭제는 최고 관리자(LV_1)만 가능합니다.' },
+        { error: '취소 이력 삭제는 최고 관리자(LV_1)만 가능합니다.' },
+        { status: 403 }
+      );
+    }
+    if (error?.message === 'FORBIDDEN_CONFIRMED_DELETE') {
+      return NextResponse.json(
+        {
+          error:
+            '승인 후 예약확정 건은 신청자가 취소할 수 없습니다. 부서 대장에서 관리자 취소를 이용해 주세요.',
+        },
         { status: 403 }
       );
     }
     if (error?.message === 'FORBIDDEN_CANCEL') {
       return NextResponse.json(
-        { error: '본인 신청만 철회할 수 있습니다. (타인 건은 LV_1·마스터만 가능합니다.)' },
+        { error: '본인 예약대기만 철회할 수 있습니다. (타인 건은 LV_1·마스터만 가능합니다.)' },
         { status: 403 }
       );
     }
