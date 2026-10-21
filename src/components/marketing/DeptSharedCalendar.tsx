@@ -29,7 +29,19 @@ type WeekSeg = {
 
 const WEEKDAYS = ['일', '월', '화', '수', '목', '금', '토'];
 /** 파스텔·중간톤 혼합 (기본: 부드러운 블루) */
-const COLORS = ['#7baaf7', '#81c995', '#f6bf26', '#e57373', '#78d9ec', '#b39ddb'];
+/** 앞 6: 파스텔 · 뒤 4: 쨍한 톤 (서로·휴일과 안 겹치게) */
+const COLORS = [
+  '#7baaf7',
+  '#81c995',
+  '#f6bf26',
+  '#e57373',
+  '#78d9ec',
+  '#b39ddb',
+  '#ff6d00',
+  '#aa00ff',
+  '#00c853',
+  '#304ffe',
+];
 const MAX_VISIBLE_LANES = 4;
 
 function pad2(n: number) {

@@ -27,6 +27,7 @@ export const dynamic = 'force-dynamic';
 const MENU_PATH = '/production/custom/dept-master/order';
 const READ_PATHS = [
   '/production/custom/dept-master/order',
+  '/production/custom/dept-master/history',
   '/production/custom/dept-master/inspection',
   '/production/custom/dept-master/settlement',
   '/production/custom/dept-master/archive',
@@ -421,7 +422,7 @@ export async function PATCH(req: Request) {
     if (action === 'revert' || action === 'unaccept') {
       if (row.status !== 'ACCEPTED') {
         return NextResponse.json(
-          { message: '발주대기(접수완료) 상태인 건만 접수 대기로 되돌릴 수 있습니다.' },
+          { message: '묶음발주대기 상태인 건만 신청검수로 되돌릴 수 있습니다.' },
           { status: 400 }
         );
       }
@@ -430,7 +431,7 @@ export async function PATCH(req: Request) {
         data: { status: 'PENDING', ...productionStatusChangedStamp() },
       });
       return NextResponse.json({
-        message: '접수를 취소하고 신청(접수 대기)으로 되돌렸습니다.',
+        message: '신청검수 서류철로 되돌렸습니다.',
         data: updated,
       });
     }

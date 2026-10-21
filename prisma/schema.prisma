@@ -501,6 +501,8 @@ model MarketingDeptCalendarEvent {
   end_date       String?
   all_day        Boolean  @default(true)
   color          String?  @default("#4f46e5")
+  /// 부서 공용 용도 색상 ID (null이면 개인 자유 색상)
+  color_purpose_id String?
   creator_name   String?
   creator_dept   String?
   creator_email  String?
@@ -508,8 +510,71 @@ model MarketingDeptCalendarEvent {
   updatedAt      DateTime @updatedAt
 
   @@index([unit_id, start_date])
+  @@index([color_purpose_id])
 }
-     
+
+/// 일정 캘린더 — 소속(unit) 공용 용도별 색상 (팀 합의, 변경 시 연결 일정 일괄 반영)
+model ScheduleDeptColorPurpose {
+  id               String   @id @default(cuid())
+  unit_id          String
+  unit_name        String?
+  /// 용도명 (예: 출장, 내부회의)
+  label            String
+  color            String   @default("#7baaf7")
+  sort_order       Int      @default(0)
+  updated_by_name  String?
+  updated_by_email String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([unit_id, sort_order])
+}
+
+/// 일정 서비스 — 소속(unit) 전용 업무 보드 카드
+model ScheduleWorkBoardItem {
+  id              String   @id @default(cuid())
+  unit_id         String
+  unit_name       String?
+  /// 공유 프로젝트명 (캘린더·칸반 표시)
+  title           String
+  note            String?  @default("")
+  /// TODO | DOING | DONE
+  status          String   @default("TODO")
+  sort_order      Int      @default(0)
+  /// 보드에 묶인 일자 YYYY-MM-DD (월간 캘린더)
+  board_date      String?
+  /// YYYY-MM-DD (선택 마감)
+  due_date        String?
+  /// 긴급 처리
+  urgent          Boolean  @default(false)
+  /// 세부분야 행 [{id, area, assignee_name, status}]
+  lines           Json?
+  assignee_name   String?
+  assignee_email  String?
+  creator_name    String?
+  creator_email   String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([unit_id, status, sort_order])
+  @@index([unit_id, board_date])
+}
+
+/// 업무 보드 — 소속(unit) 공용 세부분야·담당자 프리셋
+model ScheduleWorkBoardLinePreset {
+  id              String   @id @default(cuid())
+  unit_id         String
+  unit_name       String?
+  area            String
+  assignee_name   String   @default("")
+  sort_order      Int      @default(0)
+  updated_by_name String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([unit_id, sort_order])
+}
+
 // -----------------------------------------------------------------
 // 📦 ASSET: 일반 소모품 관리
 // -----------------------------------------------------------------

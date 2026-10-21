@@ -1,7 +1,6 @@
 'use client';
 
 import { useState, useEffect, useMemo, useRef } from 'react';
-import * as XLSX from 'xlsx';
 import { usePathname, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { getKSTDateString, getKSTNowYearMonth } from '@/utils/dateUtils';
@@ -23,7 +22,7 @@ const DISABLED_ACTION_BTN =
   'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed opacity-70 shadow-none hover:bg-slate-100';
 
 const FOLDER_TABS = [
-  { id: 'PENDING' as const, label: '신청검수', icon: '⏳', activeClass: 'bg-slate-900 text-white border-slate-900 border-b-white z-10 -mb-px' },
+  { id: 'PENDING' as const, label: '신청검수/개별발주', icon: '⏳', activeClass: 'bg-slate-900 text-white border-slate-900 border-b-white z-10 -mb-px' },
   { id: 'ACCEPTED' as const, label: '묶음발주대기', icon: '📋', activeClass: 'bg-indigo-600 text-white border-indigo-500 border-b-white z-10 -mb-px shadow-sm' },
 ];
 const FOLDER_TAB_IDLE =
@@ -550,42 +549,6 @@ export default function BusinessCardRequestPanel() {
     setSelectedIds(nextSet);
   };
 
-  const handleExcelDownload = () => {
-    if (!canEditMaster) return alertNoEditPermission();
-    const targets = requests.filter((r) => selectedIds.has(r.id));
-    if (targets.length === 0) return alert('⚠️ 다운로드할 행을 체크박스로 선택해 주세요.');
-
-    const excelData = targets.map((r) => ({
-      성명: r.userName,
-      신청일자: r.applyDate,
-      본부: r.deptHead,
-      소속: r.deptName || '',
-      '직책/직급': r.title,
-      추가사항: r.additionalKo || '',
-      우편번호: r.zipCode,
-      주소: r.addressKo,
-      휴대전화: r.mobile,
-      전화번호: r.phone || '',
-      팩스: r.fax || '',
-      이메일: r.email,
-      영문이름: r.userNameEn || '',
-      영문본부: r.deptHeadEn || '',
-      영문소속: r.deptNameEn || '',
-      영문직책: r.titleEn || '',
-      영문추가: r.additionalEn || '',
-      영문주소: r.addressEn || '',
-      '영문 휴대전화': stripBusinessCardEnPlus(r.mobileEn || ''),
-      영문전화: stripBusinessCardEnPlus(r.phoneEn || ''),
-      영문팩스: stripBusinessCardEnPlus(r.faxEn || ''),
-      '이메일(영문)': r.emailEn || r.email,
-    }));
-
-    const ws = XLSX.utils.json_to_sheet(excelData);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, '명함신청데이터');
-    XLSX.writeFile(wb, `명함발주데이터_${getKSTDateString()}.xlsx`);
-  };
-
   const handleApprove = async (id: string, postNumber: string) => {
     if (!canEditMaster) return alertNoEditPermission();
     if (!confirm(`[${postNumber}] 묶음발주대기로 이동할까요?`)) return;
@@ -615,7 +578,7 @@ export default function BusinessCardRequestPanel() {
 
   const handleCancelAccept = async (id: string, postNumber: string) => {
     if (!canEditMaster) return alertNoEditPermission();
-    if (!confirm(`[${postNumber}] 묶음발주 대기열에서 제외하고 신청검수로 이동할까요?`)) return;
+    if (!confirm(`[${postNumber}] 묶음발주 대기열에서 제외하고 신청검수로 되돌릴까요?`)) return;
     try {
       const res = await fetch('/api/asset/businesscard/master/requests', {
         method: 'PUT',
@@ -623,7 +586,7 @@ export default function BusinessCardRequestPanel() {
         body: JSON.stringify({ id, adminStatus: '대기중', processDate: null, batchId: null }),
       });
       if (res.ok) {
-        alert('대기열에서 제외했습니다. 신청검수 서류철로 돌아갑니다.');
+        alert('신청검수 서류철로 되돌렸습니다.');
         setSelectedIds((prev) => {
           const next = new Set(prev);
           next.delete(id);
@@ -632,7 +595,7 @@ export default function BusinessCardRequestPanel() {
         fetchRequests();
       } else {
         const data = await res.json().catch(() => ({}));
-        alert(data.message || '대기열 제외에 실패했습니다.');
+        alert(data.message || '신청검수 복귀에 실패했습니다.');
       }
     } catch {
       alert('서버 연결 실패');
@@ -810,7 +773,7 @@ export default function BusinessCardRequestPanel() {
     if (deletingBulk) return;
     const ids = Array.from(selectedIds);
     if (ids.length === 0) return alert('삭제할 신청을 체크박스로 선택해 주세요.');
-    const folderLabel = activeFolder === 'PENDING' ? '신청검수' : '묶음발주대기';
+    const folderLabel = activeFolder === 'PENDING' ? '신청검수/개별발주' : '묶음발주대기';
     if (
       !confirm(
         `경고: 선택한 ${ids.length}건(${folderLabel})을 영구 삭제하시겠습니까?\n대상자 마이페이지 내역에서도 함께 삭제됩니다.`
@@ -1079,7 +1042,7 @@ export default function BusinessCardRequestPanel() {
       전사 임직원 명함 통합 관리 대장
     </h1>
     <p className="text-emerald-100/90 text-xs mt-3 leading-relaxed">
-      [신청검수] 신청 건의 원문을 검수하고, [묶음발주대기] 상태의 건들을 묶음으로 취합하여 외주 발주합니다.
+      [신청검수/개별발주] 신청 건의 원문을 검수하고, [묶음발주대기] 상태의 건들을 묶음으로 취합하여 외주 발주합니다.
     </p>
     {permissionSummary && isSystemLv1User(currentUser) && (
       <div className="flex flex-wrap items-center gap-2 mt-4 pt-3 border-t border-white/15">
@@ -1133,157 +1096,170 @@ export default function BusinessCardRequestPanel() {
 
       <div className="bg-amber-50 border border-amber-200 rounded-xl p-3.5 text-[10px] text-amber-800 font-medium leading-relaxed mb-2">
         💡{' '}
-        <span className="font-black text-slate-900">발주 전</span>
+        <span className="font-medium text-slate-900">발주 전</span>
         {' : '}
-        <span className="font-black">[신청검수]</span> 원문검수 후 개별발주 또는 묶음발주대기로 분기{' '}
-        <b className="font-black text-amber-600">→</b>{' '}
-        <span className="font-black">[묶음발주대기]</span> 선택·묶음발주 후 외주발주 탭으로 이관
+        <span className="font-medium">[신청검수/개별발주]</span> 원문검수 후 개별발주 또는 묶음발주대기로 분기{' '}
+        <b className="font-medium text-amber-600">→</b>{' '}
+        <span className="font-medium">[묶음발주대기]</span> 선택·묶음발주 후 외주발주 탭으로 이관
       </div>
 
-     <div className="flex justify-end gap-2 mb-2 flex-wrap items-center">
-        <button
-          type="button"
-          onClick={() => void openQualModal()}
-          className="px-5 py-2.5 bg-indigo-700 text-white font-medium text-xs rounded-xl hover:bg-indigo-800 transition-colors shadow-sm flex items-center gap-2"
-        >
-          🎓 자격사항 표준단어 (국/영문) 관리
-        </button>
-        <button
-          type="button"
-          onClick={() => void openAddressModal()}
-          className="px-5 py-2.5 bg-slate-800 text-white font-medium text-xs rounded-xl hover:bg-slate-700 transition-colors shadow-sm flex items-center gap-2"
-        >
-          ⚙️ 시스템 공통선택지 (주소/팩스) 관리
-        </button>
-        <div className="flex items-center gap-1.5 bg-white border border-slate-200 rounded-xl px-3 py-1.5 shadow-sm">
-          <span className="text-[10px] font-medium text-slate-500 whitespace-nowrap">1통 =</span>
-          <input
-            type="number"
-            min={1}
-            max={9999}
-            disabled={!canEditMaster || savingSheets}
-            value={sheetsPerPack}
-            onChange={(e) => setSheetsPerPack(Math.max(1, parseInt(e.target.value, 10) || 1))}
-            className="w-16 p-1.5 bg-indigo-50 border border-indigo-200 rounded-lg text-xs font-medium text-indigo-700 text-center outline-none focus:border-indigo-500 disabled:opacity-50"
-          />
-          <span className="text-[10px] font-medium text-slate-500">장</span>
-          <button
-            type="button"
-            disabled={!canEditMaster || savingSheets}
-            title={!canEditMaster ? '편집 권한 필요' : undefined}
-            onClick={saveSheetsPerPack}
-            className={`px-2.5 py-1.5 font-medium text-[10px] rounded-lg transition-colors ${
-              canEditMaster
-                ? 'bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed'
-                : DISABLED_ACTION_BTN
-            }`}
-          >
-            {savingSheets ? '저장중' : '저장'}
-          </button>
-        </div>
-      </div>
-
-      {/* 신청검수 / 묶음발주대기 서류철 */}
+      {/* 신청검수 / 묶음발주대기 서류철 + 설정 칩 */}
       <div className="w-full">
-        <div
-          className="flex flex-wrap items-end gap-1 border-b border-slate-200"
-          role="tablist"
-          aria-label="명함 신청검수·묶음발주 서류철"
-        >
-          {FOLDER_TABS.map((tab) => {
-            const active = activeFolder === tab.id;
-            const badgeCount = tab.id === 'PENDING' ? folderCounts.pending : folderCounts.accepted;
-            const isReception = tab.id === 'PENDING';
-            const isOrderWait = tab.id === 'ACCEPTED';
-            const tabTone = active ? tab.activeClass : FOLDER_TAB_IDLE;
-            return (
-              <button
-                key={tab.id}
-                type="button"
-                role="tab"
-                aria-selected={active}
-                onClick={() => setActiveFolder(tab.id)}
-                title={
-                  isOrderWait ? '묶음발주대기 · 묶음발주 후 검수 탭으로 이관' : undefined
-                }
-                className={
-                  isReception
-                    ? `group relative flex items-center gap-1.5 pl-4 pr-5 py-2.5 mr-3 text-xs font-medium tracking-tight transition-colors rounded-tl-lg border border-r-0 ${tabTone}`
-                    : `group relative flex items-center gap-1.5 pl-4 pr-4 py-2.5 text-xs font-medium tracking-tight transition-colors rounded-tl-lg border border-r-0 ${tabTone}`
-                }
-              >
-                <span className="text-sm leading-none">{tab.icon}</span>
-                <span className="flex items-center gap-1">
-                  <span>{tab.label}</span>
-                  {badgeCount > 0 ? (
-                    <span className={`tabular-nums ${active ? 'opacity-95' : 'text-indigo-600'}`}>
-                      ({badgeCount})
-                    </span>
+        <div className="flex flex-wrap items-end gap-1 border-b border-slate-200">
+          <div
+            className="flex flex-wrap items-end gap-1 min-w-0"
+            role="tablist"
+            aria-label="명함 신청검수/개별발주·묶음발주 서류철"
+          >
+            {FOLDER_TABS.map((tab) => {
+              const active = activeFolder === tab.id;
+              const badgeCount = tab.id === 'PENDING' ? folderCounts.pending : folderCounts.accepted;
+              const isReception = tab.id === 'PENDING';
+              const isOrderWait = tab.id === 'ACCEPTED';
+              const tabTone = active ? tab.activeClass : FOLDER_TAB_IDLE;
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={active}
+                  onClick={() => setActiveFolder(tab.id)}
+                  title={
+                    isOrderWait ? '묶음발주대기 · 묶음발주 후 검수 탭으로 이관' : undefined
+                  }
+                  className={
+                    isReception
+                      ? `group relative flex items-center gap-1.5 pl-4 pr-5 py-2.5 mr-3 text-xs font-medium tracking-tight transition-colors rounded-tl-lg border border-r-0 ${tabTone}`
+                      : `group relative flex items-center gap-1.5 pl-4 pr-4 py-2.5 text-xs font-medium tracking-tight transition-colors rounded-tl-lg border border-r-0 ${tabTone}`
+                  }
+                >
+                  <span className="text-sm leading-none">{tab.icon}</span>
+                  <span className="flex items-center gap-1">
+                    <span>{tab.label}</span>
+                    {badgeCount > 0 ? (
+                      <span className={`tabular-nums ${active ? 'opacity-95' : 'text-indigo-600'}`}>
+                        ({badgeCount})
+                      </span>
+                    ) : null}
+                  </span>
+                  {/* 신청검수 → 묶음발주대기 (강한 화살표) */}
+                  {isReception ? (
+                    <>
+                      <span
+                        aria-hidden
+                        className={`pointer-events-none absolute -right-[12px] -top-px -bottom-px z-[11] w-[13px] ${
+                          active
+                            ? 'bg-slate-900'
+                            : 'bg-slate-200 group-hover:bg-slate-300'
+                        }`}
+                        style={{ clipPath: 'polygon(0 0, 100% 50%, 0 100%)' }}
+                      />
+                      <span
+                        aria-hidden
+                        className={`pointer-events-none absolute -right-[11px] inset-y-0 z-[12] w-[12px] ${
+                          active
+                            ? 'bg-slate-900'
+                            : 'bg-slate-100 group-hover:bg-slate-200/80'
+                        }`}
+                        style={{ clipPath: 'polygon(0 0, 100% 50%, 0 100%)' }}
+                      />
+                    </>
                   ) : null}
-                </span>
-                {/* 신청검수 → 묶음발주대기 (강한 화살표) */}
-                {isReception ? (
-                  <>
-                    <span
-                      aria-hidden
-                      className={`pointer-events-none absolute -right-[12px] -top-px -bottom-px z-[11] w-[13px] ${
-                        active
-                          ? 'bg-slate-900'
-                          : 'bg-slate-200 group-hover:bg-slate-300'
-                      }`}
-                      style={{ clipPath: 'polygon(0 0, 100% 50%, 0 100%)' }}
-                    />
-                    <span
-                      aria-hidden
-                      className={`pointer-events-none absolute -right-[11px] inset-y-0 z-[12] w-[12px] ${
-                        active
-                          ? 'bg-slate-900'
-                          : 'bg-slate-100 group-hover:bg-slate-200/80'
-                      }`}
-                      style={{ clipPath: 'polygon(0 0, 100% 50%, 0 100%)' }}
-                    />
-                  </>
-                ) : null}
-                {/* 묶음발주대기 → 검수 탭 (약한 화살표) */}
-                {isOrderWait ? (
-                  <>
-                    <span
-                      aria-hidden
-                      className={`pointer-events-none absolute -right-[8px] -top-px -bottom-px z-[11] w-[9px] opacity-80 ${
-                        active
-                          ? 'bg-indigo-600'
-                          : 'bg-slate-200 group-hover:bg-slate-300'
-                      }`}
-                      style={{ clipPath: 'polygon(0 0, 100% 50%, 0 100%)' }}
-                    />
-                    <span
-                      aria-hidden
-                      className={`pointer-events-none absolute -right-[7px] inset-y-0 z-[12] w-[8px] opacity-80 ${
-                        active
-                          ? 'bg-indigo-600'
-                          : 'bg-slate-100 group-hover:bg-slate-200/80'
-                      }`}
-                      style={{ clipPath: 'polygon(0 0, 100% 50%, 0 100%)' }}
-                    />
-                  </>
-                ) : null}
+                  {/* 묶음발주대기 → 검수 탭 (약한 화살표) */}
+                  {isOrderWait ? (
+                    <>
+                      <span
+                        aria-hidden
+                        className={`pointer-events-none absolute -right-[8px] -top-px -bottom-px z-[11] w-[9px] opacity-80 ${
+                          active
+                            ? 'bg-indigo-600'
+                            : 'bg-slate-200 group-hover:bg-slate-300'
+                        }`}
+                        style={{ clipPath: 'polygon(0 0, 100% 50%, 0 100%)' }}
+                      />
+                      <span
+                        aria-hidden
+                        className={`pointer-events-none absolute -right-[7px] inset-y-0 z-[12] w-[8px] opacity-80 ${
+                          active
+                            ? 'bg-indigo-600'
+                            : 'bg-slate-100 group-hover:bg-slate-200/80'
+                        }`}
+                        style={{ clipPath: 'polygon(0 0, 100% 50%, 0 100%)' }}
+                      />
+                    </>
+                  ) : null}
+                </button>
+              );
+            })}
+          </div>
+
+          <div
+            className="flex flex-wrap items-center gap-1.5 ml-auto mb-1.5 shrink-0"
+            aria-label="명함 마스터 설정"
+          >
+            <button
+              type="button"
+              onClick={() => void openQualModal()}
+              title="자격사항 표준단어 (국/영문) 관리"
+              className="inline-flex items-center gap-1 h-7 px-2.5 rounded-lg text-[10px] font-medium whitespace-nowrap leading-none bg-slate-100 border border-slate-200 text-slate-700 hover:bg-slate-200/80 transition-colors"
+            >
+              <span className="text-[11px] leading-none">🎓</span>
+              <span>자격단어</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => void openAddressModal()}
+              title="시스템 공통선택지 (주소/팩스) 관리"
+              className="inline-flex items-center gap-1 h-7 px-2.5 rounded-lg text-[10px] font-medium whitespace-nowrap leading-none bg-slate-100 border border-slate-200 text-slate-700 hover:bg-slate-200/80 transition-colors"
+            >
+              <span className="text-[11px] leading-none">⚙️</span>
+              <span>주소·팩스</span>
+            </button>
+            <div className="flex items-center gap-1.5 h-7 px-2.5 rounded-lg bg-slate-100 border border-slate-200 box-border">
+              <span className="text-[10px] font-medium text-slate-500 leading-none whitespace-nowrap">
+                1통=
+              </span>
+              <input
+                type="number"
+                min={1}
+                max={9999}
+                disabled={!canEditMaster || savingSheets}
+                value={sheetsPerPack}
+                onChange={(e) =>
+                  setSheetsPerPack(Math.max(1, parseInt(e.target.value, 10) || 1))
+                }
+                className="w-11 h-4 box-border px-0 py-0 bg-transparent border-0 text-[11px] font-medium text-slate-800 text-center outline-none disabled:opacity-50"
+              />
+              <span className="text-[10px] font-medium text-slate-500 leading-none">장</span>
+              <button
+                type="button"
+                disabled={!canEditMaster || savingSheets}
+                title={!canEditMaster ? '편집 권한 필요' : '1통당 장수 저장'}
+                onClick={saveSheetsPerPack}
+                className={`text-[10px] font-medium leading-none underline underline-offset-2 transition-colors ${
+                  canEditMaster
+                    ? 'text-indigo-600 hover:text-indigo-800 disabled:opacity-40'
+                    : 'text-slate-400 cursor-not-allowed'
+                }`}
+              >
+                {savingSheets ? '…' : '저장'}
               </button>
-            );
-          })}
+            </div>
+          </div>
         </div>
 
       <div className={`bg-white border border-t-0 border-slate-200 rounded-b-[2.5rem] rounded-tr-2xl shadow-sm animate-in fade-in duration-300 ${orgMenuOpen ? 'overflow-visible' : 'overflow-hidden'}`}>
         <div className={`p-4 px-6 bg-slate-200/70 border-b border-slate-300 flex flex-wrap items-center justify-between gap-4 relative ${orgMenuOpen ? 'z-[80] overflow-visible' : ''}`}>
           <div className="flex items-center gap-2 flex-wrap">
             <div className="w-2.5 h-2.5 rounded-full bg-blue-600" />
-            <h2 className="text-sm font-black text-slate-800 tracking-tight">
+            <h2 className="text-sm font-medium text-slate-800 tracking-tight">
               {activeFolder === 'ACCEPTED'
                 ? '묶음발주대기 서류철 (접수완료 · 묶음발주)'
-                : '신청검수 서류철 (원문검수 · 개별/묶음 이동)'}
+                : '신청검수/개별발주 서류철 (원문검수 · 개별/묶음 이동)'}
             </h2>
-            <span className="text-[11px] font-bold bg-slate-300/80 text-slate-700 px-2 py-0.5 rounded-md">{filteredRequests.length}건</span>
+            <span className="text-[11px] font-medium bg-slate-300/80 text-slate-700 px-2 py-0.5 rounded-md">{filteredRequests.length}건</span>
             {selectedIds.size > 0 && (
-              <span className="text-[10px] font-black text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-md border border-indigo-200">
+              <span className="text-[10px] font-medium text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-md border border-indigo-200">
                 {selectedIds.size}개 선택
               </span>
             )}
@@ -1305,30 +1281,10 @@ export default function BusinessCardRequestPanel() {
                     : '삭제(LV_1)'}
               </button>
             )}
-            {activeFolder === 'ACCEPTED' && (
-              <button
-                type="button"
-                onClick={handleCreateBatch}
-                disabled={!canEditMaster || creatingBatch || selectedIds.size === 0}
-                title={!canEditMaster ? '편집 권한 필요' : undefined}
-                className={`inline-flex items-center gap-1 text-[10px] font-medium rounded-lg px-4 py-1.5 transition-colors shadow-sm h-7 ${
-                  canEditMaster
-                    ? 'bg-indigo-600 text-white border border-indigo-600 hover:bg-indigo-700 disabled:opacity-50'
-                    : DISABLED_ACTION_BTN
-                }`}
-              >
-                <span>→</span>
-                <span>
-                  {creatingBatch
-                    ? '발주 처리 중…'
-                    : `선택된 ${selectedIds.size}건 묶음발주 이동 🚀`}
-                </span>
-              </button>
-            )}
             <div className={`relative group/filter flex items-center gap-1.5 bg-white px-2.5 rounded-lg border border-slate-200 shadow-sm h-7 box-border ${orgMenuOpen ? 'relative z-[90]' : ''}`}>
               <span
                 role="tooltip"
-                className={`pointer-events-none absolute left-0 top-full mt-1.5 z-50 hidden whitespace-nowrap rounded-lg bg-slate-800 px-2.5 py-1.5 text-[10px] font-bold text-white shadow-lg ${orgMenuOpen ? '' : 'group-hover/filter:block'}`}
+                className={`pointer-events-none absolute left-0 top-full mt-1.5 z-50 hidden whitespace-nowrap rounded-lg bg-slate-800 px-2.5 py-1.5 text-[10px] font-medium text-white shadow-lg ${orgMenuOpen ? '' : 'group-hover/filter:block'}`}
               >
                 연도 → 월 · 연계필터 / 조직은 마스터 정렬
               </span>
@@ -1385,7 +1341,7 @@ export default function BusinessCardRequestPanel() {
                             setOrgMenuOpen(false);
                           }}
                           className={`w-full text-left pr-3 py-1.5 text-[11px] ${
-                            bold ? 'font-black text-slate-900' : 'font-medium text-slate-600'
+                            bold ? 'font-medium text-slate-900' : 'font-medium text-slate-600'
                           } ${selectedOrg === dept.id ? 'bg-indigo-50' : 'hover:bg-slate-50'}`}
                           style={{ paddingLeft: `${12 + dept.depth * 12}px` }}
                         >
@@ -1407,55 +1363,62 @@ export default function BusinessCardRequestPanel() {
                 className="w-full h-7 box-border pl-7 pr-3 py-0 bg-white border border-slate-200 rounded-lg text-[11px] font-medium outline-none focus:border-indigo-500 shadow-sm transition-colors placeholder:font-medium"
               />
             </div>
-            <button
-              type="button"
-              disabled={!canEditMaster}
-              title={!canEditMaster ? '편집 권한 필요' : undefined}
-              onClick={handleExcelDownload}
-              className={`h-7 px-3 rounded-lg text-[10px] font-medium shadow-sm transition-all whitespace-nowrap leading-none ${
-                canEditMaster
-                  ? 'bg-emerald-600 text-white hover:bg-emerald-700'
-                  : DISABLED_ACTION_BTN
-              }`}
-            >
-              {selectedIds.size > 0
-                ? `선택 EXCEL 다운로드(${selectedIds.size})`
-                : '선택 데이터 엑셀 다운로드'}
-            </button>
-            <button
-              type="button"
-              disabled={!canEditMaster}
-              title={!canEditMaster ? '편집 권한 필요' : undefined}
-              onClick={() => {
-                if (!canEditMaster) return alertNoEditPermission();
-                setIsAdminApplyOpen(true);
-              }}
-              className={`h-7 px-3 rounded-lg text-[10px] font-medium shadow-sm transition-all whitespace-nowrap leading-none ${
-                canEditMaster
-                  ? 'bg-indigo-600 text-white hover:bg-indigo-700'
-                  : DISABLED_ACTION_BTN
-              }`}
-            >
-              + 관리자 직접 신청(Edit)
-            </button>
+            {activeFolder === 'PENDING' ? (
+              <button
+                type="button"
+                disabled={!canEditMaster}
+                title={!canEditMaster ? '편집 권한 필요' : undefined}
+                onClick={() => {
+                  if (!canEditMaster) return alertNoEditPermission();
+                  setIsAdminApplyOpen(true);
+                }}
+                className={`h-7 px-3 rounded-lg text-[10px] font-medium shadow-sm transition-all whitespace-nowrap leading-none ${
+                  canEditMaster
+                    ? 'bg-indigo-600 text-white hover:bg-indigo-700'
+                    : DISABLED_ACTION_BTN
+                }`}
+              >
+                + 관리자 직접 신청(Edit)
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={handleCreateBatch}
+                disabled={!canEditMaster || creatingBatch || selectedIds.size === 0}
+                title={!canEditMaster ? '편집 권한 필요' : undefined}
+                className={`inline-flex items-center gap-1 h-7 px-3 text-[10px] font-medium rounded-lg transition-colors shadow-sm whitespace-nowrap ${
+                  canEditMaster
+                    ? 'bg-indigo-600 text-white border border-indigo-600 hover:bg-indigo-700 disabled:opacity-50'
+                    : DISABLED_ACTION_BTN
+                }`}
+              >
+                <span>→</span>
+                <span>
+                  {creatingBatch
+                    ? '발주 처리 중…'
+                    : `선택된 ${selectedIds.size}건 묶음발주 이동 🚀`}
+                </span>
+              </button>
+            )}
           </div>
         </div>
 
         <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse table-fixed min-w-[1080px]">
+          <table className="w-full table-fixed text-left border-collapse">
             <colgroup>
-              <col className="w-[40px]" />
-              <col className="w-[44px]" />
-              <col className="w-[132px]" />
-              <col className="w-[88px]" />
-              <col className="w-[64px]" />
-              <col className="w-[160px]" />
-              <col className="w-[88px]" />
-              <col className="w-[56px]" />
-              <col className="w-[72px]" />
-              <col className="w-[300px]" />
+              <col style={{ width: '2.5rem' }} />
+              <col style={{ width: '2.5rem' }} />
+              <col style={{ width: '10%' }} />
+              <col style={{ width: '6.5%' }} />
+              <col style={{ width: '5rem' }} />
+              <col style={{ width: '12%' }} />
+              <col style={{ width: '5.5rem' }} />
+              <col style={{ width: '4rem' }} />
+              <col style={{ width: '5.5rem' }} />
+              {/* 신청검수 버튼 3개 기준 — 제작물 order와 유사 폭 */}
+              <col style={{ width: '15.5rem' }} />
             </colgroup>
-            <thead className="bg-slate-100 text-slate-700 text-[10px] font-black uppercase tracking-widest border-b border-slate-200">
+            <thead className="bg-slate-100 text-slate-700 text-[10px] font-medium border-b border-slate-200">
               <tr>
                 <th className="h-12 pl-4 text-center">
                   <input
@@ -1479,7 +1442,7 @@ export default function BusinessCardRequestPanel() {
             <tbody className="bg-white divide-y divide-slate-100 text-[11px] font-medium text-slate-700">
               {paginatedRequests.length === 0 ? (
                 <tr>
-                  <td colSpan={10} className="p-16 text-center text-slate-400 text-xs">표시할 명함 데이터가 존재하지 않습니다.</td>
+                  <td colSpan={10} className="p-16 text-center text-slate-400 text-[11px] font-medium">표시할 명함 데이터가 존재하지 않습니다.</td>
                 </tr>
               ) : (
                 paginatedRequests.map((row, index) => {
@@ -1544,7 +1507,7 @@ export default function BusinessCardRequestPanel() {
                               if (!canEditMaster) return alertNoEditPermission();
                               setDetailTarget(row);
                             }}
-                            className={`px-2.5 py-1 text-[10px] font-medium rounded-lg shadow-sm transition-colors whitespace-nowrap ${
+                            className={`h-7 box-border inline-flex items-center justify-center px-2.5 text-[11px] font-medium rounded-lg transition-colors whitespace-nowrap ${
                               canEditMaster
                                 ? 'bg-rose-600 text-white hover:bg-rose-700'
                                 : DISABLED_ACTION_BTN
@@ -1559,7 +1522,7 @@ export default function BusinessCardRequestPanel() {
                               setIsRequestEditing(false);
                               setDetailTarget(row);
                             }}
-                            className="px-2.5 py-1 text-[10px] font-medium rounded-lg transition-colors bg-slate-200 text-slate-600 hover:bg-slate-300 border border-slate-300 whitespace-nowrap"
+                            className="h-7 box-border inline-flex items-center justify-center px-2.5 text-[11px] font-medium rounded-lg transition-colors bg-slate-200 text-slate-600 hover:bg-slate-300 border border-slate-300 whitespace-nowrap"
                           >
                             원문확인
                           </button>
@@ -1572,7 +1535,7 @@ export default function BusinessCardRequestPanel() {
                               if (!canEditMaster) return alertNoEditPermission();
                               setDetailTarget(row);
                             }}
-                            className={`px-2.5 py-1 text-[10px] font-medium rounded-lg transition-colors whitespace-nowrap ${
+                            className={`h-7 box-border inline-flex items-center justify-center px-2.5 text-[11px] font-medium rounded-lg transition-colors whitespace-nowrap ${
                               canEditMaster
                                 ? 'bg-slate-200 text-slate-600 hover:bg-slate-300 border border-slate-300'
                                 : DISABLED_ACTION_BTN
@@ -1588,20 +1551,24 @@ export default function BusinessCardRequestPanel() {
                           {formatBusinessCardAdminStatusLabel(row.adminStatus)}
                         </span>
                       </td>
-                      <td className="px-2 text-center bg-slate-50/70">
+                      <td className="px-2 text-center">
                         {activeFolder === 'ACCEPTED' ? (
                           <button
                             type="button"
                             disabled={!canEditMaster || creatingBatch || actionBusyId === row.id}
-                            title={!canEditMaster ? '편집 권한 필요' : '묶음발주 대기열에서 제외하고 신청검수로 이동'}
+                            title={
+                              !canEditMaster
+                                ? '편집 권한 필요'
+                                : '묶음발주 대기열 제외 · 신청검수로 복귀'
+                            }
                             onClick={() => handleCancelAccept(row.id, row.postNumber)}
-                            className={`px-2 py-1 text-[10px] font-medium rounded-lg transition-colors whitespace-nowrap ${
+                            className={`h-7 box-border inline-flex items-center justify-center px-2.5 text-[11px] font-medium rounded-lg transition-colors whitespace-nowrap ${
                               canEditMaster
                                 ? 'bg-rose-50 border border-rose-200 hover:bg-rose-100 text-rose-600 disabled:opacity-50'
                                 : DISABLED_ACTION_BTN
                             }`}
                           >
-                            {actionBusyId === row.id ? '처리중' : '대기열제외'}
+                            {actionBusyId === row.id ? '처리중' : '↺ 신청검수'}
                           </button>
                         ) : isPending ? (
                           <div className="flex flex-row flex-wrap items-center justify-center gap-1">
@@ -1610,7 +1577,7 @@ export default function BusinessCardRequestPanel() {
                               disabled={!canEditMaster || creatingBatch || actionBusyId === row.id}
                               title={!canEditMaster ? '편집 권한 필요' : '검수 후 바로 개별발주(외주발주 탭)'}
                               onClick={() => handleDirectSingleOrder(row)}
-                              className={`px-2 py-1 text-[10px] font-medium rounded-lg transition-colors whitespace-nowrap ${
+                              className={`h-7 box-border inline-flex items-center justify-center px-2.5 text-[11px] font-medium rounded-lg transition-colors whitespace-nowrap ${
                                 canEditMaster
                                   ? 'bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50'
                                   : DISABLED_ACTION_BTN
@@ -1623,7 +1590,7 @@ export default function BusinessCardRequestPanel() {
                               disabled={!canEditMaster || creatingBatch || actionBusyId === row.id}
                               title={!canEditMaster ? '편집 권한 필요' : '묶음발주대기로 이동'}
                               onClick={() => handleApprove(row.id, row.postNumber)}
-                              className={`px-2 py-1 text-[10px] font-medium rounded-lg transition-colors whitespace-nowrap ${
+                              className={`h-7 box-border inline-flex items-center justify-center px-2.5 text-[11px] font-medium rounded-lg transition-colors whitespace-nowrap ${
                                 canEditMaster
                                   ? 'bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50'
                                   : DISABLED_ACTION_BTN
@@ -1637,7 +1604,7 @@ export default function BusinessCardRequestPanel() {
                                 disabled={!canEditMaster}
                                 title={!canEditMaster ? '편집 권한 필요' : undefined}
                                 onClick={() => handleCancelProxy(row)}
-                                className={`px-2 py-1 text-[10px] font-medium rounded-lg transition-colors whitespace-nowrap ${
+                                className={`h-7 box-border inline-flex items-center justify-center px-2.5 text-[11px] font-medium rounded-lg transition-colors whitespace-nowrap ${
                                   canEditMaster
                                     ? 'bg-rose-50 border border-rose-200 hover:bg-rose-100 text-rose-600'
                                     : DISABLED_ACTION_BTN
@@ -1655,7 +1622,7 @@ export default function BusinessCardRequestPanel() {
                                   setRejectTarget(row);
                                   setRejectReason('');
                                 }}
-                                className={`px-2 py-1 text-[10px] font-medium rounded-lg transition-colors whitespace-nowrap ${
+                                className={`h-7 box-border inline-flex items-center justify-center px-2.5 text-[11px] font-medium rounded-lg transition-colors whitespace-nowrap ${
                                   canEditMaster
                                     ? 'bg-rose-50 border border-rose-200 hover:bg-rose-100 text-rose-600'
                                     : DISABLED_ACTION_BTN
@@ -1666,7 +1633,7 @@ export default function BusinessCardRequestPanel() {
                             )}
                           </div>
                         ) : (
-                          <span className="text-[10px] text-slate-500 font-bold whitespace-nowrap">
+                          <span className="text-[10px] text-slate-500 font-medium whitespace-nowrap">
                             {row.adminStatus === '발주완료'
                               ? '수령 검수 대기'
                               : row.adminStatus === '수령완료'

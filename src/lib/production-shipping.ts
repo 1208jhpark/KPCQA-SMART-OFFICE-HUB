@@ -193,9 +193,16 @@ export function isVendorDispatched(
   return opts.vendorDispatched === true;
 }
 
+export type VendorDispatchedBy = {
+  date: string;
+  userName: string;
+  deptName: string;
+};
+
 export function withVendorDispatched(
   prev: Record<string, unknown>,
-  customDate?: string
+  customDate?: string,
+  by?: VendorDispatchedBy | null
 ): Record<string, unknown> {
   let dateStr = new Date().toISOString();
   if (customDate) {
@@ -205,9 +212,17 @@ export function withVendorDispatched(
       dateStr = d.toISOString();
     }
   }
-  return {
+  const next: Record<string, unknown> = {
     ...prev,
     vendorDispatched: true,
     vendorDispatchedAt: dateStr,
   };
+  if (by && (by.userName || by.deptName)) {
+    next.vendorDispatchedBy = {
+      date: by.date || dateStr.slice(0, 10),
+      userName: String(by.userName || '').trim() || '-',
+      deptName: String(by.deptName || '').trim(),
+    };
+  }
+  return next;
 }

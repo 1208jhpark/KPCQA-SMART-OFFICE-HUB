@@ -14,8 +14,16 @@ type CalEvent = {
   start_date: string;
   end_date?: string | null;
   color?: string | null;
+  color_purpose_id?: string | null;
   creator_name?: string | null;
   creator_dept?: string | null;
+};
+
+type ColorPurpose = {
+  id: string;
+  label: string;
+  color: string;
+  updated_by_name?: string | null;
 };
 
 type DayCell = { dateStr: string; day: number };
@@ -26,14 +34,40 @@ type WeekSeg = {
   color: string;
   startCol: number;
   endCol: number;
-  kind: 'holiday' | 'event';
-  event?: CalEvent;
+  event: CalEvent;
 };
 
 const WEEKDAYS = ['일', '월', '화', '수', '목', '금', '토'];
-/** 파스텔·중간톤 혼합 (기본: 부드러운 블루) */
-const COLORS = ['#7baaf7', '#81c995', '#f6bf26', '#e57373', '#78d9ec', '#b39ddb'];
+/** 앞: 파스텔 · 뒤: 쨍한 톤 (연한 로즈 #fecdd3 포함) */
+const COLORS = [
+  '#7baaf7',
+  '#81c995',
+  '#f6bf26',
+  '#fecdd3',
+  '#78d9ec',
+  '#b39ddb',
+  '#e57373',
+  '#ff6d00',
+  '#aa00ff',
+  '#00c853',
+  '#304ffe',
+];
 const MAX_VISIBLE_LANES = 4;
+const LANE_H = 14;
+
+/** 연한 띠에도 읽히도록 배경 밝기에 따라 글자색 */
+function contrastText(bg: string): string {
+  const h = String(bg || '')
+    .replace('#', '')
+    .trim();
+  if (h.length < 6) return '#ffffff';
+  const r = parseInt(h.slice(0, 2), 16);
+  const g = parseInt(h.slice(2, 4), 16);
+  const b = parseInt(h.slice(4, 6), 16);
+  if ([r, g, b].some((n) => Number.isNaN(n))) return '#ffffff';
+  const y = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  return y > 0.62 ? '#0f172a' : '#ffffff';
+}
 
 function pad2(n: number) {
   return String(n).padStart(2, '0');
@@ -55,38 +89,231 @@ function formatDotDate(s: string) {
   return String(s || '').replace(/-/g, '.') || '-';
 }
 
+function escapeHtml(s: string) {
+  return String(s || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
 function eventCoversDate(ev: CalEvent, dateStr: string) {
   const start = ev.start_date;
   const end = ev.end_date || ev.start_date;
   return start <= dateStr && dateStr <= end;
 }
 
+/** 월간 일정 인쇄/다운로드용 HTML (한 장 기준 일별 Detail 포맷) */
+function buildMonthPrintHtml(opts: {
+  year: number;
+  month: number;
+  unitName: string;
+  events: CalEvent[];
+  holidays: Map<string, string>;
+}) {
+  const { year, month, unitName, events, holidays } = opts;
+  const lastDay = new Date(year, month, 0).getDate();
+  const title = `${year}.${pad2(month)}`;
+  const unitLabel = unitName ? ` · ${escapeHtml(unitName)}` : '';
+
+  const dayRows: string[] = [];
+  for (let d = 1; d <= lastDay; d++) {
+    const dateStr = ymd(year, month, d);
+    const dow = WEEKDAYS[new Date(year, month - 1, d).getDay()];
+    const dayLabel = `${d}(${dow})`;
+    const holiday = holidays.get(dateStr);
+    const dayEvents = events.filter((ev) => eventCoversDate(ev, dateStr));
+
+    const detailRows: string[] = [];
+    if (holiday) {
+      detailRows.push(`
+        <tr>
+          <td>${escapeHtml(holiday)}</td>
+          <td>—</td>
+          <td>종일</td>
+          <td>공휴일</td>
+        </tr>`);
+    }
+    if (dayEvents.length === 0 && !holiday) {
+      detailRows.push(`
+        <tr class="empty">
+          <td></td>
+          <td></td>
+          <td></td>
+          <td></td>
+        </tr>`);
+    } else {
+      for (const ev of dayEvents) {
+        detailRows.push(`
+          <tr>
+            <td>${escapeHtml(ev.title || '')}</td>
+            <td>${escapeHtml(String(ev.location || '').trim() || '—')}</td>
+            <td>${escapeHtml(String(ev.time_text || '').trim() || '—')}</td>
+            <td>${escapeHtml(String(ev.attendees || '').trim() || '—')}</td>
+          </tr>`);
+      }
+    }
+
+    const isWeekend = dow === '일' || dow === '토';
+    dayRows.push(`
+      <tr class="day-row${isWeekend ? ' weekend' : ''}${holiday ? ' holiday' : ''}">
+        <td class="day-col">${escapeHtml(dayLabel)}</td>
+        <td class="detail-col">
+          <table class="detail-table">
+            <thead>
+              <tr>
+                <th>내용</th>
+                <th>위치</th>
+                <th>시간</th>
+                <th>참석자</th>
+              </tr>
+            </thead>
+            <tbody>${detailRows.join('')}</tbody>
+          </table>
+        </td>
+      </tr>`);
+  }
+
+  return `<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <title>공유 일정 ${title}</title>
+  <style>
+    @page { size: A4; margin: 12mm 10mm; }
+    * { box-sizing: border-box; }
+    body {
+      font-family: "Malgun Gothic", "Apple SD Gothic Neo", sans-serif;
+      color: #1e293b;
+      font-size: 10px;
+      margin: 0;
+      padding: 0;
+    }
+    .header { margin-bottom: 10px; border-bottom: 2px solid #334155; padding-bottom: 8px; }
+    .header h1 { margin: 0; font-size: 20px; font-weight: 700; letter-spacing: 0.02em; }
+    .header p { margin: 4px 0 0; font-size: 11px; color: #64748b; }
+    table.month { width: 100%; border-collapse: collapse; table-layout: fixed; }
+    table.month > tbody > tr.day-row > td {
+      border: 1px solid #cbd5e1;
+      vertical-align: top;
+      padding: 0;
+    }
+    td.day-col {
+      width: 48px;
+      text-align: center;
+      font-weight: 700;
+      font-size: 11px;
+      padding: 6px 4px !important;
+      background: #f8fafc;
+      white-space: nowrap;
+    }
+    tr.weekend td.day-col { color: #4f46e5; }
+    tr.holiday td.day-col { color: #e11d48; background: #fff1f2; }
+    td.detail-col { padding: 0 !important; }
+    table.detail-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+    table.detail-table th {
+      background: #f1f5f9;
+      font-size: 9px;
+      font-weight: 600;
+      color: #64748b;
+      text-align: left;
+      padding: 3px 6px;
+      border-bottom: 1px solid #e2e8f0;
+      border-right: 1px solid #e2e8f0;
+    }
+    table.detail-table th:last-child { border-right: none; }
+    table.detail-table th:nth-child(1) { width: 38%; }
+    table.detail-table th:nth-child(2) { width: 22%; }
+    table.detail-table th:nth-child(3) { width: 14%; }
+    table.detail-table th:nth-child(4) { width: 26%; }
+    table.detail-table td {
+      padding: 4px 6px;
+      border-bottom: 1px solid #f1f5f9;
+      border-right: 1px solid #f1f5f9;
+      word-break: break-word;
+      min-height: 18px;
+    }
+    table.detail-table td:last-child { border-right: none; }
+    table.detail-table tr:last-child td { border-bottom: none; }
+    table.detail-table tr.empty td { height: 22px; }
+    @media print {
+      body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>${title}</h1>
+    <p>공유 일정${unitLabel}</p>
+  </div>
+  <table class="month">
+    <tbody>
+      ${dayRows.join('')}
+    </tbody>
+  </table>
+</body>
+</html>`;
+}
+
+/** 팝업 없이 숨은 iframe으로 인쇄 대화상자 열기 */
+function openMonthPrint(html: string) {
+  const iframe = document.createElement('iframe');
+  iframe.setAttribute('title', 'schedule-print');
+  iframe.style.cssText =
+    'position:fixed;right:0;bottom:0;width:0;height:0;border:0;opacity:0;pointer-events:none;';
+  document.body.appendChild(iframe);
+
+  const win = iframe.contentWindow;
+  const doc = win?.document;
+  if (!win || !doc) {
+    document.body.removeChild(iframe);
+    alert('인쇄 창을 열 수 없습니다.');
+    return;
+  }
+
+  doc.open();
+  doc.write(html);
+  doc.close();
+
+  const cleanup = () => {
+    try {
+      if (iframe.parentNode) document.body.removeChild(iframe);
+    } catch {
+      /* ignore */
+    }
+  };
+
+  const triggerPrint = () => {
+    try {
+      win.focus();
+      win.print();
+    } catch {
+      alert('인쇄를 실행할 수 없습니다.');
+    } finally {
+      // 인쇄 대화상자 닫힌 뒤 iframe 제거
+      setTimeout(cleanup, 1500);
+    }
+  };
+
+  // 문서 로드 후 인쇄 (팝업 차단과 무관)
+  if (doc.readyState === 'complete') {
+    setTimeout(triggerPrint, 100);
+  } else {
+    iframe.onload = () => setTimeout(triggerPrint, 100);
+    setTimeout(triggerPrint, 400);
+  }
+}
+
 function segmentsOverlap(a: WeekSeg, b: WeekSeg) {
   return !(a.endCol < b.startCol || a.startCol > b.endCol);
 }
 
-/** 주(7칸) 단위로 공휴일·일정을 레인에 배치 (구글캘린더식 연속 바) */
+/** 주(7칸) 단위로 일정을 레인에 배치 (휴일은 띠 없이 날짜 아래 텍스트) */
 function layoutWeekLanes(
   week: Array<DayCell | null>,
-  events: CalEvent[],
-  holidays: Map<string, string>
+  events: CalEvent[]
 ): WeekSeg[][] {
   const items: WeekSeg[] = [];
-
-  week.forEach((cell, col) => {
-    if (!cell) return;
-    const name = holidays.get(cell.dateStr);
-    if (name) {
-      items.push({
-        key: `h-${cell.dateStr}`,
-        title: name,
-        color: KR_HOLIDAY_COLOR,
-        startCol: col,
-        endCol: col,
-        kind: 'holiday',
-      });
-    }
-  });
 
   for (const ev of events) {
     const evStart = ev.start_date;
@@ -108,7 +335,6 @@ function layoutWeekLanes(
       color: ev.color || COLORS[0],
       startCol,
       endCol,
-      kind: 'event',
       event: ev,
     });
   }
@@ -118,7 +344,6 @@ function layoutWeekLanes(
     const da = a.endCol - a.startCol;
     const db = b.endCol - b.startCol;
     if (da !== db) return db - da;
-    if (a.kind !== b.kind) return a.kind === 'holiday' ? -1 : 1;
     return a.title.localeCompare(b.title, 'ko');
   });
 
@@ -159,18 +384,23 @@ function renderLaneRow(
           onSegClick(seg);
         }}
         title={seg.title}
-        className={`min-w-0 h-[17px] truncate rounded-sm px-1.5 text-[11px] font-normal text-white text-left leading-[17px] hover:opacity-90 ${
-          seg.kind === 'holiday' ? 'cursor-default' : ''
-        }`}
+        className="min-w-0 truncate rounded-sm px-1 text-[10px] font-medium text-left hover:opacity-90"
         style={{
           gridColumn: `span ${span}`,
+          height: LANE_H,
+          lineHeight: `${LANE_H}px`,
           backgroundColor: seg.color,
+          color: contrastText(seg.color),
         }}
       >
         {seg.title}
       </button>
     );
     col = seg.endCol + 1;
+  }
+  while (col < 7) {
+    nodes.push(<div key={`pad-end-${col}`} className="min-w-0" />);
+    col += 1;
   }
   return nodes;
 }
@@ -196,6 +426,17 @@ type ModalState =
       start_date: string;
       end_date: string;
       color: string;
+      /** null = 개인 설정 */
+      color_purpose_id: string | null;
+    };
+
+type PurposeEditState =
+  | null
+  | {
+      mode: 'create' | 'edit';
+      id?: string;
+      label: string;
+      color: string;
     };
 
 export default function DeptSharedCalendar() {
@@ -206,11 +447,14 @@ export default function DeptSharedCalendar() {
   const [viewMonth, setViewMonth] = useState(nowM);
   const [events, setEvents] = useState<CalEvent[]>([]);
   const [unitName, setUnitName] = useState('');
+  const [purposes, setPurposes] = useState<ColorPurpose[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedDate, setSelectedDate] = useState(today);
   const [modal, setModal] = useState<ModalState>(null);
+  const [purposeEdit, setPurposeEdit] = useState<PurposeEditState>(null);
+  const [manageOpen, setManageOpen] = useState(false);
 
   const monthRange = useMemo(() => {
     const from = ymd(viewYear, viewMonth, 1);
@@ -220,6 +464,19 @@ export default function DeptSharedCalendar() {
   }, [viewYear, viewMonth]);
 
   const holidays = useMemo(() => getKrHolidaysForYear(viewYear), [viewYear]);
+
+  const loadPurposes = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/schedule/dept-color-purposes?t=${Date.now()}`, {
+        cache: 'no-store',
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      setPurposes(Array.isArray(data.purposes) ? data.purposes : []);
+    } catch {
+      /* ignore */
+    }
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -248,6 +505,10 @@ export default function DeptSharedCalendar() {
     void load();
   }, [load]);
 
+  useEffect(() => {
+    void loadPurposes();
+  }, [loadPurposes]);
+
   const cells = useMemo(() => {
     const firstDow = new Date(viewYear, viewMonth - 1, 1).getDay();
     const days: Array<DayCell | null> = [];
@@ -268,8 +529,8 @@ export default function DeptSharedCalendar() {
   }, [cells]);
 
   const weekLayouts = useMemo(
-    () => weeks.map((week) => layoutWeekLanes(week, events, holidays)),
-    [weeks, events, holidays]
+    () => weeks.map((week) => layoutWeekLanes(week, events)),
+    [weeks, events]
   );
 
   const selectedDayEvents = useMemo(
@@ -295,6 +556,7 @@ export default function DeptSharedCalendar() {
 
   const openCreate = (dateStr: string) => {
     setSelectedDate(dateStr);
+    const firstPurpose = purposes[0];
     setModal({
       mode: 'create',
       title: '',
@@ -303,12 +565,15 @@ export default function DeptSharedCalendar() {
       attendees: '',
       start_date: dateStr,
       end_date: dateStr,
-      color: COLORS[0],
+      color: firstPurpose?.color || COLORS[0],
+      color_purpose_id: firstPurpose?.id || null,
     });
   };
 
   const openEdit = (ev: CalEvent) => {
     setSelectedDate(ev.start_date);
+    const purposeId = ev.color_purpose_id || null;
+    const purpose = purposeId ? purposes.find((p) => p.id === purposeId) : null;
     setModal({
       mode: 'edit',
       id: ev.id,
@@ -318,14 +583,15 @@ export default function DeptSharedCalendar() {
       attendees: String(ev.attendees || ''),
       start_date: ev.start_date,
       end_date: ev.end_date || ev.start_date,
-      color: ev.color || COLORS[0],
+      color: purpose?.color || ev.color || COLORS[0],
+      color_purpose_id: purposeId,
     });
   };
 
   const onSegClick = (seg: WeekSeg, week: Array<DayCell | null>) => {
     const cell = week[seg.startCol];
     if (cell) setSelectedDate(cell.dateStr);
-    if (seg.kind === 'event' && seg.event) openEdit(seg.event);
+    if (seg.event) openEdit(seg.event);
   };
 
   const saveModal = async () => {
@@ -344,6 +610,7 @@ export default function DeptSharedCalendar() {
         start_date: modal.start_date,
         end_date: modal.end_date || modal.start_date,
         color: modal.color,
+        color_purpose_id: modal.color_purpose_id,
       };
       const res = await fetch('/api/schedule/dept-calendar', {
         method: modal.mode === 'create' ? 'POST' : 'PATCH',
@@ -381,6 +648,67 @@ export default function DeptSharedCalendar() {
     }
   };
 
+  const savePurposeEdit = async () => {
+    if (!purposeEdit) return;
+    const label = purposeEdit.label.trim();
+    if (!label) return alert('용도명을 입력해 주세요.');
+    setBusy(true);
+    try {
+      const res = await fetch('/api/schedule/dept-color-purposes', {
+        method: purposeEdit.mode === 'create' ? 'POST' : 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: purposeEdit.id,
+          label,
+          color: purposeEdit.color,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(String(data.error || '용도 저장 실패'));
+        return;
+      }
+      if (data.colorChanged && Number(data.updatedEvents || 0) > 0) {
+        alert(
+          `「${label}」 색상이 변경되어 연결된 일정 ${data.updatedEvents}건이 일괄 반영되었습니다.`
+        );
+      }
+      setPurposeEdit(null);
+      await Promise.all([loadPurposes(), load()]);
+      if (modal?.color_purpose_id && purposeEdit.id === modal.color_purpose_id && data.color) {
+        setModal({ ...modal, color: String(data.color) });
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const deletePurpose = async (p: ColorPurpose) => {
+    if (
+      !confirm(
+        `「${p.label}」 용도를 삭제할까요?\n이미 등록된 일정 색상 값은 유지되고, 공용 연결만 해제됩니다.`
+      )
+    ) {
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await fetch(`/api/schedule/dept-color-purposes?id=${encodeURIComponent(p.id)}`, {
+        method: 'DELETE',
+      });
+      if (!res.ok) {
+        alert(await readApiError(res, '용도 삭제 실패'));
+        return;
+      }
+      if (modal?.color_purpose_id === p.id) {
+        setModal({ ...modal, color_purpose_id: null });
+      }
+      await loadPurposes();
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <>
     {/* 좌: 달력 / 우: Detail — 1:1 */}
@@ -401,6 +729,23 @@ export default function DeptSharedCalendar() {
           </div>
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
+          <button
+            type="button"
+            title={`${viewYear}.${pad2(viewMonth)} 일정 인쇄·다운로드`}
+            onClick={() => {
+              const html = buildMonthPrintHtml({
+                year: viewYear,
+                month: viewMonth,
+                unitName,
+                events,
+                holidays,
+              });
+              openMonthPrint(html);
+            }}
+            className="h-7 px-2.5 rounded-md border border-slate-200 bg-white text-slate-700 text-[10px] font-medium hover:bg-slate-50 hover:border-slate-300"
+          >
+            ⬇ 다운
+          </button>
           <button
             type="button"
             onClick={() => shiftMonth(-1)}
@@ -433,12 +778,40 @@ export default function DeptSharedCalendar() {
           </button>
           <button
             type="button"
+            onClick={() => setManageOpen(true)}
+            className="h-7 px-2.5 rounded-md border border-slate-200 bg-white text-slate-700 text-[10px] font-medium hover:bg-slate-50"
+          >
+            색상 관리
+          </button>
+          <button
+            type="button"
             onClick={() => openCreate(selectedDate || today)}
             className="h-7 px-2.5 rounded-md bg-indigo-600 text-white text-[10px] font-medium hover:bg-indigo-700"
           >
             + 일정
           </button>
         </div>
+      </div>
+
+      <div className="px-4 py-2 border-b border-slate-100 flex flex-wrap items-center gap-x-3 gap-y-1.5">
+        <span className="text-[10px] font-medium text-slate-500 shrink-0">부서 공용</span>
+        {purposes.length === 0 ? (
+          <span className="text-[11px] text-slate-400">용도를 추가해 팀 색상을 맞춰 보세요</span>
+        ) : (
+          purposes.map((p) => (
+            <span
+              key={p.id}
+              className="inline-flex items-center gap-1.5 text-[11px] text-slate-700"
+              title={p.updated_by_name ? `최근 변경: ${p.updated_by_name}` : undefined}
+            >
+              <span
+                className="w-2.5 h-2.5 rounded-full shrink-0"
+                style={{ backgroundColor: p.color }}
+              />
+              {p.label}
+            </span>
+          ))
+        )}
       </div>
 
       {error && (
@@ -534,11 +907,16 @@ export default function DeptSharedCalendar() {
 
                   <div
                     className="relative grid grid-cols-7 gap-px bg-slate-100 flex-1 min-h-[64px]"
-                    style={{ minHeight: Math.max(64, visibleLanes.length * 19 + 12) }}
+                    style={{
+                      minHeight: Math.max(56, visibleLanes.length * (LANE_H + 2) + 16),
+                    }}
                   >
                     {week.map((cell, col) => {
                       const isSelected = cell?.dateStr === selectedDate;
-                      const isToday = cell?.dateStr === today;
+                      const isTodayCell = cell?.dateStr === today;
+                      const holidayName = cell
+                        ? holidays.get(cell.dateStr) || null
+                        : null;
                       return (
                         <div
                           key={`bg-${wi}-${col}`}
@@ -546,20 +924,30 @@ export default function DeptSharedCalendar() {
                           tabIndex={cell ? 0 : undefined}
                           onClick={() => cell && setSelectedDate(cell.dateStr)}
                           onDoubleClick={() => cell && openCreate(cell.dateStr)}
-                          className={`min-h-full ${
+                          className={`min-h-full px-0.5 pt-0.5 ${
                             !cell
                               ? 'bg-slate-50/80'
                               : isSelected
                                 ? 'bg-indigo-50/90 ring-2 ring-inset ring-indigo-500'
-                                : isToday
+                                : isTodayCell
                                   ? 'bg-indigo-50/30 ring-1 ring-inset ring-indigo-200'
                                   : 'bg-white hover:bg-slate-50 cursor-pointer'
                           }`}
-                        />
+                        >
+                          {holidayName ? (
+                            <p
+                              className="truncate text-[9px] font-medium leading-tight"
+                              style={{ color: KR_HOLIDAY_COLOR }}
+                              title={holidayName}
+                            >
+                              {holidayName}
+                            </p>
+                          ) : null}
+                        </div>
                       );
                     })}
 
-                    <div className="absolute inset-0 pointer-events-none flex flex-col gap-0.5 py-0.5">
+                    <div className="absolute inset-0 pointer-events-none flex flex-col gap-px py-0.5 pt-3.5">
                       {visibleLanes.map((lane, li) => (
                         <div
                           key={`lane-${wi}-${li}`}
@@ -798,21 +1186,83 @@ export default function DeptSharedCalendar() {
                     />
                   </div>
                 </div>
-                <div className="mt-3">
-                  <label className="text-[10px] font-medium text-slate-500 block mb-1.5">색상</label>
-                  <div className="flex gap-2">
-                    {COLORS.map((c) => (
+                <div className="mt-3 space-y-3">
+                  <div>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <label className="text-[10px] font-medium text-slate-500">
+                        부서 공용
+                      </label>
                       <button
-                        key={c}
                         type="button"
-                        onClick={() => setModal({ ...modal, color: c })}
-                        className={`w-7 h-7 rounded-full border-2 ${
-                          modal.color === c ? 'border-slate-800 scale-110' : 'border-transparent'
-                        }`}
-                        style={{ backgroundColor: c }}
-                        aria-label={c}
-                      />
-                    ))}
+                        onClick={() => setManageOpen(true)}
+                        className="text-[10px] font-medium text-indigo-600 hover:text-indigo-800"
+                      >
+                        관리
+                      </button>
+                    </div>
+                    {purposes.length === 0 ? (
+                      <p className="text-[11px] text-slate-400">
+                        아직 공용 용도가 없습니다. 관리에서 추가해 주세요.
+                      </p>
+                    ) : (
+                      <div className="flex flex-wrap gap-1.5">
+                        {purposes.map((p) => {
+                          const selected = modal.color_purpose_id === p.id;
+                          return (
+                            <button
+                              key={p.id}
+                              type="button"
+                              onClick={() =>
+                                setModal({
+                                  ...modal,
+                                  color_purpose_id: p.id,
+                                  color: p.color,
+                                })
+                              }
+                              className={`inline-flex items-center gap-1.5 rounded-lg border px-2 py-1 text-[11px] font-medium transition-colors ${
+                                selected
+                                  ? 'border-slate-800 bg-slate-50 text-slate-900'
+                                  : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300'
+                              }`}
+                            >
+                              <span
+                                className="w-3 h-3 rounded-full shrink-0"
+                                style={{ backgroundColor: p.color }}
+                              />
+                              {p.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-medium text-slate-500 block mb-1.5">
+                      개인 설정
+                    </label>
+                    <div className="flex gap-2">
+                      {COLORS.map((c) => {
+                        const selected =
+                          modal.color_purpose_id === null && modal.color === c;
+                        return (
+                          <button
+                            key={c}
+                            type="button"
+                            onClick={() =>
+                              setModal({ ...modal, color_purpose_id: null, color: c })
+                            }
+                            className={`w-7 h-7 rounded-full border-2 ${
+                              selected ? 'border-slate-800 scale-110' : 'border-transparent'
+                            }`}
+                            style={{ backgroundColor: c }}
+                            aria-label={`개인 색상 ${c}`}
+                          />
+                        );
+                      })}
+                    </div>
+                    <p className="mt-1 text-[10px] text-slate-400">
+                      개인 색상은 이 일정에만 적용됩니다.
+                    </p>
                   </div>
                 </div>
               </div>
@@ -850,6 +1300,161 @@ export default function DeptSharedCalendar() {
                 </div>
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {manageOpen && (
+        <div
+          className="fixed inset-0 z-[500] flex items-center justify-center bg-slate-900/40 p-4"
+          onClick={() => {
+            if (!busy) {
+              setManageOpen(false);
+              setPurposeEdit(null);
+            }
+          }}
+        >
+          <div
+            className="w-full max-w-md rounded-2xl bg-white shadow-xl border border-slate-200 p-5"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-3 mb-3">
+              <div>
+                <p className="text-[10px] font-medium text-slate-500 uppercase tracking-widest">
+                  Department Colors
+                </p>
+                <h3 className="text-base font-semibold text-slate-900">부서 공용 용도·색상</h3>
+                <p className="mt-1 text-[11px] text-slate-500 leading-relaxed">
+                  소속 누구나 추가·변경할 수 있습니다. 색상을 바꾸면 그 용도로 등록된 일정이
+                  일괄 반영됩니다.
+                </p>
+              </div>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => {
+                  setManageOpen(false);
+                  setPurposeEdit(null);
+                }}
+                className="text-[12px] text-slate-500 hover:text-slate-800"
+              >
+                닫기
+              </button>
+            </div>
+
+            <ul className="space-y-2 max-h-[40vh] overflow-y-auto mb-3">
+              {purposes.map((p) => (
+                <li
+                  key={p.id}
+                  className="flex items-center gap-2 rounded-xl border border-slate-200 px-3 py-2"
+                >
+                  <span
+                    className="w-4 h-4 rounded-full shrink-0"
+                    style={{ backgroundColor: p.color }}
+                  />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-[13px] font-medium text-slate-800 truncate">{p.label}</p>
+                    {p.updated_by_name ? (
+                      <p className="text-[10px] text-slate-400 truncate">
+                        최근 변경 · {p.updated_by_name}
+                      </p>
+                    ) : null}
+                  </div>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() =>
+                      setPurposeEdit({
+                        mode: 'edit',
+                        id: p.id,
+                        label: p.label,
+                        color: p.color,
+                      })
+                    }
+                    className="text-[11px] font-medium text-slate-600 hover:text-slate-900"
+                  >
+                    수정
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => void deletePurpose(p)}
+                    className="text-[11px] font-medium text-rose-600 hover:text-rose-700"
+                  >
+                    삭제
+                  </button>
+                </li>
+              ))}
+              {purposes.length === 0 ? (
+                <li className="py-6 text-center text-[12px] text-slate-400">등록된 용도 없음</li>
+              ) : null}
+            </ul>
+
+            {!purposeEdit ? (
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() =>
+                  setPurposeEdit({
+                    mode: 'create',
+                    label: '',
+                    color: COLORS[0],
+                  })
+                }
+                className="w-full rounded-xl border border-dashed border-slate-300 py-2 text-[12px] font-medium text-slate-600 hover:bg-slate-50"
+              >
+                + 용도 추가
+              </button>
+            ) : (
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 space-y-2.5">
+                <p className="text-[11px] font-medium text-slate-700">
+                  {purposeEdit.mode === 'create' ? '용도 추가' : '용도 수정'}
+                </p>
+                <input
+                  value={purposeEdit.label}
+                  onChange={(e) =>
+                    setPurposeEdit({ ...purposeEdit, label: e.target.value })
+                  }
+                  placeholder="예: 출장, 내부회의"
+                  maxLength={40}
+                  className="w-full h-9 px-3 rounded-lg border border-slate-200 bg-white text-[13px] outline-none focus:ring-2 focus:ring-indigo-200"
+                />
+                <div className="flex flex-wrap gap-2">
+                  {COLORS.map((c) => (
+                    <button
+                      key={c}
+                      type="button"
+                      onClick={() => setPurposeEdit({ ...purposeEdit, color: c })}
+                      className={`w-7 h-7 rounded-full border-2 ${
+                        purposeEdit.color === c
+                          ? 'border-slate-800 scale-110'
+                          : 'border-transparent'
+                      }`}
+                      style={{ backgroundColor: c }}
+                      aria-label={c}
+                    />
+                  ))}
+                </div>
+                <div className="flex justify-end gap-2 pt-1">
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => setPurposeEdit(null)}
+                    className="px-3 py-1.5 rounded-lg text-[11px] text-slate-600 hover:bg-white"
+                  >
+                    취소
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busy || !purposeEdit.label.trim()}
+                    onClick={() => void savePurposeEdit()}
+                    className="px-3 py-1.5 rounded-lg text-[11px] font-medium bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-40"
+                  >
+                    저장
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}

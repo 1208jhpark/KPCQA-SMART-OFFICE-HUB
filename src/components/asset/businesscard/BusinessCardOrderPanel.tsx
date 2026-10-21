@@ -38,13 +38,18 @@ import {
   resolveBcMailSubjectTemplate,
 } from '@/lib/businesscard-mail-template';
 import { rowMatchesOrgUnit } from '@/lib/org-unit-match';
+import {
+  DEFAULT_GROUPWARE_MAIL_SHORTCUT_URL,
+  buildGroupwareMailOpenUrl,
+  sanitizeGroupwareMailShortcutUrl,
+} from '@/lib/groupware-mail-shortcut';
 import WindowedPagination from '@/components/common/WindowedPagination';
 
 const MENU_PATH = '/asset/businesscard/master/order';
 const DISABLED_ACTION_BTN =
   'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed opacity-70 shadow-none hover:bg-slate-100';
 /** 그룹웨어 메일 작성 기본 URL — DB 미설정·빈 값일 때 사용 (설정에서 변경 가능) */
-const DEFAULT_MAIL_SHORTCUT_URL = 'https://ep.kpcqa.or.kr/mail2/writeMailView.do?';
+const DEFAULT_MAIL_SHORTCUT_URL = DEFAULT_GROUPWARE_MAIL_SHORTCUT_URL;
 const BATCH_PAGE_SIZE = 10;
 
 interface RequestHistory {
@@ -504,8 +509,9 @@ const statementFileInputRef = useRef<HTMLInputElement>(null);
         if (data?.statementColMap) {
           setStatementColMap(normalizeStatementColMap(data.statementColMap));
         }
-        const shortcut = String(data?.mailShortcutUrl || '').trim();
-        setMailShortcutUrl(shortcut || DEFAULT_MAIL_SHORTCUT_URL);
+        setMailShortcutUrl(
+          sanitizeGroupwareMailShortcutUrl(data?.mailShortcutUrl)
+        );
         setMailSubjectTemplate(resolveBcMailSubjectTemplate(data?.mailSubjectTemplate));
         setMailBodyTemplate(resolveBcMailBodyTemplate(data?.mailBodyTemplate));
       })
@@ -1417,7 +1423,9 @@ const handleCopyToClipboard = async () => {
 const handleSaveMailShortcut = async () => {
   if (!canEditMaster) return alertNoEditPermission();
   if (mailShortcutEditor == null) return;
-  const next = mailShortcutEditor.trim() || DEFAULT_MAIL_SHORTCUT_URL;
+  const next = sanitizeGroupwareMailShortcutUrl(
+    mailShortcutEditor.trim() || DEFAULT_MAIL_SHORTCUT_URL
+  );
   setMailShortcutUrl(next);
   try {
     const res = await fetch('/api/asset/businesscard/master/settings', {
@@ -1437,7 +1445,10 @@ const handleSaveMailShortcut = async () => {
 };
 
 const handleOpenMailShortcut = () => {
-  const url = String(mailShortcutUrl || '').trim() || DEFAULT_MAIL_SHORTCUT_URL;
+  const url = buildGroupwareMailOpenUrl(
+    mailShortcutUrl,
+    currentUser?.email || currentUser?.userEmail || ''
+  );
   if (!url) {
     alert('메일 바로가기 경로가 비어 있습니다.\n⚙ 설정에서 그룹웨어 메일 작성 URL을 먼저 저장해 주세요.');
     return;
@@ -1616,15 +1627,20 @@ const handleCancelOrderBatch = async (batch: OrderBatch, e: React.MouseEvent) =>
   e.stopPropagation();
   if (!canEditMaster) return alertNoEditPermission();
   if (batch.status === '지급완료') {
-    return alert('지급완료 처리된 묶음은 발주 취소할 수 없습니다.');
+    return alert('지급완료 처리된 묶음은 발주대기로 되돌릴 수 없습니다.');
   }
-  if (!confirm(`[${formatBatchNo(batch.id)}] 발주를 취소하고 소속 건을 접수완료 발주 대기열로 되돌릴까요?`)) return;
+  if (
+    !confirm(
+      `[${formatBatchNo(batch.id)}] 묶음을 해제하고 소속 건을 접수완료 발주 대기열로 되돌릴까요?`
+    )
+  )
+    return;
   try {
     const res = await fetch(`/api/asset/businesscard/master/order?batchId=${encodeURIComponent(batch.id)}`, {
       method: 'DELETE',
     });
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.message || '발주 취소 실패');
+    if (!res.ok) throw new Error(data.message || '발주대기 복귀 실패');
     setExpandedBatchIds((prev) => {
       if (!prev.has(batch.id)) return prev;
       const next = new Set(prev);
@@ -1636,10 +1652,10 @@ const handleCancelOrderBatch = async (batch: OrderBatch, e: React.MouseEvent) =>
       next.delete(batch.id);
       return next;
     });
-    alert('발주를 취소했습니다. 건은 접수완료 발주 대기열로 돌아갑니다.');
+    alert('발주대기열로 되돌렸습니다. 건은 접수완료 발주 대기열로 돌아갑니다.');
     fetchData();
   } catch (error: any) {
-    alert(error.message || '발주 취소 중 오류가 발생했습니다.');
+    alert(error.message || '발주대기 복귀 중 오류가 발생했습니다.');
   }
 };
 
@@ -2006,7 +2022,7 @@ return (
   <div className="absolute right-0 top-0 w-64 h-64 bg-emerald-400/15 rounded-full blur-3xl -translate-y-1/3 translate-x-1/4 pointer-events-none" />
   <div className="absolute left-1/4 bottom-0 w-48 h-48 bg-teal-800/20 rounded-full blur-3xl translate-y-1/2 pointer-events-none" />
   <div className="relative z-10">
-    <h3 className="text-[10px] font-black uppercase tracking-widest text-emerald-400 mb-2.5">
+    <h3 className="text-[10px] font-medium uppercase tracking-widest text-emerald-400 mb-2.5">
       BUSINESS CARD TOTAL GOVERNANCE
     </h3>
     <h1 className="text-2xl font-extrabold tracking-tight text-white leading-none">
@@ -2017,11 +2033,11 @@ return (
     </p>
     {permissionSummary && isSystemLv1User(currentUser) && (
       <div className="flex flex-wrap items-center gap-2 mt-4 pt-3 border-t border-white/15">
-        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-white/10 border-white/25 text-emerald-50 shadow-sm">
+        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-medium border tracking-tight bg-white/10 border-white/25 text-emerald-50 shadow-sm">
           <span>👑 Master 책임자:</span>
           <span>{permissionSummary.masterName}</span>
         </div>
-        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-purple-500/20 border-purple-300/40 text-purple-100 shadow-sm">
+        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-medium border tracking-tight bg-purple-500/20 border-purple-300/40 text-purple-100 shadow-sm">
           <span>👁️ Access:</span>
           <span>{permissionSummary.accessDesignate}</span>
           <span className="opacity-50">|</span>
@@ -2029,7 +2045,7 @@ return (
           <span className="opacity-50">|</span>
           <span>Level: {permissionSummary.accessLevel}</span>
         </div>
-        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-emerald-400/20 border-emerald-300/40 text-emerald-100 shadow-sm">
+        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-medium border tracking-tight bg-emerald-400/20 border-emerald-300/40 text-emerald-100 shadow-sm">
           <span>✍️ Edit:</span>
           <span>{permissionSummary.editDesignate}</span>
           <span className="opacity-50">|</span>
@@ -2049,7 +2065,7 @@ return (
         <Link
           key={tab.id}
           href={tab.path}
-          className={`px-5 py-2 rounded-md text-xs font-black transition-all flex items-center gap-2 ${
+          className={`px-5 py-2 rounded-md text-xs font-medium transition-all flex items-center gap-2 ${
             isActive
               ? `bg-white ${tab.activeColor || 'text-indigo-600'} shadow-sm border border-slate-200/80`
               : 'text-slate-500 hover:text-slate-800'
@@ -2060,7 +2076,7 @@ return (
       );
     })}
   </div>
-  <p className="text-[10px] text-slate-400 font-bold px-3 hidden sm:block">
+  <p className="text-[10px] text-slate-400 font-medium px-3 hidden sm:block">
     ※ 탭을 클릭하여 신청현황·외주발주·보관함을 전환합니다.
   </p>
 </div>
@@ -2068,25 +2084,25 @@ return (
       <div className="bg-amber-50 border border-amber-200 rounded-xl p-3.5 text-[10px] text-amber-800 font-medium leading-relaxed">
         <div className="grid grid-cols-[1.25rem_8.5rem_1fr] gap-x-2 gap-y-1.5 items-start">
           <span className="pt-px">💡</span>
-          <span className="font-black text-slate-900 whitespace-nowrap">1) 발주진행</span>
+          <span className="font-medium text-slate-900 whitespace-nowrap">1) 발주진행</span>
           <span>
             발주서 엑셀↓ + 메일 작성(그룹웨어){' '}
-            <b className="font-black text-amber-600">→</b> 시안업로드(신청자 공유됨){' '}
-            <b className="font-black text-amber-600">→</b> 시안확정(신청자 또는 관리자 클릭){' '}
-            <b className="font-black text-amber-600">→</b> 최종 발주확정일 지정 (시안확정 후 최종메일 송부)
+            <b className="font-medium text-amber-600">→</b> 시안업로드(신청자 공유됨){' '}
+            <b className="font-medium text-amber-600">→</b> 시안확정(신청자 또는 관리자 클릭){' '}
+            <b className="font-medium text-amber-600">→</b> 최종 발주확정일 지정 (시안확정 후 최종메일 송부)
           </span>
 
           <span aria-hidden />
-          <span className="font-black text-slate-900 whitespace-nowrap">2) 수령 및 지급</span>
+          <span className="font-medium text-slate-900 whitespace-nowrap">2) 수령 및 지급</span>
           <span>
-            물품 수령검수 <b className="font-black text-amber-600">→</b> 사용자 지급
+            물품 수령검수 <b className="font-medium text-amber-600">→</b> 사용자 지급
           </span>
 
           <span aria-hidden />
-          <span className="font-black text-slate-900 whitespace-nowrap">3) 명세 대조·검수</span>
+          <span className="font-medium text-slate-900 whitespace-nowrap">3) 명세 대조·검수</span>
           <span>
             명세서 업로드 또는 수기 검수 확정{' '}
-            <b className="font-black text-amber-600">→</b> 완료 보관함 이동
+            <b className="font-medium text-amber-600">→</b> 완료 보관함 이동
           </span>
         </div>
       </div>
@@ -2097,7 +2113,7 @@ return (
         <div className="flex items-start gap-2">
           <div className="w-2.5 h-2.5 rounded-full bg-indigo-600 mt-1.5 shrink-0" />
           <div>
-            <h2 className="text-sm font-black text-slate-800 tracking-tight">외주 발주 묶음 관리 대장</h2>
+            <h2 className="text-sm font-medium text-slate-800 tracking-tight">외주 발주 묶음 관리 대장</h2>
           </div>
         </div>
         
@@ -2105,18 +2121,18 @@ return (
             <div className={`relative group/filter flex items-center gap-1.5 bg-white px-2.5 rounded-lg border border-indigo-200 shadow-sm h-7 box-border ${orgMenuOpen ? 'relative z-[90]' : ''}`}>
               <span
                 role="tooltip"
-                className={`pointer-events-none absolute left-0 top-full mt-1.5 z-50 hidden whitespace-nowrap rounded-lg bg-slate-800 px-2.5 py-1.5 text-[10px] font-bold text-white shadow-lg ${orgMenuOpen ? '' : 'group-hover/filter:block'}`}
+                className={`pointer-events-none absolute left-0 top-full mt-1.5 z-50 hidden whitespace-nowrap rounded-lg bg-slate-800 px-2.5 py-1.5 text-[10px] font-medium text-white shadow-lg ${orgMenuOpen ? '' : 'group-hover/filter:block'}`}
               >
                 연도 → 월 · 연계필터 / 조직은 마스터 정렬
               </span>
-              <span className="text-[10px] font-black text-slate-400 uppercase leading-none">연도</span>
+              <span className="text-[10px] font-medium text-slate-400 uppercase leading-none">연도</span>
               <select
                 value={selectedYear}
                 onChange={(e) => {
                   setSelectedYear(e.target.value);
                   setSelectedMonth('ALL');
                 }}
-                className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent h-4 leading-none py-0"
+                className="text-[11px] font-medium text-slate-800 outline-none cursor-pointer bg-transparent h-4 leading-none py-0"
               >
                 <option value="ALL">전체</option>
                 {availableYears.map((year) => (
@@ -2124,13 +2140,13 @@ return (
                 ))}
               </select>
               <div className="w-px h-3 bg-slate-300 shrink-0" />
-              <span className="text-[10px] font-black text-slate-400 uppercase leading-none">월별</span>
+              <span className="text-[10px] font-medium text-slate-400 uppercase leading-none">월별</span>
               <select
                 value={selectedMonth}
                 onChange={(e) => {
                   setSelectedMonth(e.target.value);
                 }}
-                className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent h-4 leading-none py-0"
+                className="text-[11px] font-medium text-slate-800 outline-none cursor-pointer bg-transparent h-4 leading-none py-0"
               >
                 <option value="ALL">전체</option>
                 {availableMonths.map((month) => (
@@ -2138,13 +2154,13 @@ return (
                 ))}
               </select>
               <div className="w-px h-3 bg-slate-300 shrink-0" />
-              <span className="text-[10px] font-black text-slate-400 uppercase leading-none">조직</span>
+              <span className="text-[10px] font-medium text-slate-400 uppercase leading-none">조직</span>
               <div className="relative inline-flex items-center" ref={orgMenuRef}>
                 <button
                   type="button"
                   onClick={() => setOrgMenuOpen((open) => !open)}
                   className={`max-w-[220px] truncate text-left text-[11px] leading-none py-0 px-0 m-0 h-4 inline-flex items-center border-0 appearance-none outline-none cursor-pointer bg-transparent ${
-                    selectedOrgUnit && isBoldOrgType(selectedOrgUnit.unit_type) ? 'font-black text-slate-900' : 'font-bold text-slate-800'
+                    selectedOrgUnit && isBoldOrgType(selectedOrgUnit.unit_type) ? 'font-medium text-slate-900' : 'font-medium text-slate-800'
                   }`}
                 >
                   {selectedOrgUnit ? selectedOrgUnit.unit_name : organizationUnit?.unit_name || '조직 선택'}
@@ -2162,7 +2178,7 @@ return (
                             setOrgMenuOpen(false);
                           }}
                           className={`w-full text-left pr-3 py-1.5 text-[11px] ${
-                            bold ? 'font-black text-slate-900' : 'font-medium text-slate-600'
+                            bold ? 'font-medium text-slate-900' : 'font-medium text-slate-600'
                           } ${selectedOrg === dept.id ? 'bg-indigo-50' : 'hover:bg-slate-50'}`}
                           style={{ paddingLeft: `${12 + dept.depth * 12}px` }}
                         >
@@ -2181,7 +2197,7 @@ return (
                 placeholder="대상자 검색..."
                 value={searchUserQuery}
                 onChange={(e) => setSearchUserQuery(e.target.value)}
-                className="w-full h-7 box-border pl-7 pr-3 py-0 bg-white border border-indigo-200 rounded-lg text-[11px] font-bold outline-none focus:border-indigo-500 shadow-sm transition-colors"
+                className="w-full h-7 box-border pl-7 pr-3 py-0 bg-white border border-indigo-200 rounded-lg text-[11px] font-medium outline-none focus:border-indigo-500 shadow-sm transition-colors"
               />
             </div>
         </div>
@@ -2189,17 +2205,17 @@ return (
 
       <div className="overflow-x-auto">
         <table className="w-full text-left border-collapse">
-          <thead className="text-indigo-900 text-[10px] font-black uppercase tracking-widest border-b border-indigo-200">
+          <thead className="text-indigo-900 text-[10px] font-medium border-b border-indigo-200">
             <tr>
               <th
                 colSpan={4}
-                className="bg-slate-100 text-slate-700 border-b border-r border-slate-300 font-semibold text-center text-xs py-1.5 normal-case tracking-normal"
+                className="bg-slate-100 text-slate-700 border-b border-r border-slate-300 font-medium text-center text-xs py-1.5 normal-case tracking-normal"
               >
                 신청/기본정보
               </th>
               <th
                 colSpan={4}
-                className="bg-blue-50 text-blue-700 border-b border-r border-blue-200 font-semibold text-center text-xs py-1.5 normal-case tracking-normal"
+                className="bg-blue-50 text-blue-700 border-b border-r border-blue-200 font-medium text-center text-xs py-1.5 normal-case tracking-normal"
               >
                 <div className="flex flex-col items-center gap-1 px-2">
                   <span>발주진행</span>
@@ -2217,7 +2233,7 @@ return (
               </th>
               <th
                 colSpan={2}
-                className="bg-sky-50 text-sky-800 border-b border-r border-sky-200 font-semibold text-center text-xs py-1.5 normal-case tracking-normal"
+                className="bg-sky-50 text-sky-800 border-b border-r border-sky-200 font-medium text-center text-xs py-1.5 normal-case tracking-normal"
               >
                 <div className="flex flex-col items-center gap-1 px-2">
                   <span>수령 및 지급</span>
@@ -2235,7 +2251,7 @@ return (
               </th>
               <th
                 colSpan={2}
-                className="bg-amber-50 text-amber-800 border-b border-r border-amber-200 font-semibold text-center text-xs py-1.5 normal-case tracking-normal"
+                className="bg-amber-50 text-amber-800 border-b border-r border-amber-200 font-medium text-center text-xs py-1.5 normal-case tracking-normal"
               >
                 <div className="flex flex-col items-center gap-1 px-2">
                   <span>명세 대조·검수</span>
@@ -2253,7 +2269,7 @@ return (
               </th>
               <th
                 colSpan={2}
-                className="bg-indigo-50 text-indigo-700 border-b border-indigo-200 font-semibold text-center text-xs py-1.5 normal-case tracking-normal"
+                className="bg-indigo-50 text-indigo-700 border-b border-indigo-200 font-medium text-center text-xs py-1.5 normal-case tracking-normal"
               >
                 관리 액션
               </th>
@@ -2266,7 +2282,7 @@ return (
               <th className="h-12 px-2 text-center w-[120px]">
                 <div className="flex flex-col items-center justify-center gap-0.5 leading-tight">
                   <span className="whitespace-nowrap">발주서다운</span>
-                  <span className="text-[10px] font-bold text-indigo-700/80 normal-case tracking-normal whitespace-nowrap">
+                  <span className="text-[10px] font-medium text-indigo-700/80 normal-case tracking-normal whitespace-nowrap">
                     (Edit · 엑셀)
                   </span>
                 </div>
@@ -2274,7 +2290,7 @@ return (
               <th className="h-12 px-2 text-center w-[100px]">
                 <div className="flex flex-col items-center justify-center gap-0.5 leading-tight">
                   <span className="whitespace-nowrap">메일 작성</span>
-                  <span className="text-[10px] font-bold text-indigo-700/80 normal-case tracking-normal whitespace-nowrap">
+                  <span className="text-[10px] font-medium text-indigo-700/80 normal-case tracking-normal whitespace-nowrap">
                     (그룹웨어)
                   </span>
                 </div>
@@ -2282,7 +2298,7 @@ return (
               <th className="h-12 px-1 text-center w-[100px]">
                 <div className="flex flex-col items-center justify-center gap-0.5 leading-tight">
                   <span className="whitespace-nowrap">시안확인</span>
-                  <span className="text-[10px] font-bold text-indigo-700/80 normal-case tracking-normal whitespace-nowrap">
+                  <span className="text-[10px] font-medium text-indigo-700/80 normal-case tracking-normal whitespace-nowrap">
                     (Edit)
                   </span>
                 </div>
@@ -2290,7 +2306,7 @@ return (
               <th className="h-12 px-1 text-center w-[110px] border-r border-blue-200">
                 <div className="flex flex-col items-center justify-center gap-0.5 leading-tight">
                   <span className="whitespace-nowrap">발주확정일</span>
-                  <span className="text-[10px] font-bold text-indigo-700/80 normal-case tracking-normal whitespace-nowrap">
+                  <span className="text-[10px] font-medium text-indigo-700/80 normal-case tracking-normal whitespace-nowrap">
                     (Edit)
                   </span>
                 </div>
@@ -2298,7 +2314,7 @@ return (
               <th className="h-12 px-1 text-center w-[100px]">
                 <div className="flex flex-col items-center justify-center gap-0.5 leading-tight">
                   <span className="whitespace-nowrap">수령 검수</span>
-                  <span className="text-[9px] font-bold text-indigo-700/80 normal-case tracking-normal whitespace-nowrap">
+                  <span className="text-[9px] font-medium text-indigo-700/80 normal-case tracking-normal whitespace-nowrap">
                     (물품 수령)
                   </span>
                 </div>
@@ -2314,7 +2330,7 @@ return (
                     onClick={openCompareModal}
                     disabled={!canEditMaster || selectedBatchIds.size === 0}
                     title={!canEditMaster ? '편집 권한 필요' : undefined}
-                    className={`px-1.5 py-1 font-black text-[9px] rounded-lg shadow-sm whitespace-nowrap normal-case tracking-normal leading-tight ${
+                    className={`px-1.5 py-1 font-medium text-[9px] rounded-lg shadow-sm whitespace-nowrap normal-case tracking-normal leading-tight ${
                       canEditMaster
                         ? 'bg-amber-500 hover:bg-amber-600 text-white disabled:opacity-40'
                         : DISABLED_ACTION_BTN
@@ -2327,16 +2343,23 @@ return (
               <th className="h-12 px-1 text-center w-[132px] border-r border-amber-200">
                 <div className="flex flex-col items-center justify-center gap-0.5 leading-tight">
                   <span className="whitespace-nowrap">명세표 수기 대조</span>
-                  <span className="text-[10px] font-bold text-indigo-700/80 normal-case tracking-normal whitespace-nowrap">
+                  <span className="text-[10px] font-medium text-indigo-700/80 normal-case tracking-normal whitespace-nowrap">
                     (Edit)
                   </span>
                 </div>
               </th>
               <th className="h-12 px-2 text-center w-[150px]">완료 보관함 이동</th>
-              <th className="h-12 px-2 text-center w-[90px]">발주취소 (Edit)</th>
+              <th className="h-12 px-2 text-center w-[100px]">
+                <div className="flex flex-col items-center justify-center gap-0.5 leading-tight">
+                  <span className="whitespace-nowrap">↺ 발주대기</span>
+                  <span className="text-[10px] font-medium text-indigo-700/80 normal-case tracking-normal whitespace-nowrap">
+                    (Edit)
+                  </span>
+                </div>
+              </th>
             </tr>
           </thead>
-          <tbody className="bg-white text-xs font-bold text-slate-700 divide-y divide-slate-100">
+          <tbody className="bg-white text-[11px] font-medium text-slate-700 divide-y divide-slate-100">
             {filteredBatches.length === 0 ? (
               <tr>
                 <td colSpan={14} className="p-16 text-center text-slate-400 text-xs">발주 묶음이 없습니다.</td>
@@ -2352,13 +2375,13 @@ return (
                 <tr className={`h-16 hover:bg-indigo-50/40 transition-colors ${selectedBatchIds.has(batch.id) ? 'bg-indigo-50/50' : ''}`}>
                   <td className="px-4 text-center"><input type="checkbox" checked={selectedBatchIds.has(batch.id)} onChange={() => handleSelectBatchRow(batch.id)} className="w-3 h-3 accent-indigo-600 cursor-pointer" /></td>
                   <td
-                    className="px-2 text-left font-mono text-slate-800 cursor-pointer whitespace-nowrap tabular-nums truncate overflow-hidden"
+                    className="px-2 text-left text-slate-800 cursor-pointer whitespace-nowrap truncate overflow-hidden"
                     title={formatBatchNo(batch.id)}
                     onClick={() => toggleBatchExpand(batch.id)}
                   >
                     {formatBatchNo(batch.id)}
                   </td>
-                  <td className="px-4 text-center text-slate-800 font-mono tabular-nums">{batch.orderDate}</td>
+                  <td className="px-4 text-center text-slate-800 whitespace-nowrap">{batch.orderDate}</td>
                   <td
                     className="px-2 text-left cursor-pointer border-r border-slate-200"
                     onClick={() => toggleBatchExpand(batch.id)}
@@ -2397,7 +2420,7 @@ return (
                             : '발주서 엑셀 다운로드'
                       }
                       onClick={() => handleBatchExcelDownload(batch)}
-                      className={`px-2.5 py-1 text-[10px] font-black rounded-lg w-full whitespace-nowrap transition-colors ${
+                      className={`px-2.5 py-1 text-[11px] font-medium rounded-lg w-full whitespace-nowrap transition-colors ${
                         canEditMaster ? prepActionBtnClass : DISABLED_ACTION_BTN
                       }`}
                     >
@@ -2413,7 +2436,7 @@ return (
                           ? '발주완료 후에도 메일 양식을 다시 열 수 있습니다'
                           : '그룹웨어 발송용 메일 양식 열기'
                       }
-                      className={`px-2.5 py-1 text-[10px] font-black rounded-lg w-full whitespace-nowrap transition-colors ${prepActionBtnClass}`}
+                      className={`px-2.5 py-1 text-[11px] font-medium rounded-lg w-full whitespace-nowrap transition-colors ${prepActionBtnClass}`}
                     >
                       메일 작성
                     </button>
@@ -2432,7 +2455,7 @@ return (
                             ? 'text-amber-600'
                             : 'text-slate-500';
                       return (
-                        <span className={`text-[10px] font-medium whitespace-nowrap ${cls}`}>
+                        <span className={`font-medium whitespace-nowrap ${cls}`}>
                           {proofStatus}
                         </span>
                       );
@@ -2440,7 +2463,7 @@ return (
                   </td>
                   <td className="px-2 text-center border-r border-slate-200">
                     {allDispatched ? (
-                      <span className="text-[10px] font-medium font-mono tabular-nums text-emerald-600 whitespace-nowrap">
+                      <span className="font-medium text-emerald-600 whitespace-nowrap">
                         {batch.dispatchedDate}
                       </span>
                     ) : (
@@ -2459,7 +2482,7 @@ return (
                                   : '발주완료일 기록'
                             }
                             onClick={() => openDispatchModal(batch)}
-                            className={`px-2 py-1 text-[10px] font-black rounded-lg w-full whitespace-nowrap transition-colors ${
+                            className={`px-2 py-1 text-[11px] font-medium rounded-lg w-full whitespace-nowrap transition-colors ${
                               canDispatch
                                 ? 'bg-blue-600 hover:bg-blue-700 text-white'
                                 : DISABLED_ACTION_BTN
@@ -2486,13 +2509,13 @@ return (
                       const pendingCls = allDispatched ? 'text-red-600' : 'text-slate-500';
                       if (total > 0 && received >= total) {
                         return (
-                          <span className="text-[10px] font-medium text-emerald-600 whitespace-nowrap">
+                          <span className="font-medium text-emerald-600 whitespace-nowrap">
                             수령완료
                           </span>
                         );
                       }
                       return (
-                        <span className={`text-[10px] font-bold whitespace-nowrap ${pendingCls}`}>
+                        <span className={`font-medium whitespace-nowrap ${pendingCls}`}>
                           수령 {received}/{total}
                           {total - received > 0 ? ` · 대기 ${total - received}` : null}
                         </span>
@@ -2501,7 +2524,7 @@ return (
                   </td>
                   <td className="px-2 text-center border-r border-slate-200">
                     {batch.status === '지급완료' ? (
-                      <span className="text-[10px] font-bold whitespace-nowrap text-slate-900">지급완료</span>
+                      <span className="font-medium whitespace-nowrap text-slate-900">지급완료</span>
                     ) : batch.status === '수령완료' ||
                       ((batch.items || []).length > 0 &&
                         (batch.items || []).every(
@@ -2512,7 +2535,7 @@ return (
                         disabled={!canEditMaster}
                         title={!canEditMaster ? '편집 권한 필요' : undefined}
                         onClick={(e) => handleMarkAsDistributed(batch.id, e)}
-                        className={`inline-flex items-center gap-1 px-2 py-1 text-[10px] font-black rounded-lg transition-colors ${
+                        className={`inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium rounded-lg transition-colors ${
                           canEditMaster
                             ? 'bg-blue-600 hover:bg-blue-700 text-white'
                             : DISABLED_ACTION_BTN
@@ -2522,16 +2545,20 @@ return (
                         <span>명함지급완료</span>
                       </button>
                     ) : (
-                      <span className="text-[10px] font-bold text-slate-300">—</span>
+                      <span className="font-medium text-slate-300">—</span>
                     )}
                   </td>
                   <td className="px-1 text-center w-[132px]">
                     <div className="flex items-center justify-center">
                       {(() => {
                         const inspect = getBatchInspectStatus(batch);
-                        if (inspect === 'match') return <span className="text-[10px] font-black text-indigo-600">일치</span>;
-                        if (inspect === 'mismatch') return <span className="text-[10px] font-black text-rose-600">불일치</span>;
-                        return <span className="text-[10px] font-black text-slate-400">미검수</span>;
+                        if (inspect === 'match') {
+                          return <span className="font-medium text-indigo-600">일치</span>;
+                        }
+                        if (inspect === 'mismatch') {
+                          return <span className="font-medium text-rose-600">불일치</span>;
+                        }
+                        return <span className="font-medium text-slate-400">미검수</span>;
                       })()}
                     </div>
                   </td>
@@ -2551,7 +2578,7 @@ return (
                           e.stopPropagation();
                           openSettlementModal(batch);
                         }}
-                        className={`px-2.5 py-1 text-[10px] font-black rounded-lg whitespace-nowrap transition-colors ${
+                        className={`px-2.5 py-1 text-[11px] font-medium rounded-lg whitespace-nowrap transition-colors ${
                           canEditMaster
                             ? batch.inspectResult?.settlementManual
                               ? 'bg-indigo-600 hover:bg-indigo-700 text-white'
@@ -2570,7 +2597,7 @@ return (
                         disabled={!canEditMaster}
                         title={!canEditMaster ? '편집 권한 필요' : undefined}
                         onClick={(e) => handleMoveBatchToArchive(batch, e)}
-                        className={`px-2.5 py-1 text-[10px] font-black rounded-lg w-full whitespace-nowrap transition-colors ${
+                        className={`px-2.5 py-1 text-[11px] font-medium rounded-lg w-full whitespace-nowrap transition-colors ${
                           canEditMaster
                             ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
                             : DISABLED_ACTION_BTN
@@ -2579,7 +2606,7 @@ return (
                         → 완료 보관함 이동
                       </button>
                     ) : (
-                      <span className="text-[10px] text-slate-300">—</span>
+                      <span className="font-medium text-slate-300">—</span>
                     )}
                   </td>
                   <td className="px-2 text-center">
@@ -2589,22 +2616,22 @@ return (
                         disabled={!canEditMaster}
                         title={!canEditMaster ? '편집 권한 필요' : undefined}
                         onClick={(e) => handleCancelOrderBatch(batch, e)}
-                        className={`px-2.5 py-1 text-[10px] font-black rounded-lg w-full whitespace-nowrap transition-colors ${
+                        className={`px-2.5 py-1 text-[11px] font-medium rounded-lg w-full whitespace-nowrap transition-colors ${
                           canEditMaster
                             ? 'bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-200'
                             : DISABLED_ACTION_BTN
                         }`}
                       >
-                        발주취소
+                        ↺ 발주대기
                       </button>
                     ) : (
-                      <span className="text-[10px] text-slate-300">—</span>
+                      <span className="font-medium text-slate-300">—</span>
                     )}
                   </td>
                 </tr>
                 
                 {expandedBatchIds.has(batch.id) && (
-                  <tr className="bg-slate-200/90 text-slate-700 text-[10px] font-semibold tracking-wide border-y border-slate-300">
+                  <tr className="bg-slate-200/90 text-slate-700 text-[10px] font-medium border-y border-slate-300">
                     <td className="h-9 px-4 text-center border-l-4 border-l-blue-500 bg-slate-200/90">NO</td>
                     <td className="h-9 px-2 text-left whitespace-nowrap">관리번호</td>
                     <td className="h-9 px-4 text-center whitespace-nowrap">신청일</td>
@@ -2683,7 +2710,7 @@ return (
                         </td>
                         {/* 묶음번호 ↓ 관리번호 */}
                         <td
-                          className="px-2 text-left font-mono text-slate-900 tabular-nums truncate bg-slate-50/80"
+                          className="px-2 text-left text-slate-900 truncate bg-slate-50/80"
                           title={item.postNumber}
                         >
                           {item.postNumber}
@@ -2869,7 +2896,7 @@ return (
                           —
                         </td>
                         {/* 명세서검수 ↓ O/X */}
-                        <td className="px-1 text-center text-base font-black bg-slate-50/80">
+                        <td className="px-1 text-center text-base font-medium bg-slate-50/80">
                           {mStatus === 'idle' && <span className="text-slate-300">-</span>}
                           {mStatus === 'match' && <span className="text-indigo-600">O</span>}
                           {(mStatus === 'mismatch' || mStatus === 'missing') && (
@@ -2915,14 +2942,14 @@ return (
         <div className="bg-white border border-slate-200 rounded-[2.5rem] shadow-2xl max-w-5xl w-full max-h-[90vh] overflow-y-auto p-6 space-y-4">
           <div className="flex justify-between items-center border-b border-slate-100 pb-3">
             <div>
-              <span className="text-[10px] font-black text-blue-600 font-mono tracking-widest">{isRequestEditing ? '⚡ 원문 편집 모드 활성화 (발주 전 최종)' : (detailReadOnly ? '🔎 원문 확인' : '🔎 발주 원문 검수 모드')}</span>
-              <h2 className="text-base font-black text-slate-900 mt-1">{detailReadOnly ? `명함 신청 원문 확인 (${detailTarget.userName} 님)` : `명함 신청 데이터 세부 검수창 (${detailTarget.userName} 님)`}</h2>
+              <span className="text-[10px] font-medium text-blue-600 font-mono tracking-widest">{isRequestEditing ? '⚡ 원문 편집 모드 활성화 (발주 전 최종)' : (detailReadOnly ? '🔎 원문 확인' : '🔎 발주 원문 검수 모드')}</span>
+              <h2 className="text-base font-medium text-slate-900 mt-1">{detailReadOnly ? `명함 신청 원문 확인 (${detailTarget.userName} 님)` : `명함 신청 데이터 세부 검수창 (${detailTarget.userName} 님)`}</h2>
             </div>
-            <button onClick={() => { setDetailTarget(null); setIsRequestEditing(false); setDetailReadOnly(false); }} className="w-8 h-8 rounded-full bg-slate-100 text-slate-500 hover:bg-slate-200 font-black text-sm transition-colors">✕</button>
+            <button onClick={() => { setDetailTarget(null); setIsRequestEditing(false); setDetailReadOnly(false); }} className="w-8 h-8 rounded-full bg-slate-100 text-slate-500 hover:bg-slate-200 font-medium text-sm transition-colors">✕</button>
           </div>
 
           {detailTarget.isModifiedByAdmin && (
-            <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-800 font-bold">⚠️ 주의: 이 신청서는 관리자에 의해 이미 한 번 수정된 이력이 있습니다. (사유: {detailTarget.adminMemo})</div>
+            <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-800 font-medium">⚠️ 주의: 이 신청서는 관리자에 의해 이미 한 번 수정된 이력이 있습니다. (사유: {detailTarget.adminMemo})</div>
           )}
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-slate-50 p-5 rounded-2xl border border-slate-100">
@@ -2954,7 +2981,7 @@ return (
                   isActive: false,
                 });
               }
-              const syncedCls = 'w-full p-1.5 border border-slate-200 rounded bg-slate-50 text-xs font-black text-slate-500 cursor-not-allowed';
+              const syncedCls = 'w-full p-1.5 border border-slate-200 rounded bg-slate-50 text-xs font-medium text-slate-500 cursor-not-allowed';
               const hqUnits = (() => {
                 const hqs = units.filter((u) => isBusinessCardHqUnit(u) || !u.parent_id);
                 if (preview.deptHead && !hqs.some((u) => u.unit_name === preview.deptHead)) {
@@ -2979,16 +3006,16 @@ return (
               return (
             <>
             <div className="space-y-2 border-r border-slate-200 pr-5 flex flex-col">
-              <h3 className="text-xs font-black text-slate-800 border-b pb-1.5">1. 국문 조판 데이터</h3>
-              <div className="space-y-1.5 text-xs font-bold text-slate-600 flex-1">
+              <h3 className="text-xs font-medium text-slate-800 border-b pb-1.5">1. 국문 조판 데이터</h3>
+              <div className="space-y-1.5 text-xs font-medium text-slate-600 flex-1">
                 <label className="block text-[10px] text-slate-400 mt-1">성명</label>
-                {isRequestEditing ? <input type="text" value={requestEditForm?.userName || ''} onChange={e => handleEditKoField('userName', e.target.value)} className="w-full p-1.5 border border-blue-300 rounded bg-white text-xs font-black" /> : <p className="text-slate-900 font-black">{detailTarget.userName}</p>}
+                {isRequestEditing ? <input type="text" value={requestEditForm?.userName || ''} onChange={e => handleEditKoField('userName', e.target.value)} className="w-full p-1.5 border border-blue-300 rounded bg-white text-xs font-medium" /> : <p className="text-slate-900 font-medium">{detailTarget.userName}</p>}
                 <label className="block text-[10px] text-slate-400 mt-1">본부 (상위 조직)</label>
                 {isRequestEditing ? (
                   <select
                     value={preview.deptHead || ''}
                     onChange={(e) => handleEditHeadChange(e.target.value)}
-                    className="w-full p-1.5 border border-blue-300 rounded bg-white text-slate-900 text-xs font-black"
+                    className="w-full p-1.5 border border-blue-300 rounded bg-white text-slate-900 text-xs font-medium"
                   >
                     <option value="">선택</option>
                     {hqUnits.map((u) => (
@@ -2996,7 +3023,7 @@ return (
                     ))}
                   </select>
                 ) : (
-                  <p className="text-slate-900 font-black">{detailTarget.deptHead || '-'}</p>
+                  <p className="text-slate-900 font-medium">{detailTarget.deptHead || '-'}</p>
                 )}
                 <label className="block text-[10px] text-slate-400 mt-1">센터 (하위 조직)</label>
                 {isRequestEditing ? (
@@ -3004,7 +3031,7 @@ return (
                     value={preview.deptName || ''}
                     disabled={!preview.deptHead}
                     onChange={(e) => handleEditSubChange(e.target.value)}
-                    className="w-full p-1.5 border border-blue-300 rounded bg-white text-slate-900 text-xs font-black disabled:bg-slate-50 disabled:text-slate-400"
+                    className="w-full p-1.5 border border-blue-300 rounded bg-white text-slate-900 text-xs font-medium disabled:bg-slate-50 disabled:text-slate-400"
                   >
                     <option value="">(본부의 하위 센터만 선택)</option>
                     {childCenterUnits.map((u) => (
@@ -3012,14 +3039,14 @@ return (
                     ))}
                   </select>
                 ) : (
-                  <p className="text-slate-900 font-black">{detailTarget.deptName || '-'}</p>
+                  <p className="text-slate-900 font-medium">{detailTarget.deptName || '-'}</p>
                 )}
                 <label className="block text-[10px] text-slate-400 mt-1">직책/직급</label>
                 {isRequestEditing ? (
                   <select
                     value={preview.title}
                     onChange={(e) => handleEditTitleChange(e.target.value)}
-                    className="w-full p-1.5 border border-blue-300 rounded bg-white text-slate-900 text-xs font-black"
+                    className="w-full p-1.5 border border-blue-300 rounded bg-white text-slate-900 text-xs font-medium"
                   >
                     <option value="">선택</option>
                     {!titleInMaster && preview.title ? (
@@ -3041,16 +3068,16 @@ return (
                     )}
                   </select>
                 ) : (
-                  <p className="text-slate-900 font-black">{detailTarget.title}</p>
+                  <p className="text-slate-900 font-medium">{detailTarget.title}</p>
                 )}
                 <label className="block text-[10px] text-slate-400 mt-1">자격사항</label>
-                {isRequestEditing ? <input type="text" value={requestEditForm?.additionalKo || ''} onChange={e => handleEditKoField('additionalKo', e.target.value)} className="w-full p-1.5 border border-blue-300 rounded bg-white text-slate-900 text-xs font-black" /> : <p className="text-slate-900 font-black">{detailTarget.additionalKo || '-'}</p>}
+                {isRequestEditing ? <input type="text" value={requestEditForm?.additionalKo || ''} onChange={e => handleEditKoField('additionalKo', e.target.value)} className="w-full p-1.5 border border-blue-300 rounded bg-white text-slate-900 text-xs font-medium" /> : <p className="text-slate-900 font-medium">{detailTarget.additionalKo || '-'}</p>}
                 <label className="block text-[10px] text-slate-400 mt-1">휴대전화</label>
-                {isRequestEditing ? <input type="text" value={requestEditForm?.mobile || ''} onChange={e => handleEditKoField('mobile', e.target.value)} className="w-full p-1.5 border border-blue-300 rounded bg-white font-mono text-xs font-black" /> : <p className="text-slate-900 font-mono font-black">{detailTarget.mobile}</p>}
+                {isRequestEditing ? <input type="text" value={requestEditForm?.mobile || ''} onChange={e => handleEditKoField('mobile', e.target.value)} className="w-full p-1.5 border border-blue-300 rounded bg-white font-mono text-xs font-medium" /> : <p className="text-slate-900 font-mono font-medium">{detailTarget.mobile}</p>}
                 <label className="block text-[10px] text-slate-400 mt-1">내선전화</label>
-                {isRequestEditing ? <input type="text" value={requestEditForm?.phone || ''} onChange={e => handleEditKoField('phone', e.target.value)} className="w-full p-1.5 border border-blue-300 rounded bg-white font-mono text-xs font-black" /> : <p className="text-slate-900 font-mono">{detailTarget.phone || '-'}</p>}
+                {isRequestEditing ? <input type="text" value={requestEditForm?.phone || ''} onChange={e => handleEditKoField('phone', e.target.value)} className="w-full p-1.5 border border-blue-300 rounded bg-white font-mono text-xs font-medium" /> : <p className="text-slate-900 font-mono">{detailTarget.phone || '-'}</p>}
                 <label className="block text-[10px] text-slate-400 mt-1">이메일</label>
-                {isRequestEditing ? <input type="text" value={requestEditForm?.email || ''} onChange={e => handleEditKoField('email', e.target.value)} className="w-full p-1.5 border border-blue-300 rounded bg-white font-mono text-xs font-black" /> : <p className="text-slate-900 font-mono">{detailTarget.email}</p>}
+                {isRequestEditing ? <input type="text" value={requestEditForm?.email || ''} onChange={e => handleEditKoField('email', e.target.value)} className="w-full p-1.5 border border-blue-300 rounded bg-white font-mono text-xs font-medium" /> : <p className="text-slate-900 font-mono">{detailTarget.email}</p>}
               </div>
               <div className="mt-4 p-3 bg-white rounded-xl border border-slate-200 space-y-1.5">
                 {isRequestEditing ? (
@@ -3059,55 +3086,55 @@ return (
                     <select
                       value={addressSelectValue}
                       onChange={(e) => handleEditAddressChange(e.target.value)}
-                      className="w-full p-1.5 border border-blue-300 rounded bg-white text-slate-900 text-xs font-black"
+                      className="w-full p-1.5 border border-blue-300 rounded bg-white text-slate-900 text-xs font-medium"
                     >
                       <option value="">선택</option>
                       {addressOptions.map((a) => (
                         <option key={a.id} value={a.id}>{a.label}</option>
                       ))}
                     </select>
-                    <p className="text-[11px] font-bold text-slate-500">팩스: <span className="font-mono text-slate-800">{preview.fax || '-'}</span></p>
-                    <p className="text-[11px] font-bold text-slate-500 leading-relaxed">주소: <span className="text-slate-800">[{preview.zipCode}] {preview.addressKo}</span></p>
+                    <p className="text-[11px] font-medium text-slate-500">팩스: <span className="font-mono text-slate-800">{preview.fax || '-'}</span></p>
+                    <p className="text-[11px] font-medium text-slate-500 leading-relaxed">주소: <span className="text-slate-800">[{preview.zipCode}] {preview.addressKo}</span></p>
                   </>
                 ) : (
                   <>
-                    <p className="text-[11px] font-bold text-slate-600 mb-1">팩스: <span className="font-mono text-slate-900">{detailTarget.fax || '-'}</span></p>
-                    <p className="text-[11px] font-bold text-slate-600 leading-relaxed">주소: <span className="text-slate-900">[{detailTarget.zipCode}] {detailTarget.addressKo}</span></p>
+                    <p className="text-[11px] font-medium text-slate-600 mb-1">팩스: <span className="font-mono text-slate-900">{detailTarget.fax || '-'}</span></p>
+                    <p className="text-[11px] font-medium text-slate-600 leading-relaxed">주소: <span className="text-slate-900">[{detailTarget.zipCode}] {detailTarget.addressKo}</span></p>
                   </>
                 )}
               </div>
             </div>
 
             <div className="space-y-2 pl-1 flex flex-col">
-              <h3 className="text-xs font-black text-indigo-800 border-b border-indigo-100 pb-1.5">2. 영문 조판 데이터</h3>
-              <div className="space-y-1.5 text-xs font-bold text-slate-600 flex-1">
+              <h3 className="text-xs font-medium text-indigo-800 border-b border-indigo-100 pb-1.5">2. 영문 조판 데이터</h3>
+              <div className="space-y-1.5 text-xs font-medium text-slate-600 flex-1">
                 <label className="block text-[10px] text-slate-400 mt-1">영문 성명</label>
-                {isRequestEditing ? <input type="text" value={requestEditForm?.userNameEn || ''} onChange={e => setRequestEditForm({...requestEditForm!, userNameEn: e.target.value})} className="w-full p-1.5 border border-blue-300 rounded bg-white text-indigo-950 text-xs font-black" /> : <p className="text-indigo-900 font-black">{detailTarget.userNameEn || '-'}</p>}
+                {isRequestEditing ? <input type="text" value={requestEditForm?.userNameEn || ''} onChange={e => setRequestEditForm({...requestEditForm!, userNameEn: e.target.value})} className="w-full p-1.5 border border-blue-300 rounded bg-white text-indigo-950 text-xs font-medium" /> : <p className="text-indigo-900 font-medium">{detailTarget.userNameEn || '-'}</p>}
                 <label className="block text-[10px] text-slate-400 mt-1">영문 본부 (상위 조직) (조직 연동)🔒</label>
                 {isRequestEditing ? (
                   <input type="text" readOnly value={preview.deptHeadEn || '-'} className={syncedCls} />
                 ) : (
-                  <p className="text-indigo-900 font-black">{detailTarget.deptHeadEn || '-'}</p>
+                  <p className="text-indigo-900 font-medium">{detailTarget.deptHeadEn || '-'}</p>
                 )}
                 <label className="block text-[10px] text-slate-400 mt-1">영문 센터 (하위 조직) (조직 연동)🔒</label>
                 {isRequestEditing ? (
                   <input type="text" readOnly value={preview.deptNameEn || '-'} className={syncedCls} />
                 ) : (
-                  <p className="text-indigo-900 font-black">{detailTarget.deptNameEn || '-'}</p>
+                  <p className="text-indigo-900 font-medium">{detailTarget.deptNameEn || '-'}</p>
                 )}
                 <label className="block text-[10px] text-slate-400 mt-1">영문 직책/직급🔒</label>
                 {isRequestEditing ? (
                   <input type="text" readOnly value={preview.titleEn || '-'} className={syncedCls} />
                 ) : (
-                  <p className="text-indigo-900 font-black">{detailTarget.titleEn || '-'}</p>
+                  <p className="text-indigo-900 font-medium">{detailTarget.titleEn || '-'}</p>
                 )}
                 <label className="block text-[10px] text-slate-400 mt-1">영문 자격사항</label>
-                {isRequestEditing ? <input type="text" value={requestEditForm?.additionalEn || ''} onChange={e => setRequestEditForm({...requestEditForm!, additionalEn: e.target.value})} className="w-full p-1.5 border border-blue-300 rounded bg-white text-indigo-950 text-xs font-black" /> : <p className="text-indigo-900 font-black">{detailTarget.additionalEn || '-'}</p>}
+                {isRequestEditing ? <input type="text" value={requestEditForm?.additionalEn || ''} onChange={e => setRequestEditForm({...requestEditForm!, additionalEn: e.target.value})} className="w-full p-1.5 border border-blue-300 rounded bg-white text-indigo-950 text-xs font-medium" /> : <p className="text-indigo-900 font-medium">{detailTarget.additionalEn || '-'}</p>}
                 <label className="block text-[10px] text-slate-400 mt-1">영문 휴대전화 (국문 연동)🔒</label>
                 {isRequestEditing ? (
                   <input type="text" readOnly value={stripBusinessCardEnPlus(preview.mobileEn) || '-'} className={`${syncedCls} font-mono`} />
                 ) : (
-                  <p className="text-indigo-900 font-mono font-black">{stripBusinessCardEnPlus(detailTarget.mobileEn) || '-'}</p>
+                  <p className="text-indigo-900 font-mono font-medium">{stripBusinessCardEnPlus(detailTarget.mobileEn) || '-'}</p>
                 )}
                 <label className="block text-[10px] text-slate-400 mt-1">영문 내선전화 (국문 연동)🔒</label>
                 {isRequestEditing ? (
@@ -3123,8 +3150,8 @@ return (
                 )}
               </div>
               <div className="mt-4 p-3 bg-white rounded-xl border border-indigo-100">
-                <p className="text-[11px] font-bold text-slate-600 mb-1">영문 팩스: <span className="font-mono text-indigo-900">{stripBusinessCardEnPlus(preview.faxEn) || '-'}</span></p>
-                <p className="text-[11px] font-bold text-slate-600 leading-relaxed">영문 주소: <span className="text-indigo-900">{preview.addressEn || '-'}</span></p>
+                <p className="text-[11px] font-medium text-slate-600 mb-1">영문 팩스: <span className="font-mono text-indigo-900">{stripBusinessCardEnPlus(preview.faxEn) || '-'}</span></p>
+                <p className="text-[11px] font-medium text-slate-600 leading-relaxed">영문 주소: <span className="text-indigo-900">{preview.addressEn || '-'}</span></p>
               </div>
             </div>
             </>
@@ -3134,41 +3161,41 @@ return (
 
           <div className="p-4 bg-rose-50 border border-rose-200 rounded-2xl flex items-center justify-between shadow-inner">
             <div>
-              <label className="block text-sm font-black text-rose-900 mb-0.5">📦 명함 발주 최종 수량 (통)</label>
-              <p className="text-[10px] text-rose-700 font-bold">{detailReadOnly ? '인쇄소에 전달된 제작 수량입니다. 변경이 필요하면 묶음의 [발주 취소]로 대기열에 되돌린 뒤 수정하세요.' : '인쇄소에 전달될 최종 제작 수량입니다. 수정이 필요할 경우 우측 폼에서 조정하세요.'}</p>
+              <label className="block text-sm font-medium text-rose-900 mb-0.5">📦 명함 발주 최종 수량 (통)</label>
+              <p className="text-[10px] text-rose-700 font-medium">{detailReadOnly ? '인쇄소에 전달된 제작 수량입니다. 변경이 필요하면 묶음의 [↺ 발주대기]로 대기열에 되돌린 뒤 수정하세요.' : '인쇄소에 전달될 최종 제작 수량입니다. 수정이 필요할 경우 우측 폼에서 조정하세요.'}</p>
             </div>
             <div className="w-32">
               {isRequestEditing ? (
-                <input type="number" min="1" value={requestEditForm?.quantity || 1} onChange={e => setRequestEditForm({...requestEditForm!, quantity: parseInt(e.target.value)})} className="w-full p-2.5 border-2 border-rose-400 rounded-xl bg-white text-rose-700 font-black text-base text-center outline-none focus:border-rose-600" />
+                <input type="number" min="1" value={requestEditForm?.quantity || 1} onChange={e => setRequestEditForm({...requestEditForm!, quantity: parseInt(e.target.value)})} className="w-full p-2.5 border-2 border-rose-400 rounded-xl bg-white text-rose-700 font-medium text-base text-center outline-none focus:border-rose-600" />
               ) : (
-                <div className="w-full p-2.5 bg-white border-2 border-rose-200 rounded-xl text-rose-600 font-black text-base text-center shadow-sm">{detailTarget.quantity || 1} 통</div>
+                <div className="w-full p-2.5 bg-white border-2 border-rose-200 rounded-xl text-rose-600 font-medium text-base text-center shadow-sm">{detailTarget.quantity || 1} 통</div>
               )}
             </div>
           </div>
 
           {isRequestEditing && (
             <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl">
-              <label className="block text-xs font-black text-amber-900 mb-2">📝 발주 전 최종 수정 사유 (임직원 마이페이지에 표시됩니다) *</label>
-              <input type="text" value={adminMemoInput} onChange={(e) => setAdminMemoInput(e.target.value)} placeholder="예: 직급 오기재 수정, 영문 성명 스펠링 최종 수정 등" className="w-full p-2.5 text-xs font-bold text-slate-800 border border-amber-300 rounded-lg outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-200" />
+              <label className="block text-xs font-medium text-amber-900 mb-2">📝 발주 전 최종 수정 사유 (임직원 마이페이지에 표시됩니다) *</label>
+              <input type="text" value={adminMemoInput} onChange={(e) => setAdminMemoInput(e.target.value)} placeholder="예: 직급 오기재 수정, 영문 성명 스펠링 최종 수정 등" className="w-full p-2.5 text-xs font-medium text-slate-800 border border-amber-300 rounded-lg outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-200" />
             </div>
           )}
 
           <div className="flex gap-2 justify-end pt-3 border-t border-slate-100 mt-2">
             {isRequestEditing ? (
               <>
-                <button onClick={() => { setIsRequestEditing(false); setAdminMemoInput(''); }} className="px-5 py-2.5 bg-slate-200 text-slate-700 rounded-xl font-black text-xs hover:bg-slate-300 transition-colors">수정 취소</button>
-                <button onClick={handleExecuteUpdate} className="px-6 py-2.5 bg-blue-600 text-white rounded-xl font-black text-xs hover:bg-blue-700 transition-colors shadow-md">변경사항 DB 저장</button>
+                <button onClick={() => { setIsRequestEditing(false); setAdminMemoInput(''); }} className="px-5 py-2.5 bg-slate-200 text-slate-700 rounded-xl font-medium text-xs hover:bg-slate-300 transition-colors">수정 취소</button>
+                <button onClick={handleExecuteUpdate} className="px-6 py-2.5 bg-blue-600 text-white rounded-xl font-medium text-xs hover:bg-blue-700 transition-colors shadow-md">변경사항 DB 저장</button>
               </>
             ) : (
               <>
-                <button onClick={() => { setDetailTarget(null); setDetailReadOnly(false); }} className="px-5 py-2.5 bg-slate-100 text-slate-700 rounded-xl font-black text-xs hover:bg-slate-200 transition-colors">닫기</button>
+                <button onClick={() => { setDetailTarget(null); setDetailReadOnly(false); }} className="px-5 py-2.5 bg-slate-100 text-slate-700 rounded-xl font-medium text-xs hover:bg-slate-200 transition-colors">닫기</button>
                 {!detailReadOnly && (
                   <button
                     type="button"
                     disabled={!canEditMaster}
                     title={!canEditMaster ? '편집 권한 필요' : undefined}
                     onClick={() => beginRequestEdit(detailTarget)}
-                    className={`px-5 py-2.5 rounded-xl font-black text-xs transition-colors shadow-sm ${
+                    className={`px-5 py-2.5 rounded-xl font-medium text-xs transition-colors shadow-sm ${
                       canEditMaster
                         ? 'bg-amber-500 text-white hover:bg-amber-600'
                         : DISABLED_ACTION_BTN
@@ -3188,7 +3215,7 @@ return (
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 animate-fade-in backdrop-blur-sm">
         <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl border border-slate-200 space-y-4">
           <div className="border-b border-slate-100 pb-3">
-            <h3 className="text-base font-black text-slate-800 flex items-center gap-2">
+            <h3 className="text-base font-medium text-slate-800 flex items-center gap-2">
               <span>📅</span>
               <span>발주완료일을 기록합니다.</span>
             </h3>
@@ -3200,12 +3227,12 @@ return (
           </div>
 
           <div className="rounded-xl bg-slate-50 p-3.5 border border-slate-200/80 space-y-2">
-            <div className="font-mono font-bold text-indigo-700 text-xs sm:text-[13px] break-all leading-snug tracking-tight">
+            <div className="font-mono font-medium text-indigo-700 text-xs sm:text-[13px] break-all leading-snug tracking-tight">
               {formatBatchNo(dispatchModalBatch.id)}
             </div>
             <div className="flex items-center justify-between text-xs text-slate-600 pt-2 border-t border-slate-200/70">
-              <span className="font-bold text-slate-500">수량 / 건수:</span>
-              <span className="font-bold text-slate-800">
+              <span className="font-medium text-slate-500">수량 / 건수:</span>
+              <span className="font-medium text-slate-800">
                 {(dispatchModalBatch.items || []).reduce((s, it) => s + (it.quantity || 1), 0)}통 (
                 {(dispatchModalBatch.items || []).length}건)
               </span>
@@ -3214,11 +3241,11 @@ return (
 
           <div className="space-y-1.5">
             <div className="flex items-center justify-between">
-              <label className="text-xs font-black text-slate-700">날짜:</label>
+              <label className="text-xs font-medium text-slate-700">날짜:</label>
               <button
                 type="button"
                 onClick={() => setDispatchDateInput(getKSTDateString())}
-                className="text-[11px] font-bold text-blue-600 hover:text-blue-800 hover:underline"
+                className="text-[11px] font-medium text-blue-600 hover:text-blue-800 hover:underline"
               >
                 오늘(Today)로 설정
               </button>
@@ -3227,7 +3254,7 @@ return (
               type="date"
               value={dispatchDateInput}
               onChange={(e) => setDispatchDateInput(e.target.value)}
-              className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm font-mono font-bold text-slate-800 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100 shadow-sm"
+              className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm font-mono font-medium text-slate-800 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100 shadow-sm"
             />
           </div>
 
@@ -3236,7 +3263,7 @@ return (
               type="button"
               onClick={() => setDispatchModalBatch(null)}
               disabled={dispatchSubmitting}
-              className="rounded-xl bg-slate-100 hover:bg-slate-200 px-4 py-2 text-xs font-black text-slate-600 transition-colors"
+              className="rounded-xl bg-slate-100 hover:bg-slate-200 px-4 py-2 text-xs font-medium text-slate-600 transition-colors"
             >
               취소
             </button>
@@ -3244,7 +3271,7 @@ return (
               type="button"
               onClick={handleConfirmDispatch}
               disabled={dispatchSubmitting}
-              className="rounded-xl bg-blue-600 hover:bg-blue-700 px-4 py-2 text-xs font-black text-white transition-colors disabled:opacity-50"
+              className="rounded-xl bg-blue-600 hover:bg-blue-700 px-4 py-2 text-xs font-medium text-white transition-colors disabled:opacity-50"
             >
               {dispatchSubmitting ? '처리중…' : '발주완료 확정'}
             </button>
@@ -3259,15 +3286,15 @@ return (
         <div className="bg-white border border-slate-200 rounded-[2.5rem] shadow-2xl max-w-4xl w-full p-8 space-y-6">
           <div className="border-b border-slate-100 pb-5 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
             <div className="flex-1">
-              <h2 className="text-lg font-black text-slate-900 flex items-center gap-2">📋 그룹웨어 발송용 메일 양식 미리보기</h2>
-              <p className="text-xs text-slate-500 font-bold mt-2 leading-relaxed">
+              <h2 className="text-lg font-medium text-slate-900 flex items-center gap-2">📋 그룹웨어 발송용 메일 양식 미리보기</h2>
+              <p className="text-xs text-slate-500 font-medium mt-2 leading-relaxed">
                 수신 업체를 선택하면 본문이 자동으로 변경됩니다.
                 <br />
                 복사 후 그룹웨어에 붙여넣으세요. 제목·본문 양식은 설정에서 수정할 수 있습니다.
               </p>
             </div>
             <div className="flex items-center gap-2 shrink-0">
-              <select value={selectedVendorId} onChange={(e) => setSelectedVendorId(e.target.value)} className="bg-indigo-50 border border-indigo-200 text-indigo-900 text-xs font-black py-2.5 px-3 rounded-xl outline-none focus:ring-2 focus:ring-indigo-300 w-48 cursor-pointer">
+              <select value={selectedVendorId} onChange={(e) => setSelectedVendorId(e.target.value)} className="bg-indigo-50 border border-indigo-200 text-indigo-900 text-xs font-medium py-2.5 px-3 rounded-xl outline-none focus:ring-2 focus:ring-indigo-300 w-48 cursor-pointer">
                 {vendors.map(vendor => (
                   <option key={vendor.id} value={vendor.id}>{vendor.companyName} ({vendor.managerName})</option>
                 ))}
@@ -3284,7 +3311,7 @@ return (
                     bodyTemplate: mailBodyTemplate,
                   });
                 }}
-                className={`px-4 py-2.5 font-black text-xs rounded-xl transition-colors whitespace-nowrap shadow-sm ${
+                className={`px-4 py-2.5 font-medium text-xs rounded-xl transition-colors whitespace-nowrap shadow-sm ${
                   canEditMaster
                     ? 'bg-slate-800 text-white hover:bg-slate-900'
                     : DISABLED_ACTION_BTN
@@ -3300,7 +3327,7 @@ return (
                   if (!canEditMaster) return alertNoEditPermission();
                   setIsVendorModalOpen(true);
                 }}
-                className={`px-4 py-2.5 font-black text-xs rounded-xl transition-colors whitespace-nowrap shadow-sm ${
+                className={`px-4 py-2.5 font-medium text-xs rounded-xl transition-colors whitespace-nowrap shadow-sm ${
                   canEditMaster
                     ? 'bg-slate-800 text-white hover:bg-slate-900'
                     : DISABLED_ACTION_BTN
@@ -3312,30 +3339,30 @@ return (
           </div>
           <div className="space-y-4">
             <div>
-              <label className="block text-xs font-black text-slate-500 mb-1.5 ml-1">담당자 이메일</label>
-              <div className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-black text-slate-800 select-all cursor-text">
+              <label className="block text-xs font-medium text-slate-500 mb-1.5 ml-1">담당자 이메일</label>
+              <div className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-medium text-slate-800 select-all cursor-text">
                 {activeVendor?.email?.trim() || <span className="text-slate-400">선택한 업체 이메일이 없습니다.</span>}
               </div>
             </div>
             <div>
-              <label className="block text-xs font-black text-slate-500 mb-1.5 ml-1">메일 제목 (클릭 시 자동 선택)</label>
-              <div className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-black text-slate-800 select-all cursor-text">{getPreviewSubject()}</div>
+              <label className="block text-xs font-medium text-slate-500 mb-1.5 ml-1">메일 제목 (클릭 시 자동 선택)</label>
+              <div className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-medium text-slate-800 select-all cursor-text">{getPreviewSubject()}</div>
             </div>
             <div>
-              <label className="block text-xs font-black text-slate-500 mb-1.5 ml-1">메일 본문 (클릭 시 자동 선택)</label>
-              <textarea readOnly rows={8} value={getPreviewBody()} className="w-full p-4 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold text-slate-700 whitespace-pre-wrap resize-none focus:outline-none select-all cursor-text" />
+              <label className="block text-xs font-medium text-slate-500 mb-1.5 ml-1">메일 본문 (클릭 시 자동 선택)</label>
+              <textarea readOnly rows={8} value={getPreviewBody()} className="w-full p-4 bg-slate-50 border border-slate-200 rounded-xl text-sm font-medium text-slate-700 whitespace-pre-wrap resize-none focus:outline-none select-all cursor-text" />
             </div>
           </div>
           <div className="flex justify-end gap-2 pt-2 border-t border-slate-100 mt-2">
-            <button onClick={() => setIsEmailModalOpen(false)} className="px-5 py-2.5 bg-slate-100 font-black text-xs rounded-xl hover:bg-slate-200 text-slate-700 transition-colors">닫기</button>
-            <button onClick={handleCopyToClipboard} className="px-6 py-2.5 bg-indigo-600 text-white font-black text-xs rounded-xl hover:bg-indigo-700 shadow-md transition-colors">📝 메일·제목·본문 전체 복사하기</button>
+            <button onClick={() => setIsEmailModalOpen(false)} className="px-5 py-2.5 bg-slate-100 font-medium text-xs rounded-xl hover:bg-slate-200 text-slate-700 transition-colors">닫기</button>
+            <button onClick={handleCopyToClipboard} className="px-6 py-2.5 bg-indigo-600 text-white font-medium text-xs rounded-xl hover:bg-indigo-700 shadow-md transition-colors">📝 메일·제목·본문 전체 복사하기</button>
             <div className="flex items-center">
               <button
                 type="button"
                 onClick={handleOpenMailShortcut}
-                className="px-6 py-2.5 bg-slate-800 text-white font-black text-xs rounded-l-xl hover:bg-slate-900 shadow-md transition-colors"
+                className="px-6 py-2.5 bg-slate-800 text-white font-medium text-xs rounded-l-xl hover:bg-slate-900 shadow-md transition-colors"
               >
-                메일로 바로가기 ↗
+                그룹웨어 메일로 바로가기 ↗
               </button>
               <button
                 type="button"
@@ -3345,7 +3372,7 @@ return (
                   if (!canEditMaster) return alertNoEditPermission();
                   setMailShortcutEditor(mailShortcutUrl || DEFAULT_MAIL_SHORTCUT_URL);
                 }}
-                className={`px-3 py-2.5 font-black text-xs rounded-r-xl shadow-md border-l border-slate-600 ${
+                className={`px-3 py-2.5 font-medium text-xs rounded-r-xl shadow-md border-l border-slate-600 ${
                   canEditMaster
                     ? 'bg-slate-700 text-white hover:bg-slate-600'
                     : DISABLED_ACTION_BTN
@@ -3363,15 +3390,15 @@ return (
       <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-900/50 p-4">
         <div className="w-full max-w-2xl rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl space-y-4">
           <div>
-            <h3 className="text-base font-black text-slate-900">명함 메일 양식 설정</h3>
-            <p className="mt-2 text-[11px] font-bold leading-relaxed text-slate-500">
+            <h3 className="text-base font-medium text-slate-900">명함 메일 양식 설정</h3>
+            <p className="mt-2 text-[11px] font-medium leading-relaxed text-slate-500">
               플레이스홀더: {'{{BATCH_NO}}'}(묶음번호), {'{{APPLICANTS}}'}(신청인 이름·통수),{' '}
               {'{{COUNT}}'}(건수), {'{{PACKS}}'}(통수), {'{{VENDOR_NAME}}'}(업체명),{' '}
               {'{{VENDOR_MANAGER}}'}(담당자)
             </p>
           </div>
           <div>
-            <label className="block text-[10px] font-black text-slate-500 mb-1">제목 양식</label>
+            <label className="block text-[10px] font-medium text-slate-500 mb-1">제목 양식</label>
             <input
               type="text"
               value={mailTemplateEditor.subjectTemplate}
@@ -3381,11 +3408,11 @@ return (
                   subjectTemplate: e.target.value,
                 })
               }
-              className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm font-bold text-slate-800 outline-none focus:border-indigo-400"
+              className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm font-medium text-slate-800 outline-none focus:border-indigo-400"
             />
           </div>
           <div>
-            <label className="block text-[10px] font-black text-slate-500 mb-1">본문 양식</label>
+            <label className="block text-[10px] font-medium text-slate-500 mb-1">본문 양식</label>
             <textarea
               rows={12}
               value={mailTemplateEditor.bodyTemplate}
@@ -3395,7 +3422,7 @@ return (
                   bodyTemplate: e.target.value,
                 })
               }
-              className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm font-bold text-slate-800 outline-none focus:border-indigo-400 whitespace-pre-wrap"
+              className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm font-medium text-slate-800 outline-none focus:border-indigo-400 whitespace-pre-wrap"
             />
           </div>
           <div className="flex justify-between gap-2">
@@ -3407,7 +3434,7 @@ return (
                   bodyTemplate: DEFAULT_BC_MAIL_BODY,
                 })
               }
-              className="rounded-xl bg-slate-100 px-4 py-2 text-xs font-black text-slate-600"
+              className="rounded-xl bg-slate-100 px-4 py-2 text-xs font-medium text-slate-600"
             >
               기본값 불러오기(Edit)
             </button>
@@ -3415,14 +3442,14 @@ return (
               <button
                 type="button"
                 onClick={() => setMailTemplateEditor(null)}
-                className="rounded-xl bg-slate-100 px-4 py-2 text-xs font-black text-slate-600"
+                className="rounded-xl bg-slate-100 px-4 py-2 text-xs font-medium text-slate-600"
               >
                 취소
               </button>
               <button
                 type="button"
                 onClick={handleSaveMailTemplates}
-                className="rounded-xl bg-indigo-600 px-4 py-2 text-xs font-black text-white"
+                className="rounded-xl bg-indigo-600 px-4 py-2 text-xs font-medium text-white"
               >
                 저장
               </button>
@@ -3437,33 +3464,33 @@ return (
         <div className="bg-white border border-slate-200 rounded-[2.5rem] shadow-2xl max-w-5xl w-full p-8 space-y-6">
           <div className="border-b border-slate-100 pb-4 flex justify-between items-center">
             <div>
-              <h2 className="text-lg font-black text-slate-900 flex items-center gap-2">⚙️ 외주업체 마스터 데이터 관리</h2>
-              <p className="text-xs text-slate-500 font-bold mt-1">명함 조판 협력사 정보를 관리합니다. 사용하지 않는 업체는 삭제할 수 있으며, 발주 이력은 그대로 남습니다.</p>
+              <h2 className="text-lg font-medium text-slate-900 flex items-center gap-2">⚙️ 외주업체 마스터 데이터 관리</h2>
+              <p className="text-xs text-slate-500 font-medium mt-1">명함 조판 협력사 정보를 관리합니다. 사용하지 않는 업체는 삭제할 수 있으며, 발주 이력은 그대로 남습니다.</p>
             </div>
-            {vendorForm.id && <span className="bg-amber-100 text-amber-800 text-[11px] font-black px-3 py-1 rounded-lg animate-pulse">✏️ 현재 업체 정보 수정 중</span>}
+            {vendorForm.id && <span className="bg-amber-100 text-amber-800 text-[11px] font-medium px-3 py-1 rounded-lg animate-pulse">✏️ 현재 업체 정보 수정 중</span>}
           </div>
 
           <div className={`flex flex-wrap gap-2 items-end p-4 rounded-2xl border transition-all ${vendorForm.id ? 'bg-amber-50/50 border-amber-200' : 'bg-slate-50 border-slate-200'}`}>
             <div className="flex-1 min-w-[140px]">
-              <label className="block text-[10px] font-black text-slate-500 mb-1 ml-1">업체명</label>
-              <input type="text" value={vendorForm.companyName || ''} onChange={e => setVendorForm({...vendorForm, companyName: e.target.value})} className="w-full p-2 border border-slate-300 rounded-lg text-xs font-bold outline-none bg-white" placeholder="업체명을 작성하세요" />
+              <label className="block text-[10px] font-medium text-slate-500 mb-1 ml-1">업체명</label>
+              <input type="text" value={vendorForm.companyName || ''} onChange={e => setVendorForm({...vendorForm, companyName: e.target.value})} className="w-full p-2 border border-slate-300 rounded-lg text-xs font-medium outline-none bg-white" placeholder="업체명을 작성하세요" />
             </div>
             <div className="flex-1 min-w-[140px]">
-              <label className="block text-[10px] font-black text-slate-500 mb-1 ml-1">담당자명/직급</label>
-              <input type="text" value={vendorForm.managerName || ''} onChange={e => setVendorForm({...vendorForm, managerName: e.target.value})} className="w-full p-2 border border-slate-300 rounded-lg text-xs font-bold outline-none bg-white" placeholder="ex) 홍길동 팀장 / 담당자" />
+              <label className="block text-[10px] font-medium text-slate-500 mb-1 ml-1">담당자명/직급</label>
+              <input type="text" value={vendorForm.managerName || ''} onChange={e => setVendorForm({...vendorForm, managerName: e.target.value})} className="w-full p-2 border border-slate-300 rounded-lg text-xs font-medium outline-none bg-white" placeholder="ex) 홍길동 팀장 / 담당자" />
             </div>
             <div className="flex-1 min-w-[160px]">
-              <label className="block text-[10px] font-black text-slate-500 mb-1 ml-1">이메일</label>
-              <input type="email" value={vendorForm.email || ''} onChange={e => setVendorForm({...vendorForm, email: e.target.value})} className="w-full p-2 border border-slate-300 rounded-lg text-xs font-bold outline-none bg-white" placeholder="print@..." />
+              <label className="block text-[10px] font-medium text-slate-500 mb-1 ml-1">이메일</label>
+              <input type="email" value={vendorForm.email || ''} onChange={e => setVendorForm({...vendorForm, email: e.target.value})} className="w-full p-2 border border-slate-300 rounded-lg text-xs font-medium outline-none bg-white" placeholder="print@..." />
             </div>
             <div className="flex-1 min-w-[140px]">
-              <label className="block text-[10px] font-black text-slate-500 mb-1 ml-1">비고</label>
-              <input type="text" value={vendorForm.memo || ''} onChange={e => setVendorForm({...vendorForm, memo: e.target.value})} className="w-full p-2 border border-slate-300 rounded-lg text-xs font-bold outline-none bg-white" placeholder="자유 기재" />
+              <label className="block text-[10px] font-medium text-slate-500 mb-1 ml-1">비고</label>
+              <input type="text" value={vendorForm.memo || ''} onChange={e => setVendorForm({...vendorForm, memo: e.target.value})} className="w-full p-2 border border-slate-300 rounded-lg text-xs font-medium outline-none bg-white" placeholder="자유 기재" />
             </div>
             <div className="flex gap-1">
               {vendorForm.id ? (
                 <>
-                  <button onClick={() => setVendorForm(EMPTY_VENDOR_FORM)} className="px-3 py-2 h-[34px] bg-slate-200 text-slate-700 font-black text-xs rounded-lg hover:bg-slate-300">취소</button>
+                  <button onClick={() => setVendorForm(EMPTY_VENDOR_FORM)} className="px-3 py-2 h-[34px] bg-slate-200 text-slate-700 font-medium text-xs rounded-lg hover:bg-slate-300">취소</button>
                   <button onClick={async () => {
                     if(!vendorForm.companyName) return alert('업체명을 입력하세요.');
                     try {
@@ -3479,7 +3506,7 @@ return (
                         alert("✅ 업체 정보가 성공적으로 수정되었습니다.");
                       }
                     } catch (e) { alert("수정 실패"); }
-                  }} className="px-4 py-2 h-[34px] bg-amber-500 text-white font-black text-xs rounded-lg hover:bg-amber-600 shadow-sm">수정 완료</button>
+                  }} className="px-4 py-2 h-[34px] bg-amber-500 text-white font-medium text-xs rounded-lg hover:bg-amber-600 shadow-sm">수정 완료</button>
                 </>
               ) : (
                 <button onClick={async () => {
@@ -3496,14 +3523,14 @@ return (
                       setVendorForm(EMPTY_VENDOR_FORM);
                     }
                   } catch (e) { alert("등록 실패"); }
-                }} className="px-5 py-2 h-[34px] bg-indigo-600 text-white font-black text-xs rounded-lg hover:bg-indigo-700 shadow-sm">신규 등록</button>
+                }} className="px-5 py-2 h-[34px] bg-indigo-600 text-white font-medium text-xs rounded-lg hover:bg-indigo-700 shadow-sm">신규 등록</button>
               )}
             </div>
           </div>
 
           <div className="max-h-64 overflow-y-auto border border-slate-200 rounded-2xl">
             <table className="w-full text-left text-xs">
-              <thead className="bg-slate-100 text-slate-600 font-black tracking-widest sticky top-0">
+              <thead className="bg-slate-100 text-slate-600 font-medium tracking-widest sticky top-0">
                 <tr>
                   <th className="p-3 pl-4">업체명</th>
                   <th className="p-3">담당자</th>
@@ -3512,10 +3539,10 @@ return (
                   <th className="p-3 text-center pr-4">제어 기능</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-100 font-bold text-slate-700">
+              <tbody className="divide-y divide-slate-100 font-medium text-slate-700">
                 {vendors.map(v => (
                   <tr key={v.id} className={`hover:bg-slate-50 ${vendorForm.id === v.id ? 'bg-amber-50/40' : ''}`}>
-                    <td className="p-3 pl-4 font-black text-slate-900">{v.companyName}</td>
+                    <td className="p-3 pl-4 font-medium text-slate-900">{v.companyName}</td>
                     <td className="p-3">{v.managerName}</td>
                     <td className="p-3 font-mono text-slate-500">{v.email}</td>
                     <td className="p-3 text-slate-500 max-w-[180px] truncate" title={v.memo || ''}>{v.memo || <span className="text-slate-300">-</span>}</td>
@@ -3574,7 +3601,7 @@ return (
             </table>
           </div>
           <div className="flex justify-end pt-2 border-t border-slate-100">
-            <button onClick={() => { setIsVendorModalOpen(false); setVendorForm(EMPTY_VENDOR_FORM); }} className="px-6 py-2.5 bg-slate-900 text-white font-black text-xs rounded-xl hover:bg-black transition-colors">닫기 및 적용</button>
+            <button onClick={() => { setIsVendorModalOpen(false); setVendorForm(EMPTY_VENDOR_FORM); }} className="px-6 py-2.5 bg-slate-900 text-white font-medium text-xs rounded-xl hover:bg-black transition-colors">닫기 및 적용</button>
           </div>
         </div>
       </div>
@@ -3585,11 +3612,11 @@ return (
       <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm">
         <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[90vh] overflow-y-auto border border-slate-200">
           <div className="p-6 border-b border-slate-100">
-            <h3 className="text-base font-black text-slate-900">명세표 대조</h3>
+            <h3 className="text-base font-medium text-slate-900">명세표 대조</h3>
             <p className="text-xs text-slate-500 mt-1.5 font-semibold">
               {formatBatchNo(settlementBatch.id)} · 외주 명세 단가를 건별로 입력합니다.
             </p>
-            <p className="text-[10px] font-bold text-amber-700/90 mt-1.5">
+            <p className="text-[10px] font-medium text-amber-700/90 mt-1.5">
               ※ 명세서 검수에서 따라온 단가와 <strong>다른 숫자</strong>로 저장한 칸만{' '}
               <span className="rounded px-1 bg-amber-100 border border-amber-200">주황</span>
               으로 남습니다. 같은 숫자로 되돌리면 표시되지 않습니다.
@@ -3607,14 +3634,14 @@ return (
               return (
                 <div className="flex items-center justify-end gap-4 px-1">
                   <div className="text-right">
-                    <p className="text-[10px] font-bold text-slate-400">수량 합계</p>
-                    <p className="text-sm font-black text-slate-800 font-mono">
+                    <p className="text-[10px] font-medium text-slate-400">수량 합계</p>
+                    <p className="text-sm font-medium text-slate-800 font-mono">
                       {totalQty.toLocaleString()}통
                     </p>
                   </div>
                   <div className="text-right min-w-[140px]">
-                    <p className="text-[10px] font-bold text-slate-400">최종 정산단가(원) 합계</p>
-                    <p className="text-base font-black text-indigo-600 font-mono">
+                    <p className="text-[10px] font-medium text-slate-400">최종 정산단가(원) 합계</p>
+                    <p className="text-base font-medium text-indigo-600 font-mono">
                       ₩{totalPrice.toLocaleString()}
                     </p>
                   </div>
@@ -3622,7 +3649,7 @@ return (
               );
             })()}
             <table className="w-full text-left text-xs">
-              <thead className="bg-slate-50 text-slate-600 font-black border-b border-slate-200 text-[10px]">
+              <thead className="bg-slate-50 text-slate-600 font-medium border-b border-slate-200 text-[10px]">
                 <tr>
                   <th className="h-10 px-2 text-center">관리번호</th>
                   <th className="h-10 px-2 text-left">대상자</th>
@@ -3631,7 +3658,7 @@ return (
                   <th className="h-10 px-2 text-right w-[140px]">정산단가(원)</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-100 font-bold text-slate-700">
+              <tbody className="divide-y divide-slate-100 font-medium text-slate-700">
                 {(settlementBatch.items || []).map((item) => (
                   <tr key={item.id} className="h-12">
                     <td className="px-2 text-center font-mono text-[11px] tabular-nums">{item.postNumber}</td>
@@ -3692,7 +3719,7 @@ return (
                   setPriceBaselines({});
                   setPriceDrafts({});
                 }}
-                className="px-4 py-2.5 rounded-xl text-[11px] font-black text-slate-500 bg-slate-100 hover:bg-slate-200"
+                className="px-4 py-2.5 rounded-xl text-[11px] font-medium text-slate-500 bg-slate-100 hover:bg-slate-200"
               >
                 취소
               </button>
@@ -3701,7 +3728,7 @@ return (
                 disabled={savingSettlement || !canEditMaster}
                 onClick={handleSaveSettlement}
                 title={!canEditMaster ? '편집 권한 필요' : '명세표 대조 저장'}
-                className="px-4 py-2.5 rounded-xl text-[11px] font-black text-white bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50"
+                className="px-4 py-2.5 rounded-xl text-[11px] font-medium text-white bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50"
               >
                 {savingSettlement ? '저장 중…' : '대조 저장(Edit)'}
               </button>
@@ -3717,9 +3744,9 @@ return (
         <div className="bg-white border border-slate-200 rounded-[2.5rem] shadow-2xl max-w-7xl w-full p-8 space-y-6">
           <div className="border-b border-slate-100 pb-4 flex justify-between items-center">
             <div>
-              <h2 className="text-xl font-black text-slate-900 flex items-center gap-2">외주사 거래명세표 교차 검증 결과</h2>
-              <p className="text-xs text-slate-500 font-bold mt-1">선택한 <strong className="text-indigo-600">{selectedBatchIds.size}개</strong> 묶음과 업체의 거래명세표(<strong>PDF 우선</strong>, Excel 가능)를 대조합니다.</p>
-              <p className="text-[11px] text-indigo-700 font-bold mt-2 leading-relaxed bg-indigo-50 border border-indigo-100 rounded-lg px-3 py-2">
+              <h2 className="text-xl font-medium text-slate-900 flex items-center gap-2">외주사 거래명세표 교차 검증 결과</h2>
+              <p className="text-xs text-slate-500 font-medium mt-1">선택한 <strong className="text-indigo-600">{selectedBatchIds.size}개</strong> 묶음과 업체의 거래명세표(<strong>PDF 우선</strong>, Excel 가능)를 대조합니다.</p>
+              <p className="text-[11px] text-indigo-700 font-medium mt-2 leading-relaxed bg-indigo-50 border border-indigo-100 rounded-lg px-3 py-2">
               이름 행 기준으로, 제목줄에서 ⚙에 지정한 문자열만 찾아 비교합니다. (띄어쓰기 무시)
               </p>
               <div className="mt-2 flex flex-wrap gap-2">
@@ -3730,14 +3757,14 @@ return (
                     disabled={!canEditMaster}
                     title={!canEditMaster ? '편집 권한 필요' : undefined}
                     onClick={() => openColMapEditor(field.key)}
-                    className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-[10px] font-black ${
+                    className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-[10px] font-medium ${
                       canEditMaster
                         ? 'border-slate-200 bg-white text-slate-600 hover:border-indigo-300 hover:text-indigo-700'
                         : DISABLED_ACTION_BTN
                     }`}
                   >
                     <span>{field.label}</span>
-                    <span className={canEditMaster ? 'font-bold text-indigo-600' : 'font-bold text-slate-400'}>
+                    <span className={canEditMaster ? 'font-medium text-indigo-600' : 'font-medium text-slate-400'}>
                       {statementColMap[field.key].join(', ')}
                     </span>
                     <span className="text-slate-400">⚙</span>
@@ -3745,7 +3772,7 @@ return (
                 ))}
               </div>
             </div>
-            <button onClick={() => { setIsCompareModalOpen(false); setCompareResult({ status: 'idle', dbTotalQty: 0, docTotalQty: 0, docTotalPrice: 0, matched: false, fileName: '', logs: [], details: [] }); setManualDrafts({}); setManualEditRows({}); }} className="w-8 h-8 rounded-full bg-slate-100 text-slate-500 hover:bg-slate-200 font-black transition-colors">✕</button>
+            <button onClick={() => { setIsCompareModalOpen(false); setCompareResult({ status: 'idle', dbTotalQty: 0, docTotalQty: 0, docTotalPrice: 0, matched: false, fileName: '', logs: [], details: [] }); setManualDrafts({}); setManualEditRows({}); }} className="w-8 h-8 rounded-full bg-slate-100 text-slate-500 hover:bg-slate-200 font-medium transition-colors">✕</button>
           </div>
 
           <input
@@ -3765,8 +3792,8 @@ return (
             >
               <div className="flex flex-col items-center justify-center pt-5 pb-6">
                 <span className="text-4xl mb-3 group-hover:scale-110 transition-transform">📄</span>
-                <p className="mb-2 text-sm font-black text-indigo-700">여기를 클릭하여 거래명세표 업로드</p>
-                <p className="text-xs text-indigo-400 font-bold leading-relaxed">
+                <p className="mb-2 text-sm font-medium text-indigo-700">여기를 클릭하여 거래명세표 업로드</p>
+                <p className="text-xs text-indigo-400 font-medium leading-relaxed">
                   지원양식: PDF(권장), Excel(.xlsx/.xls)
                   <br />
                   
@@ -3779,7 +3806,7 @@ return (
           {compareResult.status === 'analyzing' && (
             <div className="flex flex-col items-center justify-center h-48 space-y-4">
               <div className="w-10 h-10 border-4 border-indigo-200 border-t-indigo-600 rounded-full animate-spin"></div>
-              <p className="text-sm font-black text-indigo-800 animate-pulse">{compareResult.fileName} 문서를 해독하고 있습니다...</p>
+              <p className="text-sm font-medium text-indigo-800 animate-pulse">{compareResult.fileName} 문서를 해독하고 있습니다...</p>
             </div>
           )}
 
@@ -3787,12 +3814,12 @@ return (
           {compareResult.status === 'error' && (
             <div className="flex flex-col items-center justify-center h-48 space-y-4 bg-rose-50 rounded-2xl border border-rose-200">
               <span className="text-4xl">❌</span>
-              <p className="text-sm font-black text-rose-800">문서 분석에 실패했습니다.</p>
+              <p className="text-sm font-medium text-rose-800">문서 분석에 실패했습니다.</p>
               <div className="text-[10px] text-rose-500 font-mono text-center px-4">{compareResult.logs[compareResult.logs.length - 1]}</div>
               <button
                 type="button"
                 onClick={handleReuploadClick}
-                className="px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white font-black text-xs rounded-xl shadow-sm"
+                className="px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white font-medium text-xs rounded-xl shadow-sm"
               >
                 거래명세표 다시 업로드
               </button>
@@ -3805,12 +3832,12 @@ return (
               {/* 상단 요약 바 */}
               <div className={`p-6 rounded-3xl border-2 flex flex-col md:flex-row items-start md:items-center justify-between gap-4 ${compareResult.matched ? 'bg-emerald-50/80 border-emerald-200' : 'bg-rose-50/80 border-rose-200'}`}>
                 <div className="flex-1">
-                  <h3 className={`text-lg font-black flex items-center gap-2 ${compareResult.matched ? 'text-emerald-700' : 'text-rose-700'}`}>
+                  <h3 className={`text-lg font-medium flex items-center gap-2 ${compareResult.matched ? 'text-emerald-700' : 'text-rose-700'}`}>
                     {compareResult.matched ? '✅ 이름·소속·수량 모두 일치' : '⚠️ 교차 검증 불일치 항목 감지'}
                   </h3>
                   
                   <div className="mt-2.5 space-y-3">
-                    <p className={`text-xs font-bold leading-relaxed ${compareResult.matched ? 'text-emerald-700/80' : 'text-rose-700/80'}`}>
+                    <p className={`text-xs font-medium leading-relaxed ${compareResult.matched ? 'text-emerald-700/80' : 'text-rose-700/80'}`}>
                       {compareResult.matched 
                         ? '지정한 이름·소속·수량 열이 모두 일치하여 통과입니다.' 
                         : '통과는 이름·소속·수량이 모두 맞을 때만입니다. 하단 표의 일치 여부와 판별 상세를 확인하세요.'}
@@ -3823,13 +3850,13 @@ return (
                       const qtyOk = compareResult.details.filter((d) => d.qtyMatch).length;
                       return (
                     <div className="flex flex-wrap gap-1.5">
-                      <span className={`px-2.5 py-1 rounded-lg border text-[10px] font-black tracking-tight ${nameOk === total ? 'bg-white border-emerald-300 text-emerald-600 shadow-sm' : 'bg-white border-rose-200 text-rose-500'}`}>
+                      <span className={`px-2.5 py-1 rounded-lg border text-[10px] font-medium tracking-tight ${nameOk === total ? 'bg-white border-emerald-300 text-emerald-600 shadow-sm' : 'bg-white border-rose-200 text-rose-500'}`}>
                         {nameOk === total ? '✔️' : '❌'} 이름 {nameOk}/{total}
                       </span>
-                      <span className={`px-2.5 py-1 rounded-lg border text-[10px] font-black tracking-tight ${deptOk === total ? 'bg-white border-emerald-300 text-emerald-600 shadow-sm' : 'bg-white border-rose-200 text-rose-500'}`}>
+                      <span className={`px-2.5 py-1 rounded-lg border text-[10px] font-medium tracking-tight ${deptOk === total ? 'bg-white border-emerald-300 text-emerald-600 shadow-sm' : 'bg-white border-rose-200 text-rose-500'}`}>
                         {deptOk === total ? '✔️' : '❌'} 소속 {deptOk}/{total}
                       </span>
-                      <span className={`px-2.5 py-1 rounded-lg border text-[10px] font-black tracking-tight ${qtyOk === total ? 'bg-white border-emerald-300 text-emerald-600 shadow-sm' : 'bg-white border-rose-200 text-rose-500'}`}>
+                      <span className={`px-2.5 py-1 rounded-lg border text-[10px] font-medium tracking-tight ${qtyOk === total ? 'bg-white border-emerald-300 text-emerald-600 shadow-sm' : 'bg-white border-rose-200 text-rose-500'}`}>
                         {qtyOk === total ? '✔️' : '❌'} 수량 {qtyOk}/{total}
                       </span>
                     </div>
@@ -3842,14 +3869,14 @@ return (
                   <button
                     type="button"
                     onClick={handleReuploadClick}
-                    className="w-full px-3 py-2 bg-amber-500 hover:bg-amber-600 text-white font-black text-[11px] rounded-xl shadow-sm whitespace-nowrap"
+                    className="w-full px-3 py-2 bg-amber-500 hover:bg-amber-600 text-white font-medium text-[11px] rounded-xl shadow-sm whitespace-nowrap"
                   >
                     거래명세표 다시 업로드
                   </button>
                   <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
-                  <p className="text-[10px] text-slate-500 font-bold mb-1">문서 공급가액 (행 합산)</p>
-                  <p className="text-2xl font-black text-slate-900 font-mono">₩{compareResult.docTotalPrice.toLocaleString()}</p>
-                  <p className="text-[10px] text-slate-400 font-bold mt-1 leading-relaxed">
+                  <p className="text-[10px] text-slate-500 font-medium mb-1">문서 공급가액 (행 합산)</p>
+                  <p className="text-2xl font-medium text-slate-900 font-mono">₩{compareResult.docTotalPrice.toLocaleString()}</p>
+                  <p className="text-[10px] text-slate-400 font-medium mt-1 leading-relaxed">
                     {compareResult.docTotalPrice > 0
                       ? `아래 공급가액 칸의 합계 · 제목: ${statementColMap.price.join(', ')}`
                       : `지정 제목(${statementColMap.price.join(', ')}) 열에서 금액을 읽지 못했습니다`}
@@ -3861,16 +3888,16 @@ return (
               {compareResult.logs.filter((l) => l.startsWith('⚠️')).length > 0 && (
                 <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 space-y-1">
                   {compareResult.logs.filter((l) => l.startsWith('⚠️')).map((line, idx) => (
-                    <p key={idx} className="text-[11px] font-bold text-amber-800 leading-relaxed">{line}</p>
+                    <p key={idx} className="text-[11px] font-medium text-amber-800 leading-relaxed">{line}</p>
                   ))}
-                  <p className="text-[10px] font-bold text-amber-700/80">칼럼 제목은 거래명세표 제목줄과 같아야 합니다. 이 문서는 이름=품목, 소속=비고 인 경우가 많습니다.</p>
+                  <p className="text-[10px] font-medium text-amber-700/80">칼럼 제목은 거래명세표 제목줄과 같아야 합니다. 이 문서는 이름=품목, 소속=비고 인 경우가 많습니다.</p>
                 </div>
               )}
 
               {/* 상세 매칭 결과 리스트 */}
               <div className="border border-slate-200 rounded-2xl overflow-hidden max-h-72 overflow-y-auto shadow-inner">
                 <table className="w-full text-left text-xs border-collapse">
-                  <thead className="bg-slate-100 text-slate-600 font-black sticky top-0 z-10">
+                  <thead className="bg-slate-100 text-slate-600 font-medium sticky top-0 z-10">
                     <tr>
                       <th colSpan={3} className="p-2 pl-4 text-center border-r-2 border-slate-300">
                         <span className="inline-flex items-center justify-center">임직원명<ColumnGearButton label="임직원명" disabled={!canEditMaster} onClick={() => openColMapEditor('name')} /></span>
@@ -3888,23 +3915,23 @@ return (
                       <th className="p-2 text-center w-[132px] min-w-[132px]">관리자 점검</th>
                     </tr>
                     <tr className="text-[10px] text-slate-400">
-                      <th className="p-2 pl-4 font-bold whitespace-nowrap min-w-[88px]">이름</th>
-                      <th className="p-2 text-center w-12 font-bold">일치</th>
-                      <th className="p-2 text-center w-[96px] font-bold border-r-2 border-slate-300">관리자 처리</th>
-                      <th className="p-2 font-bold">DB 본부·센터 / 문서 표기</th>
-                      <th className="p-2 text-center w-12 font-bold">일치</th>
-                      <th className="p-2 text-center w-[110px] font-bold border-r-2 border-slate-300">관리자 처리</th>
-                      <th className="p-2 text-center w-[52px] font-bold">DB</th>
-                      <th className="p-2 text-center w-[56px] font-bold whitespace-nowrap">문서</th>
-                      <th className="p-2 text-center w-[44px] font-bold">일치</th>
-                      <th className="p-2 text-center w-[72px] font-bold border-r-2 border-slate-300">관리자 처리</th>
-                      <th className="p-2 font-bold border-r-2 border-slate-300 min-w-[220px]">상세</th>
-                      <th className="p-2 text-center w-[84px] font-bold">문서 인식</th>
-                      <th className="p-2 text-center w-[72px] font-bold border-r-2 border-slate-300">관리자 처리</th>
-                      <th className="p-2 text-center w-[132px] font-bold">관리자 점검</th>
+                      <th className="p-2 pl-4 font-medium whitespace-nowrap min-w-[88px]">이름</th>
+                      <th className="p-2 text-center w-12 font-medium">일치</th>
+                      <th className="p-2 text-center w-[96px] font-medium border-r-2 border-slate-300">관리자 처리</th>
+                      <th className="p-2 font-medium">DB 본부·센터 / 문서 표기</th>
+                      <th className="p-2 text-center w-12 font-medium">일치</th>
+                      <th className="p-2 text-center w-[110px] font-medium border-r-2 border-slate-300">관리자 처리</th>
+                      <th className="p-2 text-center w-[52px] font-medium">DB</th>
+                      <th className="p-2 text-center w-[56px] font-medium whitespace-nowrap">문서</th>
+                      <th className="p-2 text-center w-[44px] font-medium">일치</th>
+                      <th className="p-2 text-center w-[72px] font-medium border-r-2 border-slate-300">관리자 처리</th>
+                      <th className="p-2 font-medium border-r-2 border-slate-300 min-w-[220px]">상세</th>
+                      <th className="p-2 text-center w-[84px] font-medium">문서 인식</th>
+                      <th className="p-2 text-center w-[72px] font-medium border-r-2 border-slate-300">관리자 처리</th>
+                      <th className="p-2 text-center w-[132px] font-medium">관리자 점검</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-slate-100 font-bold">
+                  <tbody className="divide-y divide-slate-100 font-medium">
                     {compareResult.details.map((detail, idx) => (
                       <tr key={detail.id || idx} className={detail.matchStatus === 'match' ? 'bg-white' : 'bg-rose-50/60'}>
                         {(() => {
@@ -3912,52 +3939,52 @@ return (
                           return (
                             <>
                         <td className={`p-2.5 pl-4 whitespace-nowrap ${detail.adminEditedFields?.includes('name') ? 'text-blue-600' : 'text-slate-800'}`}>{detail.name}</td>
-                        <td className={`p-2.5 text-center text-[11px] font-black ${detail.nameMatch ? 'text-emerald-600' : 'text-rose-500'}`}>{detail.nameMatch ? 'O' : 'X'}</td>
+                        <td className={`p-2.5 text-center text-[11px] font-medium ${detail.nameMatch ? 'text-emerald-600' : 'text-rose-500'}`}>{detail.nameMatch ? 'O' : 'X'}</td>
                         <td className="p-2 text-center border-r-2 border-slate-200 min-w-[96px]">
                           {isManualEditing ? (
-                            <input value={manualDrafts[detail.id]?.name ?? detail.name} onChange={(e) => setManualDraftValue(detail.id, 'name', e.target.value)} className="w-full rounded-lg border border-slate-200 px-2 py-1 text-[10px] font-bold text-slate-700" />
+                            <input value={manualDrafts[detail.id]?.name ?? detail.name} onChange={(e) => setManualDraftValue(detail.id, 'name', e.target.value)} className="w-full rounded-lg border border-slate-200 px-2 py-1 text-[10px] font-medium text-slate-700" />
                           ) : (
-                            <span className="text-[10px] font-bold text-slate-300">비활성</span>
+                            <span className="text-[10px] font-medium text-slate-300">비활성</span>
                           )}
                         </td>
                         <td className="p-2.5 text-slate-700">
-                          <p className="text-[10px] text-slate-400 font-bold">본부 {detail.deptHead || '-'}</p>
-                          <p className="text-[10px] text-slate-400 font-bold">센터 {detail.deptName || detail.dept || '-'}</p>
+                          <p className="text-[10px] text-slate-400 font-medium">본부 {detail.deptHead || '-'}</p>
+                          <p className="text-[10px] text-slate-400 font-medium">센터 {detail.deptName || detail.dept || '-'}</p>
                           {(detail.docQtyParts || []).length > 0 ? (
                             <div className="mt-1 space-y-0.5">
                               {(detail.docQtyParts || []).map((part, pIdx) => (
-                                <p key={`${detail.id}-dept-${pIdx}`} className={`text-[10px] font-black ${detail.adminEditedFields?.includes('dept') ? 'text-blue-600' : 'text-emerald-600'}`}>
+                                <p key={`${detail.id}-dept-${pIdx}`} className={`text-[10px] font-medium ${detail.adminEditedFields?.includes('dept') ? 'text-blue-600' : 'text-emerald-600'}`}>
                                   문서: {part.dept} {part.qty}통
                                 </p>
                               ))}
                             </div>
                           ) : detail.docDept ? (
-                            <p className={`text-[10px] font-black mt-1 ${detail.adminEditedFields?.includes('dept') ? 'text-blue-600' : 'text-emerald-600'}`}>문서: {detail.docDept}</p>
+                            <p className={`text-[10px] font-medium mt-1 ${detail.adminEditedFields?.includes('dept') ? 'text-blue-600' : 'text-emerald-600'}`}>문서: {detail.docDept}</p>
                           ) : null}
                         </td>
-                        <td className={`p-2.5 text-center text-[11px] font-black ${detail.deptMatch ? 'text-emerald-600' : 'text-rose-500'}`}>{detail.deptMatch ? 'O' : 'X'}</td>
+                        <td className={`p-2.5 text-center text-[11px] font-medium ${detail.deptMatch ? 'text-emerald-600' : 'text-rose-500'}`}>{detail.deptMatch ? 'O' : 'X'}</td>
                         <td className="p-2 text-center border-r-2 border-slate-200 min-w-[110px]">
                           {isManualEditing ? (
-                            <input value={manualDrafts[detail.id]?.dept ?? detail.docDept} onChange={(e) => setManualDraftValue(detail.id, 'dept', e.target.value)} className="w-full rounded-lg border border-slate-200 px-2 py-1 text-[10px] font-bold text-slate-700" />
+                            <input value={manualDrafts[detail.id]?.dept ?? detail.docDept} onChange={(e) => setManualDraftValue(detail.id, 'dept', e.target.value)} className="w-full rounded-lg border border-slate-200 px-2 py-1 text-[10px] font-medium text-slate-700" />
                           ) : (
-                            <span className="text-[10px] font-bold text-slate-300">비활성</span>
+                            <span className="text-[10px] font-medium text-slate-300">비활성</span>
                           )}
                         </td>
                         <td className="p-2.5 text-center text-slate-800 font-mono whitespace-nowrap">{detail.dbQty}</td>
                         <td className={`p-2.5 text-center font-mono whitespace-nowrap ${detail.adminEditedFields?.includes('qty') ? 'text-blue-600' : 'text-slate-600'}`}>
                           {detail.docQty || 0}
                           {(detail.docQtyParts || []).length > 1 ? (
-                            <p className={`text-[10px] font-bold mt-0.5 whitespace-nowrap ${detail.adminEditedFields?.includes('qty') ? 'text-blue-600' : 'text-emerald-600'}`}>
+                            <p className={`text-[10px] font-medium mt-0.5 whitespace-nowrap ${detail.adminEditedFields?.includes('qty') ? 'text-blue-600' : 'text-emerald-600'}`}>
                               합계 {(detail.docQtyParts || []).map((p) => p.qty).join('+')}
                             </p>
                           ) : null}
                         </td>
-                        <td className={`p-2.5 text-center text-[11px] font-black ${detail.qtyMatch ? 'text-emerald-600' : 'text-rose-500'}`}>{detail.qtyMatch ? 'O' : 'X'}</td>
+                        <td className={`p-2.5 text-center text-[11px] font-medium ${detail.qtyMatch ? 'text-emerald-600' : 'text-rose-500'}`}>{detail.qtyMatch ? 'O' : 'X'}</td>
                         <td className="p-2 text-center border-r-2 border-slate-200 min-w-[72px]">
                           {isManualEditing ? (
-                            <input value={manualDrafts[detail.id]?.qty ?? String(detail.docQty || detail.dbQty || '')} onChange={(e) => setManualDraftValue(detail.id, 'qty', e.target.value)} className="w-full rounded-lg border border-slate-200 px-2 py-1 text-[10px] font-bold text-slate-700 text-center" />
+                            <input value={manualDrafts[detail.id]?.qty ?? String(detail.docQty || detail.dbQty || '')} onChange={(e) => setManualDraftValue(detail.id, 'qty', e.target.value)} className="w-full rounded-lg border border-slate-200 px-2 py-1 text-[10px] font-medium text-slate-700 text-center" />
                           ) : (
-                            <span className="text-[10px] font-bold text-slate-300">비활성</span>
+                            <span className="text-[10px] font-medium text-slate-300">비활성</span>
                           )}
                         </td>
                         <td className="p-2.5 text-[11px] border-r-2 border-slate-200 min-w-[220px] align-top">
@@ -3969,9 +3996,9 @@ return (
                         </td>
                         <td className="p-2 text-center border-r-2 border-slate-200 min-w-[72px]">
                           {isManualEditing ? (
-                            <input value={manualDrafts[detail.id]?.price ?? String(detail.docPrice || 0)} onChange={(e) => setManualDraftValue(detail.id, 'price', e.target.value)} className="w-full rounded-lg border border-slate-200 px-2 py-1 text-[10px] font-bold text-slate-700 text-right" />
+                            <input value={manualDrafts[detail.id]?.price ?? String(detail.docPrice || 0)} onChange={(e) => setManualDraftValue(detail.id, 'price', e.target.value)} className="w-full rounded-lg border border-slate-200 px-2 py-1 text-[10px] font-medium text-slate-700 text-right" />
                           ) : (
-                            <span className="text-[10px] font-bold text-slate-300">비활성</span>
+                            <span className="text-[10px] font-medium text-slate-300">비활성</span>
                           )}
                         </td>
                         <td className="p-2.5 text-center min-w-[132px]">
@@ -3980,27 +4007,27 @@ return (
                               <button
                                 type="button"
                                 onClick={() => completeManualEditRow(detail.id)}
-                                className="w-full rounded-lg bg-indigo-600 px-2 py-1 text-[10px] font-black text-white"
+                                className="w-full rounded-lg bg-indigo-600 px-2 py-1 text-[10px] font-medium text-white"
                               >
                                 완료
                               </button>
                               <button
                                 type="button"
                                 onClick={() => cancelManualEditRow(detail)}
-                                className="w-full rounded-lg bg-slate-100 px-2 py-1 text-[10px] font-black text-slate-600"
+                                className="w-full rounded-lg bg-slate-100 px-2 py-1 text-[10px] font-medium text-slate-600"
                               >
                                 취소
                               </button>
                             </div>
                           ) : detail.matchStatus === 'match' || detail.adminOverride ? (
                             <div className="space-y-1">
-                              <span className={`block text-[10px] font-black ${detail.adminEditedFields?.length ? 'text-blue-600' : 'text-emerald-600'}`}>{detail.adminEditedFields?.length ? '수동 처리 완료' : '점검완료'}</span>
+                              <span className={`block text-[10px] font-medium ${detail.adminEditedFields?.length ? 'text-blue-600' : 'text-emerald-600'}`}>{detail.adminEditedFields?.length ? '수동 처리 완료' : '점검완료'}</span>
                               <button
                                 type="button"
                                 disabled={!canEditMaster}
                                 title={!canEditMaster ? '편집 권한 필요' : undefined}
                                 onClick={() => openManualEditRow(detail)}
-                                className={`w-full rounded-lg px-2 py-1 text-[10px] font-black ${
+                                className={`w-full rounded-lg px-2 py-1 text-[10px] font-medium ${
                                   canEditMaster
                                     ? 'bg-slate-100 text-slate-700'
                                     : DISABLED_ACTION_BTN
@@ -4015,7 +4042,7 @@ return (
                               disabled={!canEditMaster}
                               title={!canEditMaster ? '편집 권한 필요' : undefined}
                               onClick={() => openManualEditRow(detail)}
-                              className={`px-2 py-1 text-[10px] font-black rounded-lg ${
+                              className={`px-2 py-1 text-[10px] font-medium rounded-lg ${
                                 canEditMaster
                                   ? 'bg-indigo-600 hover:bg-indigo-700 text-white'
                                   : DISABLED_ACTION_BTN
@@ -4036,7 +4063,7 @@ return (
             </div>
           )}
           <div className="flex justify-end pt-2 border-t border-slate-100">
-            <button onClick={() => { setIsCompareModalOpen(false); setCompareResult({ status: 'idle', dbTotalQty: 0, docTotalQty: 0, docTotalPrice: 0, matched: false, fileName: '', logs: [], details: [] }); setManualDrafts({}); setManualEditRows({}); }} className="px-6 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-black text-xs rounded-xl transition-colors">닫기</button>
+            <button onClick={() => { setIsCompareModalOpen(false); setCompareResult({ status: 'idle', dbTotalQty: 0, docTotalQty: 0, docTotalPrice: 0, matched: false, fileName: '', logs: [], details: [] }); setManualDrafts({}); setManualEditRows({}); }} className="px-6 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium text-xs rounded-xl transition-colors">닫기</button>
           </div>
         </div>
       </div>
@@ -4045,20 +4072,22 @@ return (
     {mailShortcutEditor != null && (
       <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-900/50 p-4">
         <div className="w-full max-w-lg rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl">
-          <h3 className="text-base font-black text-slate-900">메일 바로가기 경로 설정</h3>
-          <p className="mt-2 text-[11px] font-bold leading-relaxed text-slate-500">
-            그룹웨어 메일 작성 화면 주소를 붙여넣으세요. 경로가 바뀌면 여기만 수정하면 됩니다.
+          <h3 className="text-base font-medium text-slate-900">메일 바로가기 경로 설정</h3>
+          <p className="mt-2 text-[11px] font-medium leading-relaxed text-slate-500">
+            기본 경로가 이미 들어 있습니다. 전체 URL을 붙여넣어도{' '}
+            <span className="text-slate-700">token·currentemail은 저장 시 자동 제거</span>됩니다.
+            (token은 세션용, 메일은 열 때 로그인 계정으로 붙입니다.)
           </p>
           <input
             type="text"
             value={mailShortcutEditor}
             onChange={(e) => setMailShortcutEditor(e.target.value)}
-            className="mt-3 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm font-bold text-slate-800 outline-none focus:border-indigo-400"
+            className="mt-3 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm font-medium text-slate-800 outline-none focus:border-indigo-400"
             placeholder={DEFAULT_MAIL_SHORTCUT_URL}
           />
           <div className="mt-4 flex justify-end gap-2">
-            <button type="button" onClick={() => setMailShortcutEditor(null)} className="rounded-xl bg-slate-100 px-4 py-2 text-xs font-black text-slate-600">취소</button>
-            <button type="button" onClick={handleSaveMailShortcut} className="rounded-xl bg-indigo-600 px-4 py-2 text-xs font-black text-white">저장</button>
+            <button type="button" onClick={() => setMailShortcutEditor(null)} className="rounded-xl bg-slate-100 px-4 py-2 text-xs font-medium text-slate-600">취소</button>
+            <button type="button" onClick={handleSaveMailShortcut} className="rounded-xl bg-indigo-600 px-4 py-2 text-xs font-medium text-white">저장</button>
           </div>
         </div>
       </div>
@@ -4068,27 +4097,27 @@ return (
       return (
         <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-900/50 p-4">
           <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl">
-            <h3 className="text-base font-black text-slate-900">{meta?.label} 칼럼 제목 지정</h3>
-            <p className="mt-2 text-[11px] font-bold leading-relaxed text-slate-500">
+            <h3 className="text-base font-medium text-slate-900">{meta?.label} 칼럼 제목 지정</h3>
+            <p className="mt-2 text-[11px] font-medium leading-relaxed text-slate-500">
               문서 제목의 띄어쓰기는 무시합니다. 비 고, 비   고 모두 비고와 같습니다.
               쉼표로 여러 개 가능합니다.
             </p>
-            <p className="mt-1 text-[10px] font-bold text-indigo-600">{meta?.hint}</p>
+            <p className="mt-1 text-[10px] font-medium text-indigo-600">{meta?.hint}</p>
             <textarea
               value={colMapEditor.draft}
               onChange={(e) => setColMapEditor({ ...colMapEditor, draft: e.target.value })}
               rows={3}
-              className="mt-3 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm font-bold text-slate-800 outline-none focus:border-indigo-400"
+              className="mt-3 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm font-medium text-slate-800 outline-none focus:border-indigo-400"
               placeholder="예: 공급가액"
             />
             <div className="mt-4 flex justify-end gap-2">
-              <button type="button" onClick={() => setColMapEditor(null)} className="rounded-xl bg-slate-100 px-4 py-2 text-xs font-black text-slate-600">취소</button>
+              <button type="button" onClick={() => setColMapEditor(null)} className="rounded-xl bg-slate-100 px-4 py-2 text-xs font-medium text-slate-600">취소</button>
               <button
                 type="button"
                 disabled={!canEditMaster}
                 title={!canEditMaster ? '편집 권한 필요' : undefined}
                 onClick={handleSaveColMap}
-                className={`rounded-xl px-4 py-2 text-xs font-black ${
+                className={`rounded-xl px-4 py-2 text-xs font-medium ${
                   canEditMaster ? 'bg-indigo-600 text-white' : DISABLED_ACTION_BTN
                 }`}
               >

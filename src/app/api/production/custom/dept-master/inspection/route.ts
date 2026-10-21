@@ -315,12 +315,21 @@ export async function POST(req: Request) {
         );
       }
 
+      const { getKSTDateString } = await import('@/utils/dateUtils');
+      const vendorDispatchedBy = {
+        date: getKSTDateString(),
+        userName: String(auth.user?.name || '').trim() || '-',
+        deptName: String(
+          (auth.user as { unit?: { unit_name?: string | null } | null })?.unit?.unit_name || ''
+        ).trim(),
+      };
+
       let dispatched = 0;
       let autoReceived = 0;
       for (const row of rows) {
         const prev = asOptionsRecord(row.options);
         if (prev.vendorDispatched === true) continue;
-        const nextOpts = withVendorDispatched(prev, dispatchedDate);
+        const nextOpts = withVendorDispatched(prev, dispatchedDate, vendorDispatchedBy);
         const direct = isCustomerDirectShip({
           category: row.category,
           options: nextOpts,
@@ -602,7 +611,13 @@ export async function POST(req: Request) {
       }
       for (const row of rows) {
         const prev = asOptionsRecord(row.options);
-        const { vendorDispatched: _vd, vendorDispatchedAt: _at, _backupShipping, ...rest } = prev;
+        const {
+          vendorDispatched: _vd,
+          vendorDispatchedAt: _at,
+          vendorDispatchedBy: _by,
+          _backupShipping,
+          ...rest
+        } = prev;
         let restoredOptions = { ...rest };
         if (_backupShipping && typeof _backupShipping === 'object') {
           const b = _backupShipping as Record<string, unknown>;
@@ -631,7 +646,7 @@ export async function POST(req: Request) {
         });
       }
       return NextResponse.json({
-        message: `${rows.length}건 발주를 취소하고 발주대기열로 되돌렸습니다.`,
+        message: `${rows.length}건 묶음을 해제하고 발주대기열로 되돌렸습니다.`,
         count: rows.length,
       });
     }

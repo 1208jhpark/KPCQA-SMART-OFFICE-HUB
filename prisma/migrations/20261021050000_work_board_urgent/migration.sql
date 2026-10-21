@@ -1,0 +1,2 @@
+ALTER TABLE "ScheduleWorkBoardItem"
+  ADD COLUMN IF NOT EXISTS "urgent" BOOLEAN NOT NULL DEFAULT false;

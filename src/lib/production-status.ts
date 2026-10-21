@@ -27,23 +27,37 @@ function isVendorDispatched(options?: Record<string, unknown> | null): boolean {
 }
 
 /**
+ * 공정상태 라벨 톤
+ * - ops: 검수·정산 등 운영 화면 (접수대기 / 발주대기)
+ * - applicant: 나의 이력·부서 전체 이력 (신청대기 / 묶음발주대기)
+ * - deptQueue: 부서 발주 대장 신청검수·묶음발주대기 (신청검수 / 묶음발주대기)
+ */
+export type ProductionStatusLabelVariant = 'ops' | 'applicant' | 'deptQueue';
+
+/**
  * 화면 공정상태 라벨
- * PENDING → 접수대기
- * ACCEPTED / ORDERED(미발주확정) → 발주대기
+ * PENDING → 접수대기 | 신청대기 | 신청검수
+ * ACCEPTED / ORDERED(미발주확정) → 발주대기 | 묶음발주대기
  * ORDERED(발주확정) → 발주완료
  * VERIFIED → 수령완료
  */
 export function productionStatusLabel(
   status: string,
-  options?: Record<string, unknown> | null
+  options?: Record<string, unknown> | null,
+  variant: ProductionStatusLabelVariant = 'ops'
 ): string {
+  const pendingLabel =
+    variant === 'deptQueue' ? '신청검수' : variant === 'applicant' ? '신청대기' : '접수대기';
+  const waitOrderLabel =
+    variant === 'deptQueue' || variant === 'applicant' ? '묶음발주대기' : '발주대기';
+
   switch (status) {
     case PRODUCTION_STATUS.PENDING:
-      return '접수대기';
+      return pendingLabel;
     case PRODUCTION_STATUS.ACCEPTED:
-      return '발주대기';
+      return waitOrderLabel;
     case PRODUCTION_STATUS.ORDERED:
-      return isVendorDispatched(options) ? '발주완료' : '발주대기';
+      return isVendorDispatched(options) ? '발주완료' : waitOrderLabel;
     case PRODUCTION_STATUS.VERIFIED:
       return '수령완료';
     case PRODUCTION_STATUS.REJECTED:

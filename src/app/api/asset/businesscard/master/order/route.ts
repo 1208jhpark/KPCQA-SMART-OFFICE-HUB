@@ -484,11 +484,14 @@ export async function DELETE(req: Request) {
       return NextResponse.json({ message: '묶음을 찾을 수 없습니다.' }, { status: 404 });
     }
     if (batch.isArchived) {
-      return NextResponse.json({ message: '보관된 묶음은 발주 취소할 수 없습니다.' }, { status: 400 });
+      return NextResponse.json(
+        { message: '보관된 묶음은 발주대기로 되돌릴 수 없습니다.' },
+        { status: 400 }
+      );
     }
     if (batch.status === '지급완료' || batch.status === '수령완료') {
       return NextResponse.json(
-        { message: '수령·지급 처리된 묶음은 발주 취소할 수 없습니다.' },
+        { message: '수령·지급 처리된 묶음은 발주대기로 되돌릴 수 없습니다.' },
         { status: 400 }
       );
     }
@@ -509,6 +512,6 @@ export async function DELETE(req: Request) {
     const authRes = authErrorToResponse(error);
     if (authRes.status !== 500) return authRes;
     console.error('[businesscard/master/order DELETE]', error);
-    return NextResponse.json({ message: '발주 취소 실패' }, { status: 500 });
+    return NextResponse.json({ message: '발주대기 복귀 실패' }, { status: 500 });
   }
 }

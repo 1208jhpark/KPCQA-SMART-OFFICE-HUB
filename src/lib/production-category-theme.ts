@@ -6,6 +6,8 @@ const FOLDER_TAB_IDLE =
 export const PRODUCTION_CATEGORY_THEME = {
   ALL: {
     badge: 'bg-slate-700 text-white border-slate-600',
+    /** 테이블 분류 — 박스 없이 배지색을 글씨색으로만 */
+    text: 'text-slate-700',
     toggleActive:
       'bg-slate-900 text-white shadow-lg shadow-slate-900/20 scale-[1.02] border-transparent',
     toggleIdle: 'bg-white text-slate-600 hover:bg-slate-50 border border-slate-200',
@@ -14,6 +16,7 @@ export const PRODUCTION_CATEGORY_THEME = {
   },
   SIGN: {
     badge: 'bg-rose-600 text-white border-rose-500',
+    text: 'text-rose-600',
     toggleActive:
       'bg-rose-600 text-white shadow-lg shadow-rose-600/25 scale-[1.02] border-transparent',
     toggleIdle: 'bg-white text-rose-700 hover:bg-rose-50 border border-rose-200',
@@ -22,6 +25,7 @@ export const PRODUCTION_CATEGORY_THEME = {
   },
   JEBON: {
     badge: 'bg-blue-600 text-white border-blue-500',
+    text: 'text-blue-600',
     toggleActive:
       'bg-blue-600 text-white shadow-lg shadow-blue-600/25 scale-[1.02] border-transparent',
     toggleIdle: 'bg-white text-blue-700 hover:bg-blue-50 border border-blue-200',
@@ -30,6 +34,7 @@ export const PRODUCTION_CATEGORY_THEME = {
   },
   PRINT: {
     badge: 'bg-amber-500 text-white border-amber-400',
+    text: 'text-amber-600',
     toggleActive:
       'bg-amber-500 text-white shadow-lg shadow-amber-500/25 scale-[1.02] border-transparent',
     toggleIdle: 'bg-white text-amber-800 hover:bg-amber-50 border border-amber-200',
@@ -38,6 +43,7 @@ export const PRODUCTION_CATEGORY_THEME = {
   },
   OFFICE_SUPPLIES: {
     badge: 'bg-emerald-600 text-white border-emerald-500',
+    text: 'text-emerald-600',
     toggleActive:
       'bg-emerald-600 text-white shadow-lg shadow-emerald-600/25 scale-[1.02] border-transparent',
     toggleIdle: 'bg-white text-emerald-800 hover:bg-emerald-50 border border-emerald-200',
@@ -54,6 +60,12 @@ export function getProductionCategoryBadgeClass(categoryId: string): string {
     PRODUCTION_CATEGORY_THEME[key]?.badge ??
     'bg-slate-700 text-white border-slate-600'
   );
+}
+
+/** 테이블 분류 라벨 — 배경/테두리 없이 분류색 글씨만 */
+export function getProductionCategoryTextClass(categoryId: string): string {
+  const key = categoryId as ProductionCategoryThemeKey;
+  return PRODUCTION_CATEGORY_THEME[key]?.text ?? 'text-slate-700';
 }
 
 export function getProductionCategoryToggleClasses(

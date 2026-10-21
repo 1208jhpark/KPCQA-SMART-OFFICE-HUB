@@ -537,7 +537,23 @@ export default function AdminInterfacePage() {
                             <input type="number" defaultValue={m.sort_order} onBlur={(e) => handleUpdate(m.id, { sort_order: Number(e.target.value) })} className="w-10 p-1 font-black text-blue-600 bg-white border rounded text-center outline-none focus:ring-2 focus:ring-blue-500" />
                           </td>
                           <td className="p-4 align-top pt-5 pb-5">
-                            <input type="text" defaultValue={m.name} onBlur={(e) => handleUpdate(m.id, { name: e.target.value })} className="font-black text-slate-800 bg-transparent block w-full outline-none focus:text-blue-600 text-[15px]" />
+                            {m.level === 1 ? (
+                              <textarea
+                                key={`${m.id}-name`}
+                                defaultValue={m.name}
+                                rows={2}
+                                onBlur={(e) => handleUpdate(m.id, { name: e.target.value })}
+                                placeholder="한글 명칭 (Enter로 줄바꿈 → /home 반영)"
+                                className="font-black text-slate-800 bg-transparent block w-full outline-none focus:text-blue-600 text-[15px] resize-y min-h-[2.5rem] leading-snug whitespace-pre-wrap"
+                              />
+                            ) : (
+                              <input
+                                type="text"
+                                defaultValue={m.name}
+                                onBlur={(e) => handleUpdate(m.id, { name: e.target.value })}
+                                className="font-black text-slate-800 bg-transparent block w-full outline-none focus:text-blue-600 text-[15px]"
+                              />
+                            )}
                             <div className="flex gap-2 text-[10px] text-slate-400 mt-1 font-mono">
                               <span className="bg-slate-100 px-1.5 py-0.5 rounded text-blue-500 font-bold shrink-0">{m.path}</span>
                               <span className="italic truncate max-w-[300px]">{m.description || '...'}</span>

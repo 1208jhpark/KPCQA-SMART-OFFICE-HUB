@@ -109,6 +109,24 @@ export function useInterfaceStepTabs(
 
 /* ——— Step4 탭 정의 (경로·색만 고정, 문구는 InterfaceConfig) ——— */
 
+/** 나의 신청 — request + history */
+export const PRODUCTION_MY_ORDERS_TABS: InterfaceStepTabDef[] = [
+  {
+    id: 'request',
+    path: '/production/custom/my-orders/request',
+    fallbackName: '신규 제작물 신청',
+    fallbackIcon: '✍️',
+    activeColor: 'text-blue-600',
+  },
+  {
+    id: 'history',
+    path: '/production/custom/my-orders/history',
+    fallbackName: '나의 신청 이력 관리',
+    fallbackIcon: '📂',
+    activeColor: 'text-indigo-600',
+  },
+];
+
 export const PRODUCTION_DEPT_MASTER_TABS: InterfaceStepTabDef[] = [
   {
     id: 'order',
@@ -116,6 +134,13 @@ export const PRODUCTION_DEPT_MASTER_TABS: InterfaceStepTabDef[] = [
     fallbackName: '부서 발주 대장',
     fallbackIcon: '📦',
     activeColor: 'text-indigo-600',
+  },
+  {
+    id: 'history',
+    path: '/production/custom/dept-master/history',
+    fallbackName: '부서 전체 이력',
+    fallbackIcon: '📂',
+    activeColor: 'text-sky-700',
   },
   {
     id: 'inspection',

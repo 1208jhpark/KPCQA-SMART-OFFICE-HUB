@@ -16,6 +16,10 @@ import {
 import { isSeedPrintItemId } from '@/lib/production-seed-print-items';
 import { isSeedVendor } from '@/lib/production-seed-vendors';
 import { formatKrPhoneInput } from '@/lib/format-kr-phone';
+import {
+  PRODUCTION_MY_ORDERS_TABS,
+  useInterfaceStepTabs,
+} from '@/lib/interface-step-tabs';
 
 const MENU_PATH = '/production/custom/my-orders/request';
 
@@ -112,6 +116,10 @@ export default function ProductionApplyForm() {
   const [isPrintItemModalOpen, setIsPrintItemModalOpen] = useState(false);
   const pathname = usePathname();
   const router = useRouter();
+  const stepTabs = useInterfaceStepTabs(
+    PRODUCTION_MY_ORDERS_TABS,
+    '/production/custom/my-orders'
+  );
   const [activeTab, setActiveTab] = useState('SIGN'); 
   const todayStr = getKSTDateString();
   const [currentUser, setCurrentUser] = useState<any>(null);
@@ -179,7 +187,7 @@ export default function ProductionApplyForm() {
       value={value || ''}
       disabled={disabled}
       onChange={(e) => onChange(e.target.value)}
-      className={`text-[10px] font-black rounded-lg border px-2 py-1 outline-none ${
+      className={`text-[10px] font-medium rounded-lg border px-2 py-1 outline-none ${
         disabled
           ? 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed'
           : 'bg-indigo-50 text-indigo-700 border-indigo-200 cursor-pointer focus:border-indigo-400'
@@ -383,6 +391,10 @@ const [signData, setSignData] = useState({
     PRINT: false,
     OFFICE_SUPPLIES: false,
   });
+
+  /** 사무문구 — 드림디포 견적서 첨부 (1·2 사이) */
+  const [suppliesQuoteFile, setSuppliesQuoteFile] = useState<File | null>(null);
+  const suppliesQuoteFileInputRef = useRef<HTMLInputElement>(null);
 
   // /api/auth/me + interface 권한 칩
   useEffect(() => {
@@ -1765,6 +1777,7 @@ if (activeTab === 'SIGN') {
   } else if (activeTab === 'OFFICE_SUPPLIES') {
     // 📎 사무문구는 기존에 정리된 suppliesProjectName을 그대로 검사합니다.
     if (!signData.suppliesProjectName.trim()) return alert("관리용 제목을 입력해 주세요.");
+    if (!suppliesQuoteFile) return alert('드림디포 견적서 파일(Excel / PDF)을 첨부해 주세요.');
     if (!signData.suppliesQuoteRawText.trim()) return alert("견적서 텍스트 내용을 붙여넣어 주세요.");
   }
 
@@ -1872,6 +1885,25 @@ if (activeTab === 'SIGN') {
       body: JSON.stringify(payload)
     });
     if (res.ok) {
+      const created = await res.json().catch(() => ({}));
+      const requestId = String(created?.data?.id || '').trim();
+      if (activeTab === 'OFFICE_SUPPLIES' && suppliesQuoteFile && requestId) {
+        const fd = new FormData();
+        fd.append('requestId', requestId);
+        fd.append('file', suppliesQuoteFile);
+        const up = await fetch('/api/production/custom/my-orders/quote-attachment', {
+          method: 'POST',
+          body: fd,
+        });
+        if (!up.ok) {
+          const upErr = await up.json().catch(() => ({}));
+          alert(
+            `신청은 접수되었으나 견적서 첨부 저장에 실패했습니다.\n${upErr.message || '이력에서 확인해 주세요.'}`
+          );
+          router.push('/production/custom/my-orders/history');
+          return;
+        }
+      }
       alert("성공적으로 제작 신청이 접수되었습니다.");
       router.push('/production/custom/my-orders/history'); 
     } else {
@@ -1900,24 +1932,24 @@ return (
         <div className="absolute right-0 top-0 w-64 h-64 bg-sky-400/15 rounded-full blur-3xl -translate-y-1/3 translate-x-1/4 pointer-events-none" />
         <div className="absolute left-1/4 bottom-0 w-48 h-48 bg-indigo-900/20 rounded-full blur-3xl translate-y-1/2 pointer-events-none" />
         <div className="relative z-10">
-          <h3 className="text-[10px] font-black uppercase tracking-widest text-blue-200 mb-2.5">
+          <h3 className="text-[10px] font-medium uppercase tracking-widest text-blue-200 mb-2.5">
             DEPARTMENT PRODUCTION PROCESS CENTER
           </h3>
           <h1 className="text-2xl tracking-tight leading-none">
             <span className="text-blue-200 font-normal">{currentUser?.name || signData.manager || '임직원'} 님</span>
             <span className="text-white/30 font-normal mx-2.5">|</span>
-            <span className="text-white font-extrabold">맞춤 제작물 신청 허브</span>
+            <span className="text-white font-extrabold">외주 제작 신청</span>
           </h1>
           <p className="text-white/70 text-xs mt-3 leading-relaxed max-w-xl">
-            현판·제본·기타 제작·사무문구 발주 신청서를 작성하고 부서 관리 대장으로 이관합니다.
+            외주 요청을 같은 양식으로 신청하여, 부서 발주 대장에 모읍니다.
           </p>
           {permissionSummary && isSystemLv1User(currentUser) && (
             <div className="flex flex-wrap items-center gap-2 mt-4 pt-3 border-t border-white/15">
-              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-white/10 border-white/25 text-blue-50 shadow-sm">
+              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-medium border tracking-tight bg-white/10 border-white/25 text-blue-50 shadow-sm">
                 <span>👑 Master 책임자:</span>
                 <span>{permissionSummary.masterName}</span>
               </div>
-              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-purple-500/20 border-purple-300/40 text-purple-100 shadow-sm">
+              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-medium border tracking-tight bg-purple-500/20 border-purple-300/40 text-purple-100 shadow-sm">
                 <span>👁️ Access:</span>
                 <span>{permissionSummary.accessDesignate}</span>
                 <span className="opacity-50">|</span>
@@ -1925,7 +1957,7 @@ return (
                 <span className="opacity-50">|</span>
                 <span>Level: {permissionSummary.accessLevel}</span>
               </div>
-              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-sky-400/20 border-sky-300/40 text-sky-100 shadow-sm">
+              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-medium border tracking-tight bg-sky-400/20 border-sky-300/40 text-sky-100 shadow-sm">
                 <span>✍️ Edit:</span>
                 <span>{permissionSummary.editDesignate}</span>
                 <span className="opacity-50">|</span>
@@ -1936,41 +1968,34 @@ return (
         </div>
       </div>
 
-      {/* 탭 네비게이션 — dept-master/order 스위처 규격 */}
+      {/* 탭 네비게이션 — admin/interface 명칭 반영 */}
       <div className="flex items-center justify-between bg-white p-2 rounded-xl border border-slate-200 shadow-sm">
         <div className="flex items-center gap-1.5 bg-slate-100/80 p-1 rounded-lg flex-wrap min-h-[40px]">
-          {[
-            {
-              name: '✍️ 신규 제작물 신청',
-              path: '/production/custom/my-orders/request',
-              activeColor: 'text-blue-600',
-            },
-            {
-              name: '📂 나의 신청 이력 관리',
-              path: '/production/custom/my-orders/history',
-              activeColor: 'text-indigo-600',
-            },
-          ].map((tab) => {
-            const isActive =
-              pathname === tab.path ||
-              (tab.path === '/production/custom/my-orders/request' &&
-                pathname === '/production/custom/my-orders');
-            return (
-              <Link
-                key={tab.path}
-                href={tab.path}
-                className={`px-5 py-2 rounded-md text-xs font-black transition-all flex items-center gap-2 ${
-                  isActive
-                    ? `bg-white ${tab.activeColor} shadow-sm border border-slate-200/80`
-                    : 'text-slate-500 hover:text-slate-800'
-                }`}
-              >
-                <span>{tab.name}</span>
-              </Link>
-            );
-          })}
+          {stepTabs.length === 0 ? (
+            <div className="h-8 w-72 rounded-md bg-slate-200/80 animate-pulse" aria-hidden />
+          ) : (
+            stepTabs.map((tab) => {
+              const isActive =
+                pathname === tab.path ||
+                (tab.path === '/production/custom/my-orders/request' &&
+                  pathname === '/production/custom/my-orders');
+              return (
+                <Link
+                  key={tab.id}
+                  href={tab.path}
+                  className={`px-5 py-2 rounded-md text-xs font-medium transition-all flex items-center gap-2 ${
+                    isActive
+                      ? `bg-white ${tab.activeColor || 'text-blue-600'} shadow-sm border border-slate-200/80`
+                      : 'text-slate-500 hover:text-slate-800'
+                  }`}
+                >
+                  <span>{tab.label}</span>
+                </Link>
+              );
+            })
+          )}
         </div>
-        <p className="text-[10px] text-slate-400 font-bold px-3 hidden sm:block">
+        <p className="text-[10px] text-slate-400 font-medium px-3 hidden sm:block">
           ※ apply=개인 발주서 작성 · dept=부서 묶음 발주 · master=중앙 명세 대조
         </p>
       </div>
@@ -2074,14 +2099,14 @@ return (
         <div className="w-full bg-white rounded-b-[2rem] rounded-tr-2xl p-8 shadow-sm border border-t-0 border-slate-200/80">
         <div className="flex items-center gap-3 border-b border-slate-100 pb-4">
           <span className="text-xl">{CATEGORIES.find(c => c.id === activeTab)?.icon || '✍️'}</span>
-          <h2 className="text-lg font-black text-slate-800">
+          <h2 className="text-lg font-medium text-slate-800">
             {CATEGORIES.find((c) => c.id === activeTab)?.label || '부서 맞춤'} 제작 발주서 신청
           </h2>
         </div>
 
         <div className="space-y-6 pt-6">
           <div className="bg-yellow-50 border-2 border-yellow-400 p-8 rounded-2xl transition-all shadow-inner space-y-6 relative mt-4">
-            <div className="absolute -top-3 left-6 bg-yellow-400 text-yellow-900 px-4 py-1 rounded-full text-[10px] font-black tracking-widest shadow-sm">
+            <div className="absolute -top-3 left-6 bg-yellow-400 text-yellow-900 px-4 py-1 rounded-full text-[10px] font-medium tracking-widest shadow-sm">
               신청 내용
             </div>
 
@@ -2093,7 +2118,7 @@ return (
 
                   {/* 프로세스 안내 */}
                   <div className="border-b border-blue-100 pb-4">
-                    <p className="text-xs font-black text-blue-800 leading-relaxed">
+                    <p className="text-xs font-medium text-blue-800 leading-relaxed">
                       드롭다운 서식은 설정 탭 활용 / 발주서만 신청됨 / 첨부파일은 부서 NAS 활용하여 별첨 (파일명은 관리용 제목설정과 일치 권장)
                     </p>
                   </div>
@@ -2101,21 +2126,21 @@ return (
                   {/* 1~3: 인증 종류 | 등급 | 현판 품목 | 품목 요약 — 한 줄 */}
                   <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 items-start">
                     <div className="min-w-0">
-                      <label className="block text-[10px] font-black text-slate-500 tracking-widest uppercase mb-2">1. 인증의 종류 <span className="text-red-500">*</span></label>
-                      <select value={signData.certType} onChange={(e) => setSignData({ ...signData, certType: e.target.value, certLevel: '' })} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-3 text-xs font-semibold focus:ring-2 focus:ring-blue-500 outline-none cursor-pointer hover:bg-white">
+                      <label className="block text-[10px] font-medium text-slate-500 tracking-widest uppercase mb-2">1. 인증의 종류 <span className="text-red-500">*</span></label>
+                      <select value={signData.certType} onChange={(e) => setSignData({ ...signData, certType: e.target.value, certLevel: '' })} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-3 text-xs font-medium focus:ring-2 focus:ring-blue-500 outline-none cursor-pointer hover:bg-white">
                         {signCertMasterList.map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
                       </select>
                     </div>
 
                     <div className="min-w-0">
-                      <label className="block text-[10px] font-black text-slate-500 tracking-widest uppercase mb-2">2. 인증 등급/종류 설정 <span className="text-red-500">*</span></label>
+                      <label className="block text-[10px] font-medium text-slate-500 tracking-widest uppercase mb-2">2. 인증 등급/종류 설정 <span className="text-red-500">*</span></label>
 
                       {useMultiGradeField ? (
                         <div className="relative" ref={gradeMultiRef}>
                           <button
                             type="button"
                             onClick={() => setGradeMultiOpen((o) => !o)}
-                            className="w-full flex items-center justify-between gap-2 bg-slate-50 hover:bg-white border border-slate-200 rounded-xl px-3 py-3 text-xs font-semibold text-left outline-none focus:ring-2 focus:ring-blue-500 transition-colors"
+                            className="w-full flex items-center justify-between gap-2 bg-slate-50 hover:bg-white border border-slate-200 rounded-xl px-3 py-3 text-xs font-medium text-left outline-none focus:ring-2 focus:ring-blue-500 transition-colors"
                           >
                             <span className="min-w-0 truncate text-slate-800">
                               {signData.certLevel
@@ -2197,25 +2222,25 @@ return (
                           🚫 결로방지 성능평가는 별도의 마스터 등급 표기 사항이 없습니다.
                         </div>
                       ) : (
-                        <select value={signData.certLevel} onChange={(e) => setSignData({ ...signData, certLevel: e.target.value })} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-3 text-xs font-semibold focus:ring-2 focus:ring-blue-500 outline-none cursor-pointer hover:bg-white">
+                        <select value={signData.certLevel} onChange={(e) => setSignData({ ...signData, certLevel: e.target.value })} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-3 text-xs font-medium focus:ring-2 focus:ring-blue-500 outline-none cursor-pointer hover:bg-white">
                           {(gradeMasterMap[signData.certType] || []).map(g => <option key={g} value={g}>{g}</option>)}
                         </select>
                       )}
                     </div>
 
                     <div className="min-w-0">
-                      <label className="block text-[10px] font-black text-slate-500 tracking-widest uppercase mb-2">
+                      <label className="block text-[10px] font-medium text-slate-500 tracking-widest uppercase mb-2">
                         3. 현판 품목 설정 <span className="text-red-500">*</span>
                       </label>
                       {availableSignPlates.length === 0 ? (
-                        <div className="w-full bg-amber-50 text-amber-800 font-bold rounded-xl px-3 py-3 text-[10px] border border-amber-200 leading-snug">
+                        <div className="w-full bg-amber-50 text-amber-800 font-medium rounded-xl px-3 py-3 text-[10px] border border-amber-200 leading-snug">
                           이 인증에 연결된 현판 품목이 없습니다. 「인증별 현판 서식 설정」에서 품목을 체크해 주세요.
                         </div>
                       ) : (
                         <select
                           value={signData.plateType}
                           onChange={(e) => setSignData({ ...signData, plateType: e.target.value })}
-                          className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-3 text-xs font-bold focus:ring-2 focus:ring-blue-500 outline-none cursor-pointer hover:bg-white"
+                          className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-3 text-xs font-medium focus:ring-2 focus:ring-blue-500 outline-none cursor-pointer hover:bg-white"
                         >
                           {availableSignPlates.map((p) => (
                             <option key={p.code} value={p.code}>
@@ -2225,7 +2250,7 @@ return (
                         </select>
                       )}
                       {(selectedSignCert?.linkedPlateCodes?.length || 0) === 0 && plateMasterList.length > 0 && (
-                        <p className="mt-1.5 text-[9px] font-bold text-slate-400 leading-snug">
+                        <p className="mt-1.5 text-[9px] font-medium text-slate-400 leading-snug">
                           ※ 아직 품목 미연결 — 전체 품목이 표시됩니다.
                         </p>
                       )}
@@ -2233,7 +2258,7 @@ return (
 
                     <div className="min-w-0 self-start">
                       <div
-                        className="block text-[10px] font-black tracking-widest uppercase mb-2 invisible select-none"
+                        className="block text-[10px] font-medium tracking-widest uppercase mb-2 invisible select-none"
                         aria-hidden
                       >
                         규격
@@ -2241,17 +2266,17 @@ return (
                       <div className="bg-slate-50/50 rounded-xl border border-slate-200 overflow-hidden shadow-sm">
                         <table className="w-full table-fixed text-left border-collapse text-[10px]">
                           <thead>
-                            <tr className="bg-slate-100 text-slate-500 font-black border-b border-slate-200 text-[9px]">
+                            <tr className="bg-slate-100 text-slate-500 font-medium border-b border-slate-200 text-[9px]">
                               <th className="p-2 pl-3 w-[40%]">선택 품명</th>
                               <th className="p-2 text-center w-[28%]">규격(mm)</th>
                               <th className="p-2 text-right pr-3 w-[32%]">단가</th>
                             </tr>
                           </thead>
                           <tbody>
-                            <tr className="font-bold text-slate-800 bg-white">
+                            <tr className="font-medium text-slate-800 bg-white">
                               <td className="p-2.5 pl-3 text-blue-600 text-xs truncate">📦 {currentSelectedInfo.label}</td>
                               <td className="p-2.5 text-center font-mono text-slate-600 truncate">{currentSelectedInfo.size}</td>
-                              <td className="p-2.5 text-right font-mono text-emerald-600 font-black pr-3 truncate">{currentSelectedInfo.priceStr}</td>
+                              <td className="p-2.5 text-right font-mono text-emerald-600 font-medium pr-3 truncate">{currentSelectedInfo.priceStr}</td>
                             </tr>
                           </tbody>
                         </table>
@@ -2263,7 +2288,7 @@ return (
                   <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 items-start border-t border-slate-100 pt-4">
                     <div className="min-w-0">
                       <label
-                        className="block text-[10px] font-black text-slate-500 tracking-tight mb-2 leading-snug"
+                        className="block text-[10px] font-medium text-slate-500 tracking-tight mb-2 leading-snug"
                         title="4. 프로젝트명/건물명/경영시스템인증 조직명"
                       >
                         4. 프로젝트명/건물명/경영시스템인증 조직명{' '}
@@ -2277,7 +2302,7 @@ return (
                           onChange={(e) =>
                             setSignData({ ...signData, isoCompanyName: e.target.value })
                           }
-                          className="w-full bg-white border border-slate-200 rounded-xl px-3 py-3 text-xs font-semibold focus:ring-2 focus:ring-blue-500 outline-none"
+                          className="w-full bg-white border border-slate-200 rounded-xl px-3 py-3 text-xs font-medium focus:ring-2 focus:ring-blue-500 outline-none"
                         />
                       ) : (
                         <input
@@ -2287,13 +2312,13 @@ return (
                           onChange={(e) =>
                             setSignData({ ...signData, projectName: e.target.value })
                           }
-                          className="w-full bg-white border border-slate-200 rounded-xl px-3 py-3 text-xs font-semibold focus:ring-2 focus:ring-blue-500 outline-none"
+                          className="w-full bg-white border border-slate-200 rounded-xl px-3 py-3 text-xs font-medium focus:ring-2 focus:ring-blue-500 outline-none"
                         />
                       )}
                     </div>
                     <div className="min-w-0">
                       <label
-                        className="block text-[10px] font-black text-slate-500 tracking-tight mb-2 leading-snug"
+                        className="block text-[10px] font-medium text-slate-500 tracking-tight mb-2 leading-snug"
                         title={
                           !useCertNumberField
                             ? '5. 인증번호 (설정에 비활성화로 입력 불가)'
@@ -2302,7 +2327,7 @@ return (
                       >
                         5. 인증번호{' '}
                         {!useCertNumberField ? (
-                          <span className="text-red-500 font-bold">(설정에 비활성화로 입력 불가)</span>
+                          <span className="text-red-500 font-medium">(설정에 비활성화로 입력 불가)</span>
                         ) : null}
                       </label>
                       <input
@@ -2317,7 +2342,7 @@ return (
                           setSignData({ ...signData, certNumber: e.target.value })
                         }
                         disabled={!useCertNumberField}
-                        className={`w-full border rounded-xl px-3 py-3 text-xs font-semibold outline-none transition-all ${
+                        className={`w-full border rounded-xl px-3 py-3 text-xs font-medium outline-none transition-all ${
                           !useCertNumberField
                             ? 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed select-none'
                             : 'bg-white border-slate-200 text-slate-800 focus:ring-2 focus:ring-blue-500'
@@ -2325,10 +2350,10 @@ return (
                       />
                     </div>
                     <div className="min-w-0">
-                      <label className="block text-[10px] font-black text-slate-500 tracking-tight mb-2 leading-snug">
+                      <label className="block text-[10px] font-medium text-slate-500 tracking-tight mb-2 leading-snug">
                         6. 현판 유효기간 (숫자 연속 입력){' '}
                         {!useValidPeriodField ? (
-                          <span className="text-red-500 font-bold">(설정에 비활성화로 입력 불가)</span>
+                          <span className="text-red-500 font-medium">(설정에 비활성화로 입력 불가)</span>
                         ) : (
                           <span className="text-slate-400 font-medium">(선택)</span>
                         )}
@@ -2349,7 +2374,7 @@ return (
                           })
                         }
                         disabled={!useValidPeriodField}
-                        className={`w-full border rounded-xl px-3 py-3 text-xs font-semibold outline-none transition-all ${
+                        className={`w-full border rounded-xl px-3 py-3 text-xs font-medium outline-none transition-all ${
                           !useValidPeriodField
                             ? 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed select-none'
                             : 'bg-white border-slate-200 text-slate-800 focus:ring-2 focus:ring-blue-500'
@@ -2357,14 +2382,14 @@ return (
                       />
                     </div>
                     <div className="min-w-0">
-                      <label className="block text-[10px] font-black text-slate-500 tracking-tight mb-2 leading-snug whitespace-nowrap">
+                      <label className="block text-[10px] font-medium text-slate-500 tracking-tight mb-2 leading-snug whitespace-nowrap">
                         출력 양식 미리보기
                       </label>
                       <div
                         className={`w-full min-h-[46px] flex items-center px-3 py-3 rounded-xl border text-xs ${
                           !useValidPeriodField
-                            ? 'font-semibold bg-slate-100 border-slate-200 text-slate-400'
-                            : 'font-mono font-black tracking-wider bg-yellow-100/50 border-yellow-200 shadow-inner'
+                            ? 'font-medium bg-slate-100 border-slate-200 text-slate-400'
+                            : 'font-mono font-medium tracking-wider bg-yellow-100/50 border-yellow-200 shadow-inner'
                         }`}
                       >
                         <span className="truncate">
@@ -2392,7 +2417,7 @@ return (
 
                 {/* 프로세스 안내 */}
                 <div className="border-b border-blue-100 pb-4">
-                  <p className="text-xs font-black text-blue-800 leading-relaxed">
+                  <p className="text-xs font-medium text-blue-800 leading-relaxed">
                     드롭다운 서식은 설정 탭 활용 / 발주서만 신청됨 / 첨부파일은 부서 NAS 활용하여 별첨 (파일명은 관리용 제목설정과 일치 권장)
                   </p>
                 </div>
@@ -2400,7 +2425,7 @@ return (
                 {/* 🚀 3번: 제본 종류 (판형·표지·본문보다 먼저) */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                   <div>
-                    <label className="block text-[10px] font-black text-slate-500 tracking-widest uppercase mb-2">
+                    <label className="block text-[10px] font-medium text-slate-500 tracking-widest uppercase mb-2">
                       {jebonFormSteps.certType}. 제본 종류 선택 <span className="text-red-500">*</span>
                     </label>
                     <select
@@ -2409,7 +2434,7 @@ return (
                         lastAppliedJebonDefaultsRef.current = '';
                         setSignData({ ...signData, certType: e.target.value });
                       }}
-                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-xs font-semibold focus:ring-2 focus:ring-blue-500 outline-none cursor-pointer hover:bg-white"
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-xs font-medium focus:ring-2 focus:ring-blue-500 outline-none cursor-pointer hover:bg-white"
                     >
                       {jebonCertMasterList.map((c) => (
                         <option key={c.id} value={c.id}>
@@ -2419,13 +2444,13 @@ return (
                     </select>
                   </div>
                   <div className="animate-fade-in">
-                      <label className="block text-[10px] font-black text-slate-500 tracking-widest uppercase mb-2">
+                      <label className="block text-[10px] font-medium text-slate-500 tracking-widest uppercase mb-2">
                         {jebonFormSteps.certPhase}. 인증의 단계 <span className="text-red-500">*</span>
                       </label>
                       <select
                         value={signData.certPhase}
                         onChange={(e) => setSignData({ ...signData, certPhase: e.target.value })}
-                        className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-xs font-semibold text-slate-800 focus:ring-2 focus:ring-blue-500 outline-none cursor-pointer hover:bg-white"
+                        className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-xs font-medium text-slate-800 focus:ring-2 focus:ring-blue-500 outline-none cursor-pointer hover:bg-white"
                       >
                         <option value="해당없음">해당없음</option>
                         <option value="예비인증">예비인증</option>
@@ -2438,7 +2463,7 @@ return (
                 <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
                   {/* 1. 제본 판형 */}
                   <div className="bg-slate-50/50 p-4 rounded-2xl border border-slate-200 shadow-sm space-y-3">
-                    <label className="block text-[10px] font-black text-slate-500 tracking-widest uppercase">
+                    <label className="block text-[10px] font-medium text-slate-500 tracking-widest uppercase">
                       <span className="flex items-center gap-2">
                         <span>📏</span> {jebonFormSteps.size}. 제본 판형 지정{' '}
                         <span className="text-red-500">*</span>
@@ -2454,7 +2479,7 @@ return (
                           jebonSize: resolveJebonSizeSpec(selectedType, jebonSizeMasterList),
                         });
                       }}
-                      className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2.5 text-xs font-black text-slate-700 focus:ring-2 focus:ring-blue-500 outline-none cursor-pointer"
+                      className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2.5 text-xs font-medium text-slate-700 focus:ring-2 focus:ring-blue-500 outline-none cursor-pointer"
                     >
                       {jebonSizeMasterList.map((opt) => (
                         <option key={opt.code} value={opt.code}>
@@ -2468,12 +2493,12 @@ return (
                         placeholder="예: A3 (297 x 420mm)"
                         value={signData.jebonSize || ''}
                         onChange={(e) => setSignData({ ...signData, jebonSize: e.target.value })}
-                        className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold outline-none text-slate-800 focus:ring-2 focus:ring-blue-500"
+                        className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-medium outline-none text-slate-800 focus:ring-2 focus:ring-blue-500"
                       />
                     ) : (
-                      <div className="w-full bg-slate-100/80 border border-slate-200 rounded-xl px-3 py-2 text-xs font-black text-slate-500 flex items-center justify-between">
+                      <div className="w-full bg-slate-100/80 border border-slate-200 rounded-xl px-3 py-2 text-xs font-medium text-slate-500 flex items-center justify-between">
                         <span className="text-slate-700">{signData.jebonSize || 'A4'}</span>
-                        <span className="text-[10px] text-slate-400 font-bold">✔️ 자동</span>
+                        <span className="text-[10px] text-slate-400 font-medium">✔️ 자동</span>
                       </div>
                     )}
                   </div>
@@ -2486,17 +2511,17 @@ return (
                         : 'bg-slate-100/80 border-slate-200 opacity-80'
                     }`}
                   >
-                    <h4 className="text-[10px] font-black text-slate-500 tracking-widest uppercase flex items-center gap-2 flex-wrap">
+                    <h4 className="text-[10px] font-medium text-slate-500 tracking-widest uppercase flex items-center gap-2 flex-wrap">
                       <span>📘</span> {jebonFormSteps.cover}. 표지 (Cover) 스펙{' '}
                       {useJebonCoverField ? (
                         <span className="text-red-500">*</span>
                       ) : (
-                        <span className="text-red-500 font-bold">(설정에 비활성화로 입력 불가)</span>
+                        <span className="text-red-500 font-medium">(설정에 비활성화로 입력 불가)</span>
                       )}
                     </h4>
                     <div className="grid grid-cols-2 gap-3">
                       <div>
-                        <label className="block text-[10px] font-black text-slate-500 tracking-widest uppercase mb-1.5">
+                        <label className="block text-[10px] font-medium text-slate-500 tracking-widest uppercase mb-1.5">
                           인쇄 방식
                         </label>
                         <select
@@ -2505,8 +2530,8 @@ return (
                           disabled={!useJebonCoverField}
                           className={`w-full border rounded-xl px-3 py-2.5 text-xs outline-none ${
                             useJebonCoverField
-                              ? 'bg-white border-slate-200 font-black text-slate-700 cursor-pointer focus:ring-2 focus:ring-blue-500'
-                              : 'bg-slate-100 border-slate-200 font-semibold text-slate-400 cursor-not-allowed'
+                              ? 'bg-white border-slate-200 font-medium text-slate-700 cursor-pointer focus:ring-2 focus:ring-blue-500'
+                              : 'bg-slate-100 border-slate-200 font-medium text-slate-400 cursor-not-allowed'
                           }`}
                         >
                           {useJebonCoverField ? (
@@ -2520,9 +2545,9 @@ return (
                         </select>
                       </div>
                       <div>
-                        <label className="block text-[10px] font-black text-slate-500 tracking-widest mb-1.5 leading-snug">
+                        <label className="block text-[10px] font-medium text-slate-500 tracking-widest mb-1.5 leading-snug">
                           면수{' '}
-                          <span className="font-semibold normal-case tracking-normal text-slate-400">
+                          <span className="font-medium normal-case tracking-normal text-slate-400">
                             (ex. PDF 페이지 쪽수)
                           </span>
                         </label>
@@ -2541,7 +2566,7 @@ return (
                             })
                           }
                           disabled={!useJebonCoverField || signData.coverPageFromAttachment}
-                          className={`w-full border rounded-xl px-3 py-2.5 text-xs font-semibold outline-none text-right ${
+                          className={`w-full border rounded-xl px-3 py-2.5 text-xs font-medium outline-none text-right ${
                             useJebonCoverField && !signData.coverPageFromAttachment
                               ? 'bg-white border-slate-200 focus:ring-2 focus:ring-blue-500'
                               : 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'
@@ -2562,7 +2587,7 @@ return (
                               }}
                               className="w-3.5 h-3.5 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
                             />
-                            <span className="text-[10px] font-bold text-slate-500">면수는 첨부파일에 따름</span>
+                            <span className="text-[10px] font-medium text-slate-500">면수는 첨부파일에 따름</span>
                           </label>
                         )}
                       </div>
@@ -2571,28 +2596,28 @@ return (
 
                   {/* 3. 본문 Inner */}
                   <div className="bg-slate-50/50 p-4 rounded-2xl border border-slate-200 space-y-3">
-                    <h4 className="text-[10px] font-black text-slate-500 tracking-widest uppercase flex items-center gap-2">
+                    <h4 className="text-[10px] font-medium text-slate-500 tracking-widest uppercase flex items-center gap-2">
                       <span>📄</span> {jebonFormSteps.inner}. 본문 (Inner) 스펙{' '}
                       <span className="text-red-500">*</span>
                     </h4>
                     <div className="grid grid-cols-2 gap-3">
                       <div>
-                        <label className="block text-[10px] font-black text-slate-500 tracking-widest uppercase mb-1.5">
+                        <label className="block text-[10px] font-medium text-slate-500 tracking-widest uppercase mb-1.5">
                           인쇄 방식
                         </label>
                         <select
                           value={signData.innerColor}
                           onChange={(e) => setSignData({ ...signData, innerColor: e.target.value })}
-                          className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2.5 text-xs font-black text-slate-700 focus:ring-2 focus:ring-blue-500 outline-none cursor-pointer"
+                          className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2.5 text-xs font-medium text-slate-700 focus:ring-2 focus:ring-blue-500 outline-none cursor-pointer"
                         >
                           <option value="흑백">흑백 인쇄</option>
                           <option value="컬러">컬러 인쇄</option>
                         </select>
                       </div>
                       <div>
-                        <label className="block text-[10px] font-black text-slate-500 tracking-widest mb-1.5 leading-snug">
+                        <label className="block text-[10px] font-medium text-slate-500 tracking-widest mb-1.5 leading-snug">
                           면수{' '}
-                          <span className="font-semibold normal-case tracking-normal text-slate-400">
+                          <span className="font-medium normal-case tracking-normal text-slate-400">
                             (ex. PDF 페이지 쪽수)
                           </span>
                         </label>
@@ -2607,7 +2632,7 @@ return (
                             })
                           }
                           disabled={signData.innerPageFromAttachment}
-                          className={`w-full border rounded-xl px-3 py-2.5 text-xs font-semibold outline-none text-right ${
+                          className={`w-full border rounded-xl px-3 py-2.5 text-xs font-medium outline-none text-right ${
                             signData.innerPageFromAttachment
                               ? 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'
                               : 'bg-white border-slate-200 focus:ring-2 focus:ring-blue-500'
@@ -2627,7 +2652,7 @@ return (
                             }}
                             className="w-3.5 h-3.5 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
                           />
-                          <span className="text-[10px] font-bold text-slate-500">면수는 첨부파일에 따름</span>
+                          <span className="text-[10px] font-medium text-slate-500">면수는 첨부파일에 따름</span>
                         </label>
                       </div>
                     </div>
@@ -2637,7 +2662,7 @@ return (
                 {/* 프로젝트명 · 표지 일자 · 미리보기 — 한 줄(3열) */}
                 <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 items-start border-t border-slate-100 pt-4">
                   <div className="min-w-0">
-                    <label className="block text-[10px] font-black text-slate-500 tracking-tight mb-2 leading-snug">
+                    <label className="block text-[10px] font-medium text-slate-500 tracking-tight mb-2 leading-snug">
                       {jebonFormSteps.building}. 프로젝트명/건물명/표지제목
                     </label>
                     <input
@@ -2651,12 +2676,12 @@ return (
                           coverName: e.target.value,
                         })
                       }
-                      className="w-full bg-white border border-slate-200 rounded-xl px-3 py-3 text-xs font-semibold focus:ring-2 focus:ring-blue-500 outline-none"
+                      className="w-full bg-white border border-slate-200 rounded-xl px-3 py-3 text-xs font-medium focus:ring-2 focus:ring-blue-500 outline-none"
                     />
                   </div>
                   <div className="min-w-0">
                     <div className="flex items-center justify-between gap-2 mb-2">
-                      <label className="block text-[10px] font-black text-slate-500 tracking-tight leading-snug min-w-0">
+                      <label className="block text-[10px] font-medium text-slate-500 tracking-tight leading-snug min-w-0">
                         {jebonFormSteps.coverDate}. 표지 일자(인증 완료일 등){' '}
                         <span className="text-slate-400 font-medium">(선택)</span>
                       </label>
@@ -2703,7 +2728,7 @@ return (
                           : undefined
                       }
                       onChange={(e) => setSignData({ ...signData, compDateRaw: e.target.value })}
-                      className={`w-full border rounded-xl px-3 py-3 text-xs font-semibold outline-none transition-all ${
+                      className={`w-full border rounded-xl px-3 py-3 text-xs font-medium outline-none transition-all ${
                         useJebonCoverDateField
                           ? 'bg-white border-slate-200 text-slate-800 focus:ring-2 focus:ring-blue-500 cursor-pointer'
                           : 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'
@@ -2718,10 +2743,10 @@ return (
                     )}
                   </div>
                   <div className="min-w-0 self-start">
-                    <label className="block text-[10px] font-black text-slate-500 tracking-tight mb-2 leading-snug whitespace-nowrap">
+                    <label className="block text-[10px] font-medium text-slate-500 tracking-tight mb-2 leading-snug whitespace-nowrap">
                       출력 양식 미리보기
                     </label>
-                    <div className="w-full min-h-[46px] flex items-center px-3 py-3 rounded-xl border text-xs font-mono font-black tracking-wider bg-yellow-100/50 border-yellow-200 shadow-inner">
+                    <div className="w-full min-h-[46px] flex items-center px-3 py-3 rounded-xl border text-xs font-mono font-medium tracking-wider bg-yellow-100/50 border-yellow-200 shadow-inner">
                       <span className="truncate">
                         {!useJebonCoverDateField ? (
                           <span className="text-slate-400 font-medium">표지 일자 미적용</span>
@@ -2746,8 +2771,9 @@ return (
                 <div className="p-6 bg-white rounded-2xl border border-blue-200 space-y-6 shadow-sm">
                   {/* 프로세스 안내 */}
                   <div className="border-b border-blue-100 pb-4">
-                    <p className="text-xs font-black text-blue-800 leading-relaxed">
-                      그룹웨어 결재 승인 후 신청 / 일반소모품 입고 관리는 별도 진행필요
+                    <p className="text-xs font-medium text-blue-800 leading-relaxed">
+                      <span className="text-red-600">그룹웨어 결재 승인 후 신청</span>
+                      {' / 일반소모품 입고 관리는 별도 진행필요'}
                     </p>
                   </div>
 
@@ -2756,7 +2782,7 @@ return (
                     
                     {/* 1. 주문 물품 선택 — 제품명(검정) + 참고(회색) */}
                     <div ref={printItemMenuRef} className="relative">
-                      <label className="block text-[10px] font-black text-slate-500 tracking-widest uppercase mb-2">
+                      <label className="block text-[10px] font-medium text-slate-500 tracking-widest uppercase mb-2">
                         1. 주문 물품 선택 <span className="text-red-500">*</span>
                       </label>
                       <button
@@ -2766,15 +2792,15 @@ return (
                       >
                         {selectedPrintItem ? (
                           <span className="min-w-0 truncate text-xs">
-                            <span className="font-black text-slate-900">{selectedPrintItem.name}</span>
+                            <span className="font-medium text-slate-900">{selectedPrintItem.name}</span>
                             {printItemReferenceText(selectedPrintItem) && (
-                              <span className="font-semibold text-slate-400 ml-1.5">
+                              <span className="font-medium text-slate-400 ml-1.5">
                                 {printItemReferenceText(selectedPrintItem)}
                               </span>
                             )}
                           </span>
                         ) : (
-                          <span className="text-xs font-bold text-slate-400">
+                          <span className="text-xs font-medium text-slate-400">
                             {printItemMasterList.length === 0
                               ? '등록된 주문 물품이 없습니다'
                               : '주문 물품을 선택해 주세요'}
@@ -2798,9 +2824,9 @@ return (
                                   active ? 'bg-blue-50/80' : ''
                                 }`}
                               >
-                                <span className="font-black text-slate-900 shrink-0">{item.name}</span>
+                                <span className="font-medium text-slate-900 shrink-0">{item.name}</span>
                                 {refText && (
-                                  <span className="font-semibold text-slate-400 truncate">
+                                  <span className="font-medium text-slate-400 truncate">
                                     {refText}
                                   </span>
                                 )}
@@ -2813,9 +2839,9 @@ return (
 
                     {/* 2. 규격 매핑 및 동적 직접 입력 전환창 */}
                     <div>
-                      <label className="block text-[10px] font-black text-slate-500 tracking-widest uppercase mb-2">
+                      <label className="block text-[10px] font-medium text-slate-500 tracking-widest uppercase mb-2">
                         {isPrintCustomItem ? (
-                          <span className="text-blue-700 font-black animate-pulse">
+                          <span className="text-blue-700 font-medium animate-pulse">
                             1. 기타소모품 명칭/규격 직접 기재 *
                           </span>
                         ) : (
@@ -2832,20 +2858,20 @@ return (
                             onChange={(e) =>
                               setSignData({ ...signData, printCustomName: e.target.value })
                             }
-                            className="w-full bg-white border-2 border-blue-400 focus:border-blue-600 focus:ring-2 focus:ring-blue-200 rounded-xl px-4 py-2.5 text-xs font-bold outline-none shadow-sm text-blue-900"
+                            className="w-full bg-white border-2 border-blue-400 focus:border-blue-600 focus:ring-2 focus:ring-blue-200 rounded-xl px-4 py-2.5 text-xs font-medium outline-none shadow-sm text-blue-900"
                           />
-                          <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[9px] font-black text-blue-600 bg-blue-50 px-2 py-0.5 rounded-md">
+                          <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[9px] font-medium text-blue-600 bg-blue-50 px-2 py-0.5 rounded-md">
                             입력모드
                           </span>
                         </div>
                       ) : (
-                        <div className="w-full bg-slate-100/80 border border-slate-200 rounded-xl px-4 py-3 text-xs font-black text-slate-500 flex items-center justify-between gap-2 shadow-inner">
+                        <div className="w-full bg-slate-100/80 border border-slate-200 rounded-xl px-4 py-3 text-xs font-medium text-slate-500 flex items-center justify-between gap-2 shadow-inner">
                           <span className="text-slate-700">
                             {[selectedPrintItem?.name, selectedPrintItem?.size]
                               .filter(Boolean)
                               .join(' ') || signData.printItemType || '—'}
                           </span>
-                          <span className="text-[10px] text-slate-400 font-bold tracking-wider shrink-0">
+                          <span className="text-[10px] text-slate-400 font-medium tracking-wider shrink-0">
                             ✔️ 선택사항 확인
                           </span>
                         </div>
@@ -2856,7 +2882,7 @@ return (
                   {/* 🚀 2, 3. 상세 내용 및 비고 */}
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6 border-t border-slate-100 pt-6 mt-2">
                     <div>
-                      <label className="block text-[10px] font-black text-slate-500 tracking-widest uppercase mb-2">
+                      <label className="block text-[10px] font-medium text-slate-500 tracking-widest uppercase mb-2">
                         2. 인쇄 제작 문구1 <span className="text-slate-400 font-medium">(선택)</span>
                       </label>
                       <input
@@ -2871,7 +2897,7 @@ return (
                     </div>
 
                     <div>
-                      <label className="block text-[10px] font-black text-slate-500 tracking-widest uppercase mb-2">
+                      <label className="block text-[10px] font-medium text-slate-500 tracking-widest uppercase mb-2">
                         3. 인쇄 제작 문구2 <span className="text-slate-400 font-medium">(선택)</span>
                       </label>
                       <input
@@ -2897,18 +2923,19 @@ return (
                   
                   {/* 헤더 */}
                   <div className="border-b border-blue-100 pb-4">
-                    <p className="text-xs font-black text-blue-800 leading-relaxed">
-                      드림디포 견적서 다운 (Excel / PDF) → 그룹웨어 결재 승인 → 하단 폼 제목생성 및 견적서 붙여넣기 → 외주업체 클릭 및 신청서 제출
+                    <p className="text-xs font-medium text-blue-800 leading-relaxed">
+                      드림디포 견적서 다운 (Excel / PDF) →{' '}
+                      <span className="text-red-600">그룹웨어 결재 승인 후 신청</span>
                     </p>
                   </div>
 
-                 {/* 구분 타이틀 (라벨 바로 옆으로 버튼 이동 및 정렬 보정) */}
-                 <div className="rounded-xl border border-sky-300 bg-sky-100/60 p-4">
+                  {/* 1. 관리용 제목 — 외곽 박스 없이 입력만 */}
+                  <div>
                     <div className="flex items-center gap-2 mb-2">
-                      <label className="block text-[10px] font-black text-sky-900 tracking-widest uppercase">
+                      <label className="block text-sm font-semibold text-slate-900">
                         1. 관리용 제목 설정 <span className="text-red-500">*</span>
                       </label>
-                      <button 
+                      <button
                         type="button"
                         onClick={() => {
                           setTitleManualByTab((prev) => ({ ...prev, OFFICE_SUPPLIES: false }));
@@ -2917,50 +2944,100 @@ return (
                             suppliesProjectName: autoSuppliesFormTitle,
                           });
                         }}
-                        className="text-[9px] font-black text-blue-700 bg-white hover:bg-sky-50 px-2 py-0.5 rounded border border-sky-300 transition-colors shrink-0 cursor-pointer"
+                        className="text-[9px] font-medium text-blue-600 hover:text-blue-800 underline underline-offset-2 shrink-0 cursor-pointer bg-transparent border-0 p-0"
                       >
                         ⚡ 제목 자동 생성
                       </button>
                     </div>
-                    <input 
-                      type="text" 
-                      placeholder="스펙에 맞춰 자동 생성됩니다. 필요 시 직접 수정해 주세요." 
-                      value={signData.suppliesProjectName || ''} 
+                    <input
+                      type="text"
+                      placeholder="스펙에 맞춰 자동 생성됩니다. 필요 시 직접 수정해 주세요."
+                      value={signData.suppliesProjectName || ''}
                       onChange={(e) => {
                         setTitleManualByTab((prev) => ({ ...prev, OFFICE_SUPPLIES: true }));
                         setSignData({ ...signData, suppliesProjectName: e.target.value });
                       }}
-                      className="w-full bg-white border border-sky-300 rounded-xl px-4 py-3 text-xs font-bold outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-200 transition-colors"
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-xs font-medium outline-none focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-colors"
                     />
                   </div>
 
-                  {/* 텍스트 긁어붙이기 윈도우 */}
+                  {/* 2. 견적서 첨부 */}
                   <div>
-                    <div className="flex justify-between items-center mb-2">
-                      <label className="block text-[10px] font-black text-slate-500 tracking-widest uppercase">
-                        2. 견적 내용 전체 붙여넣기 (Ctrl + V) <span className="text-red-500">*</span>
+                    <div className="flex justify-between items-center mb-2 gap-2">
+                      <label className="block text-sm font-semibold text-slate-900">
+                        2. 드림디포 견적서 첨부 <span className="text-red-500">*</span>
                       </label>
-                      <span className="text-[9px] font-bold text-blue-500 bg-blue-50 px-2 py-0.5 rounded">텍스트 전용</span>
+                      <span className="text-[9px] font-medium text-slate-500 bg-slate-100 px-2 py-0.5 rounded">
+                        Excel / PDF
+                      </span>
                     </div>
-                    <textarea 
-                      placeholder="견적서(Excel 또는 PDF) 텍스트 전체를 복사하여 이곳에 붙여넣어 주세요. (품명, 규격, 수량, 단가 필수 포함)" 
-                      value={signData.suppliesQuoteRawText || ''} 
-                      onChange={(e) => setSignData({ ...signData, suppliesQuoteRawText: e.target.value })} 
+                    <input
+                      ref={suppliesQuoteFileInputRef}
+                      type="file"
+                      accept=".pdf,.xls,.xlsx,application/pdf,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                      className="hidden"
+                      onChange={(e) => {
+                        const f = e.target.files?.[0] || null;
+                        setSuppliesQuoteFile(f);
+                      }}
+                    />
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => suppliesQuoteFileInputRef.current?.click()}
+                        className="h-9 px-3 rounded-xl text-[11px] font-medium bg-white border border-slate-200 text-slate-700 hover:border-blue-400 hover:bg-blue-50 transition-colors"
+                      >
+                        파일 선택
+                      </button>
+                      <span
+                        className="min-w-0 flex-1 text-[11px] font-medium text-slate-600 truncate"
+                        title={suppliesQuoteFile?.name || ''}
+                      >
+                        {suppliesQuoteFile
+                          ? `${suppliesQuoteFile.name} (${Math.max(1, Math.round(suppliesQuoteFile.size / 1024))}KB)`
+                          : '선택된 파일 없음'}
+                      </span>
+                      {suppliesQuoteFile ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSuppliesQuoteFile(null);
+                            if (suppliesQuoteFileInputRef.current) {
+                              suppliesQuoteFileInputRef.current.value = '';
+                            }
+                          }}
+                          className="text-[10px] font-medium text-rose-600 hover:text-rose-700 underline underline-offset-2"
+                        >
+                          제거
+                        </button>
+                      ) : null}
+                    </div>
+                    <p className="mt-1.5 text-[9px] font-medium text-slate-400 leading-snug">
+                      그룹웨어 결재에 사용한 드림디포 견적서와 동일한 파일을 올려 주세요.
+                    </p>
+                  </div>
+
+                  {/* 3. 텍스트 긁어붙이기 */}
+                  <div>
+                    <div className="flex justify-between items-center gap-3 mb-2">
+                      <label className="block text-sm font-semibold text-slate-900 shrink-0">
+                        3. 견적 내용 전체 붙여넣기 (Ctrl + V) <span className="text-red-500">*</span>
+                      </label>
+                      <span className="text-[9px] font-medium text-slate-400 text-right leading-snug">
+                        부서 명세 대조에서 품명·수량을 1:1 추출해 크로스매칭합니다.
+                      </span>
+                    </div>
+                    <textarea
+                      placeholder="견적서(Excel 또는 PDF) 텍스트 전체를 복사하여 이곳에 붙여넣어 주세요. (품명, 규격, 수량, 단가 필수 포함)"
+                      value={signData.suppliesQuoteRawText || ''}
+                      onChange={(e) => setSignData({ ...signData, suppliesQuoteRawText: e.target.value })}
                       className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-xs font-mono font-medium outline-none focus:bg-white focus:border-blue-500 min-h-[180px] resize-y"
                     />
-                  </div>
-
-                  {/* 실시간 텍스트 유무 가이드 데스크 */}
-                  <div className="bg-blue-50/50 p-4 rounded-xl border border-blue-100 flex items-center justify-between">
-                    <span className="text-[10px] font-bold text-blue-700">📋 입력된 문자열 상태 분석</span>
-                    <span className="text-[10px] font-mono font-black text-blue-800">
-                      {signData.suppliesQuoteRawText ? `${signData.suppliesQuoteRawText.length} 자 감지됨 (저장 대기)` : '대기 중'}
-                    </span>
-                  </div>
-
-                  {/* 안내말 */}
-                  <div className="bg-amber-50 border border-amber-200 rounded-xl p-3.5 text-[10px] text-amber-800 font-medium leading-relaxed">
-                    💡 **명세 대조 프로세스 가이드:** 등록된 견적 텍스트는 부서 명세 대조 화면에서 품명/수량을 1:1로 추출해 크로스매칭합니다.
+                    <p className="mt-1.5 text-[10px] font-medium text-slate-400">
+                      {signData.suppliesQuoteRawText
+                        ? `${signData.suppliesQuoteRawText.length} 자 감지됨 (저장 대기)`
+                        : '대기 중'}
+                    </p>
                   </div>
 
                 </div>
@@ -2971,7 +3048,7 @@ return (
             {activeTab !== 'OFFICE_SUPPLIES' && (
               <div className="p-4 bg-white rounded-xl border border-yellow-200 space-y-2 shadow-sm mt-4">
                 <div className="flex justify-between items-center gap-2">
-                  <label className="block text-[10px] font-black text-slate-500 tracking-widest uppercase">
+                  <label className="block text-[10px] font-medium text-slate-500 tracking-widest uppercase">
                     {customRequestStepNumber}. 추가 제작 변수 요청사항 자유기재 <span className="text-slate-400 font-medium">(선택)</span>
                   </label>
                   <button
@@ -2982,22 +3059,22 @@ return (
                         { id: Date.now(), value: '' },
                       ])
                     }
-                    className="px-2 py-0.5 bg-yellow-100 hover:bg-yellow-200 text-yellow-700 border border-yellow-300 rounded-md font-black text-[10px] flex items-center gap-1 transition-all shrink-0"
+                    className="px-2 py-0.5 bg-yellow-100 hover:bg-yellow-200 text-yellow-700 border border-yellow-300 rounded-md font-medium text-[10px] flex items-center gap-1 transition-all shrink-0"
                   >
                     ➕ 추가
                   </button>
                 </div>
-                <p className="text-[9px] text-slate-400 font-bold leading-snug">
+                <p className="text-[9px] text-slate-400 font-medium leading-snug">
                   「➕ 추가」로 행을 만든 뒤, <span className="text-slate-500">내용을 입력한 항목만</span> 신청서에 포함됩니다. 빈 행은 제출 시 자동으로 제외됩니다.
                 </p>
                 {customRequests.length === 0 ? (
-                  <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50/80 px-3 py-2.5 text-center text-[10px] font-bold text-slate-400">
+                  <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50/80 px-3 py-2.5 text-center text-[10px] font-medium text-slate-400">
                     추가할 요청사항이 있으면 우측 상단 「➕ 추가」를 눌러주세요.
                   </div>
                 ) : (
                   customRequests.map((req, index) => (
                   <div key={req.id} className="flex items-center gap-2 animate-fade-in">
-                    <span className="text-slate-400 font-mono font-bold w-3.5 shrink-0 text-right text-[10px]">
+                    <span className="text-slate-400 font-mono font-medium w-3.5 shrink-0 text-right text-[10px]">
                       {index + 1}.
                     </span>
                     <input
@@ -3011,7 +3088,7 @@ return (
                           )
                         );
                       }}
-                      className="flex-1 min-w-0 bg-white border border-slate-200 rounded-lg px-3 py-2 text-[11px] font-semibold focus:ring-2 focus:ring-blue-500 outline-none"
+                      className="flex-1 min-w-0 bg-white border border-slate-200 rounded-lg px-3 py-2 text-[11px] font-medium focus:ring-2 focus:ring-blue-500 outline-none"
                     />
                     <button
                       type="button"
@@ -3034,16 +3111,16 @@ return (
 
   {/* 🚚 최종 제작물 실배송지 섹션 */}
         <div className="p-6 rounded-2xl border border-sky-300 bg-sky-100/60 shadow-sm space-y-4">
-          <h3 className="text-sm font-black text-slate-800 flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
+          <h3 className="text-sm font-medium text-slate-800 flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
             <div className="flex flex-wrap items-center gap-2 min-w-0">
               <span>🚚 최종 제작물 실배송지</span>
               {deliveryMode === 'CUSTOMER_DIRECT' && (
-                <span className="text-[11px] font-bold text-red-500 bg-red-50 px-2.5 py-1 rounded-lg border border-red-200">
+                <span className="text-[11px] font-medium text-red-500 bg-red-50 px-2.5 py-1 rounded-lg border border-red-200">
                   고객사/현장 직발송 — 아래 실배송지를 입력해 주세요
                 </span>
               )}
               {deliveryMode === 'HQ_RECEIVE' && (
-                <span className="text-[11px] font-bold text-amber-700 bg-amber-50 px-2.5 py-1 rounded-lg border border-amber-200">
+                <span className="text-[11px] font-medium text-amber-700 bg-amber-50 px-2.5 py-1 rounded-lg border border-amber-200">
                   인증원 수령 — 실배송지는 부서 대장(발주)에서 입력합니다
                 </span>
               )}
@@ -3056,7 +3133,7 @@ return (
                   onChange={() => setDeliveryMode('CUSTOMER_DIRECT')}
                   className="w-3.5 h-3.5 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
                 />
-                <span className="text-[11px] font-black text-slate-600">고객사 직발송</span>
+                <span className="text-[11px] font-medium text-slate-600">고객사 직발송</span>
               </label>
               <label className="flex items-center gap-2 cursor-pointer select-none">
                 <input
@@ -3065,14 +3142,14 @@ return (
                   onChange={() => setDeliveryMode('HQ_RECEIVE')}
                   className="w-3.5 h-3.5 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
                 />
-                <span className="text-[11px] font-black text-slate-600">인증원 수령/묶음 발주</span>
+                <span className="text-[11px] font-medium text-slate-600">인증원 수령/묶음 발주</span>
               </label>
             </div>
           </h3>
           {deliveryMode === 'CUSTOMER_DIRECT' && (
           <div className="space-y-2.5 pt-2 animate-fade-in">
             <div className="flex flex-wrap items-center gap-2">
-              <span className="text-[10px] font-black text-slate-500 tracking-widest shrink-0">
+              <span className="text-[10px] font-medium text-slate-500 tracking-widest shrink-0">
                 배송지 주소 불러오기
               </span>
               <button
@@ -3088,7 +3165,7 @@ return (
                   }
                   setShowCompanyAddrPicker(true);
                 }}
-                className="px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg text-[10px] font-black text-slate-700 hover:border-blue-400 hover:bg-blue-50 transition-colors shadow-sm"
+                className="px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg text-[10px] font-medium text-slate-700 hover:border-blue-400 hover:bg-blue-50 transition-colors shadow-sm"
                 title="명함 등록 주소"
               >
                 전사 공통주소
@@ -3096,7 +3173,7 @@ return (
               <button
                 type="button"
                 onClick={() => void openMarketingClientPicker()}
-                className="px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg text-[10px] font-black text-slate-700 hover:border-sky-400 hover:bg-sky-50 transition-colors shadow-sm"
+                className="px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg text-[10px] font-medium text-slate-700 hover:border-sky-400 hover:bg-sky-50 transition-colors shadow-sm"
                 title="제작물 · 고객사 주소관리 *실배송지 확인 필수"
               >
                 고객사 주소관리
@@ -3104,13 +3181,13 @@ return (
               <button
                 type="button"
                 onClick={openProductionPostcode}
-                className="px-2.5 py-1.5 bg-slate-900 text-white rounded-lg text-[10px] font-black hover:bg-slate-800 transition-colors shadow-sm"
+                className="px-2.5 py-1.5 bg-slate-900 text-white rounded-lg text-[10px] font-medium hover:bg-slate-800 transition-colors shadow-sm"
                 title="우편번호 검색"
               >
                 신규 검색
               </button>
               {selectedCompanyAddressId && (
-                <span className="text-[9px] text-blue-600 font-bold">
+                <span className="text-[9px] text-blue-600 font-medium">
                   선택됨:{' '}
                   {companyAddresses.find((a) => a.id === selectedCompanyAddressId)?.label || '-'}
                 </span>
@@ -3121,7 +3198,7 @@ return (
             <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-2.5 space-y-2">
               <div className="flex flex-wrap xl:flex-nowrap items-stretch gap-2">
                 <div className="flex items-center gap-1.5 shrink-0 w-full sm:w-auto sm:min-w-[7.5rem] bg-white border border-slate-200 rounded-xl px-2.5 h-10">
-                  <span className="text-[9px] font-black text-slate-400 shrink-0">
+                  <span className="text-[9px] font-medium text-slate-400 shrink-0">
                     수령인 <span className="text-red-500">*</span>
                   </span>
                   <input
@@ -3129,11 +3206,11 @@ return (
                     placeholder="성명"
                     value={signData.receiverName}
                     onChange={(e) => setSignData({ ...signData, receiverName: e.target.value })}
-                    className="min-w-0 w-20 sm:w-24 text-xs font-semibold outline-none bg-transparent"
+                    className="min-w-0 w-20 sm:w-24 text-xs font-medium outline-none bg-transparent"
                   />
                 </div>
                 <div className="flex items-center gap-1.5 shrink-0 w-full sm:w-auto sm:min-w-[9.5rem] bg-white border border-slate-200 rounded-xl px-2.5 h-10">
-                  <span className="text-[9px] font-black text-slate-400 shrink-0">
+                  <span className="text-[9px] font-medium text-slate-400 shrink-0">
                     연락처 <span className="text-red-500">*</span>
                   </span>
                   <input
@@ -3148,11 +3225,11 @@ return (
                     }
                     inputMode="numeric"
                     maxLength={13}
-                    className="min-w-0 w-28 text-xs font-semibold outline-none bg-transparent"
+                    className="min-w-0 w-28 text-xs font-medium outline-none bg-transparent"
                   />
                 </div>
                 <div className="flex items-center gap-1.5 shrink-0 bg-white border border-slate-200 rounded-xl px-2.5 h-10">
-                  <span className="text-[9px] font-black text-slate-400">
+                  <span className="text-[9px] font-medium text-slate-400">
                     우편 <span className="text-red-500">*</span>
                   </span>
                   <input
@@ -3160,23 +3237,26 @@ return (
                     readOnly
                     value={signData.shippingZipCode}
                     placeholder="자동"
-                    className="w-14 font-mono text-center text-xs font-black text-blue-600 bg-transparent outline-none"
+                    className="w-14 font-mono text-center text-xs font-medium text-blue-600 bg-transparent outline-none"
                   />
                 </div>
                 <div className="flex-[2] min-w-[10rem] h-10 px-3 border border-slate-200 rounded-xl bg-white flex items-center gap-1.5">
-                  <span className="text-[9px] font-black text-slate-400 shrink-0 whitespace-nowrap">
+                  <span className="text-[9px] font-medium text-slate-400 shrink-0 whitespace-nowrap">
                     도로명 <span className="text-red-500">*</span>
                   </span>
                   <input
                     type="text"
-                    readOnly
                     value={signData.shippingAddressRoad}
-                    placeholder="불러오기 또는 신규 검색"
-                    className="min-w-0 flex-1 text-slate-700 text-xs font-bold outline-none bg-transparent"
+                    onChange={(e) => {
+                      setSignData({ ...signData, shippingAddressRoad: e.target.value });
+                      if (selectedCompanyAddressId) setSelectedCompanyAddressId('');
+                    }}
+                    placeholder="불러오기·검색 후 수정 가능"
+                    className="min-w-0 flex-1 text-slate-700 text-xs font-medium outline-none bg-transparent"
                   />
                 </div>
                 <div className="flex items-center gap-1.5 flex-1 min-w-[8rem] max-w-[18rem] bg-white border border-slate-200 rounded-xl px-2.5 h-10">
-                  <span className="text-[9px] font-black text-blue-600 shrink-0">
+                  <span className="text-[9px] font-medium text-blue-600 shrink-0">
                     상세 <span className="text-red-500">*</span>
                   </span>
                   <input
@@ -3187,12 +3267,12 @@ return (
                       if (selectedCompanyAddressId) setSelectedCompanyAddressId('');
                     }}
                     placeholder="동·호수 등"
-                    className="min-w-0 flex-1 text-xs font-semibold text-slate-800 outline-none bg-transparent"
+                    className="min-w-0 flex-1 text-xs font-medium text-slate-800 outline-none bg-transparent"
                   />
                 </div>
               </div>
               {buildProductionShippingAddress(signData) && (
-                <p className="text-[10px] text-slate-500 font-bold px-0.5">
+                <p className="text-[10px] text-slate-500 font-medium px-0.5">
                   미리보기: {buildProductionShippingAddress(signData)}
                 </p>
               )}
@@ -3205,7 +3285,7 @@ return (
       {['SIGN', 'JEBON', 'PRINT'].includes(activeTab) && (
         <div className="p-5 rounded-2xl border border-sky-300 bg-sky-100/60 shadow-sm space-y-3">
           <div className="flex items-center gap-2">
-            <label className="block text-[10px] font-black text-sky-900 tracking-widest uppercase">
+            <label className="block text-[10px] font-medium text-sky-900 tracking-widest uppercase">
               관리용 제목 설정 <span className="text-red-500">*</span>
             </label>
             <button
@@ -3222,7 +3302,7 @@ return (
                   setSignData({ ...signData, jebonFormTitle: autoJebonFormTitle });
                 }
               }}
-              className="text-[9px] font-black text-blue-700 bg-white hover:bg-sky-50 px-2 py-0.5 rounded border border-sky-300 transition-colors shrink-0 cursor-pointer"
+              className="text-[9px] font-medium text-blue-700 bg-white hover:bg-sky-50 px-2 py-0.5 rounded border border-sky-300 transition-colors shrink-0 cursor-pointer"
             >
               ⚡ 제목 자동 생성
             </button>
@@ -3249,7 +3329,7 @@ return (
                     : { ...signData, jebonFormTitle: e.target.value }
               );
             }}
-            className="w-full bg-white border border-sky-300 rounded-xl px-4 py-3 text-xs font-bold outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-200 transition-colors"
+            className="w-full bg-white border border-sky-300 rounded-xl px-4 py-3 text-xs font-medium outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-200 transition-colors"
           />
         </div>
       )}
@@ -3257,13 +3337,13 @@ return (
 {/* 🗂️ 시스템 내부 보관 보조 서식 섹션 (현판 탭에서만 노출) */}
 {activeTab === 'SIGN' && (
         <div className="p-6 bg-slate-50 rounded-2xl border border-slate-200 shadow-sm space-y-4">
-          <h3 className="text-sm font-black text-slate-800 flex items-center gap-2 border-b border-slate-200/60 pb-3">
+          <h3 className="text-sm font-medium text-slate-800 flex items-center gap-2 border-b border-slate-200/60 pb-3">
             <span className="text-yellow-500">🗂️</span> 시스템 내부 보관 보조 서식 
             <span className="text-slate-400 text-[10px] font-normal ml-1">(외주 발주서 제외 항목)</span>
           </h3>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6 pt-2">
             <div>
-              <label className="block text-[10px] font-black text-slate-500 tracking-widest mb-2">
+              <label className="block text-[10px] font-medium text-slate-500 tracking-widest mb-2">
                 현판 신청 회사 <span className="text-slate-400 font-medium">(선택)</span>
               </label>
               <input 
@@ -3271,11 +3351,11 @@ return (
                 placeholder="회사명" 
                 value={signData.companyName} 
                 onChange={(e) => setSignData({...signData, companyName: e.target.value})} 
-                className="w-full bg-white border border-slate-200 rounded-xl px-4 py-3 text-xs font-semibold focus:ring-2 focus:ring-blue-500 outline-none" 
+                className="w-full bg-white border border-slate-200 rounded-xl px-4 py-3 text-xs font-medium focus:ring-2 focus:ring-blue-500 outline-none" 
               />
             </div>
             <div>
-              <label className="block text-[10px] font-black text-slate-500 tracking-widest mb-2">
+              <label className="block text-[10px] font-medium text-slate-500 tracking-widest mb-2">
                 신청인 정보 <span className="text-slate-400 font-medium">(선택)</span>
               </label>
               <input 
@@ -3283,11 +3363,11 @@ return (
                 placeholder="신청인 정보" 
                 value={signData.applicantName} 
                 onChange={(e) => setSignData({...signData, applicantName: e.target.value})} 
-                className="w-full bg-white border border-slate-200 rounded-xl px-4 py-3 text-xs font-semibold focus:ring-2 focus:ring-blue-500 outline-none" 
+                className="w-full bg-white border border-slate-200 rounded-xl px-4 py-3 text-xs font-medium focus:ring-2 focus:ring-blue-500 outline-none" 
               />
             </div>
             <div>
-              <label className="block text-[10px] font-black text-slate-500 tracking-widest mb-2">
+              <label className="block text-[10px] font-medium text-slate-500 tracking-widest mb-2">
                 기타 <span className="text-slate-400 font-medium">(선택)</span>
               </label>
               <input 
@@ -3295,7 +3375,7 @@ return (
                 placeholder="기타" 
                 value={signData.applicantPhone} 
                 onChange={(e) => setSignData({...signData, applicantPhone: e.target.value})} 
-                className="w-full bg-white border border-slate-200 rounded-xl px-4 py-3 text-xs font-semibold focus:ring-2 focus:ring-blue-500 outline-none" 
+                className="w-full bg-white border border-slate-200 rounded-xl px-4 py-3 text-xs font-medium focus:ring-2 focus:ring-blue-500 outline-none" 
               />
             </div>
           </div>
@@ -3312,7 +3392,7 @@ return (
                     activeTab === 'PRINT' ? 'w-48' : 'w-24'
                   }`}
                 >
-                  <label className="block text-[10px] font-black text-slate-500 tracking-widest uppercase mb-1.5 text-center h-4">
+                  <label className="block text-[10px] font-medium text-slate-500 tracking-widest uppercase mb-1.5 text-center h-4">
                     {activeTab === 'PRINT' ? '수량 / 단위' : `수량 (${quantityUnitLabel})`}
                   </label>
                   {activeTab === 'PRINT' ? (
@@ -3327,14 +3407,14 @@ return (
                             quantity: Math.max(1, parseInt(e.target.value) || 1),
                           })
                         }
-                        className="w-[4.5rem] h-full bg-white border-2 border-emerald-500 rounded-xl px-2 text-xs font-black text-center outline-none focus:ring-2 focus:ring-emerald-200"
+                        className="w-[4.5rem] h-full bg-white border-2 border-emerald-500 rounded-xl px-2 text-xs font-medium text-center outline-none focus:ring-2 focus:ring-emerald-200"
                       />
                       <select
                         value={signData.printUnitValue || 'VAL_1'}
                         onChange={(e) =>
                           setSignData({ ...signData, printUnitValue: e.target.value })
                         }
-                        className="flex-1 min-w-0 h-full bg-white border-2 border-emerald-500 rounded-xl px-2 text-[11px] font-black text-slate-700 outline-none focus:ring-2 focus:ring-emerald-200"
+                        className="flex-1 min-w-0 h-full bg-white border-2 border-emerald-500 rounded-xl px-2 text-[11px] font-medium text-slate-700 outline-none focus:ring-2 focus:ring-emerald-200"
                         title="단위 (unit_category_group)"
                       >
                         {(unitOptions.length
@@ -3358,16 +3438,16 @@ return (
                           quantity: Math.max(1, parseInt(e.target.value) || 1),
                         })
                       }
-                      className="w-full h-11 bg-white border-2 border-emerald-500 rounded-xl px-3 text-xs font-black text-center outline-none focus:ring-2 focus:ring-emerald-200"
+                      className="w-full h-11 bg-white border-2 border-emerald-500 rounded-xl px-3 text-xs font-medium text-center outline-none focus:ring-2 focus:ring-emerald-200"
                     />
                   )}
                 </div>
               )}
 
               <div className="flex-1 min-w-0">
-                <label className="block text-[10px] font-black text-slate-500 tracking-widest uppercase mb-1.5 h-4">
+                <label className="block text-[10px] font-medium text-slate-500 tracking-widest uppercase mb-1.5 h-4">
                   외주 업체 <span className="text-red-500">*</span>
-                  <span className="ml-1.5 text-[9px] font-bold text-slate-400 normal-case tracking-normal">
+                  <span className="ml-1.5 text-[9px] font-medium text-slate-400 normal-case tracking-normal">
                     제출 전 확인
                   </span>
                 </label>
@@ -3376,7 +3456,7 @@ return (
                     value={signData.vendor}
                     onChange={(e) => setSignData({ ...signData, vendor: e.target.value })}
                     title="본 제작 서식 데이터가 전송·다운로드될 최종 외주 업체"
-                    className={`flex-1 min-w-0 h-full bg-white border-2 border-emerald-500 rounded-xl px-3 text-xs font-black outline-none focus:ring-2 focus:ring-emerald-200 cursor-pointer ${
+                    className={`flex-1 min-w-0 h-full bg-white border-2 border-emerald-500 rounded-xl px-3 text-xs font-medium outline-none focus:ring-2 focus:ring-emerald-200 cursor-pointer ${
                       activeTab === 'PRINT' && !signData.vendor
                         ? 'text-slate-400'
                         : 'text-slate-800'
@@ -3394,7 +3474,7 @@ return (
                   <button
                     type="button"
                     onClick={() => setIsVendorModalOpen(true)}
-                    className="shrink-0 h-full px-3 bg-slate-800 hover:bg-slate-900 text-white rounded-xl font-black text-[10px] shadow-sm active:scale-95 transition-all flex items-center gap-1.5 whitespace-nowrap"
+                    className="shrink-0 h-full px-3 bg-slate-800 hover:bg-slate-900 text-white rounded-xl font-medium text-[10px] shadow-sm active:scale-95 transition-all flex items-center gap-1.5 whitespace-nowrap"
                   >
                     <span>🏢</span> 업체관리 설정
                   </button>
@@ -3405,7 +3485,7 @@ return (
                     ?.items?.trim();
                   if (!memo) return null;
                   return (
-                    <p className="mt-1.5 text-[11px] font-semibold text-slate-600 leading-snug truncate" title={memo}>
+                    <p className="mt-1.5 text-[11px] font-medium text-slate-600 leading-snug truncate" title={memo}>
                       {memo}
                     </p>
                   );
@@ -3422,7 +3502,7 @@ return (
                     isSubmitting ||
                     (activeTab === 'PRINT' && !signData.vendor)
                   }
-                  className={`w-full h-11 font-black text-xs rounded-xl transition-all shadow-md text-white
+                  className={`w-full h-11 font-medium text-xs rounded-xl transition-all shadow-md text-white
                     ${
                       isSubmitting
                         ? 'bg-slate-400 cursor-wait active:scale-100'
@@ -3450,10 +3530,10 @@ return (
           <div className="bg-white rounded-[2.5rem] w-full max-w-4xl shadow-2xl border border-slate-200 overflow-hidden flex flex-col max-h-[85vh]">
             <div className="bg-slate-900 p-6 text-white flex justify-between items-center px-8 shrink-0">
               <div>
-                <h3 className="text-xs font-black tracking-widest text-blue-400 uppercase">Vendor Management Settings</h3>
-                <h2 className="text-xl font-black mt-0.5">외주 업체(VENDOR) 관리 설정</h2>
+                <h3 className="text-xs font-medium tracking-widest text-blue-400 uppercase">Vendor Management Settings</h3>
+                <h2 className="text-xl font-medium mt-0.5">외주 업체(VENDOR) 관리 설정</h2>
               </div>
-              <button type="button" onClick={() => setIsVendorModalOpen(false)} className="bg-slate-800 hover:bg-slate-700 text-white font-black px-4 py-2 rounded-xl text-xs transition-all active:scale-95">닫기 ✕</button>
+              <button type="button" onClick={() => setIsVendorModalOpen(false)} className="bg-slate-800 hover:bg-slate-700 text-white font-medium px-4 py-2 rounded-xl text-xs transition-all active:scale-95">닫기 ✕</button>
             </div>
             
             <div className="p-8 overflow-y-auto flex-1 bg-slate-50/50 space-y-6">
@@ -3461,13 +3541,13 @@ return (
                 
                 <div className="border-b border-slate-100 pb-3 flex justify-between items-end">
                   <div>
-                    <h4 className="text-sm font-black text-slate-800">🏢 외주 제작사 등록 관리</h4>
+                    <h4 className="text-sm font-medium text-slate-800">🏢 외주 제작사 등록 관리</h4>
                     <p className="text-xs text-slate-400 mt-1">
                       DB 공통 마스터입니다. 등록은 누구나 가능하며, 수정은 Edit, 시드 업체(아트로릭·한생미디어 3종·드림디포) 삭제는 LV_1만 가능합니다.
                     </p>
                     <p className="text-[10px] text-slate-400 mt-1.5 leading-relaxed">
-                      등록한 업체는 신청서 <span className="font-bold text-slate-500">외주 업체 · 제출 전 확인</span> 선택란에 반영됩니다.
-                      각 업체에 <span className="font-bold text-slate-500">우선 연결 품목</span>을 지정하면 해당 품목 탭에서 자동 선택·연락 카드가 표시됩니다.
+                      등록한 업체는 신청서 <span className="font-medium text-slate-500">외주 업체 · 제출 전 확인</span> 선택란에 반영됩니다.
+                      각 업체에 <span className="font-medium text-slate-500">우선 연결 품목</span>을 지정하면 해당 품목 탭에서 자동 선택·연락 카드가 표시됩니다.
                     </p>
                   </div>
                 </div>
@@ -3475,19 +3555,19 @@ return (
                 {/* 🚀 신규 등록 (수정 폼과 동일한 기본 정보 입력 후 등록) */}
                 <div className="space-y-3 bg-slate-50 p-4 rounded-xl border border-slate-200">
                   <div>
-                    <label className="block text-[9px] font-bold text-slate-400 mb-1">🏢 업체명 (필수)</label>
+                    <label className="block text-[9px] font-medium text-slate-400 mb-1">🏢 업체명 (필수)</label>
                     <input
                       type="text"
                       placeholder="예: ○○인쇄 / ○○제작소"
                       value={newVendorData.label}
                       onChange={(e) => setNewVendorData({ ...newVendorData, label: e.target.value })}
-                      className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm font-black outline-none focus:border-blue-500 text-slate-800"
+                      className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm font-medium outline-none focus:border-blue-500 text-slate-800"
                     />
                   </div>
 
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
                     <div>
-                      <label className="block text-[9px] font-bold text-slate-400 mb-1">👤 담당자 성명 및 직급</label>
+                      <label className="block text-[9px] font-medium text-slate-400 mb-1">👤 담당자 성명 및 직급</label>
                       <input
                         type="text"
                         placeholder="예: 담당자명 직급"
@@ -3497,7 +3577,7 @@ return (
                       />
                     </div>
                     <div>
-                      <label className="block text-[9px] font-bold text-slate-400 mb-1">📞 연락처</label>
+                      <label className="block text-[9px] font-medium text-slate-400 mb-1">📞 연락처</label>
                       <input
                         type="text"
                         placeholder="예: 02-0000-0000"
@@ -3507,7 +3587,7 @@ return (
                       />
                     </div>
                     <div className="md:col-span-2">
-                      <label className="block text-[9px] font-bold text-slate-400 mb-1">📧 이메일</label>
+                      <label className="block text-[9px] font-medium text-slate-400 mb-1">📧 이메일</label>
                       <input
                         type="text"
                         placeholder="예: order@vendor.com"
@@ -3519,7 +3599,7 @@ return (
                   </div>
 
                   <div>
-                    <label className="block text-[9px] font-bold text-slate-400 mb-1">📦 주요 제작 품목 및 비고 메모</label>
+                    <label className="block text-[9px] font-medium text-slate-400 mb-1">📦 주요 제작 품목 및 비고 메모</label>
                     <input
                       type="text"
                       placeholder="예: 현판제작, 명함제작, 인증서 용지 / 제본, 기타 제작, 쇼핑백, 상장케이스 / 사무문구류 등 "
@@ -3530,7 +3610,7 @@ return (
                   </div>
 
                   <div>
-                    <label className="block text-[9px] font-bold text-slate-400 mb-1">🔗 우선 연결 품목</label>
+                    <label className="block text-[9px] font-medium text-slate-400 mb-1">🔗 우선 연결 품목</label>
                     {renderVendorPrioritySelect(newVendorData.priorityCategory || '', (next) =>
                       setNewVendorData({ ...newVendorData, priorityCategory: next })
                     )}
@@ -3589,7 +3669,7 @@ return (
                           alert('업체 등록 중 오류가 발생했습니다.');
                         }
                       }}
-                      className="font-black text-xs px-4 py-2.5 rounded-xl shadow-md active:scale-95 transition-all bg-blue-600 hover:bg-blue-700 text-white"
+                      className="font-medium text-xs px-4 py-2.5 rounded-xl shadow-md active:scale-95 transition-all bg-blue-600 hover:bg-blue-700 text-white"
                     >
                       + 신규 업체 등록
                     </button>
@@ -3604,30 +3684,30 @@ return (
                       {/* ==== ✏️ [수정 모드] ==== */}
                       {editingVendorId === v.id ? (
                         <div className="space-y-3 animate-fade-in">
-                          <input type="text" placeholder="업체명 (필수)" value={editingVendorData.label} onChange={(e) => setEditingVendorData({...editingVendorData, label: e.target.value})} className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-sm font-black outline-none focus:border-blue-500 text-slate-800" />
+                          <input type="text" placeholder="업체명 (필수)" value={editingVendorData.label} onChange={(e) => setEditingVendorData({...editingVendorData, label: e.target.value})} className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-sm font-medium outline-none focus:border-blue-500 text-slate-800" />
                           
                           <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
                             <div>
-                              <label className="block text-[9px] font-bold text-slate-400 mb-1">👤 담당자 성명 및 직급</label>
+                              <label className="block text-[9px] font-medium text-slate-400 mb-1">👤 담당자 성명 및 직급</label>
                               <input type="text" placeholder="예: 담당자명 직급" value={editingVendorData.managerName || ''} onChange={(e) => setEditingVendorData({...editingVendorData, managerName: e.target.value})} className="w-full bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-xs outline-none focus:border-blue-500" />
                             </div>
                             <div>
-                              <label className="block text-[9px] font-bold text-slate-400 mb-1">📞 연락처</label>
+                              <label className="block text-[9px] font-medium text-slate-400 mb-1">📞 연락처</label>
                               <input type="text" placeholder="예: 02-0000-0000" value={editingVendorData.contact || ''} onChange={(e) => setEditingVendorData({...editingVendorData, contact: e.target.value})} className="w-full bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-xs outline-none focus:border-blue-500" />
                             </div>
                             <div className="md:col-span-2">
-                              <label className="block text-[9px] font-bold text-slate-400 mb-1">📧 이메일</label>
+                              <label className="block text-[9px] font-medium text-slate-400 mb-1">📧 이메일</label>
                               <input type="text" placeholder="예: order@vendor.com" value={editingVendorData.email || ''} onChange={(e) => setEditingVendorData({...editingVendorData, email: e.target.value})} className="w-full bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-xs outline-none focus:border-blue-500" />
                             </div>
                           </div>
                           
                           <div>
-                            <label className="block text-[9px] font-bold text-slate-400 mb-1">📦 주요 제작 품목 및 비고 메모</label>
+                            <label className="block text-[9px] font-medium text-slate-400 mb-1">📦 주요 제작 품목 및 비고 메모</label>
                             <input type="text" placeholder="예: 현판제작, 명함제작, 인증서 용지 / 제본, 기타 제작, 쇼핑백, 상장케이스 / 사무문구류 등 " value={editingVendorData.items || ''} onChange={(e) => setEditingVendorData({...editingVendorData, items: e.target.value})} className="w-full bg-yellow-50/50 border border-yellow-200/60 rounded-lg px-3 py-2 text-xs outline-none focus:border-yellow-400" />
                           </div>
 
                           <div>
-                            <label className="block text-[9px] font-bold text-slate-400 mb-1">🔗 우선 연결 품목</label>
+                            <label className="block text-[9px] font-medium text-slate-400 mb-1">🔗 우선 연결 품목</label>
                             {renderVendorPrioritySelect(
                               editingVendorData.priorityCategory || '',
                               (next) => setEditingVendorData({ ...editingVendorData, priorityCategory: next })
@@ -3635,7 +3715,7 @@ return (
                           </div>
 
                           <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
-                            <button type="button" onClick={() => setEditingVendorId(null)} className="text-[10px] font-black text-slate-500 bg-slate-100 px-3 py-1.5 rounded-lg">취소</button>
+                            <button type="button" onClick={() => setEditingVendorId(null)} className="text-[10px] font-medium text-slate-500 bg-slate-100 px-3 py-1.5 rounded-lg">취소</button>
                             <button
                               type="button"
                               disabled={!canEdit}
@@ -3659,7 +3739,7 @@ return (
                                   alert('저장 중 오류가 발생했습니다.');
                                 }
                               }}
-                              className={`text-[10px] font-black px-4 py-1.5 rounded-lg shadow-sm transition-colors ${
+                              className={`text-[10px] font-medium px-4 py-1.5 rounded-lg shadow-sm transition-colors ${
                                 canEdit
                                   ? 'text-white bg-emerald-600 hover:bg-emerald-500'
                                   : DISABLED_ACTION_BTN
@@ -3676,7 +3756,7 @@ return (
                         <div className="flex flex-col gap-2">
                           <div className="flex justify-between items-start gap-2">
                             <div className="flex flex-wrap items-center gap-2 min-w-0">
-                              <span className="text-sm font-black text-slate-800">🏢 {v.label}</span>
+                              <span className="text-sm font-medium text-slate-800">🏢 {v.label}</span>
                               {renderVendorPrioritySelect(
                                 v.priorityCategory || '',
                                 (next) => handleVendorPriorityChange(v, next),
@@ -3700,7 +3780,7 @@ return (
                                     priorityCategory: v.priorityCategory || '',
                                   });
                                 }}
-                                className={`text-[10px] font-black px-2.5 py-1 rounded-lg transition-colors border ${
+                                className={`text-[10px] font-medium px-2.5 py-1 rounded-lg transition-colors border ${
                                   canEdit
                                     ? 'text-slate-500 hover:text-blue-600 bg-white border-slate-200 hover:border-blue-200'
                                     : DISABLED_ACTION_BTN
@@ -3750,7 +3830,7 @@ return (
                                     alert('삭제 중 오류가 발생했습니다.');
                                   }
                                 }}
-                                className={`text-[10px] font-black px-2.5 py-1 rounded-lg transition-colors border ${
+                                className={`text-[10px] font-medium px-2.5 py-1 rounded-lg transition-colors border ${
                                   (isSeedVendor(v) ? canDeleteLv1Cert : canEdit)
                                     ? 'text-red-400 hover:text-red-600 bg-white border-slate-200 hover:border-red-200'
                                     : DISABLED_ACTION_BTN
@@ -3763,9 +3843,9 @@ return (
 
                           {/* 상세 정보 노출 구역 (데이터가 있을 때만 노출) */}
                           <div className="flex flex-wrap gap-x-4 gap-y-1.5 mt-1">
-                            {v.managerName && <span className="text-[11px] font-medium text-slate-600">👤 <span className="font-bold text-slate-700">{v.managerName}</span></span>}
-                            {v.contact && <span className="text-[11px] font-medium text-slate-600">📞 <span className="font-bold text-slate-700">{v.contact}</span></span>}
-                            {v.email && <span className="text-[11px] font-medium text-slate-600">📧 <span className="font-bold text-slate-700">{v.email}</span></span>}
+                            {v.managerName && <span className="text-[11px] font-medium text-slate-600">👤 <span className="font-medium text-slate-700">{v.managerName}</span></span>}
+                            {v.contact && <span className="text-[11px] font-medium text-slate-600">📞 <span className="font-medium text-slate-700">{v.contact}</span></span>}
+                            {v.email && <span className="text-[11px] font-medium text-slate-600">📧 <span className="font-medium text-slate-700">{v.email}</span></span>}
                           </div>
                           
                           {v.items && (
@@ -3789,7 +3869,7 @@ return (
                     disabled={!canDeleteLv1Cert}
                     title={!canDeleteLv1Cert ? 'LV_1 권한 필요' : undefined}
                     onClick={handleRestoreSeedVendors}
-                    className={`text-[10px] font-black px-3 py-1.5 rounded-lg border transition-colors shrink-0 ${
+                    className={`text-[10px] font-medium px-3 py-1.5 rounded-lg border transition-colors shrink-0 ${
                       canDeleteLv1Cert
                         ? 'bg-amber-50 text-amber-800 border-amber-200 hover:bg-amber-100'
                         : DISABLED_ACTION_BTN
@@ -3811,15 +3891,15 @@ return (
           <div className="bg-white rounded-[2.5rem] w-full max-w-4xl shadow-2xl border border-slate-200 overflow-hidden flex flex-col max-h-[85vh]">
             <div className="bg-slate-900 p-6 text-white flex justify-between items-center px-8 shrink-0">
               <div>
-                <h3 className="text-xs font-black tracking-widest text-fuchsia-400 uppercase">
+                <h3 className="text-xs font-medium tracking-widest text-fuchsia-400 uppercase">
                   Print / Consumable Item Master
                 </h3>
-                <h2 className="text-xl font-black mt-0.5">기타제작 주문물품 설정</h2>
+                <h2 className="text-xl font-medium mt-0.5">기타제작 주문물품 설정</h2>
               </div>
               <button
                 type="button"
                 onClick={() => setIsPrintItemModalOpen(false)}
-                className="bg-slate-800 hover:bg-slate-700 text-white font-black px-4 py-2 rounded-xl text-xs transition-all active:scale-95"
+                className="bg-slate-800 hover:bg-slate-700 text-white font-medium px-4 py-2 rounded-xl text-xs transition-all active:scale-95"
               >
                 닫기 ✕
               </button>
@@ -3830,7 +3910,7 @@ return (
                 <div className="border-b border-slate-100 pb-3">
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div className="min-w-0 flex-1">
-                      <h4 className="text-sm font-black text-slate-800">📜 주문 물품 마스터</h4>
+                      <h4 className="text-sm font-medium text-slate-800">📜 주문 물품 마스터</h4>
                       <p className="text-xs text-slate-500 mt-1">
                         제품명·규격·단위를 신청서에 반영하고, 최근 공급처·제작 기본 수량은 참고용으로 관리합니다.
                       </p>
@@ -3847,7 +3927,7 @@ return (
                           : '시드 기본 품목 중 없거나 비활성인 항목만 추가/재활성'
                       }
                       onClick={handleRestoreSeedPrintItems}
-                      className={`shrink-0 text-[10px] font-black px-3 py-2 rounded-xl border transition-all active:scale-95 ${
+                      className={`shrink-0 text-[10px] font-medium px-3 py-2 rounded-xl border transition-all active:scale-95 ${
                         canDeleteLv1Cert
                           ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
                           : DISABLED_ACTION_BTN
@@ -3861,7 +3941,7 @@ return (
                 <div className="space-y-3 bg-slate-50 p-4 rounded-xl border border-slate-200">
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
                     <div>
-                      <label className="block text-[9px] font-black text-slate-800 mb-1">제품명 *</label>
+                      <label className="block text-[9px] font-medium text-slate-800 mb-1">제품명 *</label>
                       <input
                         type="text"
                         placeholder="예: 인증서 용지"
@@ -3873,7 +3953,7 @@ return (
                       />
                     </div>
                     <div>
-                      <label className="block text-[9px] font-black text-slate-800 mb-1">규격</label>
+                      <label className="block text-[9px] font-medium text-slate-800 mb-1">규격</label>
                       <input
                         type="text"
                         placeholder="예: 230*70*320"
@@ -3887,7 +3967,7 @@ return (
                   </div>
                   <div className="grid grid-cols-1 md:grid-cols-12 gap-2 items-end">
                     <div className="md:col-span-2">
-                      <label className="block text-[9px] font-black text-slate-800 mb-1">제작 기본 수량</label>
+                      <label className="block text-[9px] font-medium text-slate-800 mb-1">제작 기본 수량</label>
                       <input
                         type="number"
                         min={1}
@@ -3902,7 +3982,7 @@ return (
                       />
                     </div>
                     <div className="md:col-span-2">
-                      <label className="block text-[9px] font-black text-slate-800 mb-1">단위 *</label>
+                      <label className="block text-[9px] font-medium text-slate-800 mb-1">단위 *</label>
                       <select
                         value={newPrintItemData.unitValue}
                         onChange={(e) =>
@@ -3924,7 +4004,7 @@ return (
                       </select>
                     </div>
                     <div className="md:col-span-3">
-                      <label className="block text-[9px] font-black text-slate-800 mb-1">최근 공급처</label>
+                      <label className="block text-[9px] font-medium text-slate-800 mb-1">최근 공급처</label>
                       <select
                         value={newPrintItemData.supplier}
                         onChange={(e) =>
@@ -3953,7 +4033,7 @@ return (
                           }
                           className="w-3.5 h-3.5 rounded border-slate-300 text-purple-600"
                         />
-                        <span className="text-[10px] font-black text-slate-800">직접입력(기타)</span>
+                        <span className="text-[10px] font-medium text-slate-800">직접입력(기타)</span>
                       </label>
                     </div>
                     <div className="md:col-span-3 flex justify-end">
@@ -3978,7 +4058,7 @@ return (
                             alert('저장 중 오류가 발생했습니다.');
                           }
                         }}
-                        className="w-full font-black text-xs px-4 py-2 rounded-xl shadow-md active:scale-95 transition-all bg-purple-600 hover:bg-purple-700 text-white"
+                        className="w-full font-medium text-xs px-4 py-2 rounded-xl shadow-md active:scale-95 transition-all bg-purple-600 hover:bg-purple-700 text-white"
                       >
                         + 신규 물품 등록
                       </button>
@@ -3996,7 +4076,7 @@ return (
                         <div className="space-y-3 animate-fade-in">
                           <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
                             <div>
-                              <label className="block text-[9px] font-black text-slate-800 mb-1">제품명 *</label>
+                              <label className="block text-[9px] font-medium text-slate-800 mb-1">제품명 *</label>
                               <input
                                 type="text"
                                 value={editingPrintItemData.name}
@@ -4006,11 +4086,11 @@ return (
                                     name: e.target.value,
                                   })
                                 }
-                                className="w-full bg-slate-50 border border-slate-300 rounded-lg px-2 py-1.5 text-xs font-black outline-none"
+                                className="w-full bg-slate-50 border border-slate-300 rounded-lg px-2 py-1.5 text-xs font-medium outline-none"
                               />
                             </div>
                             <div>
-                              <label className="block text-[9px] font-black text-slate-800 mb-1">규격</label>
+                              <label className="block text-[9px] font-medium text-slate-800 mb-1">규격</label>
                               <input
                                 type="text"
                                 value={editingPrintItemData.size}
@@ -4026,7 +4106,7 @@ return (
                           </div>
                           <div className="grid grid-cols-1 md:grid-cols-12 gap-2 items-end">
                             <div className="md:col-span-2">
-                              <label className="block text-[9px] font-black text-slate-800 mb-1">제작 기본 수량</label>
+                              <label className="block text-[9px] font-medium text-slate-800 mb-1">제작 기본 수량</label>
                               <input
                                 type="number"
                                 min={1}
@@ -4041,7 +4121,7 @@ return (
                               />
                             </div>
                             <div className="md:col-span-2">
-                              <label className="block text-[9px] font-black text-slate-800 mb-1">단위 *</label>
+                              <label className="block text-[9px] font-medium text-slate-800 mb-1">단위 *</label>
                               <select
                                 value={editingPrintItemData.unitValue}
                                 onChange={(e) =>
@@ -4063,7 +4143,7 @@ return (
                               </select>
                             </div>
                             <div className="md:col-span-4">
-                              <label className="block text-[9px] font-black text-slate-800 mb-1">최근 공급처</label>
+                              <label className="block text-[9px] font-medium text-slate-800 mb-1">최근 공급처</label>
                               <select
                                 value={editingPrintItemData.supplier}
                                 onChange={(e) =>
@@ -4103,7 +4183,7 @@ return (
                                   }
                                   className="w-3.5 h-3.5 rounded border-slate-300 text-purple-600"
                                 />
-                                <span className="text-[10px] font-black text-slate-800">직접입력(기타)</span>
+                                <span className="text-[10px] font-medium text-slate-800">직접입력(기타)</span>
                               </label>
                             </div>
                           </div>
@@ -4111,7 +4191,7 @@ return (
                             <button
                               type="button"
                               onClick={() => setEditingPrintItemId(null)}
-                              className="text-[10px] font-black text-slate-500 bg-slate-100 px-3 py-1.5 rounded-lg"
+                              className="text-[10px] font-medium text-slate-500 bg-slate-100 px-3 py-1.5 rounded-lg"
                             >
                               취소
                             </button>
@@ -4145,7 +4225,7 @@ return (
                                   alert('저장 중 오류가 발생했습니다.');
                                 }
                               }}
-                              className={`text-[10px] font-black px-4 py-1.5 rounded-lg shadow-sm ${
+                              className={`text-[10px] font-medium px-4 py-1.5 rounded-lg shadow-sm ${
                                 canEdit
                                   ? 'text-white bg-emerald-600 hover:bg-emerald-500'
                                   : DISABLED_ACTION_BTN
@@ -4158,35 +4238,35 @@ return (
                       ) : (
                         <div className="flex justify-between items-start gap-3">
                           <div className="min-w-0 space-y-1">
-                            <div className="text-sm font-black text-slate-800 truncate">
+                            <div className="text-sm font-medium text-slate-800 truncate">
                               📜 {item.name}
                               {item.isCustom && (
-                                <span className="ml-2 text-[9px] font-bold text-purple-600 bg-purple-50 border border-purple-100 px-1.5 py-0.5 rounded">
+                                <span className="ml-2 text-[9px] font-medium text-purple-600 bg-purple-50 border border-purple-100 px-1.5 py-0.5 rounded">
                                   직접입력
                                 </span>
                               )}
                             </div>
                             <div className="text-[11px] flex flex-wrap items-center gap-x-1 gap-y-1">
                               <span>
-                                <span className="font-black text-slate-800">규격:</span>{' '}
+                                <span className="font-medium text-slate-800">규격:</span>{' '}
                                 <span className="font-medium text-slate-400">{item.size?.trim() || '-'}</span>
                               </span>
-                              <span className="text-slate-300 font-black">/</span>
+                              <span className="text-slate-300 font-medium">/</span>
                               <span>
-                                <span className="font-black text-slate-800">최근 공급처:</span>{' '}
+                                <span className="font-medium text-slate-800">최근 공급처:</span>{' '}
                                 <span className="font-medium text-slate-400">{item.supplier?.trim() || '-'}</span>
                               </span>
-                              <span className="text-slate-300 font-black">/</span>
+                              <span className="text-slate-300 font-medium">/</span>
                               <span>
-                                <span className="font-black text-slate-800">제작 기본 수량:</span>{' '}
+                                <span className="font-medium text-slate-800">제작 기본 수량:</span>{' '}
                                 <span className="font-medium text-slate-400">
                                   {item.orderQty}
                                   {shortUnitLabel(resolveUnitLabel(item.unitValue))}
                                 </span>
                               </span>
-                              <span className="text-slate-300 font-black">/</span>
+                              <span className="text-slate-300 font-medium">/</span>
                               <span>
-                                <span className="font-black text-slate-800">단위:</span>{' '}
+                                <span className="font-medium text-slate-800">단위:</span>{' '}
                                 <span className="font-medium text-slate-400">{resolveUnitLabel(item.unitValue)}</span>
                               </span>
                             </div>
@@ -4209,7 +4289,7 @@ return (
                                   sortOrder: item.sortOrder,
                                 });
                               }}
-                              className={`text-[10px] font-black px-2.5 py-1 rounded-lg border ${
+                              className={`text-[10px] font-medium px-2.5 py-1 rounded-lg border ${
                                 canEdit
                                   ? 'text-slate-500 hover:text-purple-600 bg-white border-slate-200'
                                   : DISABLED_ACTION_BTN
@@ -4230,7 +4310,7 @@ return (
                                     : undefined
                               }
                               onClick={() => handleDeletePrintItem(item)}
-                              className={`text-[10px] font-black px-2.5 py-1 rounded-lg border ${
+                              className={`text-[10px] font-medium px-2.5 py-1 rounded-lg border ${
                                 (isSeedPrintItemId(item.id) ? canDeleteLv1Cert : canEdit)
                                   ? 'text-red-500 hover:bg-red-50 bg-white border-slate-200'
                                   : DISABLED_ACTION_BTN
@@ -4256,20 +4336,20 @@ return (
           <div className="bg-white rounded-[2.5rem] w-full max-w-4xl shadow-2xl border border-slate-200 overflow-hidden flex flex-col max-h-[85vh]">
             <div className="bg-slate-900 p-6 text-white flex justify-between items-center px-8 shrink-0">
               <div>
-                <h3 className="text-xs font-black tracking-widest text-emerald-400 uppercase">Signage Specs & Pricing Settings</h3>
-                <h2 className="text-xl font-black mt-0.5">현판 품목별 규격 및 단가 설정</h2>
+                <h3 className="text-xs font-medium tracking-widest text-emerald-400 uppercase">Signage Specs & Pricing Settings</h3>
+                <h2 className="text-xl font-medium mt-0.5">현판 품목별 규격 및 단가 설정</h2>
               </div>
-              <button type="button" onClick={() => setIsPlateModalOpen(false)} className="bg-slate-800 hover:bg-slate-700 text-white font-black px-4 py-2 rounded-xl text-xs transition-all active:scale-95">닫기 ✕</button>
+              <button type="button" onClick={() => setIsPlateModalOpen(false)} className="bg-slate-800 hover:bg-slate-700 text-white font-medium px-4 py-2 rounded-xl text-xs transition-all active:scale-95">닫기 ✕</button>
             </div>
             <div className="p-8 overflow-y-auto flex-1 bg-slate-50/50">
               <div className="bg-white rounded-2xl p-6 border border-slate-200 shadow-sm space-y-6">
                 <div className="border-b border-slate-100 pb-3">
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div className="min-w-0 flex-1">
-                      <h4 className="text-sm font-black text-slate-800">📊 단가 & 규격 마스터</h4>
+                      <h4 className="text-sm font-medium text-slate-800">📊 단가 & 규격 마스터</h4>
                       <p className="text-xs text-slate-400 mt-1">이곳에서 추가/수정한 품목 사양은 신청서 본문의 콤보박스와 미니 명세서 표에 실시간 연동됩니다.</p>
                       <p className="text-[10px] text-slate-400 mt-1.5 leading-relaxed">
-                        목록은 등록순이 아니라 <span className="font-bold text-slate-500">품목명 가나다순</span>으로 정렬되며, 같은 품목명은 <span className="font-bold text-slate-500">규격순</span>으로 이어집니다.
+                        목록은 등록순이 아니라 <span className="font-medium text-slate-500">품목명 가나다순</span>으로 정렬되며, 같은 품목명은 <span className="font-medium text-slate-500">규격순</span>으로 이어집니다.
                       </p>
                       <p className="text-[10px] text-slate-400 mt-1.5 leading-relaxed">
                         ※「시드 항목 복구」는 LV_1만 가능하며, 누락·삭제분만 다시 채우고 기존 단가·명칭은 유지합니다.
@@ -4284,7 +4364,7 @@ return (
                           : '시드 기본 품목 중 없거나 비활성인 항목만 추가/재활성'
                       }
                       onClick={handleRestoreSeedPlates}
-                      className={`shrink-0 text-[10px] font-black px-3 py-2 rounded-xl border transition-all active:scale-95 ${
+                      className={`shrink-0 text-[10px] font-medium px-3 py-2 rounded-xl border transition-all active:scale-95 ${
                         canDeleteLv1Cert
                           ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
                           : DISABLED_ACTION_BTN
@@ -4296,21 +4376,21 @@ return (
                 </div>
                 <div className="flex gap-3 bg-slate-50 p-4 rounded-xl border border-slate-200 items-end">
                   <div className="flex-1">
-                    <label className="text-[10px] font-black text-slate-400 block mb-1">신규 품목 명칭</label>
-                    <input type="text" placeholder="예: 현판 A형" value={newPlate.label} onChange={(e) => setNewPlate({ ...newPlate, label: e.target.value })} className="w-full bg-white border border-slate-200 text-slate-800 rounded-xl p-3 text-xs font-bold outline-none focus:border-blue-500" />
+                    <label className="text-[10px] font-medium text-slate-400 block mb-1">신규 품목 명칭</label>
+                    <input type="text" placeholder="예: 현판 A형" value={newPlate.label} onChange={(e) => setNewPlate({ ...newPlate, label: e.target.value })} className="w-full bg-white border border-slate-200 text-slate-800 rounded-xl p-3 text-xs font-medium outline-none focus:border-blue-500" />
                   </div>
                   <div className="flex-1">
-                    <label className="text-[10px] font-black text-slate-400 block mb-1">규격</label>
-                    <input type="text" placeholder="ex: 400*300" value={newPlate.size} onChange={(e) => setNewPlate({ ...newPlate, size: e.target.value })} className="w-full bg-white border border-slate-200 text-slate-800 rounded-xl p-3 text-xs font-semibold outline-none focus:border-blue-500" />
+                    <label className="text-[10px] font-medium text-slate-400 block mb-1">규격</label>
+                    <input type="text" placeholder="ex: 400*300" value={newPlate.size} onChange={(e) => setNewPlate({ ...newPlate, size: e.target.value })} className="w-full bg-white border border-slate-200 text-slate-800 rounded-xl p-3 text-xs font-medium outline-none focus:border-blue-500" />
                   </div>
                   <div className="w-32 shrink-0">
-                    <label className="text-[10px] font-black text-slate-400 block mb-1">공급가 (원 · VAT별도)</label>
+                    <label className="text-[10px] font-medium text-slate-400 block mb-1">공급가 (원 · VAT별도)</label>
                     <input type="number" placeholder="0" value={newPlate.price || ''} onChange={(e) => setNewPlate({ ...newPlate, price: Number(e.target.value) })} className="w-full bg-white border border-slate-200 text-slate-800 rounded-xl p-3 text-xs font-mono outline-none focus:border-blue-500" />
                   </div>
                   <button
                     type="button"
                     onClick={handleAddPlateMaster}
-                    className="font-black px-4 py-2.5 text-xs rounded-xl transition-all shadow-md active:scale-95 shrink-0 bg-blue-600 hover:bg-blue-500 text-white"
+                    className="font-medium px-4 py-2.5 text-xs rounded-xl transition-all shadow-md active:scale-95 shrink-0 bg-blue-600 hover:bg-blue-500 text-white"
                   >
                     + 신규 등록
                   </button>
@@ -4319,7 +4399,7 @@ return (
                   {plateMasterList.map((p, idx) => (
                     <div key={p.code} className="p-4 rounded-xl border bg-white border-slate-200 hover:border-blue-300 transition-all shadow-sm">
                       <div className="flex justify-between items-center mb-2 gap-4">
-                        <span className="font-black text-sm text-slate-800 truncate flex-1">📍 {p.label}</span>
+                        <span className="font-medium text-sm text-slate-800 truncate flex-1">📍 {p.label}</span>
                         <div className="flex gap-2 shrink-0">
                           <button
                             type="button"
@@ -4329,7 +4409,7 @@ return (
                               if (!canEdit) return alertNoEditPermission();
                               setEditingPlateIndex(editingPlateIndex === idx ? null : idx);
                             }}
-                            className={`text-[10px] px-3 py-1.5 rounded-lg font-bold border ${
+                            className={`text-[10px] px-3 py-1.5 rounded-lg font-medium border ${
                               canEdit
                                 ? 'text-slate-500 hover:text-slate-800 bg-slate-100 border-slate-200'
                                 : DISABLED_ACTION_BTN
@@ -4350,7 +4430,7 @@ return (
                                   : undefined
                             }
                             onClick={() => handleIdDeletePlate(p.code)}
-                            className={`text-[10px] px-3 py-1.5 rounded-lg font-bold border ${
+                            className={`text-[10px] px-3 py-1.5 rounded-lg font-medium border ${
                               (isSeedPlateCode(p.code) ? canDeleteLv1Cert : canEdit)
                                 ? 'text-red-500 hover:text-red-700 bg-slate-100 border-slate-200'
                                 : DISABLED_ACTION_BTN
@@ -4363,29 +4443,29 @@ return (
                       {editingPlateIndex === idx ? (
                         <div className="flex gap-3 pt-3 animate-fade-in border-t border-slate-100 mt-2 items-end">
                           <div className="flex-1">
-                            <label className="text-[10px] font-black text-slate-400 block mb-1">공급가액 (원 · VAT별도)</label>
+                            <label className="text-[10px] font-medium text-slate-400 block mb-1">공급가액 (원 · VAT별도)</label>
                             <input type="number" value={p.price} onChange={(e) => {
                               const updated = [...plateMasterList]; updated[idx] = { ...updated[idx], price: Number(e.target.value) }; setPlateMasterList(updated);
-                            }} className="w-full bg-slate-50 border border-slate-300 text-blue-600 font-mono font-black rounded-lg p-2.5 text-xs outline-none" />
+                            }} className="w-full bg-slate-50 border border-slate-300 text-blue-600 font-mono font-medium rounded-lg p-2.5 text-xs outline-none" />
                           </div>
                           <div className="flex-1">
-                            <label className="text-[10px] font-black text-slate-400 block mb-1">규격 수정 (mm)</label>
+                            <label className="text-[10px] font-medium text-slate-400 block mb-1">규격 수정 (mm)</label>
                             <input type="text" value={p.size} onChange={(e) => {
                               const updated = [...plateMasterList]; updated[idx] = { ...updated[idx], size: e.target.value }; setPlateMasterList(updated);
-                            }} className="w-full bg-slate-50 border border-slate-300 text-slate-800 font-semibold rounded-lg p-2.5 text-xs outline-none" />
+                            }} className="w-full bg-slate-50 border border-slate-300 text-slate-800 font-medium rounded-lg p-2.5 text-xs outline-none" />
                           </div>
                           <button
                             type="button"
                             onClick={() => handleSavePlateRow(plateMasterList[idx])}
-                            className="shrink-0 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-black rounded-lg"
+                            className="shrink-0 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-medium rounded-lg"
                           >
                             DB 저장
                           </button>
                         </div>
                       ) : (
                         <div className="flex justify-between text-xs text-slate-500 font-mono border-t border-slate-100 pt-2 mt-1">
-                          <span className="bg-slate-50 px-2 py-1 rounded font-bold">규격: {p.size}</span>
-                          <span className="bg-blue-50 text-blue-700 px-2 py-1 rounded font-black">💵 공급단가: {p.price.toLocaleString()}원 (VAT별도)</span>
+                          <span className="bg-slate-50 px-2 py-1 rounded font-medium">규격: {p.size}</span>
+                          <span className="bg-blue-50 text-blue-700 px-2 py-1 rounded font-medium">💵 공급단가: {p.price.toLocaleString()}원 (VAT별도)</span>
                         </div>
                       )}
                     </div>
@@ -4405,20 +4485,20 @@ return (
             {/* 팝업 헤더 — 진입 버튼에 따라 명판/제본 단독 표시 */}
             <div className="bg-slate-900 p-6 text-white flex justify-between items-center px-8 shrink-0">
               <div>
-                <h3 className={`text-xs font-black tracking-widest uppercase ${
+                <h3 className={`text-xs font-medium tracking-widest uppercase ${
                   popSubTab === 'SIGN_SUB' ? 'text-blue-400' : 'text-indigo-400'
                 }`}>
                   {popSubTab === 'SIGN_SUB'
                     ? 'Certification Signage Template Settings'
                     : 'Certification Binding Template Settings'}
                 </h3>
-                <h2 className="text-xl font-black mt-0.5">
+                <h2 className="text-xl font-medium mt-0.5">
                   {popSubTab === 'SIGN_SUB'
                     ? '인증별 현판 서식 기준 설정'
                     : '인증별 제본 서식 기준 설정'}
                 </h2>
               </div>
-              <button type="button" onClick={() => setIsCertModalOpen(false)} className="bg-slate-800 hover:bg-slate-700 text-white font-black px-4 py-2 rounded-xl text-xs transition-all active:scale-95">닫기 ✕</button>
+              <button type="button" onClick={() => setIsCertModalOpen(false)} className="bg-slate-800 hover:bg-slate-700 text-white font-medium px-4 py-2 rounded-xl text-xs transition-all active:scale-95">닫기 ✕</button>
             </div>
 
             {/* 팝업 본문 (선택된 서식만 단독 표시) */}
@@ -4438,7 +4518,7 @@ return (
                       <button
                         type="button"
                         onClick={() => setJebonSettingsTab('CERT')}
-                        className={`flex-1 px-3 py-2.5 rounded-xl text-xs font-black border transition-all ${
+                        className={`flex-1 px-3 py-2.5 rounded-xl text-xs font-medium border transition-all ${
                           jebonSettingsTab === 'CERT'
                             ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm'
                             : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-white'
@@ -4449,7 +4529,7 @@ return (
                       <button
                         type="button"
                         onClick={() => setJebonSettingsTab('SIZE')}
-                        className={`flex-1 px-3 py-2.5 rounded-xl text-xs font-black border transition-all ${
+                        className={`flex-1 px-3 py-2.5 rounded-xl text-xs font-medium border transition-all ${
                           jebonSettingsTab === 'SIZE'
                             ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm'
                             : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-white'
@@ -4465,7 +4545,7 @@ return (
                       <div className="border-b border-slate-100 pb-3">
                         <div className="flex flex-wrap items-start justify-between gap-3">
                           <div className="min-w-0 flex-1">
-                            <h4 className="text-sm font-black text-slate-800">📏 제본 판형 마스터</h4>
+                            <h4 className="text-sm font-medium text-slate-800">📏 제본 판형 마스터</h4>
                             <p className="text-[10px] text-slate-400 mt-1">
                               종류·규격·설명으로 관리합니다. 신청서 「제본 판형 지정」 콤보박스에 실시간 반영됩니다.
                             </p>
@@ -4482,7 +4562,7 @@ return (
                                 : '시드 기본 판형 중 없거나 비활성인 항목만 추가/재활성'
                             }
                             onClick={handleRestoreSeedJebonSizes}
-                            className={`shrink-0 text-[10px] font-black px-3 py-2 rounded-xl border transition-all active:scale-95 ${
+                            className={`shrink-0 text-[10px] font-medium px-3 py-2 rounded-xl border transition-all active:scale-95 ${
                               canDeleteLv1Cert
                                 ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
                                 : DISABLED_ACTION_BTN
@@ -4495,7 +4575,7 @@ return (
 
                       <div className={`${JEBON_SIZE_MASTER_GRID} bg-slate-50 p-4 rounded-xl border border-slate-200`}>
                         <div>
-                          <label className="text-[10px] font-black text-slate-400 block mb-1">종류</label>
+                          <label className="text-[10px] font-medium text-slate-400 block mb-1">종류</label>
                           <input
                             type="text"
                             placeholder="예: A4"
@@ -4503,11 +4583,11 @@ return (
                             onChange={(e) =>
                               setNewJebonSize({ ...newJebonSize, label: e.target.value })
                             }
-                            className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold outline-none focus:border-indigo-500"
+                            className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-medium outline-none focus:border-indigo-500"
                           />
                         </div>
                         <div>
-                          <label className="text-[10px] font-black text-slate-400 block mb-1">규격</label>
+                          <label className="text-[10px] font-medium text-slate-400 block mb-1">규격</label>
                           <input
                             type="text"
                             placeholder="예: 210 × 297mm"
@@ -4515,11 +4595,11 @@ return (
                             onChange={(e) =>
                               setNewJebonSize({ ...newJebonSize, size: e.target.value })
                             }
-                            className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-semibold outline-none focus:border-indigo-500"
+                            className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-medium outline-none focus:border-indigo-500"
                           />
                         </div>
                         <div>
-                          <label className="text-[10px] font-black text-slate-400 block mb-1">설명</label>
+                          <label className="text-[10px] font-medium text-slate-400 block mb-1">설명</label>
                           <input
                             type="text"
                             placeholder="예: 표준 기본"
@@ -4527,23 +4607,23 @@ return (
                             onChange={(e) =>
                               setNewJebonSize({ ...newJebonSize, description: e.target.value })
                             }
-                            className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-semibold outline-none focus:border-indigo-500"
+                            className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-medium outline-none focus:border-indigo-500"
                           />
                         </div>
                         <button
                           type="button"
                           onClick={handleAddJebonSizeMaster}
-                          className="font-black px-3 py-2.5 text-xs rounded-xl transition-all shadow-md active:scale-95 w-full bg-indigo-600 hover:bg-indigo-500 text-white whitespace-nowrap"
+                          className="font-medium px-3 py-2.5 text-xs rounded-xl transition-all shadow-md active:scale-95 w-full bg-indigo-600 hover:bg-indigo-500 text-white whitespace-nowrap"
                         >
                           + 신규 등록
                         </button>
                       </div>
 
                       <div className={`${JEBON_SIZE_MASTER_GRID} px-3 hidden md:grid`}>
-                        <span className="text-[9px] font-black text-slate-400">종류</span>
-                        <span className="text-[9px] font-black text-slate-400">규격</span>
-                        <span className="text-[9px] font-black text-slate-400">설명</span>
-                        <span className="text-[9px] font-black text-slate-400 text-right">관리</span>
+                        <span className="text-[9px] font-medium text-slate-400">종류</span>
+                        <span className="text-[9px] font-medium text-slate-400">규격</span>
+                        <span className="text-[9px] font-medium text-slate-400">설명</span>
+                        <span className="text-[9px] font-medium text-slate-400 text-right">관리</span>
                       </div>
 
                       <div className="space-y-2 max-h-[420px] overflow-y-auto pr-1">
@@ -4561,7 +4641,7 @@ return (
                             >
                               <div className={JEBON_SIZE_MASTER_GRID}>
                                 <div className="min-w-0">
-                                  <label className="text-[9px] font-black text-slate-400 block mb-1 md:sr-only">
+                                  <label className="text-[9px] font-medium text-slate-400 block mb-1 md:sr-only">
                                     종류
                                   </label>
                                   {isEditing ? (
@@ -4574,16 +4654,16 @@ return (
                                           label: e.target.value,
                                         })
                                       }
-                                      className="w-full bg-white border border-slate-300 rounded-lg px-2 py-1.5 text-xs font-bold outline-none"
+                                      className="w-full bg-white border border-slate-300 rounded-lg px-2 py-1.5 text-xs font-medium outline-none"
                                     />
                                   ) : (
-                                    <span className="text-xs font-black text-slate-800 block truncate">
+                                    <span className="text-xs font-medium text-slate-800 block truncate">
                                       {row.label}
                                     </span>
                                   )}
                                 </div>
                                 <div className="min-w-0">
-                                  <label className="text-[9px] font-black text-slate-400 block mb-1 md:sr-only">
+                                  <label className="text-[9px] font-medium text-slate-400 block mb-1 md:sr-only">
                                     규격
                                   </label>
                                   {isEditing ? (
@@ -4596,16 +4676,16 @@ return (
                                           size: e.target.value,
                                         })
                                       }
-                                      className="w-full bg-white border border-slate-300 rounded-lg px-2 py-1.5 text-xs font-semibold outline-none"
+                                      className="w-full bg-white border border-slate-300 rounded-lg px-2 py-1.5 text-xs font-medium outline-none"
                                     />
                                   ) : (
-                                    <span className="text-xs font-semibold text-slate-700 block truncate">
+                                    <span className="text-xs font-medium text-slate-700 block truncate">
                                       {row.size || '—'}
                                     </span>
                                   )}
                                 </div>
                                 <div className="min-w-0">
-                                  <label className="text-[9px] font-black text-slate-400 block mb-1 md:sr-only">
+                                  <label className="text-[9px] font-medium text-slate-400 block mb-1 md:sr-only">
                                     설명
                                   </label>
                                   {isEditing ? (
@@ -4618,7 +4698,7 @@ return (
                                           description: e.target.value,
                                         })
                                       }
-                                      className="w-full bg-white border border-slate-300 rounded-lg px-2 py-1.5 text-xs font-semibold outline-none"
+                                      className="w-full bg-white border border-slate-300 rounded-lg px-2 py-1.5 text-xs font-medium outline-none"
                                     />
                                   ) : (
                                     <span className="text-xs text-slate-600 block truncate">
@@ -4633,7 +4713,7 @@ return (
                                         type="button"
                                         disabled={!canEdit}
                                         onClick={() => handleSaveJebonSizeRow(draft)}
-                                        className={`text-[9px] font-black px-2 py-1 rounded-md border whitespace-nowrap ${
+                                        className={`text-[9px] font-medium px-2 py-1 rounded-md border whitespace-nowrap ${
                                           canEdit
                                             ? 'bg-indigo-600 text-white border-indigo-600'
                                             : DISABLED_ACTION_BTN
@@ -4647,7 +4727,7 @@ return (
                                           setEditingJebonSizeCode(null);
                                           setEditingJebonSizeDraft(null);
                                         }}
-                                        className="text-[9px] font-black px-2 py-1 rounded-md border bg-white text-slate-500 border-slate-200 whitespace-nowrap"
+                                        className="text-[9px] font-medium px-2 py-1 rounded-md border bg-white text-slate-500 border-slate-200 whitespace-nowrap"
                                       >
                                         취소
                                       </button>
@@ -4662,7 +4742,7 @@ return (
                                           setEditingJebonSizeCode(row.code);
                                           setEditingJebonSizeDraft({ ...row });
                                         }}
-                                        className={`text-[9px] font-black px-2 py-1 rounded-md border whitespace-nowrap ${
+                                        className={`text-[9px] font-medium px-2 py-1 rounded-md border whitespace-nowrap ${
                                           canEdit
                                             ? 'bg-white text-slate-600 border-slate-200 hover:border-indigo-300'
                                             : DISABLED_ACTION_BTN
@@ -4685,7 +4765,7 @@ return (
                                               : undefined
                                         }
                                         onClick={() => handleDeleteJebonSize(row.code)}
-                                        className={`text-[9px] font-black px-2 py-1 rounded-md border whitespace-nowrap ${
+                                        className={`text-[9px] font-medium px-2 py-1 rounded-md border whitespace-nowrap ${
                                           (isSeedJebonSizeCode(row.code)
                                             ? canDeleteLv1Cert
                                             : canEdit)
@@ -4709,7 +4789,7 @@ return (
                   <div className="border-b border-slate-100 pb-3 shrink-0">
                     <div className="flex flex-wrap items-start justify-between gap-3">
                       <div className="min-w-0 flex-1">
-                        <h4 className="text-sm font-black text-slate-800">
+                        <h4 className="text-sm font-medium text-slate-800">
                           {popSubTab === 'SIGN_SUB' ? '📋 인증별 설정' : '📋 인증별 제본 서식·기본값 설정'}
                         </h4>
                         <p className="text-[10px] text-slate-400 mt-1">
@@ -4728,7 +4808,7 @@ return (
                             : '시드 기본 인증 중 없거나 비활성인 항목만 추가/재활성'
                         }
                         onClick={handleRestoreSeedCerts}
-                        className={`shrink-0 text-[10px] font-black px-3 py-2 rounded-xl border transition-all active:scale-95 ${
+                        className={`shrink-0 text-[10px] font-medium px-3 py-2 rounded-xl border transition-all active:scale-95 ${
                           canDeleteLv1Cert
                             ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
                             : DISABLED_ACTION_BTN
@@ -4777,11 +4857,11 @@ return (
                                   value={draft!.label}
                                   onClick={(e) => e.stopPropagation()}
                                   onChange={(e) => patchDraft({ label: e.target.value })}
-                                  className={`w-full rounded-lg px-2.5 py-1.5 text-xs font-black outline-none border ${editable}`}
+                                  className={`w-full rounded-lg px-2.5 py-1.5 text-xs font-medium outline-none border ${editable}`}
                                   placeholder="인증 종류 명칭"
                                 />
                               ) : (
-                                <span className="font-black text-slate-800 text-xs block">
+                                <span className="font-medium text-slate-800 text-xs block">
                                   📍 {c.label}
                                 </span>
                               )}
@@ -4796,7 +4876,7 @@ return (
                                     type="button"
                                     disabled={!canEdit}
                                     onClick={() => saveSignRowEdit(c)}
-                                    className={`text-[9px] font-black px-2 py-1 rounded-md border ${
+                                    className={`text-[9px] font-medium px-2 py-1 rounded-md border ${
                                       canEdit
                                         ? 'bg-blue-600 text-white border-blue-600'
                                         : DISABLED_ACTION_BTN
@@ -4807,7 +4887,7 @@ return (
                                   <button
                                     type="button"
                                     onClick={cancelSignRowEdit}
-                                    className="text-[9px] font-black px-2 py-1 rounded-md border bg-white text-slate-500 border-slate-200"
+                                    className="text-[9px] font-medium px-2 py-1 rounded-md border bg-white text-slate-500 border-slate-200"
                                   >
                                     취소
                                   </button>
@@ -4817,7 +4897,7 @@ return (
                                   type="button"
                                   disabled={!canEdit}
                                   onClick={() => beginSignRowEdit(c)}
-                                  className={`text-[9px] font-black px-2 py-1 rounded-md border ${
+                                  className={`text-[9px] font-medium px-2 py-1 rounded-md border ${
                                     canEdit
                                       ? 'bg-white text-slate-600 border-slate-200 hover:border-blue-300'
                                       : DISABLED_ACTION_BTN
@@ -4842,7 +4922,7 @@ return (
                                         : undefined
                                 }
                                 onClick={() => handleIdDeleteCert(c.id)}
-                                className={`text-[9px] font-black px-2 py-1 rounded-md border ${
+                                className={`text-[9px] font-medium px-2 py-1 rounded-md border ${
                                   (isSeedCertId(c.id) ? canDeleteLv1Cert : canEdit) &&
                                   !isRowEditing
                                     ? 'text-red-400 hover:text-red-600 bg-white border-slate-200 hover:border-red-200'
@@ -4859,7 +4939,7 @@ return (
                             onClick={(e) => e.stopPropagation()}
                           >
                             <label
-                              className={`flex items-center gap-2 text-[10px] font-black text-slate-600 select-none ${
+                              className={`flex items-center gap-2 text-[10px] font-medium text-slate-600 select-none ${
                                 isRowEditing ? 'cursor-pointer' : 'cursor-not-allowed'
                               }`}
                             >
@@ -4875,7 +4955,7 @@ return (
                                 }
                                 className="w-3.5 h-3.5 accent-blue-600 rounded disabled:cursor-not-allowed"
                               />
-                              <span className="text-slate-400 font-bold">
+                              <span className="text-slate-400 font-medium">
                                 {(isRowEditing ? draft!.useCertNumber : c.useCertNumber)
                                   ? '(신청폼 ON)'
                                   : '(신청폼 OFF)'}
@@ -4883,7 +4963,7 @@ return (
                             </label>
 
                             <label
-                              className={`flex items-center gap-2 text-[10px] font-black text-slate-600 select-none ${
+                              className={`flex items-center gap-2 text-[10px] font-medium text-slate-600 select-none ${
                                 isRowEditing ? 'cursor-pointer' : 'cursor-not-allowed'
                               }`}
                             >
@@ -4899,7 +4979,7 @@ return (
                                 }
                                 className="w-3.5 h-3.5 accent-blue-600 rounded disabled:cursor-not-allowed"
                               />
-                              <span className="text-slate-400 font-bold">
+                              <span className="text-slate-400 font-medium">
                                 {(isRowEditing ? draft!.useValidPeriod : c.useValidPeriod)
                                   ? '(신청폼 ON)'
                                   : '(신청폼 OFF)'}
@@ -4907,7 +4987,7 @@ return (
                             </label>
 
                             <div className="flex items-center gap-2 min-w-0">
-                              <span className="shrink-0 text-[10px] font-black text-slate-800">
+                              <span className="shrink-0 text-[10px] font-medium text-slate-800">
                                 출력양식설정 :
                               </span>
                               {isRowEditing ? (
@@ -4923,7 +5003,7 @@ return (
                                 />
                               ) : (
                                 <span
-                                  className={`flex-1 min-w-0 break-all text-[11px] font-mono font-bold leading-relaxed rounded-lg px-2 py-2 border ${
+                                  className={`flex-1 min-w-0 break-all text-[11px] font-mono font-medium leading-relaxed rounded-lg px-2 py-2 border ${
                                     c.useValidPeriod
                                       ? 'bg-white border-slate-200 text-slate-700'
                                       : 'bg-slate-100 border-slate-200 text-slate-400'
@@ -4940,7 +5020,7 @@ return (
                     ) : (
                       <>
                         {/* 열 헤더 */}
-                        <div className="hidden md:flex items-center gap-0 px-3 pb-1.5 text-[9px] font-black text-slate-400 tracking-wider">
+                        <div className="hidden md:flex items-center gap-0 px-3 pb-1.5 text-[9px] font-medium text-slate-400 tracking-wider">
                           <span className="min-w-[15rem] flex-1">인증 종류</span>
                           <span className="w-[5.25rem] shrink-0 pl-3 ml-1 border-l border-transparent">판형</span>
                           <span className="w-[4.25rem] shrink-0 pl-3 ml-1 border-l border-transparent">부수</span>
@@ -4990,11 +5070,11 @@ return (
                                       type="text"
                                       value={draft!.label}
                                       onChange={(e) => patchDraft({ label: e.target.value })}
-                                      className={`w-full rounded-lg px-2 py-1.5 text-xs font-black outline-none border ${editInput}`}
+                                      className={`w-full rounded-lg px-2 py-1.5 text-xs font-medium outline-none border ${editInput}`}
                                       placeholder="인증 종류 명칭"
                                     />
                                   ) : (
-                                    <span className="font-black text-slate-800 text-xs block leading-snug break-words">
+                                    <span className="font-medium text-slate-800 text-xs block leading-snug break-words">
                                       📍 {c.label}
                                     </span>
                                   )}
@@ -5009,7 +5089,7 @@ return (
                                     onChange={(e) =>
                                       patchDraft({ jebonDefaultSizeType: e.target.value })
                                     }
-                                    className={`w-full rounded-lg px-1.5 py-1.5 text-[10px] font-bold outline-none border ${
+                                    className={`w-full rounded-lg px-1.5 py-1.5 text-[10px] font-medium outline-none border ${
                                       isRowEditing ? editInput : lockedInput
                                     }`}
                                   >
@@ -5042,11 +5122,11 @@ return (
                                           ),
                                         })
                                       }
-                                      className={`w-full min-w-0 rounded-lg px-1 py-1.5 text-[10px] font-bold outline-none text-right border ${
+                                      className={`w-full min-w-0 rounded-lg px-1 py-1.5 text-[10px] font-medium outline-none text-right border ${
                                         isRowEditing ? editInput : lockedInput
                                       }`}
                                     />
-                                    <span className="text-[9px] text-slate-400 font-bold shrink-0">부</span>
+                                    <span className="text-[9px] text-slate-400 font-medium shrink-0">부</span>
                                   </div>
                                 </div>
 
@@ -5060,7 +5140,7 @@ return (
                                 >
                                   <div className="flex items-center gap-1.5 rounded-lg bg-indigo-50/70 border border-indigo-100 px-1.5 py-1">
                                     <label
-                                      className={`flex items-center gap-1 text-[10px] font-black text-slate-600 select-none shrink-0 ${
+                                      className={`flex items-center gap-1 text-[10px] font-medium text-slate-600 select-none shrink-0 ${
                                         isRowEditing ? 'cursor-pointer' : 'cursor-not-allowed'
                                       }`}
                                     >
@@ -5075,7 +5155,7 @@ return (
                                         }
                                         className="w-3.5 h-3.5 accent-indigo-600 rounded disabled:cursor-not-allowed"
                                       />
-                                      <span className="text-[9px] text-indigo-500 font-bold">
+                                      <span className="text-[9px] text-indigo-500 font-medium">
                                         {(isRowEditing ? draft!.useJebonCover : c.useJebonCover)
                                           ? 'ON'
                                           : 'OFF'}
@@ -5094,7 +5174,7 @@ return (
                                       onChange={(e) =>
                                         patchDraft({ jebonCoverColor: e.target.value })
                                       }
-                                      className={`flex-1 min-w-0 rounded-lg px-1 py-1 text-[10px] font-bold outline-none border ${
+                                      className={`flex-1 min-w-0 rounded-lg px-1 py-1 text-[10px] font-medium outline-none border ${
                                         isRowEditing &&
                                         (isRowEditing ? draft!.useJebonCover : c.useJebonCover)
                                           ? editInput
@@ -5120,14 +5200,14 @@ return (
                                       onChange={(e) =>
                                         patchDraft({ jebonCoverPageCount: e.target.value || '1' })
                                       }
-                                      className={`w-10 shrink-0 rounded-lg px-1 py-1 text-[10px] font-bold outline-none text-right border ${
+                                      className={`w-10 shrink-0 rounded-lg px-1 py-1 text-[10px] font-medium outline-none text-right border ${
                                         isRowEditing &&
                                         (isRowEditing ? draft!.useJebonCover : c.useJebonCover)
                                           ? editInput
                                           : lockedInput
                                       }`}
                                     />
-                                    <span className="text-[9px] text-slate-400 font-bold shrink-0">면</span>
+                                    <span className="text-[9px] text-slate-400 font-medium shrink-0">면</span>
                                   </div>
                                 </div>
 
@@ -5143,7 +5223,7 @@ return (
                                     onChange={(e) =>
                                       patchDraft({ jebonInnerColor: e.target.value })
                                     }
-                                    className={`w-full rounded-lg px-1.5 py-1.5 text-[10px] font-bold outline-none border ${
+                                    className={`w-full rounded-lg px-1.5 py-1.5 text-[10px] font-medium outline-none border ${
                                       isRowEditing ? editInput : lockedInput
                                     }`}
                                   >
@@ -5160,7 +5240,7 @@ return (
                                 >
                                   <div className="flex items-center gap-1 rounded-lg bg-amber-50/70 border border-amber-100 px-1.5 py-1">
                                     <label
-                                      className={`flex items-center gap-1 text-[10px] font-black text-slate-600 select-none shrink-0 ${
+                                      className={`flex items-center gap-1 text-[10px] font-medium text-slate-600 select-none shrink-0 ${
                                         isRowEditing ? 'cursor-pointer' : 'cursor-not-allowed'
                                       }`}
                                     >
@@ -5173,7 +5253,7 @@ return (
                                         }
                                         className="w-3.5 h-3.5 accent-amber-600 rounded disabled:cursor-not-allowed"
                                       />
-                                      <span className="text-[9px] text-amber-600 font-bold">
+                                      <span className="text-[9px] text-amber-600 font-medium">
                                         {useCoverDate ? 'ON' : 'OFF'}
                                       </span>
                                     </label>
@@ -5185,13 +5265,13 @@ return (
                                         onChange={(e) =>
                                           patchDraft({ jebonFormat: e.target.value })
                                         }
-                                        className={`flex-1 min-w-0 rounded-lg px-1 py-1 text-[10px] font-mono font-bold outline-none border ${
+                                        className={`flex-1 min-w-0 rounded-lg px-1 py-1 text-[10px] font-mono font-medium outline-none border ${
                                           useCoverDate ? editInput : lockedInput
                                         }`}
                                         placeholder="0000. 0. 0."
                                       />
                                     ) : (
-                                      <span className="block flex-1 min-w-0 truncate text-[10px] font-mono font-bold text-indigo-600 bg-slate-100 border border-slate-200 rounded-lg px-1 py-1">
+                                      <span className="block flex-1 min-w-0 truncate text-[10px] font-mono font-medium text-indigo-600 bg-slate-100 border border-slate-200 rounded-lg px-1 py-1">
                                         {c.jebonFormat || '-'}
                                       </span>
                                     )}
@@ -5208,7 +5288,7 @@ return (
                                         type="button"
                                         disabled={!canEdit}
                                         onClick={() => saveJebonRowEdit(c)}
-                                        className={`text-[9px] font-black px-1.5 py-1 rounded-md border ${
+                                        className={`text-[9px] font-medium px-1.5 py-1 rounded-md border ${
                                           canEdit
                                             ? 'bg-indigo-600 text-white border-indigo-600'
                                             : DISABLED_ACTION_BTN
@@ -5219,7 +5299,7 @@ return (
                                       <button
                                         type="button"
                                         onClick={cancelJebonRowEdit}
-                                        className="text-[9px] font-black px-1.5 py-1 rounded-md border bg-white text-slate-500 border-slate-200"
+                                        className="text-[9px] font-medium px-1.5 py-1 rounded-md border bg-white text-slate-500 border-slate-200"
                                       >
                                         취소
                                       </button>
@@ -5229,7 +5309,7 @@ return (
                                       type="button"
                                       disabled={!canEdit}
                                       onClick={() => beginJebonRowEdit(c)}
-                                      className={`text-[9px] font-black px-1.5 py-1 rounded-md border ${
+                                      className={`text-[9px] font-medium px-1.5 py-1 rounded-md border ${
                                         canEdit
                                           ? 'bg-white text-slate-600 border-slate-200 hover:border-indigo-300'
                                           : DISABLED_ACTION_BTN
@@ -5254,7 +5334,7 @@ return (
                                             : undefined
                                     }
                                     onClick={() => handleIdDeleteCert(c.id)}
-                                    className={`text-[9px] font-black px-1.5 py-1 rounded-md border ${
+                                    className={`text-[9px] font-medium px-1.5 py-1 rounded-md border ${
                                       (isSeedCertId(c.id) ? canDeleteLv1Cert : canEdit) &&
                                       !isRowEditing
                                         ? 'text-red-400 hover:text-red-600 bg-white border-slate-200 hover:border-red-200'
@@ -5279,12 +5359,12 @@ return (
                     placeholder={popSubTab === 'SIGN_SUB' ? "➕ 새 명판 인증명 입력" : "➕ 새 제본 인증명 입력"} 
                     value={newCertName}
                     onChange={e => setNewCertName(e.target.value)} 
-                    className="flex-1 border rounded-xl px-3 py-2.5 text-xs font-semibold outline-none transition-all bg-slate-50 border-slate-200 focus:bg-white focus:border-blue-500"
+                    className="flex-1 border rounded-xl px-3 py-2.5 text-xs font-medium outline-none transition-all bg-slate-50 border-slate-200 focus:bg-white focus:border-blue-500"
                   />
                   <button 
                     type="button"
                     onClick={handleAddCertMaster} 
-                    className={`px-4 py-2.5 rounded-xl font-black text-xs transition-all shadow-md active:scale-95 text-white ${
+                    className={`px-4 py-2.5 rounded-xl font-medium text-xs transition-all shadow-md active:scale-95 text-white ${
                       popSubTab === 'SIGN_SUB'
                         ? 'bg-blue-600 hover:bg-blue-500'
                         : 'bg-indigo-600 hover:bg-indigo-500'
@@ -5304,12 +5384,12 @@ return (
               <div className="bg-slate-900 text-white rounded-2xl p-6 border border-slate-800 shadow-xl space-y-4 flex flex-col min-w-0">
                 <div className="space-y-4">
                   <div className="border-b border-slate-800 pb-3">
-                    <div className="text-[10px] font-black text-blue-400 uppercase tracking-wider">GRADE INTERACTION PANEL</div>
-                    <h4 className="text-sm font-black text-slate-200 mt-0.5">
+                    <div className="text-[10px] font-medium text-blue-400 uppercase tracking-wider">GRADE INTERACTION PANEL</div>
+                    <h4 className="text-sm font-medium text-slate-200 mt-0.5">
                       👑 [{signCertMasterList.find(c => c.id === selectedMasterCertId)?.label || '선택 없음'}] 인증 등급/종류 설정
                     </h4>
                     {!canEdit && (
-                      <p className="text-[10px] text-amber-400/90 mt-1.5 font-bold">
+                      <p className="text-[10px] text-amber-400/90 mt-1.5 font-medium">
                         ※ 등급·입력방식·품목연결 변경은 편집 권한이 필요합니다.
                       </p>
                     )}
@@ -5339,7 +5419,7 @@ return (
                     };
                     return (
                       <div className="rounded-xl border border-slate-700 bg-slate-800/60 p-3 space-y-2">
-                        <div className="text-[10px] font-black text-slate-300">
+                        <div className="text-[10px] font-medium text-slate-300">
                           신청폼 등급 입력 방식
                         </div>
                         <div className="grid grid-cols-2 gap-2">
@@ -5347,7 +5427,7 @@ return (
                             type="button"
                             disabled={!canEdit}
                             onClick={() => saveGradeInputMode(true)}
-                            className={`px-2.5 py-2 rounded-lg text-[10px] font-black border transition-all ${
+                            className={`px-2.5 py-2 rounded-lg text-[10px] font-medium border transition-all ${
                               !canEdit
                                 ? DISABLED_ACTION_BTN
                                 : row.useMultiGradeSelect
@@ -5361,7 +5441,7 @@ return (
                             type="button"
                             disabled={!canEdit}
                             onClick={() => saveGradeInputMode(false)}
-                            className={`px-2.5 py-2 rounded-lg text-[10px] font-black border transition-all ${
+                            className={`px-2.5 py-2 rounded-lg text-[10px] font-medium border transition-all ${
                               !canEdit
                                 ? DISABLED_ACTION_BTN
                                 : !row.useMultiGradeSelect
@@ -5372,7 +5452,7 @@ return (
                             ▾ 셀렉트 단일 선택
                           </button>
                         </div>
-                        <p className="text-[9px] text-slate-500 font-bold leading-relaxed">
+                        <p className="text-[9px] text-slate-500 font-medium leading-relaxed">
                           클릭 즉시 저장됩니다. 신청서 「2. 인증 등급/종류 설정」 UI에 반영됩니다.
                         </p>
                       </div>
@@ -5419,7 +5499,7 @@ return (
                           alert(err?.message || '등급 저장 실패');
                         }
                       }}
-                      className={`font-black text-xs px-4 rounded-xl transition-all shadow-md ${
+                      className={`font-medium text-xs px-4 rounded-xl transition-all shadow-md ${
                         canEdit
                           ? 'bg-indigo-600 hover:bg-indigo-500 text-white'
                           : DISABLED_ACTION_BTN
@@ -5435,7 +5515,7 @@ return (
                         {editingGradeIndex === gIdx ? (
                           <input type="text" value={editingGradeValue} onChange={e => setEditingGradeValue(e.target.value)} className="bg-slate-900 border border-slate-600 text-white rounded-lg px-2 py-1 text-xs flex-1 outline-none font-medium" />
                         ) : (
-                          <span className="text-xs font-bold text-slate-200 truncate flex-1">🎖️ {grade}</span>
+                          <span className="text-xs font-medium text-slate-200 truncate flex-1">🎖️ {grade}</span>
                         )}
                         <div className="flex gap-1.5 shrink-0">
                           {editingGradeIndex === gIdx ? (
@@ -5470,7 +5550,7 @@ return (
                                   alert(err?.message || '등급 저장 실패');
                                 }
                               }}
-                              className="text-[10px] font-black text-emerald-400 bg-slate-900 px-2 py-1 rounded-lg border border-slate-700"
+                              className="text-[10px] font-medium text-emerald-400 bg-slate-900 px-2 py-1 rounded-lg border border-slate-700"
                             >
                               저장
                             </button>
@@ -5483,7 +5563,7 @@ return (
                                 setEditingGradeIndex(gIdx);
                                 setEditingGradeValue(grade);
                               }}
-                              className={`text-[10px] font-black px-2 py-1 rounded-lg ${
+                              className={`text-[10px] font-medium px-2 py-1 rounded-lg ${
                                 canEdit
                                   ? 'text-blue-300 bg-slate-700'
                                   : 'text-slate-500 bg-slate-800 cursor-not-allowed opacity-50'
@@ -5522,7 +5602,7 @@ return (
                                 alert(err?.message || '등급 삭제 실패');
                               }
                             }}
-                            className={`text-[10px] font-black px-2 py-1 rounded-lg ${
+                            className={`text-[10px] font-medium px-2 py-1 rounded-lg ${
                               canEdit
                                 ? 'text-red-400 bg-slate-700'
                                 : 'text-slate-500 bg-slate-800 cursor-not-allowed opacity-50'
@@ -5537,7 +5617,7 @@ return (
                 </div>
 
                 <div className="pt-4 border-t border-slate-800 text-right">
-                  <span className="text-[10px] text-slate-500 font-bold">※ 여기서 저장한 서식·등급은 신청서 본문과 즉시 동기화됩니다.</span>
+                  <span className="text-[10px] text-slate-500 font-medium">※ 여기서 저장한 서식·등급은 신청서 본문과 즉시 동기화됩니다.</span>
                 </div>
               </div>
               )}
@@ -5546,13 +5626,13 @@ return (
               {popSubTab === 'SIGN_SUB' && (
               <div className="bg-emerald-950 text-white rounded-2xl p-6 border border-emerald-900 shadow-xl space-y-4 flex flex-col min-w-0 min-h-0">
                 <div className="border-b border-emerald-900 pb-3 shrink-0">
-                  <div className="text-[10px] font-black text-emerald-400 uppercase tracking-wider">
+                  <div className="text-[10px] font-medium text-emerald-400 uppercase tracking-wider">
                     PLATE LINK PANEL
                   </div>
-                  <h4 className="text-sm font-black text-emerald-50 mt-0.5">
+                  <h4 className="text-sm font-medium text-emerald-50 mt-0.5">
                     📛 [{signCertMasterList.find((c) => c.id === selectedMasterCertId)?.label || '선택 없음'}] 현판 품목별 규격 및 단가 설정
                   </h4>
-                  <p className="text-[10px] text-emerald-200/70 mt-1.5 font-bold leading-relaxed">
+                  <p className="text-[10px] text-emerald-200/70 mt-1.5 font-medium leading-relaxed">
                     체크한 품목만 해당 인증 선택 시 신청폼 「3. 현판 품목 설정」에 노출됩니다. 복수 선택 가능 · 클릭 즉시 저장.
                   </p>
                 </div>
@@ -5561,7 +5641,7 @@ return (
                   const row = signCertMasterList.find((c) => c.id === selectedMasterCertId);
                   if (!row) {
                     return (
-                      <div className="rounded-xl border border-dashed border-emerald-800 bg-emerald-900/40 px-3 py-6 text-center text-[11px] font-bold text-emerald-300/70">
+                      <div className="rounded-xl border border-dashed border-emerald-800 bg-emerald-900/40 px-3 py-6 text-center text-[11px] font-medium text-emerald-300/70">
                         좌측에서 인증을 선택해 주세요.
                       </div>
                     );
@@ -5591,7 +5671,7 @@ return (
                   };
                   if (plateMasterList.length === 0) {
                     return (
-                      <div className="rounded-xl border border-dashed border-emerald-800 bg-emerald-900/40 px-3 py-6 text-center text-[11px] font-bold text-emerald-300/70">
+                      <div className="rounded-xl border border-dashed border-emerald-800 bg-emerald-900/40 px-3 py-6 text-center text-[11px] font-medium text-emerald-300/70">
                         등록된 현판 품목이 없습니다. 「현판 품목별 규격 및 단가 설정」에서 품목을 먼저 등록해 주세요.
                       </div>
                     );
@@ -5619,10 +5699,10 @@ return (
                               className="mt-0.5 w-3.5 h-3.5 accent-emerald-400 rounded shrink-0"
                             />
                             <span className="min-w-0 flex-1">
-                              <span className="block text-xs font-black text-emerald-50 truncate">
+                              <span className="block text-xs font-medium text-emerald-50 truncate">
                                 {p.label}
                               </span>
-                              <span className="block text-[10px] font-bold text-emerald-300/80 mt-0.5">
+                              <span className="block text-[10px] font-medium text-emerald-300/80 mt-0.5">
                                 {p.size || '자율 규격'} · {(Number(p.price) || 0).toLocaleString()}원
                               </span>
                             </span>
@@ -5634,7 +5714,7 @@ return (
                 })()}
 
                 <div className="pt-3 border-t border-emerald-900 text-right shrink-0">
-                  <span className="text-[10px] text-emerald-500/80 font-bold">
+                  <span className="text-[10px] text-emerald-500/80 font-medium">
                     ※ 선택 {signCertMasterList.find((c) => c.id === selectedMasterCertId)?.linkedPlateCodes?.length || 0}개 / 전체 {plateMasterList.length}개
                   </span>
                 </div>
@@ -5657,16 +5737,16 @@ return (
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between mb-3">
-              <h3 className="text-sm font-black text-slate-800">전사 공통주소 선택</h3>
+              <h3 className="text-sm font-medium text-slate-800">전사 공통주소 선택</h3>
               <button
                 type="button"
                 onClick={() => setShowCompanyAddrPicker(false)}
-                className="w-8 h-8 rounded-full bg-slate-100 text-slate-500 font-black text-sm hover:bg-slate-200"
+                className="w-8 h-8 rounded-full bg-slate-100 text-slate-500 font-medium text-sm hover:bg-slate-200"
               >
                 ✕
               </button>
             </div>
-            <p className="text-[10px] text-slate-400 font-bold mb-3">(명함 등록 주소)</p>
+            <p className="text-[10px] text-slate-400 font-medium mb-3">(명함 등록 주소)</p>
             <div className="max-h-[50vh] overflow-y-auto space-y-2">
               {companyAddresses
                 .filter((a) => a.isActive !== false)
@@ -5677,8 +5757,8 @@ return (
                     onClick={() => applyCompanyAddress(a.id)}
                     className="w-full text-left px-3 py-2.5 rounded-xl border border-slate-200 hover:border-blue-400 hover:bg-blue-50 transition-colors"
                   >
-                    <div className="text-[12px] font-black text-slate-800">🏢 {a.label}</div>
-                    <div className="text-[10px] font-bold text-slate-500 mt-0.5">
+                    <div className="text-[12px] font-medium text-slate-800">🏢 {a.label}</div>
+                    <div className="text-[10px] font-medium text-slate-500 mt-0.5">
                       [{a.zipCode}] {[a.addressKo, a.addressDetailKo].filter(Boolean).join(' ')}
                     </div>
                   </button>
@@ -5698,16 +5778,16 @@ return (
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between mb-3 shrink-0">
-              <h3 className="text-sm font-black text-slate-800">고객사 주소관리 불러오기</h3>
+              <h3 className="text-sm font-medium text-slate-800">고객사 주소관리 불러오기</h3>
               <button
                 type="button"
                 onClick={() => setShowMarketingClientPicker(false)}
-                className="w-8 h-8 rounded-full bg-slate-100 text-slate-500 font-black text-sm hover:bg-slate-200"
+                className="w-8 h-8 rounded-full bg-slate-100 text-slate-500 font-medium text-sm hover:bg-slate-200"
               >
                 ✕
               </button>
             </div>
-            <p className="text-[10px] text-slate-400 font-bold mb-2 shrink-0">
+            <p className="text-[10px] text-slate-400 font-medium mb-2 shrink-0">
               (제작물 · 고객사 주소관리){' '}
               <span className="text-amber-600">*실배송지 확인 필수</span>
             </p>
@@ -5716,15 +5796,15 @@ return (
               value={marketingClientSearch}
               onChange={(e) => setMarketingClientSearch(e.target.value)}
               placeholder="회사명 검색..."
-              className="w-full mb-3 px-3 py-2.5 rounded-xl border border-slate-200 text-xs font-bold outline-none focus:border-sky-400 shrink-0"
+              className="w-full mb-3 px-3 py-2.5 rounded-xl border border-slate-200 text-xs font-medium outline-none focus:border-sky-400 shrink-0"
             />
             <div className="flex-1 min-h-0 overflow-y-auto space-y-1.5">
               {marketingClientsLoading ? (
-                <div className="py-10 text-center text-[11px] font-bold text-slate-400 animate-pulse">
+                <div className="py-10 text-center text-[11px] font-medium text-slate-400 animate-pulse">
                   고객사 불러오는 중...
                 </div>
               ) : filteredMarketingClients.length === 0 ? (
-                <div className="py-10 text-center text-[11px] font-bold text-slate-300">
+                <div className="py-10 text-center text-[11px] font-medium text-slate-300">
                   {marketingClientSearch.trim()
                     ? '검색 결과가 없습니다.'
                     : '회사명 키워드를 입력하면 관련 고객사만 표시됩니다.'}
@@ -5745,8 +5825,8 @@ return (
                       onClick={() => applyMarketingClientAddress(c)}
                       className="w-full text-left px-3 py-2.5 rounded-xl border border-slate-200 hover:border-sky-400 hover:bg-sky-50 transition-colors"
                     >
-                      <div className="text-[12px] font-black text-slate-800 truncate">{c.name}</div>
-                      <div className="text-[10px] font-bold text-slate-500 mt-0.5 truncate" title={loc}>
+                      <div className="text-[12px] font-medium text-slate-800 truncate">{c.name}</div>
+                      <div className="text-[10px] font-medium text-slate-500 mt-0.5 truncate" title={loc}>
                         {loc}
                       </div>
                     </button>

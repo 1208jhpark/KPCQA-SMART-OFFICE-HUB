@@ -51,6 +51,7 @@ export const KNOWN_APP_PATHS: { path: string; step1: string; step2: string; step
   { path: '/production/custom/my-orders/request', step1: '제작', step2: '맞춤 제작', step3: '나의 신청', step4: '신규 신청' },
   { path: '/production/custom/my-orders/history', step1: '제작', step2: '맞춤 제작', step3: '나의 신청', step4: '나의 이력' },
   { path: '/production/custom/dept-master/order', step1: '제작', step2: '맞춤 제작', step3: '부서 마스터', step4: '발주 대장' },
+  { path: '/production/custom/dept-master/history', step1: '제작', step2: '맞춤 제작', step3: '부서 마스터', step4: '부서 전체 이력' },
   { path: '/production/custom/dept-master/inspection', step1: '제작', step2: '맞춤 제작', step3: '부서 마스터', step4: '수령검수' },
   { path: '/production/custom/dept-master/settlement', step1: '제작', step2: '맞춤 제작', step3: '부서 마스터', step4: '명세서 정산' },
   { path: '/production/custom/dept-master/archive', step1: '제작', step2: '맞춤 제작', step3: '부서 마스터', step4: '정산완료 보관함' },
@@ -75,6 +76,7 @@ export const KNOWN_APP_PATHS: { path: string; step1: string; step2: string; step
   // 일정
   { path: '/schedule', step1: '일정', step2: '—', step3: '—', step4: '일정' },
   { path: '/schedule/dashboard', step1: '일정', step2: '대시보드', step3: '—', step4: '공유 캘린더' },
+  { path: '/schedule/work-board', step1: '일정', step2: '업무 보드', step3: '—', step4: '업무 보드' },
 
   // 마케팅·외주 등 자주 쓰는 서비스
   { path: '/marketing', step1: '마케팅', step2: '—', step3: '—', step4: '마케팅' },

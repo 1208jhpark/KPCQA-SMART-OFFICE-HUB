@@ -15,10 +15,14 @@ import {
   buildOfficeSuppliesDetailExcelRows,
 } from '@/lib/production-sign-excel';
 import {
-  getProductionCategoryBadgeClass,
+  getProductionCategoryTextClass,
   getProductionCategoryFolderTabClasses,
 } from '@/lib/production-category-theme';
 import { isVendorDispatched } from '@/lib/production-shipping';
+import {
+  PRODUCTION_MY_ORDERS_TABS,
+  useInterfaceStepTabs,
+} from '@/lib/interface-step-tabs';
 
 // 서류철: 진행 전체 / 분류별은 수령완료만
 const HISTORY_CATEGORIES = [
@@ -46,6 +50,10 @@ function formatQuantityUnit(item: {
 }
 
 export default function ProductionApplyHistory() {
+  const stepTabs = useInterfaceStepTabs(
+    PRODUCTION_MY_ORDERS_TABS,
+    '/production/custom/my-orders'
+  );
   const [histories, setHistories] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [actionBusyId, setActionBusyId] = useState<string | null>(null);
@@ -393,13 +401,13 @@ export default function ProductionApplyHistory() {
         <div className="absolute right-0 top-0 w-64 h-64 bg-indigo-500/12 rounded-full blur-3xl -translate-y-1/3 translate-x-1/4 pointer-events-none" />
         <div className="absolute left-1/4 bottom-0 w-48 h-48 bg-slate-500/10 rounded-full blur-3xl translate-y-1/2 pointer-events-none" />
         <div className="relative z-10">
-          <h3 className="text-[10px] font-black uppercase tracking-widest text-indigo-400 mb-2.5">
+          <h3 className="text-[10px] font-medium uppercase tracking-widest text-indigo-400 mb-2.5">
             MY PRODUCTION REQUESTS & HISTORY
           </h3>
           <h1 className="text-2xl tracking-tight leading-none">
             <span className="text-indigo-400 font-normal">{currentUser?.name || '임직원'} 님</span>
             <span className="text-white/30 font-normal mx-2.5">|</span>
-            <span className="text-white font-extrabold">나의 신청 이력</span>
+            <span className="text-white font-medium">나의 신청 이력</span>
           </h1>
           <p className="text-slate-400 text-xs mt-3 leading-relaxed">
             본인 계정으로 신청한 맞춤 제작물 이력을 조회합니다.
@@ -407,50 +415,43 @@ export default function ProductionApplyHistory() {
         </div>
       </div>
 
-      {/* 탭 네비게이션 — dept-master/order 스위처 규격 */}
+      {/* 탭 네비게이션 — admin/interface 명칭 반영 */}
       <div className="flex items-center justify-between bg-white p-2 rounded-xl border border-slate-200 shadow-sm">
         <div className="flex items-center gap-1.5 bg-slate-100/80 p-1 rounded-lg flex-wrap min-h-[40px]">
-          {[
-            {
-              name: '✍️ 신규 제작물 신청',
-              path: '/production/custom/my-orders/request',
-              activeColor: 'text-blue-600',
-            },
-            {
-              name: '📂 나의 신청 이력 관리',
-              path: '/production/custom/my-orders/history',
-              activeColor: 'text-indigo-600',
-            },
-          ].map((tab) => {
-            const isActive = pathname === tab.path;
-            return (
-              <Link
-                key={tab.path}
-                href={tab.path}
-                className={`px-5 py-2 rounded-md text-xs font-black transition-all flex items-center gap-2 ${
-                  isActive
-                    ? `bg-white ${tab.activeColor} shadow-sm border border-slate-200/80`
-                    : 'text-slate-500 hover:text-slate-800'
-                }`}
-              >
-                <span>{tab.name}</span>
-              </Link>
-            );
-          })}
+          {stepTabs.length === 0 ? (
+            <div className="h-8 w-72 rounded-md bg-slate-200/80 animate-pulse" aria-hidden />
+          ) : (
+            stepTabs.map((tab) => {
+              const isActive = pathname === tab.path;
+              return (
+                <Link
+                  key={tab.id}
+                  href={tab.path}
+                  className={`px-5 py-2 rounded-md text-xs font-medium transition-all flex items-center gap-2 ${
+                    isActive
+                      ? `bg-white ${tab.activeColor || 'text-indigo-600'} shadow-sm border border-slate-200/80`
+                      : 'text-slate-500 hover:text-slate-800'
+                  }`}
+                >
+                  <span>{tab.label}</span>
+                </Link>
+              );
+            })
+          )}
         </div>
-        <p className="text-[10px] text-slate-400 font-bold px-3 hidden sm:block">
+        <p className="text-[10px] text-slate-400 font-medium px-3 hidden sm:block">
           ※ apply=개인 신청 · dept=부서 묶음 발주 · master=중앙 대조
         </p>
       </div>
 
-      {/* 카테고리 서류철 탭 + 테이블 — dept-master/order와 동일 */}
+      {/* 서류철 탭이 아래 표 상단선에 붙음 · 진행 중 | 완료 이력(분류) */}
       <div className="w-full pt-2">
         <div
           className="flex flex-wrap items-end gap-1 border-b border-slate-200"
           role="tablist"
-          aria-label="제작 분류 필터"
+          aria-label="진행 중 · 완료 이력"
         >
-          {HISTORY_CATEGORIES.map((cat) => {
+          {HISTORY_CATEGORIES.filter((c) => c.id === 'ALL').map((cat) => {
             const active = activeCategory === cat.id;
             return (
               <button
@@ -459,7 +460,32 @@ export default function ProductionApplyHistory() {
                 role="tab"
                 aria-selected={active}
                 onClick={() => setActiveCategory(cat.id)}
-                className={`relative flex items-center gap-1.5 px-4 py-2.5 text-xs font-black tracking-tight transition-colors rounded-t-lg border ${getProductionCategoryFolderTabClasses(cat.id, active)}`}
+                className={`relative flex items-center gap-1.5 px-4 py-2.5 text-xs font-medium tracking-tight transition-colors rounded-t-lg border ${getProductionCategoryFolderTabClasses(cat.id, active)}`}
+              >
+                <span className="text-sm leading-none">{cat.icon}</span>
+                <span>{cat.label}</span>
+              </button>
+            );
+          })}
+
+          <div
+            className="w-px h-8 bg-slate-300 mx-1.5 mb-0 shrink-0"
+            aria-hidden
+          />
+          <span className="shrink-0 mb-2 px-1 text-[10px] font-medium text-slate-400 whitespace-nowrap select-none">
+            완료 이력
+          </span>
+          {HISTORY_CATEGORIES.filter((c) => c.id !== 'ALL').map((cat) => {
+            const active = activeCategory === cat.id;
+            return (
+              <button
+                key={cat.id}
+                type="button"
+                role="tab"
+                aria-selected={active}
+                title={`${cat.label} 수령완료·반려 이력`}
+                onClick={() => setActiveCategory(cat.id)}
+                className={`relative flex items-center gap-1.5 px-3.5 py-2.5 text-xs font-medium tracking-tight transition-colors rounded-t-lg border ${getProductionCategoryFolderTabClasses(cat.id, active)}`}
               >
                 <span className="text-sm leading-none">{cat.icon}</span>
                 <span>{cat.label}</span>
@@ -468,20 +494,20 @@ export default function ProductionApplyHistory() {
           })}
         </div>
 
-        <div className="bg-white border border-t-0 border-slate-200 rounded-b-[2.5rem] rounded-tr-2xl shadow-sm overflow-hidden">
+        <div className="bg-white border border-t-0 border-slate-200 rounded-b-[2.5rem] rounded-tr-2xl shadow-sm overflow-hidden -mt-px">
         <div className="p-4 px-6 bg-slate-200/70 border-b border-slate-300 flex items-center justify-between flex-wrap gap-4">
           <div className="flex items-center gap-2">
             <div className="w-2.5 h-2.5 rounded-full bg-blue-600"></div>
-            <h2 className="text-sm font-black text-slate-800 tracking-tight">
+            <h2 className="text-sm font-medium text-slate-800 tracking-tight">
               {activeCategory === 'ALL'
                 ? '실시간 신청·진행 현황'
                 : `${getCategoryLabel(activeCategory)} 제작·수령 완료 이력`}
             </h2>
-            <span className="text-[11px] font-bold bg-slate-300/80 text-slate-700 px-2 py-0.5 rounded-md">
+            <span className="text-[11px] font-medium bg-slate-300/80 text-slate-700 px-2 py-0.5 rounded-md">
               {filteredHistories.length}건
             </span>
             {selectedIds.length > 0 && (
-              <span className="text-[10px] font-black text-blue-600 ml-2 bg-blue-50 px-2 py-0.5 rounded-md border border-blue-200">
+              <span className="text-[10px] font-medium text-blue-600 ml-2 bg-blue-50 px-2 py-0.5 rounded-md border border-blue-200">
                 {selectedIds.length}개 선택됨
               </span>
             )}
@@ -491,7 +517,7 @@ export default function ProductionApplyHistory() {
             <div className="relative group/filter flex items-center gap-2 bg-white px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm">
               <span
                 role="tooltip"
-                className="pointer-events-none absolute left-0 top-full mt-1.5 z-50 hidden group-hover/filter:block whitespace-nowrap rounded-lg bg-slate-800 px-2.5 py-1.5 text-[10px] font-bold text-white shadow-lg"
+                className="pointer-events-none absolute left-0 top-full mt-1.5 z-50 hidden group-hover/filter:block whitespace-nowrap rounded-lg bg-slate-800 px-2.5 py-1.5 text-[10px] font-medium text-white shadow-lg"
               >
                 {activeCategory === 'ALL'
                   ? '분류 → 연도 → 월 · 연계필터'
@@ -500,11 +526,11 @@ export default function ProductionApplyHistory() {
 
               {activeCategory === 'ALL' && (
                 <>
-                  <span className="text-[10px] font-black text-slate-400 uppercase">분류</span>
+                  <span className="text-[10px] font-medium text-slate-400 uppercase">분류</span>
                   <select
                     value={progressCategoryFilter}
                     onChange={(e) => setProgressCategoryFilter(e.target.value)}
-                    className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent max-w-[9.5rem]"
+                    className="text-[11px] font-medium text-slate-800 outline-none cursor-pointer bg-transparent max-w-[9.5rem]"
                     aria-label="진행 중 내역 분류 솔트"
                   >
                     <option value="ALL">전체</option>
@@ -518,14 +544,14 @@ export default function ProductionApplyHistory() {
                 </>
               )}
 
-              <span className="text-[10px] font-black text-slate-400 uppercase">연도</span>
+              <span className="text-[10px] font-medium text-slate-400 uppercase">연도</span>
               <select
                 value={selectedYear}
                 onChange={(e) => {
                   setSelectedYear(e.target.value);
                   setSelectedMonth('ALL');
                 }}
-                className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent"
+                className="text-[11px] font-medium text-slate-800 outline-none cursor-pointer bg-transparent"
               >
                 <option value="ALL">전체</option>
                 {availableYears.map((year) => (
@@ -537,11 +563,11 @@ export default function ProductionApplyHistory() {
 
               <div className="w-px h-3.5 bg-slate-300 mx-0.5" />
 
-              <span className="text-[10px] font-black text-slate-400 uppercase">월별</span>
+              <span className="text-[10px] font-medium text-slate-400 uppercase">월별</span>
               <select
                 value={selectedMonth}
                 onChange={(e) => setSelectedMonth(e.target.value)}
-                className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent"
+                className="text-[11px] font-medium text-slate-800 outline-none cursor-pointer bg-transparent"
               >
                 <option value="ALL">전체</option>
                 {availableMonths.map((month) => (
@@ -556,7 +582,7 @@ export default function ProductionApplyHistory() {
               <button
                 type="button"
                 onClick={handleExcelDownload}
-                className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-[10px] font-black shadow-sm hover:bg-emerald-700 transition-all whitespace-nowrap"
+                className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-[10px] font-medium shadow-sm hover:bg-emerald-700 transition-all whitespace-nowrap"
               >
                 {selectedIds.length > 0
                   ? `선택 EXCEL 다운로드(${selectedIds.length})`
@@ -571,7 +597,7 @@ export default function ProductionApplyHistory() {
             <LoadingState />
           ) : (
             <table className="w-full text-left border-collapse">
-              <thead className="bg-slate-100 text-slate-700 text-[10px] font-black uppercase tracking-widest border-b border-slate-200">
+              <thead className="bg-slate-100 text-slate-700 text-[10px] font-medium uppercase tracking-widest border-b border-slate-200">
                 <tr>
                   <th className="h-12 pl-4 text-center">
                     <input
@@ -587,8 +613,7 @@ export default function ProductionApplyHistory() {
                   <th className="h-12 px-2 text-center">No</th>
                   <th className="h-12 px-2 text-center whitespace-nowrap">관리번호</th>
                   <th className="h-12 px-2 text-center whitespace-nowrap">신청일</th>
-                  <th className="h-12 px-2 text-left">소속 부서</th>
-                  <th className="h-12 px-2 text-left">신청자</th>
+                  <th className="h-12 px-2 text-left whitespace-nowrap">부서 / 신청자</th>
                   <th className="h-12 px-2 text-center whitespace-nowrap">분류</th>
                   <th className="h-12 px-2 text-left">관리용 제목</th>
                   <th className="h-12 px-2 text-center whitespace-nowrap">신청내역</th>
@@ -598,13 +623,13 @@ export default function ProductionApplyHistory() {
                   <th className="h-12 px-2 text-left whitespace-nowrap">외주업체</th>
                   <th className="h-12 px-2 text-center whitespace-nowrap">처리날짜</th>
                   <th className="h-12 px-2 text-center whitespace-nowrap">공정상태</th>
-                  <th className="h-12 px-2 text-center whitespace-nowrap">액션</th>
+                  <th className="h-12 px-2 text-center whitespace-nowrap">관리액션</th>
                 </tr>
               </thead>
-              <tbody className="bg-white divide-y divide-slate-100 text-[11px] font-bold text-slate-700">
+              <tbody className="bg-white divide-y divide-slate-100 text-[11px] font-medium text-slate-700">
                 {paginatedHistories.length === 0 ? (
                   <tr>
-                    <td colSpan={13} className="p-16 text-center text-slate-400 text-xs">
+                    <td colSpan={12} className="p-16 text-center text-slate-400 text-xs">
                       신청 가드 범위 내에 해당하는 내역이 존재하지 않습니다.
                     </td>
                   </tr>
@@ -622,28 +647,28 @@ export default function ProductionApplyHistory() {
                     const opts = (item.options || {}) as Record<string, unknown>;
                     const isDispatched = opts.vendorDispatched === true;
 
-                    // 1) 공정상태 판정 — 접수대기 → 발주대기 → 발주완료 → 수령완료
+                    // 1) 공정상태 판정 — 신청대기 → 묶음발주대기 → 발주완료 → 수령완료
                     let statusLabel = item.status;
                     let statusClass = 'text-slate-500';
 
                     if (isPending) {
-                      statusLabel = '접수대기';
-                      statusClass = 'text-orange-600 font-bold';
+                      statusLabel = '신청대기';
+                      statusClass = 'text-orange-600 font-medium';
                     } else if (isAccepted || (isOrdered && !isDispatched)) {
-                      statusLabel = '발주대기';
-                      statusClass = 'text-blue-600 font-bold';
+                      statusLabel = '묶음발주대기';
+                      statusClass = 'text-blue-600 font-medium';
                     } else if (isOrdered && isDispatched) {
                       statusLabel = '발주완료';
-                      statusClass = 'text-emerald-700 font-bold';
+                      statusClass = 'text-emerald-700 font-medium';
                     } else if (isVerified) {
                       statusLabel = '수령완료';
-                      statusClass = 'text-slate-900 font-bold';
+                      statusClass = 'text-slate-900 font-medium';
                     } else if (isRejected) {
                       statusLabel = '반려';
-                      statusClass = 'text-red-600 font-bold';
+                      statusClass = 'text-red-600 font-medium';
                     } else if (isCancelled) {
                       statusLabel = '취소됨';
-                      statusClass = 'text-slate-400 font-bold';
+                      statusClass = 'text-slate-400 font-medium';
                     }
                     return (
                     <tr
@@ -669,13 +694,20 @@ export default function ProductionApplyHistory() {
                       <td className="px-2 text-center whitespace-nowrap tabular-nums text-slate-800">
                         {getKSTDateString(item.createdAt)}
                       </td>
-                      <td className="px-2 text-left truncate" title={item.deptName || ''}>
-                        {item.deptName || <span className="text-slate-300">-</span>}
+                      <td
+                        className="px-2 text-left min-w-0"
+                        title={[item.deptName, item.userName].filter(Boolean).join(' / ')}
+                      >
+                        <span className="text-[10px] font-normal text-slate-500 block truncate">
+                          {item.deptName || '-'}
+                        </span>
+                        <span className="font-normal text-slate-800 block truncate">
+                          {item.userName || '-'}
+                        </span>
                       </td>
-                      <td className="px-2 text-left text-slate-800 truncate">{item.userName || '-'}</td>
                       <td className="px-2 text-center">
                         <span
-                          className={`px-2.5 py-1 rounded text-[10px] font-bold tracking-tight border ${getProductionCategoryBadgeClass(item.category)}`}
+                          className={`text-[11px] font-medium tracking-tight ${getProductionCategoryTextClass(item.category)}`}
                         >
                           {getCategoryLabel(item.category)}
                         </span>
@@ -688,7 +720,7 @@ export default function ProductionApplyHistory() {
                           <button
                             type="button"
                             onClick={() => openDetail(item)}
-                            className="px-2.5 py-1 text-[10px] font-bold rounded-lg shadow-sm transition-colors bg-rose-600 text-white hover:bg-rose-700"
+                            className="px-2.5 py-1 text-[10px] font-medium rounded-lg shadow-sm transition-colors bg-rose-600 text-white hover:bg-rose-700"
                           >
                             원문검수
                           </button>
@@ -696,7 +728,7 @@ export default function ProductionApplyHistory() {
                           <button
                             type="button"
                             onClick={() => openDetail(item)}
-                            className="px-2.5 py-1 text-[10px] font-bold rounded-lg transition-colors bg-slate-200 text-slate-600 hover:bg-slate-300 border border-slate-300"
+                            className="px-2.5 py-1 text-[10px] font-medium rounded-lg transition-colors bg-slate-200 text-slate-600 hover:bg-slate-300 border border-slate-300"
                           >
                             원문확인
                           </button>
@@ -743,7 +775,7 @@ export default function ProductionApplyHistory() {
                                 }}
                                 className={`inline-flex flex-col items-center leading-tight ${statusClass} underline decoration-dotted underline-offset-2 cursor-pointer hover:opacity-80`}
                               >
-                                <span className="text-[10px] font-bold whitespace-nowrap">반려</span>
+                                <span className="text-[10px] font-medium whitespace-nowrap">반려</span>
                                 <span className="text-[9px] font-medium text-rose-500/90 whitespace-nowrap normal-case tracking-normal">
                                   {rejectReason ? '사유 보기' : '사유 없음'}
                                 </span>
@@ -751,7 +783,7 @@ export default function ProductionApplyHistory() {
                             );
                           })()
                         ) : (
-                          <span className={`text-[10px] font-bold whitespace-nowrap ${statusClass}`}>
+                          <span className={`text-[10px] font-medium whitespace-nowrap ${statusClass}`}>
                             {statusLabel}
                           </span>
                         )}
@@ -762,7 +794,7 @@ export default function ProductionApplyHistory() {
                             type="button"
                             disabled={actionBusyId === item.id}
                             onClick={() => handleCancel(item)}
-                            className="px-2 py-1 text-[10px] font-black rounded-lg transition-colors bg-rose-50 border border-rose-200 hover:bg-rose-100 text-rose-600 disabled:opacity-50 whitespace-nowrap"
+                            className="px-2 py-1 text-[10px] font-medium rounded-lg transition-colors bg-rose-50 border border-rose-200 hover:bg-rose-100 text-rose-600 disabled:opacity-50 whitespace-nowrap"
                           >
                             {actionBusyId === item.id ? '처리중…' : '신청취소'}
                           </button>
@@ -771,12 +803,12 @@ export default function ProductionApplyHistory() {
                             type="button"
                             disabled={actionBusyId === item.id}
                             onClick={() => handleRevertAccept(item)}
-                            className="px-2 py-1 text-[10px] font-black rounded-lg transition-colors bg-rose-50 border border-rose-200 hover:bg-rose-100 text-rose-600 disabled:opacity-50 whitespace-nowrap"
+                            className="px-2 py-1 text-[10px] font-medium rounded-lg transition-colors bg-rose-50 border border-rose-200 hover:bg-rose-100 text-rose-600 disabled:opacity-50 whitespace-nowrap"
                           >
                             {actionBusyId === item.id ? '처리중…' : '접수취소'}
                           </button>
                         ) : (
-                          <span className="text-[10px] text-slate-400 font-bold whitespace-nowrap">
+                          <span className="text-[10px] text-slate-400 font-medium whitespace-nowrap">
                             -
                           </span>
                         )}

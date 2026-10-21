@@ -15,6 +15,8 @@ const MENU_PATH = '/production/custom/dept-master/order';
 const PAGE_HINT_BY_PATH: Record<string, React.ReactNode> = {
   '/production/custom/dept-master/order':
     '부서원의 발주 신청건을 검수, 접수하여 발주로 이관 관리합니다.',
+  '/production/custom/dept-master/history':
+    '연계 조직 신청을 분류철별로 모아 봅니다. 공정상태는 나의 신청 이력과 동일하게 표기됩니다.',
   '/production/custom/dept-master/inspection':
     '진행 중인 외주 발주 묶음의 상태를 추적하고, 물품 수령 및 검수 작업을 처리하는 관리 대장입니다.',
   '/production/custom/dept-master/settlement':

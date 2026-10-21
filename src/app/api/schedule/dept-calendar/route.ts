@@ -6,11 +6,9 @@ import {
   authErrorToResponse,
 } from '@/lib/server-auth-guard';
 import { getKSTDateString } from '@/utils/dateUtils';
+import { SCHEDULE_MENU_PATHS } from '@/lib/schedule-menu';
 
 export const dynamic = 'force-dynamic';
-
-/** 일정 서비스 — Interface `/schedule` · `/schedule/dashboard` */
-const SCHEDULE_MENU_PATHS = ['/schedule', '/schedule/dashboard'] as const;
 
 const YMD_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -47,6 +45,7 @@ type CalRow = {
   end_date: string | null;
   all_day: boolean;
   color: string | null;
+  color_purpose_id: string | null;
   creator_name: string | null;
   creator_dept: string | null;
   creator_email: string | null;
@@ -59,7 +58,10 @@ const SELECT_COLS = `id, unit_id, unit_name, title, note,
   COALESCE(time_text, '') AS time_text,
   COALESCE(attendees, '') AS attendees,
   start_date, end_date, all_day, color,
+  color_purpose_id,
   creator_name, creator_dept, creator_email, "createdAt", "updatedAt"`;
+
+const HEX_RE = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
 
 let columnsReady: Promise<void> | null = null;
 
@@ -77,12 +79,63 @@ function ensureDetailColumns() {
         await prisma.$executeRawUnsafe(
           `ALTER TABLE "MarketingDeptCalendarEvent" ADD COLUMN IF NOT EXISTS "attendees" TEXT DEFAULT ''`
         );
+        await prisma.$executeRawUnsafe(
+          `ALTER TABLE "MarketingDeptCalendarEvent" ADD COLUMN IF NOT EXISTS "color_purpose_id" TEXT`
+        );
       } catch (e) {
         console.warn('[schedule/dept-calendar] column ensure skipped', e);
       }
     })();
   }
   return columnsReady;
+}
+
+async function resolveEventColor(
+  unitId: string,
+  body: { color?: unknown; color_purpose_id?: unknown; colorPurposeId?: unknown },
+  opts: { requireColor?: boolean } = {}
+): Promise<{ color: string | null; colorPurposeId: string | null } | { error: string }> {
+  const purposeRaw = body.color_purpose_id ?? body.colorPurposeId;
+  const purposeId =
+    purposeRaw === null || purposeRaw === ''
+      ? null
+      : purposeRaw !== undefined
+        ? String(purposeRaw).trim() || null
+        : undefined;
+
+  if (purposeId) {
+    const rows = await prisma.$queryRawUnsafe<Array<{ id: string; color: string; unit_id: string }>>(
+      `SELECT id, color, unit_id FROM "ScheduleDeptColorPurpose" WHERE id = $1 LIMIT 1`,
+      purposeId
+    );
+    if (!rows[0] || String(rows[0].unit_id) !== unitId) {
+      return { error: '부서 공용 용도를 찾을 수 없습니다.' };
+    }
+    return { color: rows[0].color, colorPurposeId: purposeId };
+  }
+
+  if (purposeId === null) {
+    const color =
+      body.color !== undefined
+        ? String(body.color || '#7baaf7').trim().slice(0, 32) || '#7baaf7'
+        : opts.requireColor
+          ? '#7baaf7'
+          : null;
+    if (color !== null && !HEX_RE.test(color) && !color.startsWith('#')) {
+      return { color: '#7baaf7', colorPurposeId: null };
+    }
+    return { color, colorPurposeId: null };
+  }
+
+  // purpose 미전달 — 기존 개인 색상 로직
+  if (body.color !== undefined) {
+    const color = String(body.color || '#7baaf7').trim().slice(0, 32) || '#7baaf7';
+    return { color, colorPurposeId: null };
+  }
+  if (opts.requireColor) {
+    return { color: '#7baaf7', colorPurposeId: null };
+  }
+  return { color: null, colorPurposeId: undefined as unknown as null };
 }
 
 async function listEvents(unitId: string, from: string, to: string): Promise<CalRow[]> {
@@ -165,15 +218,20 @@ export async function POST(req: Request) {
     const timeText = String(body.time_text || body.timeText || '').trim().slice(0, 80);
     const attendees = String(body.attendees || '').trim().slice(0, 300);
     const note = String(body.note || '').trim().slice(0, 500);
-    const color = String(body.color || '#4f46e5').trim().slice(0, 32) || '#4f46e5';
+    const resolved = await resolveEventColor(unitId, body, { requireColor: true });
+    if ('error' in resolved) {
+      return NextResponse.json({ error: resolved.error }, { status: 400 });
+    }
+    const color = resolved.color || '#7baaf7';
+    const colorPurposeId = resolved.colorPurposeId;
     const id = randomUUID().replace(/-/g, '').slice(0, 25);
 
     await prisma.$executeRawUnsafe(
       `INSERT INTO "MarketingDeptCalendarEvent"
         (id, unit_id, unit_name, title, note, location, time_text, attendees,
-         start_date, end_date, all_day, color,
+         start_date, end_date, all_day, color, color_purpose_id,
          creator_name, creator_dept, creator_email, "createdAt", "updatedAt")
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,true,$11,$12,$13,$14,NOW(),NOW())`,
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,true,$11,$12,$13,$14,$15,NOW(),NOW())`,
       id,
       unitId,
       unitName || null,
@@ -185,6 +243,7 @@ export async function POST(req: Request) {
       startDate,
       endDate,
       color,
+      colorPurposeId,
       auth.user.name || null,
       unitName || null,
       auth.user.email || null
@@ -255,10 +314,20 @@ export async function PATCH(req: Request) {
         : null;
     const attendees =
       body.attendees !== undefined ? String(body.attendees || '').trim().slice(0, 300) : null;
-    const color =
-      body.color !== undefined
-        ? String(body.color || '#4f46e5').trim().slice(0, 32) || '#4f46e5'
-        : null;
+    const colorTouched =
+      body.color !== undefined ||
+      body.color_purpose_id !== undefined ||
+      body.colorPurposeId !== undefined;
+    let color: string | null = null;
+    let colorPurposeId: string | null | undefined = undefined;
+    if (colorTouched) {
+      const resolved = await resolveEventColor(unitId, body);
+      if ('error' in resolved) {
+        return NextResponse.json({ error: resolved.error }, { status: 400 });
+      }
+      color = resolved.color;
+      colorPurposeId = resolved.colorPurposeId;
+    }
 
     await prisma.$executeRawUnsafe(
       `UPDATE "MarketingDeptCalendarEvent" SET
@@ -270,8 +339,13 @@ export async function PATCH(req: Request) {
          start_date = COALESCE($7, start_date),
          end_date = COALESCE($8, end_date),
          color = COALESCE($9, color),
+         color_purpose_id = CASE
+           WHEN $11::int = 0 THEN color_purpose_id
+           WHEN $10::text IS NULL THEN NULL
+           ELSE $10
+         END,
          "updatedAt" = NOW()
-       WHERE id = $1 AND unit_id = $10`,
+       WHERE id = $1 AND unit_id = $12`,
       id,
       title,
       note,
@@ -281,6 +355,8 @@ export async function PATCH(req: Request) {
       startDate,
       endDate,
       color,
+      colorPurposeId === undefined ? null : colorPurposeId,
+      colorTouched ? 1 : 0,
       unitId
     );
 

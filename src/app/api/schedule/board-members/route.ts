@@ -11,10 +11,9 @@ import {
   resolveUserDutyOptions,
   resolveUserGradeOptions,
 } from '@/lib/user-job-options';
+import { SCHEDULE_MENU_PATHS } from '@/lib/schedule-menu';
 
 export const dynamic = 'force-dynamic';
-
-const SCHEDULE_MENU_PATHS = ['/schedule', '/schedule/dashboard'] as const;
 
 async function readJobOptions() {
   try {

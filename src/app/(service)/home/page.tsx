@@ -153,7 +153,7 @@ export default function ServiceHomePage() {
               href={hrefForStep1(menu)}
               onClick={(e) => !menu.is_active && handleInactiveClick(e, menu.name)}
               className={`group flex flex-row items-center gap-5 bg-white/80 backdrop-blur-md rounded-[1.5rem] border border-slate-200/80 shadow-sm transition-all duration-300 relative overflow-hidden
-                px-5 py-3.5 h-24
+                px-5 py-3.5 min-h-24
                 ${menu.icon ? '' : 'justify-center'}
                 ${!menu.is_active 
                   ? 'opacity-30 grayscale cursor-not-allowed border-dashed bg-transparent' 
@@ -167,10 +167,10 @@ export default function ServiceHomePage() {
               ) : null}
               
               <div className={menu.icon ? 'text-left' : 'text-center'}>
-                <h3 className={`soh-home-menu-title text-slate-800 tracking-tight mb-1 flex items-center text-[21px] ${menu.icon ? '' : 'justify-center'}`}>
-                  {menu.name}
+                <h3 className={`soh-home-menu-title text-slate-800 tracking-tight mb-1 flex items-start text-[21px] leading-snug ${menu.icon ? '' : 'justify-center'}`}>
+                  <span className="whitespace-pre-line">{menu.name}</span>
                   {menu.is_active && (
-                    <span className="ml-2 inline-flex items-center justify-center opacity-0 -translate-x-1.5 group-hover:opacity-100 group-hover:translate-x-0 transition-all duration-300 ease-out">
+                    <span className="ml-2 mt-1 inline-flex items-center justify-center opacity-0 -translate-x-1.5 group-hover:opacity-100 group-hover:translate-x-0 transition-all duration-300 ease-out shrink-0">
                       <svg className="w-4 h-4 text-indigo-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.75} aria-hidden>
                         <path strokeLinecap="round" strokeLinejoin="round" d="M5 12h12.5m0 0L13 7.5M17.5 12 13 16.5" />
                       </svg>

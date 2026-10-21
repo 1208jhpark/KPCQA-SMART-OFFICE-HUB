@@ -35,6 +35,7 @@ const BusinessCardArchivePanel = dynamic(() => import('../asset/businesscard/Bus
 const ProductionApplyForm = dynamic(() => import('../production/ProductionApplyForm').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
 const ProductionApplyHistory = dynamic(() => import('../production/ProductionApplyHistory').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
 const DeptOrderPanel = dynamic(() => import('../production/DeptOrderPanel').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
+const DeptHistoryPanel = dynamic(() => import('../production/DeptHistoryPanel').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
 const DeptInspectionPanel = dynamic(() => import('../production/DeptInspectionPanel').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
 const DeptSettlementPanel = dynamic(() => import('../production/DeptSettlementPanel').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
 const DeptSettledArchive = dynamic(() => import('../production/DeptSettledArchive').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
@@ -46,6 +47,7 @@ const ProductionClientAddressModule = dynamic(() => import('../production/Produc
 // --- [마케팅] ---
 const MarketingDashboard = dynamic(() => import('../../components/marketing/DashboardModule').then(m => m.default || m), { loading: ModuleLoader, ssr: false }); // 👈 절대경로(@/)나 상위 상대경로(../../)로 명확히 지정해 줍니다.
 const ScheduleDashboard = dynamic(() => import('../schedule/ScheduleDashboardModule').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
+const ScheduleWorkBoard = dynamic(() => import('../schedule/WorkBoardModule').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
 const MarketingCatalog = dynamic(() => import('../marketing/CatalogModule').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
 const MarketingClientSearch = dynamic(() => import('../marketing/ClientSearchModule').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
 const MarketingRegister = dynamic(() => import('../marketing/RegisterModule').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
@@ -98,6 +100,7 @@ export const ModuleRegistry: Record<string, React.ComponentType<any>> = {
   '/production/custom/my-orders/request': ProductionApplyForm,
   '/production/custom/my-orders/history': ProductionApplyHistory,
   '/production/custom/dept-master/order': DeptOrderPanel,
+  '/production/custom/dept-master/history': DeptHistoryPanel,
   '/production/custom/dept-master/inspection': DeptInspectionPanel,
   '/production/custom/dept-master/settlement': DeptSettlementPanel,
   '/production/custom/dept-master/archive': DeptSettledArchive,
@@ -107,6 +110,7 @@ export const ModuleRegistry: Record<string, React.ComponentType<any>> = {
   
   // [일정]
   '/schedule/dashboard': ScheduleDashboard,
+  '/schedule/work-board': ScheduleWorkBoard,
 
   // [마케팅]
   '/marketing/dashboard': MarketingDashboard,
