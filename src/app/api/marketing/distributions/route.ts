@@ -241,7 +241,7 @@ export async function GET(req: Request) {
         },
       ];
     } else if (clientId) {
-      // 고객사 이력(client-search): 팀 간 중복지급 확인용 — 전사 이력, 신청부서 스코프 없음
+      // 고객사 기준 지급 이력: 팀 간 중복지급 확인용 — 전사 이력, 신청부서 스코프 없음
     } else {
       if (senderEmail) {
         whereClause.sender_email = { equals: senderEmail, mode: 'insensitive' };

@@ -5,6 +5,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { getKSTDateString } from '@/utils/dateUtils';
 import LoadingState from '@/components/common/LoadingState';
+import DeptAssigneeLine, { useDeptAssignees } from '@/components/common/DeptAssigneeLine';
 import { getProductionCategoryFolderTabClasses } from '@/lib/production-category-theme';
 import { resolveInterfaceEditState, isSystemLv1User } from '@/lib/permission-utils';
 import { isSeedPlateCode } from '@/lib/production-seed-plates';
@@ -20,6 +21,12 @@ import {
   PRODUCTION_MY_ORDERS_TABS,
   useInterfaceStepTabs,
 } from '@/lib/interface-step-tabs';
+import * as XLSX from 'xlsx';
+import {
+  parseOfficeQuoteFromWorkbook,
+  serializeOfficeQuoteLinesToRawText,
+  type OfficeQuoteLine,
+} from '@/lib/production-office-statement-match';
 
 const MENU_PATH = '/production/custom/my-orders/request';
 
@@ -138,6 +145,7 @@ export default function ProductionApplyForm() {
     [currentUser, interfaceConfig]
   );
   const canEdit = editState.isEditor;
+  const { editorNames } = useDeptAssignees(MENU_PATH);
   /** 시드 삭제(LV_1) — 시스템 역할 LV_1만 (메뉴 Master 제외) */
   const canDeleteLv1Cert = useMemo(() => {
     const roles = Array.isArray(currentUser?.roles) ? currentUser.roles : [];
@@ -381,7 +389,8 @@ const [signData, setSignData] = useState({
   printUnitValue: 'VAL_1', // 기타제작 신청 수량 단위 (unit_category_group) 
   
   // 사무문구류 텍스트 보관 그릇
-  suppliesQuoteRawText: '', 
+  suppliesQuoteRawText: '',
+  suppliesQuoteLines: [] as OfficeQuoteLine[],
 });
 
   /** 관리용 제목을 직접 고치면 true — false면 「제목 자동 생성」과 동일하게 소스 필드에 맞춰 유지 */
@@ -394,7 +403,73 @@ const [signData, setSignData] = useState({
 
   /** 사무문구 — 드림디포 견적서 첨부 (1·2 사이) */
   const [suppliesQuoteFile, setSuppliesQuoteFile] = useState<File | null>(null);
+  const [suppliesQuoteKind, setSuppliesQuoteKind] = useState<'excel' | 'pdf'>('excel');
+  const [suppliesQuoteParseError, setSuppliesQuoteParseError] = useState('');
+  const [suppliesQuoteParsing, setSuppliesQuoteParsing] = useState(false);
   const suppliesQuoteFileInputRef = useRef<HTMLInputElement>(null);
+
+  const isExcelQuoteFile = (file: File) => /\.(xls|xlsx)$/i.test(file.name);
+  const isPdfQuoteFile = (file: File) => /\.pdf$/i.test(file.name);
+
+  const applyParsedQuoteLines = (lines: OfficeQuoteLine[]) => {
+    setSignData((prev) => ({
+      ...prev,
+      suppliesQuoteLines: lines,
+      suppliesQuoteRawText: serializeOfficeQuoteLinesToRawText(lines),
+    }));
+  };
+
+  const clearParsedQuoteLines = () => {
+    setSuppliesQuoteParseError('');
+    setSignData((prev) => ({ ...prev, suppliesQuoteRawText: '', suppliesQuoteLines: [] }));
+  };
+
+  const parseExcelQuoteFile = async (file: File) => {
+    setSuppliesQuoteParsing(true);
+    setSuppliesQuoteParseError('');
+    try {
+      const buf = await file.arrayBuffer();
+      const wb = XLSX.read(buf, { type: 'array', cellDates: true });
+      const lines = parseOfficeQuoteFromWorkbook(wb, (sheet) =>
+        XLSX.utils.sheet_to_json(sheet as XLSX.WorkSheet, {
+          header: 1,
+          raw: true,
+          defval: '',
+        }) as unknown[][]
+      );
+      if (lines.length === 0) {
+        clearParsedQuoteLines();
+        setSuppliesQuoteParseError(
+          '견적 품목(번호·제품명·수량)을 읽지 못했습니다. 드림디포 [엑셀다운로드] 파일을 그대로 첨부해 주세요.'
+        );
+        return;
+      }
+      applyParsedQuoteLines(lines);
+    } catch {
+      clearParsedQuoteLines();
+      setSuppliesQuoteParseError('엑셀 견적서를 열지 못했습니다. 파일이 손상되지 않았는지 확인해 주세요.');
+    } finally {
+      setSuppliesQuoteParsing(false);
+    }
+  };
+
+  const handleSuppliesQuoteKind = (kind: 'excel' | 'pdf') => {
+    setSuppliesQuoteKind(kind);
+    const keep =
+      suppliesQuoteFile &&
+      (kind === 'excel' ? isExcelQuoteFile(suppliesQuoteFile) : isPdfQuoteFile(suppliesQuoteFile));
+    if (!keep) {
+      setSuppliesQuoteFile(null);
+      setSuppliesQuoteParseError('');
+      if (suppliesQuoteFileInputRef.current) suppliesQuoteFileInputRef.current.value = '';
+    }
+    if (kind === 'excel') {
+      setSignData((prev) => ({ ...prev, suppliesQuoteRawText: '', suppliesQuoteLines: [] }));
+      if (keep && suppliesQuoteFile) void parseExcelQuoteFile(suppliesQuoteFile);
+    } else {
+      setSignData((prev) => ({ ...prev, suppliesQuoteLines: [] }));
+    }
+  };
 
   // /api/auth/me + interface 권한 칩
   useEffect(() => {
@@ -1161,12 +1236,13 @@ const formattedValidPeriod = useMemo(() => {
     () => ({
       certType: 1,
       certPhase: 2,
-      size: 3,
-      cover: 4,
-      inner: 5,
-      building: 6,
-      coverDate: 7,
+      building: 3,
+      coverDate: 4,
+      size: 5,
+      cover: 6,
+      inner: 7,
       customRequest: 8,
+      formTitle: 9,
     }),
     []
   );
@@ -1177,6 +1253,14 @@ const formattedValidPeriod = useMemo(() => {
     if (activeTab === 'PRINT') return 4;
     return 7;
   }, [activeTab, jebonFormSteps.customRequest]);
+
+  /** 현판·제본·기타제작: 관리용 제목은 추가변수 아래 */
+  const formTitleStepNumber = useMemo(() => {
+    if (activeTab === 'SIGN') return 8;
+    if (activeTab === 'JEBON') return jebonFormSteps.formTitle;
+    if (activeTab === 'PRINT') return 5;
+    return null;
+  }, [activeTab, jebonFormSteps.formTitle]);
 
   const printItemReferenceText = (item: {
     size: string;
@@ -1777,8 +1861,33 @@ if (activeTab === 'SIGN') {
   } else if (activeTab === 'OFFICE_SUPPLIES') {
     // 📎 사무문구는 기존에 정리된 suppliesProjectName을 그대로 검사합니다.
     if (!signData.suppliesProjectName.trim()) return alert("관리용 제목을 입력해 주세요.");
-    if (!suppliesQuoteFile) return alert('드림디포 견적서 파일(Excel / PDF)을 첨부해 주세요.');
-    if (!signData.suppliesQuoteRawText.trim()) return alert("견적서 텍스트 내용을 붙여넣어 주세요.");
+    if (!suppliesQuoteFile) {
+      return alert(
+        suppliesQuoteKind === 'pdf'
+          ? '드림디포 PDF 견적서 파일을 첨부해 주세요.'
+          : '드림디포 엑셀 견적서 파일을 첨부해 주세요.'
+      );
+    }
+    if (suppliesQuoteKind === 'excel' && !isExcelQuoteFile(suppliesQuoteFile)) {
+      return alert('엑셀 견적서(.xls, .xlsx) 파일을 첨부해 주세요.');
+    }
+    if (suppliesQuoteKind === 'pdf' && !isPdfQuoteFile(suppliesQuoteFile)) {
+      return alert('PDF 견적서 파일을 첨부해 주세요.');
+    }
+    if (suppliesQuoteKind === 'pdf' && !signData.suppliesQuoteRawText.trim()) {
+      return alert('PDF 견적서 텍스트 내용을 붙여넣어 주세요.');
+    }
+    if (suppliesQuoteKind === 'excel') {
+      if (suppliesQuoteParsing) {
+        return alert('엑셀 견적서 품목을 읽는 중입니다. 잠시 후 다시 신청해 주세요.');
+      }
+      if (!Array.isArray(signData.suppliesQuoteLines) || signData.suppliesQuoteLines.length === 0) {
+        return alert(
+          suppliesQuoteParseError ||
+            '엑셀 견적서에서 품목을 읽지 못했습니다. 드림디포 [엑셀다운로드] 파일을 그대로 첨부해 주세요.'
+        );
+      }
+    }
   }
 
 // [가드 3] 실배송지 및 수량 필수 검사
@@ -1838,6 +1947,7 @@ if (activeTab === 'SIGN') {
               companyAddresses.find((a) => a.id === selectedCompanyAddressId)?.label || '',
           }),
       deliveryMode,
+      suppliesQuoteKind,
       jebonBatchShipping: deliveryMode === 'HQ_RECEIVE',
       isoCompanyName: signData.isoCompanyName, // 👈 백엔드로 데이터 무사히 넘기기 위해 추가
       vendor: selectedVendorInfo ? selectedVendorInfo.label : signData.vendor,
@@ -2110,30 +2220,24 @@ return (
               신청 내용
             </div>
 
-{/* 🔥 현판(SIGN) 탭일 때만 보이는 영역 */}
+{/* 🔥 현판 — 노란 신청 내용 안에 필드만 (안쪽 박스 없음) */}
 {activeTab === 'SIGN' && (
               <div className="space-y-6 animate-fade-in pt-2">
-
-                <div className="p-6 bg-white rounded-2xl border border-blue-200 space-y-6 shadow-sm">
-
-                  {/* 프로세스 안내 */}
-                  <div className="border-b border-blue-100 pb-4">
-                    <p className="text-xs font-medium text-blue-800 leading-relaxed">
-                      드롭다운 서식은 설정 탭 활용 / 발주서만 신청됨 / 첨부파일은 부서 NAS 활용하여 별첨 (파일명은 관리용 제목설정과 일치 권장)
-                    </p>
-                  </div>
+                  <p className="text-xs font-medium text-slate-700 leading-relaxed">
+                    그룹웨어 결재 필요시 승인 후 신청 / 첨부파일은 NAS 활용 별첨 (파일명 관리용 제목 설정과 일치 권장)
+                  </p>
 
                   {/* 1~3: 인증 종류 | 등급 | 현판 품목 | 품목 요약 — 한 줄 */}
                   <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 items-start">
                     <div className="min-w-0">
-                      <label className="block text-[10px] font-medium text-slate-500 tracking-widest uppercase mb-2">1. 인증의 종류 <span className="text-red-500">*</span></label>
+                      <label className="block text-sm font-semibold text-slate-900 mb-2">1. 인증의 종류 <span className="text-red-500">*</span></label>
                       <select value={signData.certType} onChange={(e) => setSignData({ ...signData, certType: e.target.value, certLevel: '' })} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-3 text-xs font-medium focus:ring-2 focus:ring-blue-500 outline-none cursor-pointer hover:bg-white">
                         {signCertMasterList.map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
                       </select>
                     </div>
 
                     <div className="min-w-0">
-                      <label className="block text-[10px] font-medium text-slate-500 tracking-widest uppercase mb-2">2. 인증 등급/종류 설정 <span className="text-red-500">*</span></label>
+                      <label className="block text-sm font-semibold text-slate-900 mb-2">2. 인증 등급/종류 설정 <span className="text-red-500">*</span></label>
 
                       {useMultiGradeField ? (
                         <div className="relative" ref={gradeMultiRef}>
@@ -2229,7 +2333,7 @@ return (
                     </div>
 
                     <div className="min-w-0">
-                      <label className="block text-[10px] font-medium text-slate-500 tracking-widest uppercase mb-2">
+                      <label className="block text-sm font-semibold text-slate-900 mb-2">
                         3. 현판 품목 설정 <span className="text-red-500">*</span>
                       </label>
                       {availableSignPlates.length === 0 ? (
@@ -2285,10 +2389,10 @@ return (
                   </div>
 
                   {/* 4 · 5 · 6 · 미리보기 — 한 줄(4열) */}
-                  <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 items-start border-t border-slate-100 pt-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 items-start border-t border-slate-200/80 pt-4">
                     <div className="min-w-0">
                       <label
-                        className="block text-[10px] font-medium text-slate-500 tracking-tight mb-2 leading-snug"
+                        className="block text-sm font-semibold text-slate-900 mb-2 leading-snug"
                         title="4. 프로젝트명/건물명/경영시스템인증 조직명"
                       >
                         4. 프로젝트명/건물명/경영시스템인증 조직명{' '}
@@ -2318,7 +2422,7 @@ return (
                     </div>
                     <div className="min-w-0">
                       <label
-                        className="block text-[10px] font-medium text-slate-500 tracking-tight mb-2 leading-snug"
+                        className="block text-sm font-semibold text-slate-900 mb-2 leading-snug"
                         title={
                           !useCertNumberField
                             ? '5. 인증번호 (설정에 비활성화로 입력 불가)'
@@ -2327,7 +2431,7 @@ return (
                       >
                         5. 인증번호{' '}
                         {!useCertNumberField ? (
-                          <span className="text-red-500 font-medium">(설정에 비활성화로 입력 불가)</span>
+                          <span className="text-red-500 font-medium text-xs">(설정에 비활성화로 입력 불가)</span>
                         ) : null}
                       </label>
                       <input
@@ -2350,12 +2454,12 @@ return (
                       />
                     </div>
                     <div className="min-w-0">
-                      <label className="block text-[10px] font-medium text-slate-500 tracking-tight mb-2 leading-snug">
+                      <label className="block text-sm font-semibold text-slate-900 mb-2 leading-snug">
                         6. 현판 유효기간 (숫자 연속 입력){' '}
                         {!useValidPeriodField ? (
-                          <span className="text-red-500 font-medium">(설정에 비활성화로 입력 불가)</span>
+                          <span className="text-red-500 font-medium text-xs">(설정에 비활성화로 입력 불가)</span>
                         ) : (
-                          <span className="text-slate-400 font-medium">(선택)</span>
+                          <span className="text-slate-400 font-medium text-xs">(선택)</span>
                         )}
                       </label>
                       <input
@@ -2382,7 +2486,7 @@ return (
                       />
                     </div>
                     <div className="min-w-0">
-                      <label className="block text-[10px] font-medium text-slate-500 tracking-tight mb-2 leading-snug whitespace-nowrap">
+                      <label className="block text-sm font-semibold text-slate-900 mb-2 leading-snug whitespace-nowrap">
                         출력 양식 미리보기
                       </label>
                       <div
@@ -2406,26 +2510,20 @@ return (
                       </div>
                     </div>
                   </div>
-                </div>
               </div>
             )}
 
-            {/* 🔥 2. 제본(JEBON) 탭 뷰 */}
+            {/* 🔥 2. 제본 — 노란 신청 내용 안에 필드만 (안쪽 박스 없음) */}
             {activeTab === 'JEBON' && (
               <div className="space-y-6 animate-fade-in pt-2">
-              <div className="p-6 bg-white rounded-2xl border border-blue-200 space-y-6 shadow-sm">
+                <p className="text-xs font-medium text-slate-700 leading-relaxed">
+                  그룹웨어 결재 필요시 승인 후 신청 / 첨부파일은 NAS 활용 별첨 (파일명 관리용 제목 설정과 일치 권장)
+                </p>
 
-                {/* 프로세스 안내 */}
-                <div className="border-b border-blue-100 pb-4">
-                  <p className="text-xs font-medium text-blue-800 leading-relaxed">
-                    드롭다운 서식은 설정 탭 활용 / 발주서만 신청됨 / 첨부파일은 부서 NAS 활용하여 별첨 (파일명은 관리용 제목설정과 일치 권장)
-                  </p>
-                </div>
-
-                {/* 🚀 3번: 제본 종류 (판형·표지·본문보다 먼저) */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                {/* 🚀 1·2: 제본 종류 / 인증 단계 */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
-                    <label className="block text-[10px] font-medium text-slate-500 tracking-widest uppercase mb-2">
+                    <label className="block text-sm font-semibold text-slate-900 mb-2">
                       {jebonFormSteps.certType}. 제본 종류 선택 <span className="text-red-500">*</span>
                     </label>
                     <select
@@ -2444,7 +2542,7 @@ return (
                     </select>
                   </div>
                   <div className="animate-fade-in">
-                      <label className="block text-[10px] font-medium text-slate-500 tracking-widest uppercase mb-2">
+                      <label className="block text-sm font-semibold text-slate-900 mb-2">
                         {jebonFormSteps.certPhase}. 인증의 단계 <span className="text-red-500">*</span>
                       </label>
                       <select
@@ -2459,210 +2557,12 @@ return (
                     </div>
                 </div>
 
-                {/* 🚀 1·2·3: 판형 / 표지 / 본문 — 한 줄 */}
-                <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-                  {/* 1. 제본 판형 */}
-                  <div className="bg-slate-50/50 p-4 rounded-2xl border border-slate-200 shadow-sm space-y-3">
-                    <label className="block text-[10px] font-medium text-slate-500 tracking-widest uppercase">
-                      <span className="flex items-center gap-2">
-                        <span>📏</span> {jebonFormSteps.size}. 제본 판형 지정{' '}
-                        <span className="text-red-500">*</span>
-                      </span>
-                    </label>
-                    <select
-                      value={signData.jebonSizeType || jebonSizeMasterList[0]?.code || 'A4'}
-                      onChange={(e) => {
-                        const selectedType = e.target.value;
-                        setSignData({
-                          ...signData,
-                          jebonSizeType: selectedType,
-                          jebonSize: resolveJebonSizeSpec(selectedType, jebonSizeMasterList),
-                        });
-                      }}
-                      className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2.5 text-xs font-medium text-slate-700 focus:ring-2 focus:ring-blue-500 outline-none cursor-pointer"
-                    >
-                      {jebonSizeMasterList.map((opt) => (
-                        <option key={opt.code} value={opt.code}>
-                          {formatJebonSizeSelectLabel(opt)}
-                        </option>
-                      ))}
-                    </select>
-                    {isJebonCustomSizeCode(signData.jebonSizeType) ? (
-                      <input
-                        type="text"
-                        placeholder="예: A3 (297 x 420mm)"
-                        value={signData.jebonSize || ''}
-                        onChange={(e) => setSignData({ ...signData, jebonSize: e.target.value })}
-                        className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-medium outline-none text-slate-800 focus:ring-2 focus:ring-blue-500"
-                      />
-                    ) : (
-                      <div className="w-full bg-slate-100/80 border border-slate-200 rounded-xl px-3 py-2 text-xs font-medium text-slate-500 flex items-center justify-between">
-                        <span className="text-slate-700">{signData.jebonSize || 'A4'}</span>
-                        <span className="text-[10px] text-slate-400 font-medium">✔️ 자동</span>
-                      </div>
-                    )}
-                  </div>
+                <div className="border-t border-slate-200/80" aria-hidden />
 
-                  {/* 2. 표지 Cover */}
-                  <div
-                    className={`p-4 rounded-2xl border space-y-3 ${
-                      useJebonCoverField
-                        ? 'bg-slate-50/50 border-slate-200'
-                        : 'bg-slate-100/80 border-slate-200 opacity-80'
-                    }`}
-                  >
-                    <h4 className="text-[10px] font-medium text-slate-500 tracking-widest uppercase flex items-center gap-2 flex-wrap">
-                      <span>📘</span> {jebonFormSteps.cover}. 표지 (Cover) 스펙{' '}
-                      {useJebonCoverField ? (
-                        <span className="text-red-500">*</span>
-                      ) : (
-                        <span className="text-red-500 font-medium">(설정에 비활성화로 입력 불가)</span>
-                      )}
-                    </h4>
-                    <div className="grid grid-cols-2 gap-3">
-                      <div>
-                        <label className="block text-[10px] font-medium text-slate-500 tracking-widest uppercase mb-1.5">
-                          인쇄 방식
-                        </label>
-                        <select
-                          value={useJebonCoverField ? signData.coverColor : ''}
-                          onChange={(e) => setSignData({ ...signData, coverColor: e.target.value })}
-                          disabled={!useJebonCoverField}
-                          className={`w-full border rounded-xl px-3 py-2.5 text-xs outline-none ${
-                            useJebonCoverField
-                              ? 'bg-white border-slate-200 font-medium text-slate-700 cursor-pointer focus:ring-2 focus:ring-blue-500'
-                              : 'bg-slate-100 border-slate-200 font-medium text-slate-400 cursor-not-allowed'
-                          }`}
-                        >
-                          {useJebonCoverField ? (
-                            <>
-                              <option value="컬러">컬러 인쇄</option>
-                              <option value="흑백">흑백 인쇄</option>
-                            </>
-                          ) : (
-                            <option value="">입력 비활성</option>
-                          )}
-                        </select>
-                      </div>
-                      <div>
-                        <label className="block text-[10px] font-medium text-slate-500 tracking-widest mb-1.5 leading-snug">
-                          면수{' '}
-                          <span className="font-medium normal-case tracking-normal text-slate-400">
-                            (ex. PDF 페이지 쪽수)
-                          </span>
-                        </label>
-                        <input
-                          type="number"
-                          value={
-                            useJebonCoverField && !signData.coverPageFromAttachment
-                              ? signData.coverPageCount || ''
-                              : ''
-                          }
-                          onChange={(e) =>
-                            setSignData({
-                              ...signData,
-                              coverPageCount: e.target.value,
-                              coverPageFromAttachment: false,
-                            })
-                          }
-                          disabled={!useJebonCoverField || signData.coverPageFromAttachment}
-                          className={`w-full border rounded-xl px-3 py-2.5 text-xs font-medium outline-none text-right ${
-                            useJebonCoverField && !signData.coverPageFromAttachment
-                              ? 'bg-white border-slate-200 focus:ring-2 focus:ring-blue-500'
-                              : 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'
-                          }`}
-                        />
-                        {useJebonCoverField && (
-                          <label className="flex items-center gap-2 mt-2 cursor-pointer select-none">
-                            <input
-                              type="checkbox"
-                              checked={signData.coverPageFromAttachment}
-                              onChange={(e) => {
-                                const checked = e.target.checked;
-                                setSignData({
-                                  ...signData,
-                                  coverPageFromAttachment: checked,
-                                  coverPageCount: checked ? '' : signData.coverPageCount,
-                                });
-                              }}
-                              className="w-3.5 h-3.5 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
-                            />
-                            <span className="text-[10px] font-medium text-slate-500">면수는 첨부파일에 따름</span>
-                          </label>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* 3. 본문 Inner */}
-                  <div className="bg-slate-50/50 p-4 rounded-2xl border border-slate-200 space-y-3">
-                    <h4 className="text-[10px] font-medium text-slate-500 tracking-widest uppercase flex items-center gap-2">
-                      <span>📄</span> {jebonFormSteps.inner}. 본문 (Inner) 스펙{' '}
-                      <span className="text-red-500">*</span>
-                    </h4>
-                    <div className="grid grid-cols-2 gap-3">
-                      <div>
-                        <label className="block text-[10px] font-medium text-slate-500 tracking-widest uppercase mb-1.5">
-                          인쇄 방식
-                        </label>
-                        <select
-                          value={signData.innerColor}
-                          onChange={(e) => setSignData({ ...signData, innerColor: e.target.value })}
-                          className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2.5 text-xs font-medium text-slate-700 focus:ring-2 focus:ring-blue-500 outline-none cursor-pointer"
-                        >
-                          <option value="흑백">흑백 인쇄</option>
-                          <option value="컬러">컬러 인쇄</option>
-                        </select>
-                      </div>
-                      <div>
-                        <label className="block text-[10px] font-medium text-slate-500 tracking-widest mb-1.5 leading-snug">
-                          면수{' '}
-                          <span className="font-medium normal-case tracking-normal text-slate-400">
-                            (ex. PDF 페이지 쪽수)
-                          </span>
-                        </label>
-                        <input
-                          type="number"
-                          value={signData.innerPageFromAttachment ? '' : signData.innerPageCount || ''}
-                          onChange={(e) =>
-                            setSignData({
-                              ...signData,
-                              innerPageCount: e.target.value,
-                              innerPageFromAttachment: false,
-                            })
-                          }
-                          disabled={signData.innerPageFromAttachment}
-                          className={`w-full border rounded-xl px-3 py-2.5 text-xs font-medium outline-none text-right ${
-                            signData.innerPageFromAttachment
-                              ? 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'
-                              : 'bg-white border-slate-200 focus:ring-2 focus:ring-blue-500'
-                          }`}
-                        />
-                        <label className="flex items-center gap-2 mt-2 cursor-pointer select-none">
-                          <input
-                            type="checkbox"
-                            checked={signData.innerPageFromAttachment}
-                            onChange={(e) => {
-                              const checked = e.target.checked;
-                              setSignData({
-                                ...signData,
-                                innerPageFromAttachment: checked,
-                                innerPageCount: checked ? '' : signData.innerPageCount,
-                              });
-                            }}
-                            className="w-3.5 h-3.5 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
-                          />
-                          <span className="text-[10px] font-medium text-slate-500">면수는 첨부파일에 따름</span>
-                        </label>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                {/* 프로젝트명 · 표지 일자 · 미리보기 — 한 줄(3열) */}
-                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 items-start border-t border-slate-100 pt-4">
+                {/* 🚀 3·4: 3=1과 동일 너비 / 4·미리보기=2 자리를 반반 */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">
                   <div className="min-w-0">
-                    <label className="block text-[10px] font-medium text-slate-500 tracking-tight mb-2 leading-snug">
+                    <label className="block text-sm font-semibold text-slate-900 mb-2 leading-snug">
                       {jebonFormSteps.building}. 프로젝트명/건물명/표지제목
                     </label>
                     <input
@@ -2679,110 +2579,282 @@ return (
                       className="w-full bg-white border border-slate-200 rounded-xl px-3 py-3 text-xs font-medium focus:ring-2 focus:ring-blue-500 outline-none"
                     />
                   </div>
-                  <div className="min-w-0">
-                    <div className="flex items-center justify-between gap-2 mb-2">
-                      <label className="block text-[10px] font-medium text-slate-500 tracking-tight leading-snug min-w-0">
-                        {jebonFormSteps.coverDate}. 표지 일자(인증 완료일 등){' '}
-                        <span className="text-slate-400 font-medium">(선택)</span>
-                      </label>
-                      {isNormalJebon && (
-                        <button
-                          type="button"
-                          role="switch"
-                          aria-checked={jebonCoverDateLocalOn}
-                          title={
-                            jebonCoverDateLocalOn
-                              ? '표지 일자 사용 중 (클릭 시 미사용)'
-                              : '표지 일자 미사용 (클릭 시 사용)'
-                          }
-                          onClick={() => {
-                            setJebonCoverDateLocalOn((on) => {
-                              if (on) {
-                                setSignData((prev) => ({ ...prev, compDateRaw: '' }));
-                              }
-                              return !on;
-                            });
-                          }}
-                          className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors ${
-                            jebonCoverDateLocalOn ? 'bg-blue-600' : 'bg-slate-300'
-                          }`}
-                        >
-                          <span
-                            className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform ${
-                              jebonCoverDateLocalOn ? 'translate-x-4' : 'translate-x-1'
+                  <div className="min-w-0 grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div className="min-w-0">
+                      <div className="flex items-center justify-between gap-2 mb-2">
+                        <label className="block text-sm font-semibold text-slate-900 leading-snug min-w-0">
+                          {jebonFormSteps.coverDate}. 표지 일자{' '}
+                          <span className="text-slate-400 font-medium text-xs">(선택)</span>
+                        </label>
+                        {isNormalJebon && (
+                          <button
+                            type="button"
+                            role="switch"
+                            aria-checked={jebonCoverDateLocalOn}
+                            title={
+                              jebonCoverDateLocalOn
+                                ? '표지 일자 사용 중 (클릭 시 미사용)'
+                                : '표지 일자 미사용 (클릭 시 사용)'
+                            }
+                            onClick={() => {
+                              setJebonCoverDateLocalOn((on) => {
+                                if (on) {
+                                  setSignData((prev) => ({ ...prev, compDateRaw: '' }));
+                                }
+                                return !on;
+                              });
+                            }}
+                            className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors ${
+                              jebonCoverDateLocalOn ? 'bg-blue-600' : 'bg-slate-300'
                             }`}
-                          />
-                          <span className="sr-only">표지 일자 사용</span>
-                        </button>
+                          >
+                            <span
+                              className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform ${
+                                jebonCoverDateLocalOn ? 'translate-x-4' : 'translate-x-1'
+                              }`}
+                            />
+                            <span className="sr-only">표지 일자 사용</span>
+                          </button>
+                        )}
+                      </div>
+                      <input
+                        type="date"
+                        value={signData.compDateRaw || ''}
+                        disabled={!useJebonCoverDateField}
+                        title={
+                          !useJebonCoverDateField
+                            ? isNormalJebon
+                              ? '표지 일자 미사용 — 오른쪽 스위치로 켤 수 있습니다'
+                              : '인증별 제본 서식 설정에서 표지 일자가 비활성화되어 있습니다'
+                            : undefined
+                        }
+                        onChange={(e) => setSignData({ ...signData, compDateRaw: e.target.value })}
+                        className={`w-full border rounded-xl px-3 py-3 text-xs font-medium outline-none transition-all ${
+                          useJebonCoverDateField
+                            ? 'bg-white border-slate-200 text-slate-800 focus:ring-2 focus:ring-blue-500 cursor-pointer'
+                            : 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'
+                        }`}
+                      />
+                      {isNormalJebon && (
+                        <p className="mt-1 text-[9px] font-medium text-slate-400">
+                          {jebonCoverDateLocalOn
+                            ? '이번 신청에 표지 일자를 사용합니다'
+                            : '이번 신청에서 표지 일자를 제외합니다 (마스터 설정은 변경되지 않음)'}
+                        </p>
                       )}
                     </div>
-                    <input
-                      type="date"
-                      value={signData.compDateRaw || ''}
-                      disabled={!useJebonCoverDateField}
-                      title={
-                        !useJebonCoverDateField
-                          ? isNormalJebon
-                            ? '표지 일자 미사용 — 오른쪽 스위치로 켤 수 있습니다'
-                            : '인증별 제본 서식 설정에서 표지 일자가 비활성화되어 있습니다'
-                          : undefined
-                      }
-                      onChange={(e) => setSignData({ ...signData, compDateRaw: e.target.value })}
-                      className={`w-full border rounded-xl px-3 py-3 text-xs font-medium outline-none transition-all ${
-                        useJebonCoverDateField
-                          ? 'bg-white border-slate-200 text-slate-800 focus:ring-2 focus:ring-blue-500 cursor-pointer'
-                          : 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'
-                      }`}
-                    />
-                    {isNormalJebon && (
-                      <p className="mt-1 text-[9px] font-medium text-slate-400">
-                        {jebonCoverDateLocalOn
-                          ? '이번 신청에 표지 일자를 사용합니다'
-                          : '이번 신청에서 표지 일자를 제외합니다 (마스터 설정은 변경되지 않음)'}
-                      </p>
-                    )}
-                  </div>
-                  <div className="min-w-0 self-start">
-                    <label className="block text-[10px] font-medium text-slate-500 tracking-tight mb-2 leading-snug whitespace-nowrap">
-                      출력 양식 미리보기
-                    </label>
-                    <div className="w-full min-h-[46px] flex items-center px-3 py-3 rounded-xl border text-xs font-mono font-medium tracking-wider bg-yellow-100/50 border-yellow-200 shadow-inner">
-                      <span className="truncate">
-                        {!useJebonCoverDateField ? (
-                          <span className="text-slate-400 font-medium">표지 일자 미적용</span>
-                        ) : formattedCompDate ? (
-                          formattedCompDate
-                        ) : (
-                          <span className="text-yellow-600/60 font-medium">
-                            달력 선택 시 실시간 반영
-                          </span>
-                        )}
-                      </span>
+                    <div className="min-w-0 self-start">
+                      <label className="block text-sm font-semibold text-slate-900 mb-2 leading-snug whitespace-nowrap">
+                        출력 양식 미리보기
+                      </label>
+                      <div className="w-full min-h-[46px] flex items-center px-3 py-3 rounded-xl border text-xs font-mono font-medium tracking-wider bg-yellow-100/50 border-yellow-200 shadow-inner">
+                        <span className="truncate">
+                          {!useJebonCoverDateField ? (
+                            <span className="text-slate-400 font-medium">표지 일자 미적용</span>
+                          ) : formattedCompDate ? (
+                            formattedCompDate
+                          ) : (
+                            <span className="text-yellow-600/60 font-medium">
+                              달력 선택 시 실시간 반영
+                            </span>
+                          )}
+                        </span>
+                      </div>
                     </div>
                   </div>
                 </div>
+
+                <div className="border-t border-slate-200/80" aria-hidden />
+
+                {/* 🚀 5·6·7: 5=1·3과 동일 너비 / 6·7=2 자리 반반 */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-center">
+                  <div className="min-w-0 flex items-center gap-2">
+                    <label className="shrink-0 text-sm font-semibold text-slate-900 whitespace-nowrap">
+                      {jebonFormSteps.size}. 판형 <span className="text-red-500">*</span>
+                    </label>
+                    <select
+                      value={signData.jebonSizeType || jebonSizeMasterList[0]?.code || 'A4'}
+                      onChange={(e) => {
+                        const selectedType = e.target.value;
+                        setSignData({
+                          ...signData,
+                          jebonSizeType: selectedType,
+                          jebonSize: resolveJebonSizeSpec(selectedType, jebonSizeMasterList),
+                        });
+                      }}
+                      className="min-w-0 flex-1 bg-white border border-slate-200 rounded-lg px-2 py-2 text-xs font-medium text-slate-700 focus:ring-2 focus:ring-blue-500 outline-none cursor-pointer"
+                    >
+                      {jebonSizeMasterList.map((opt) => (
+                        <option key={opt.code} value={opt.code}>
+                          {formatJebonSizeSelectLabel(opt)}
+                        </option>
+                      ))}
+                    </select>
+                    {isJebonCustomSizeCode(signData.jebonSizeType) ? (
+                      <input
+                        type="text"
+                        placeholder="규격"
+                        value={signData.jebonSize || ''}
+                        onChange={(e) => setSignData({ ...signData, jebonSize: e.target.value })}
+                        className="w-24 shrink-0 bg-white border border-slate-200 rounded-lg px-2 py-2 text-xs font-medium outline-none focus:ring-2 focus:ring-blue-500"
+                      />
+                    ) : (
+                      <span
+                        className="shrink-0 text-[10px] font-medium text-slate-400 whitespace-nowrap max-w-[5.5rem] truncate"
+                        title={signData.jebonSize || ''}
+                      >
+                        {signData.jebonSize || ''}
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="min-w-0 grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div className={`min-w-0 flex flex-wrap items-center gap-1.5 ${useJebonCoverField ? '' : 'opacity-60'}`}>
+                      <span className="shrink-0 text-sm font-semibold text-slate-900 whitespace-nowrap">
+                        {jebonFormSteps.cover}. 표지{' '}
+                        {useJebonCoverField ? (
+                          <span className="text-red-500">*</span>
+                        ) : (
+                          <span className="text-red-500 text-[10px]">비활성</span>
+                        )}
+                      </span>
+                      <select
+                        value={useJebonCoverField ? signData.coverColor : ''}
+                        onChange={(e) => setSignData({ ...signData, coverColor: e.target.value })}
+                        disabled={!useJebonCoverField}
+                        title="인쇄 방식"
+                        className={`w-[4.5rem] shrink-0 border rounded-lg px-1.5 py-2 text-xs outline-none ${
+                          useJebonCoverField
+                            ? 'bg-white border-slate-200 font-medium text-slate-700 cursor-pointer focus:ring-2 focus:ring-blue-500'
+                            : 'bg-slate-100 border-slate-200 font-medium text-slate-400 cursor-not-allowed'
+                        }`}
+                      >
+                        {useJebonCoverField ? (
+                          <>
+                            <option value="컬러">컬러</option>
+                            <option value="흑백">흑백</option>
+                          </>
+                        ) : (
+                          <option value="">—</option>
+                        )}
+                      </select>
+                      <input
+                        type="number"
+                        placeholder="면수"
+                        title="면수 (PDF 쪽수)"
+                        value={
+                          useJebonCoverField && !signData.coverPageFromAttachment
+                            ? signData.coverPageCount || ''
+                            : ''
+                        }
+                        onChange={(e) =>
+                          setSignData({
+                            ...signData,
+                            coverPageCount: e.target.value,
+                            coverPageFromAttachment: false,
+                          })
+                        }
+                        disabled={!useJebonCoverField || signData.coverPageFromAttachment}
+                        className={`w-14 shrink-0 border rounded-lg px-1.5 py-2 text-xs font-medium outline-none text-right ${
+                          useJebonCoverField && !signData.coverPageFromAttachment
+                            ? 'bg-white border-slate-200 focus:ring-2 focus:ring-blue-500'
+                            : 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'
+                        }`}
+                      />
+                      {useJebonCoverField && (
+                        <label
+                          className="inline-flex items-center gap-0.5 cursor-pointer select-none shrink-0"
+                          title="면수는 첨부파일에 따름"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={signData.coverPageFromAttachment}
+                            onChange={(e) => {
+                              const checked = e.target.checked;
+                              setSignData({
+                                ...signData,
+                                coverPageFromAttachment: checked,
+                                coverPageCount: checked ? '' : signData.coverPageCount,
+                              });
+                            }}
+                            className="w-3.5 h-3.5 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                          />
+                          <span className="text-[10px] font-medium text-slate-500">첨부파일에 따름</span>
+                        </label>
+                      )}
+                    </div>
+
+                    <div className="min-w-0 flex flex-wrap items-center gap-1.5">
+                      <span className="shrink-0 text-sm font-semibold text-slate-900 whitespace-nowrap">
+                        {jebonFormSteps.inner}. 본문 <span className="text-red-500">*</span>
+                      </span>
+                      <select
+                        value={signData.innerColor}
+                        onChange={(e) => setSignData({ ...signData, innerColor: e.target.value })}
+                        title="인쇄 방식"
+                        className="w-[4.5rem] shrink-0 bg-white border border-slate-200 rounded-lg px-1.5 py-2 text-xs font-medium text-slate-700 focus:ring-2 focus:ring-blue-500 outline-none cursor-pointer"
+                      >
+                        <option value="흑백">흑백</option>
+                        <option value="컬러">컬러</option>
+                      </select>
+                      <input
+                        type="number"
+                        placeholder="면수"
+                        title="면수 (PDF 쪽수)"
+                        value={signData.innerPageFromAttachment ? '' : signData.innerPageCount || ''}
+                        onChange={(e) =>
+                          setSignData({
+                            ...signData,
+                            innerPageCount: e.target.value,
+                            innerPageFromAttachment: false,
+                          })
+                        }
+                        disabled={signData.innerPageFromAttachment}
+                        className={`w-14 shrink-0 border rounded-lg px-1.5 py-2 text-xs font-medium outline-none text-right ${
+                          signData.innerPageFromAttachment
+                            ? 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'
+                            : 'bg-white border-slate-200 focus:ring-2 focus:ring-blue-500'
+                        }`}
+                      />
+                      <label
+                        className="inline-flex items-center gap-0.5 cursor-pointer select-none shrink-0"
+                        title="면수는 첨부파일에 따름"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={signData.innerPageFromAttachment}
+                          onChange={(e) => {
+                            const checked = e.target.checked;
+                            setSignData({
+                              ...signData,
+                              innerPageFromAttachment: checked,
+                              innerPageCount: checked ? '' : signData.innerPageCount,
+                            });
+                          }}
+                          className="w-3.5 h-3.5 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                        />
+                        <span className="text-[10px] font-medium text-slate-500">첨부파일에 따름</span>
+                      </label>
+                    </div>
+                  </div>
                 </div>
               </div>
             )}
 
- {/* 🔥 3. 기성 서식 / 소모품 제작 통합 탭 뷰 */}
+ {/* 🔥 3. 기타 제작물 — 노란 신청 내용 안에 필드만 (안쪽 박스 없음) */}
  {activeTab === 'PRINT' && (
               <div className="space-y-6 animate-fade-in pt-2">
-                <div className="p-6 bg-white rounded-2xl border border-blue-200 space-y-6 shadow-sm">
-                  {/* 프로세스 안내 */}
-                  <div className="border-b border-blue-100 pb-4">
-                    <p className="text-xs font-medium text-blue-800 leading-relaxed">
-                      <span className="text-red-600">그룹웨어 결재 승인 후 신청</span>
-                      {' / 일반소모품 입고 관리는 별도 진행필요'}
-                    </p>
-                  </div>
+                  <p className="text-xs font-medium text-slate-700 leading-relaxed">
+                    <span className="text-red-600">그룹웨어 결재 승인 후 신청</span>
+                    {' / 일반소모품 입고 관리는 별도 진행필요'}
+                  </p>
 
                   {/* 🚀 1. 물품 선택을 가장 먼저 하도록 상단으로 이동! */}
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     
                     {/* 1. 주문 물품 선택 — 제품명(검정) + 참고(회색) */}
                     <div ref={printItemMenuRef} className="relative">
-                      <label className="block text-[10px] font-medium text-slate-500 tracking-widest uppercase mb-2">
+                      <label className="block text-sm font-semibold text-slate-900 mb-2">
                         1. 주문 물품 선택 <span className="text-red-500">*</span>
                       </label>
                       <button
@@ -2839,11 +2911,11 @@ return (
 
                     {/* 2. 규격 매핑 및 동적 직접 입력 전환창 */}
                     <div>
-                      <label className="block text-[10px] font-medium text-slate-500 tracking-widest uppercase mb-2">
+                      <label className="block text-sm font-semibold text-slate-900 mb-2">
                         {isPrintCustomItem ? (
-                          <span className="text-blue-700 font-medium animate-pulse">
-                            1. 기타소모품 명칭/규격 직접 기재 *
-                          </span>
+                          <>
+                            1. 기타소모품 명칭/규격 직접 기재 <span className="text-red-500">*</span>
+                          </>
                         ) : (
                           '선택 물품 정보/규격'
                         )}
@@ -2880,10 +2952,10 @@ return (
                   </div>
 
                   {/* 🚀 2, 3. 상세 내용 및 비고 */}
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6 border-t border-slate-100 pt-6 mt-2">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6 border-t border-slate-200/80 pt-6 mt-2">
                     <div>
-                      <label className="block text-[10px] font-medium text-slate-500 tracking-widest uppercase mb-2">
-                        2. 인쇄 제작 문구1 <span className="text-slate-400 font-medium">(선택)</span>
+                      <label className="block text-sm font-semibold text-slate-900 mb-2">
+                        2. 인쇄 제작 문구1 <span className="text-slate-400 font-medium text-xs">(선택)</span>
                       </label>
                       <input
                         type="text"
@@ -2897,8 +2969,8 @@ return (
                     </div>
 
                     <div>
-                      <label className="block text-[10px] font-medium text-slate-500 tracking-widest uppercase mb-2">
-                        3. 인쇄 제작 문구2 <span className="text-slate-400 font-medium">(선택)</span>
+                      <label className="block text-sm font-semibold text-slate-900 mb-2">
+                        3. 인쇄 제작 문구2 <span className="text-slate-400 font-medium text-xs">(선택)</span>
                       </label>
                       <input
                         type="text"
@@ -2911,25 +2983,21 @@ return (
                       />
                     </div>
                   </div>
-
-                </div>
               </div>
             )}
 
-{/* 🔥 4. 사무문구류 견적 키핑 탭 뷰 */}
+{/* 🔥 4. 사무문구류 — 노란 신청 내용 안에 필드만 (안쪽 박스 없음) */}
 {activeTab === 'OFFICE_SUPPLIES' && (
               <div className="space-y-6 animate-fade-in pt-2">
-                <div className="p-6 bg-white rounded-2xl border border-blue-200 space-y-6 shadow-sm">
-                  
-                  {/* 헤더 */}
-                  <div className="border-b border-blue-100 pb-4">
-                    <p className="text-xs font-medium text-blue-800 leading-relaxed">
-                      드림디포 견적서 다운 (Excel / PDF) →{' '}
-                      <span className="text-red-600">그룹웨어 결재 승인 후 신청</span>
+                  <div className="text-xs font-medium text-slate-700 leading-relaxed space-y-0.5">
+                    <p>
+                      1) (엑셀) 각 부서원 견적서 취합 필요: [부서 발주 진행] 취합 발주서 확인 →
+                      그룹웨어 결재 승인 → 발주 진행
                     </p>
+                    <p>2) (PDF) 부서 취합 견적서 보유: 그룹웨어 결재 승인 후 신청 진행</p>
                   </div>
 
-                  {/* 1. 관리용 제목 — 외곽 박스 없이 입력만 */}
+                  {/* 1. 관리용 제목 */}
                   <div>
                     <div className="flex items-center gap-2 mb-2">
                       <label className="block text-sm font-semibold text-slate-900">
@@ -2944,7 +3012,7 @@ return (
                             suppliesProjectName: autoSuppliesFormTitle,
                           });
                         }}
-                        className="text-[9px] font-medium text-blue-600 hover:text-blue-800 underline underline-offset-2 shrink-0 cursor-pointer bg-transparent border-0 p-0"
+                        className="text-[9px] font-medium text-blue-700 bg-white hover:bg-sky-50 px-2 py-0.5 rounded border border-sky-300 transition-colors shrink-0 cursor-pointer"
                       >
                         ⚡ 제목 자동 생성
                       </button>
@@ -2963,22 +3031,77 @@ return (
 
                   {/* 2. 견적서 첨부 */}
                   <div>
-                    <div className="flex justify-between items-center mb-2 gap-2">
-                      <label className="block text-sm font-semibold text-slate-900">
-                        2. 드림디포 견적서 첨부 <span className="text-red-500">*</span>
-                      </label>
-                      <span className="text-[9px] font-medium text-slate-500 bg-slate-100 px-2 py-0.5 rounded">
-                        Excel / PDF
-                      </span>
+                    <label className="block text-sm font-semibold text-slate-900 mb-2">
+                      2. 드림디포 견적서 첨부 <span className="text-red-500">*</span>
+                    </label>
+                    <div className="grid grid-cols-2 gap-2 mb-3">
+                      <div className="flex min-w-0 flex-col gap-0.5">
+                        <p className="text-[11px] font-medium text-slate-600 leading-snug">
+                          드림디포-장바구니 → [견적서 출력] → [엑셀다운로드] → 그대로 첨부
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => handleSuppliesQuoteKind('excel')}
+                          className={`h-11 rounded-xl text-sm font-semibold border transition-colors ${
+                            suppliesQuoteKind === 'excel'
+                              ? 'bg-blue-50 border-blue-400 text-blue-800'
+                              : 'bg-white border-slate-200 text-slate-700 hover:border-blue-300 hover:bg-blue-50/60'
+                          }`}
+                        >
+                          엑셀 견적서<span className="text-red-500">(권장*)</span>
+                        </button>
+                      </div>
+                      <div className="flex min-w-0 flex-col gap-0.5">
+                        <p className="text-[11px] font-medium text-slate-600 leading-snug">
+                          드림디포-장바구니 → [견적서 출력] → 인쇄하기 → PDF로 저장 → 그대로 첨부
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => handleSuppliesQuoteKind('pdf')}
+                          className={`h-11 rounded-xl text-sm font-semibold border transition-colors ${
+                            suppliesQuoteKind === 'pdf'
+                              ? 'bg-blue-50 border-blue-400 text-blue-800'
+                              : 'bg-white border-slate-200 text-slate-700 hover:border-blue-300 hover:bg-blue-50/60'
+                          }`}
+                        >
+                          PDF 견적서
+                        </button>
+                      </div>
                     </div>
                     <input
                       ref={suppliesQuoteFileInputRef}
                       type="file"
-                      accept=".pdf,.xls,.xlsx,application/pdf,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                      accept={
+                        suppliesQuoteKind === 'pdf'
+                          ? '.pdf,application/pdf'
+                          : '.xls,.xlsx,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+                      }
                       className="hidden"
                       onChange={(e) => {
                         const f = e.target.files?.[0] || null;
+                        if (!f) {
+                          setSuppliesQuoteFile(null);
+                          clearParsedQuoteLines();
+                          return;
+                        }
+                        const ok =
+                          suppliesQuoteKind === 'pdf' ? isPdfQuoteFile(f) : isExcelQuoteFile(f);
+                        if (!ok) {
+                          alert(
+                            suppliesQuoteKind === 'pdf'
+                              ? 'PDF 파일만 첨부할 수 있습니다.'
+                              : '엑셀 파일(.xls, .xlsx)만 첨부할 수 있습니다.'
+                          );
+                          e.target.value = '';
+                          return;
+                        }
                         setSuppliesQuoteFile(f);
+                        if (suppliesQuoteKind === 'excel') {
+                          void parseExcelQuoteFile(f);
+                        } else {
+                          setSuppliesQuoteParseError('');
+                          setSignData((prev) => ({ ...prev, suppliesQuoteLines: [] }));
+                        }
                       }}
                     />
                     <div className="flex flex-wrap items-center gap-2">
@@ -3002,6 +3125,7 @@ return (
                           type="button"
                           onClick={() => {
                             setSuppliesQuoteFile(null);
+                            clearParsedQuoteLines();
                             if (suppliesQuoteFileInputRef.current) {
                               suppliesQuoteFileInputRef.current.value = '';
                             }
@@ -3012,26 +3136,43 @@ return (
                         </button>
                       ) : null}
                     </div>
-                    <p className="mt-1.5 text-[9px] font-medium text-slate-400 leading-snug">
-                      그룹웨어 결재에 사용한 드림디포 견적서와 동일한 파일을 올려 주세요.
-                    </p>
+                    {suppliesQuoteKind === 'excel' && suppliesQuoteFile ? (
+                      suppliesQuoteParsing ? (
+                        <p className="mt-1 text-[10px] font-medium text-slate-500">품목 인식 중…</p>
+                      ) : suppliesQuoteParseError ? (
+                        <p className="mt-1 text-[10px] font-medium text-rose-600">
+                          {suppliesQuoteParseError}
+                        </p>
+                      ) : signData.suppliesQuoteLines.length > 0 ? (
+                        <p className="mt-1 text-[10px] font-medium text-emerald-700">
+                          품목 {signData.suppliesQuoteLines.length}건 자동 인식 · 붙여넣기 없이
+                          접수됩니다
+                        </p>
+                      ) : null
+                    ) : null}
                   </div>
 
-                  {/* 3. 텍스트 긁어붙이기 */}
+                  {suppliesQuoteKind === 'pdf' ? (
                   <div>
                     <div className="flex justify-between items-center gap-3 mb-2">
                       <label className="block text-sm font-semibold text-slate-900 shrink-0">
-                        3. 견적 내용 전체 붙여넣기 (Ctrl + V) <span className="text-red-500">*</span>
+                        3. 견적 내용 전체 붙여넣기 (화면{' '}
+                        <span className="text-blue-600">Ctrl + A</span>
+                        {' → '}
+                        <span className="text-blue-600">Ctrl + C</span>
+                        {' → '}
+                        <span className="text-blue-600">Ctrl + V</span>
+                        ) <span className="text-red-500">*</span>
                       </label>
                       <span className="text-[9px] font-medium text-slate-400 text-right leading-snug">
-                        부서 명세 대조에서 품명·수량을 1:1 추출해 크로스매칭합니다.
+                        PDF는 전체 복사 후 붙여넣어 주세요. 부서 명세 대조에 사용됩니다.
                       </span>
                     </div>
                     <textarea
-                      placeholder="견적서(Excel 또는 PDF) 텍스트 전체를 복사하여 이곳에 붙여넣어 주세요. (품명, 규격, 수량, 단가 필수 포함)"
+                      placeholder="PDF 견적서 텍스트 전체를 복사하여 이곳에 붙여넣어 주세요. (품명, 규격, 수량, 단가 필수 포함)"
                       value={signData.suppliesQuoteRawText || ''}
                       onChange={(e) => setSignData({ ...signData, suppliesQuoteRawText: e.target.value })}
-                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-xs font-mono font-medium outline-none focus:bg-white focus:border-blue-500 min-h-[180px] resize-y"
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-xs font-medium outline-none focus:bg-white focus:border-blue-500 min-h-[180px] resize-y"
                     />
                     <p className="mt-1.5 text-[10px] font-medium text-slate-400">
                       {signData.suppliesQuoteRawText
@@ -3039,17 +3180,17 @@ return (
                         : '대기 중'}
                     </p>
                   </div>
-
-                </div>
+                  ) : null}
               </div>
             )}
 
             {/* 🚀 공통 7번: 추가 제작 변수 요청사항 자유기재 (사무문구류 정산 탭일 때는 숨김) */}
             {activeTab !== 'OFFICE_SUPPLIES' && (
-              <div className="p-4 bg-white rounded-xl border border-yellow-200 space-y-2 shadow-sm mt-4">
+              <div className="space-y-2 mt-2 pt-4 border-t border-slate-200/80">
                 <div className="flex justify-between items-center gap-2">
-                  <label className="block text-[10px] font-medium text-slate-500 tracking-widest uppercase">
-                    {customRequestStepNumber}. 추가 제작 변수 요청사항 자유기재 <span className="text-slate-400 font-medium">(선택)</span>
+                  <label className="block text-sm font-semibold text-slate-900">
+                    {customRequestStepNumber}. 추가 제작 변수 요청사항 자유기재{' '}
+                    <span className="text-slate-400 font-medium text-xs">(선택)</span>
                   </label>
                   <button
                     type="button"
@@ -3059,7 +3200,7 @@ return (
                         { id: Date.now(), value: '' },
                       ])
                     }
-                    className="px-2 py-0.5 bg-yellow-100 hover:bg-yellow-200 text-yellow-700 border border-yellow-300 rounded-md font-medium text-[10px] flex items-center gap-1 transition-all shrink-0"
+                    className="px-2 py-0.5 bg-white hover:bg-amber-50 text-slate-700 border border-slate-200 rounded-md font-medium text-[10px] flex items-center gap-1 transition-all shrink-0"
                   >
                     ➕ 추가
                   </button>
@@ -3068,9 +3209,9 @@ return (
                   「➕ 추가」로 행을 만든 뒤, <span className="text-slate-500">내용을 입력한 항목만</span> 신청서에 포함됩니다. 빈 행은 제출 시 자동으로 제외됩니다.
                 </p>
                 {customRequests.length === 0 ? (
-                  <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50/80 px-3 py-2.5 text-center text-[10px] font-medium text-slate-400">
-                    추가할 요청사항이 있으면 우측 상단 「➕ 추가」를 눌러주세요.
-                  </div>
+                  <p className="text-[10px] font-medium text-slate-400">
+                    추가할 요청사항이 있으면 우측 「➕ 추가」를 눌러주세요.
+                  </p>
                 ) : (
                   customRequests.map((req, index) => (
                   <div key={req.id} className="flex items-center gap-2 animate-fade-in">
@@ -3103,6 +3244,68 @@ return (
                   </div>
                   ))
                 )}
+              </div>
+            )}
+
+            {/* 현판·제본·기타제작: 관리용 제목 — 추가변수 아래 */}
+            {['SIGN', 'PRINT', 'JEBON'].includes(activeTab) && formTitleStepNumber != null && (
+              <div className="mt-2 pt-4 border-t border-slate-200/80">
+                <div className="flex items-center gap-2 mb-2">
+                  <label className="block text-sm font-semibold text-slate-900">
+                    {formTitleStepNumber}. 관리용 제목 설정 <span className="text-red-500">*</span>
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (activeTab === 'SIGN') {
+                        setTitleManualByTab((prev) => ({ ...prev, SIGN: false }));
+                        setSignData({
+                          ...signData,
+                          signFormTitle: autoSignFormTitle,
+                        });
+                      } else if (activeTab === 'PRINT') {
+                        setTitleManualByTab((prev) => ({ ...prev, PRINT: false }));
+                        setSignData({
+                          ...signData,
+                          printFormTitle: autoPrintFormTitle,
+                        });
+                      } else {
+                        setTitleManualByTab((prev) => ({ ...prev, JEBON: false }));
+                        setSignData({
+                          ...signData,
+                          jebonFormTitle: autoJebonFormTitle,
+                        });
+                      }
+                    }}
+                    className="text-[9px] font-medium text-blue-700 bg-white hover:bg-sky-50 px-2 py-0.5 rounded border border-sky-300 transition-colors shrink-0 cursor-pointer"
+                  >
+                    ⚡ 제목 자동 생성
+                  </button>
+                </div>
+                <input
+                  type="text"
+                  placeholder="스펙에 맞춰 자동 생성됩니다. 필요 시 직접 수정해 주세요."
+                  value={
+                    activeTab === 'SIGN'
+                      ? signData.signFormTitle || ''
+                      : activeTab === 'PRINT'
+                        ? signData.printFormTitle || ''
+                        : signData.jebonFormTitle || ''
+                  }
+                  onChange={(e) => {
+                    if (activeTab === 'SIGN') {
+                      setTitleManualByTab((prev) => ({ ...prev, SIGN: true }));
+                      setSignData({ ...signData, signFormTitle: e.target.value });
+                    } else if (activeTab === 'PRINT') {
+                      setTitleManualByTab((prev) => ({ ...prev, PRINT: true }));
+                      setSignData({ ...signData, printFormTitle: e.target.value });
+                    } else {
+                      setTitleManualByTab((prev) => ({ ...prev, JEBON: true }));
+                      setSignData({ ...signData, jebonFormTitle: e.target.value });
+                    }
+                  }}
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-xs font-medium outline-none focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-colors"
+                />
               </div>
             )}
 
@@ -3280,59 +3483,6 @@ return (
           </div>
           )}
         </div>
-
-      {/* ⚡ 현판·제본·기타제작: 관리용 제목 — 스펙 입력 후 · 보조 서식·부수 입력 전 */}
-      {['SIGN', 'JEBON', 'PRINT'].includes(activeTab) && (
-        <div className="p-5 rounded-2xl border border-sky-300 bg-sky-100/60 shadow-sm space-y-3">
-          <div className="flex items-center gap-2">
-            <label className="block text-[10px] font-medium text-sky-900 tracking-widest uppercase">
-              관리용 제목 설정 <span className="text-red-500">*</span>
-            </label>
-            <button
-              type="button"
-              onClick={() => {
-                if (activeTab === 'SIGN') {
-                  setTitleManualByTab((prev) => ({ ...prev, SIGN: false }));
-                  setSignData({ ...signData, signFormTitle: autoSignFormTitle });
-                } else if (activeTab === 'PRINT') {
-                  setTitleManualByTab((prev) => ({ ...prev, PRINT: false }));
-                  setSignData({ ...signData, printFormTitle: autoPrintFormTitle });
-                } else {
-                  setTitleManualByTab((prev) => ({ ...prev, JEBON: false }));
-                  setSignData({ ...signData, jebonFormTitle: autoJebonFormTitle });
-                }
-              }}
-              className="text-[9px] font-medium text-blue-700 bg-white hover:bg-sky-50 px-2 py-0.5 rounded border border-sky-300 transition-colors shrink-0 cursor-pointer"
-            >
-              ⚡ 제목 자동 생성
-            </button>
-          </div>
-          <input
-            type="text"
-            placeholder="스펙에 맞춰 자동 생성됩니다. 필요 시 직접 수정해 주세요."
-            value={
-              activeTab === 'SIGN'
-                ? signData.signFormTitle || ''
-                : activeTab === 'PRINT'
-                  ? signData.printFormTitle || ''
-                  : signData.jebonFormTitle || ''
-            }
-            onChange={(e) => {
-              const tabKey =
-                activeTab === 'SIGN' ? 'SIGN' : activeTab === 'PRINT' ? 'PRINT' : 'JEBON';
-              setTitleManualByTab((prev) => ({ ...prev, [tabKey]: true }));
-              setSignData(
-                activeTab === 'SIGN'
-                  ? { ...signData, signFormTitle: e.target.value }
-                  : activeTab === 'PRINT'
-                    ? { ...signData, printFormTitle: e.target.value }
-                    : { ...signData, jebonFormTitle: e.target.value }
-              );
-            }}
-            className="w-full bg-white border border-sky-300 rounded-xl px-4 py-3 text-xs font-medium outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-200 transition-colors"
-          />
-        </div>
-      )}
 
 {/* 🗂️ 시스템 내부 보관 보조 서식 섹션 (현판 탭에서만 노출) */}
 {activeTab === 'SIGN' && (
@@ -3531,7 +3681,10 @@ return (
             <div className="bg-slate-900 p-6 text-white flex justify-between items-center px-8 shrink-0">
               <div>
                 <h3 className="text-xs font-medium tracking-widest text-blue-400 uppercase">Vendor Management Settings</h3>
-                <h2 className="text-xl font-medium mt-0.5">외주 업체(VENDOR) 관리 설정</h2>
+                <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                  <h2 className="text-xl font-medium">외주 업체(VENDOR) 관리 설정</h2>
+                  <DeptAssigneeLine editorNames={editorNames} />
+                </div>
               </div>
               <button type="button" onClick={() => setIsVendorModalOpen(false)} className="bg-slate-800 hover:bg-slate-700 text-white font-medium px-4 py-2 rounded-xl text-xs transition-all active:scale-95">닫기 ✕</button>
             </div>
@@ -4337,7 +4490,10 @@ return (
             <div className="bg-slate-900 p-6 text-white flex justify-between items-center px-8 shrink-0">
               <div>
                 <h3 className="text-xs font-medium tracking-widest text-emerald-400 uppercase">Signage Specs & Pricing Settings</h3>
-                <h2 className="text-xl font-medium mt-0.5">현판 품목별 규격 및 단가 설정</h2>
+                <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                  <h2 className="text-xl font-medium">현판 품목별 규격 및 단가 설정</h2>
+                  <DeptAssigneeLine editorNames={editorNames} />
+                </div>
               </div>
               <button type="button" onClick={() => setIsPlateModalOpen(false)} className="bg-slate-800 hover:bg-slate-700 text-white font-medium px-4 py-2 rounded-xl text-xs transition-all active:scale-95">닫기 ✕</button>
             </div>
@@ -4492,11 +4648,14 @@ return (
                     ? 'Certification Signage Template Settings'
                     : 'Certification Binding Template Settings'}
                 </h3>
-                <h2 className="text-xl font-medium mt-0.5">
-                  {popSubTab === 'SIGN_SUB'
-                    ? '인증별 현판 서식 기준 설정'
-                    : '인증별 제본 서식 기준 설정'}
-                </h2>
+                <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                  <h2 className="text-xl font-medium">
+                    {popSubTab === 'SIGN_SUB'
+                      ? '인증별 현판 서식 기준 설정'
+                      : '인증별 제본 서식 기준 설정'}
+                  </h2>
+                  <DeptAssigneeLine editorNames={editorNames} />
+                </div>
               </div>
               <button type="button" onClick={() => setIsCertModalOpen(false)} className="bg-slate-800 hover:bg-slate-700 text-white font-medium px-4 py-2 rounded-xl text-xs transition-all active:scale-95">닫기 ✕</button>
             </div>

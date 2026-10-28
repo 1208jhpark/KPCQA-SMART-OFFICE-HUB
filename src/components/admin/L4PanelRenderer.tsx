@@ -47,7 +47,6 @@ const MarketingDashboard = dynamic(() => import('../../components/marketing/Dash
 const ScheduleDashboard = dynamic(() => import('../schedule/ScheduleDashboardModule').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
 const ScheduleWorkBoard = dynamic(() => import('../schedule/WorkBoardModule').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
 const MarketingCatalog = dynamic(() => import('../marketing/CatalogModule').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
-const MarketingClientSearch = dynamic(() => import('../marketing/ClientSearchModule').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
 const MarketingRegister = dynamic(() => import('../marketing/RegisterModule').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
 const MarketingDeptDistribution = dynamic(() => import('../marketing/DeptDistributionModule').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
   
@@ -112,7 +111,6 @@ export const ModuleRegistry: Record<string, React.ComponentType<any>> = {
   // [마케팅]
   '/marketing/dashboard': MarketingDashboard,
   '/marketing/distribution/catalog': MarketingCatalog,
-  '/marketing/distribution/client-search': MarketingClientSearch,
   '/marketing/distribution/register': MarketingRegister,
   '/marketing/distribution/dept': MarketingDeptDistribution,
      

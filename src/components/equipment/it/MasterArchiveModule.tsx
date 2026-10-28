@@ -5,6 +5,7 @@ import * as XLSX from 'xlsx';
 import { getKSTDateString, getKSTNowYearMonth, getKSTYearMonthParts } from '@/utils/dateUtils';
 import { resolveInterfaceEditState } from '@/lib/permission-utils';
 import LoadingState from '@/components/common/LoadingState';
+import DeptAssigneeLine, { useDeptAssignees } from '@/components/common/DeptAssigneeLine';
 import ItMasterPageBanner from '@/components/equipment/it/ItMasterPageBanner';
 import { rowMatchesOrgUnit } from '@/lib/org-unit-match';
 
@@ -60,6 +61,7 @@ function descendantUnitNames(unitName: string, units: Array<{ id: string; unit_n
 const HISTORY_MONTHS = ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12'];
 
 function MasterArchiveContent() {
+  const { editorNames } = useDeptAssignees(MENU_PATH);
   const [currentUser, setCurrentUser] = useState<any>(null);
   const [interfaceConfig, setInterfaceConfig] = useState<any>(null);
   const [history, setHistory] = useState<any[]>([]);
@@ -419,10 +421,11 @@ function MasterArchiveContent() {
         <div className={`p-3 px-4 bg-slate-200/70 border-b border-slate-300 flex items-center gap-2 min-w-0 relative ${orgMenuOpen ? 'z-[80] overflow-visible' : ''}`}>
           <div className="flex items-center gap-1.5 shrink-0">
             <div className="w-2.5 h-2.5 rounded-full bg-blue-600 shrink-0" />
-            <h2 className="text-sm font-black text-slate-800 tracking-tight whitespace-nowrap">종료 자산 데이터 대장</h2>
-            <span className="text-[11px] font-bold bg-slate-300/80 text-slate-700 px-1.5 py-0.5 rounded-md whitespace-nowrap">
+            <h2 className="text-sm font-medium text-slate-800 tracking-tight whitespace-nowrap">종료 자산 데이터 대장</h2>
+            <span className="text-[11px] font-medium bg-slate-300/80 text-slate-700 px-1.5 py-0.5 rounded-md whitespace-nowrap">
               {filteredHistory.length}건
             </span>
+            <DeptAssigneeLine editorNames={editorNames} />
           </div>
 
           <div className={`flex items-center gap-1.5 flex-nowrap min-w-0 ml-auto ${orgMenuOpen ? 'overflow-visible relative z-[90]' : 'overflow-x-auto scrollbar-hide'}`}>
@@ -430,7 +433,7 @@ function MasterArchiveContent() {
               <button
                 type="button"
                 onClick={() => setFilterStatus('ALL')}
-                className={`px-2 h-full rounded-md text-[10px] font-black transition-all whitespace-nowrap leading-none ${
+                className={`px-2 h-full rounded-md text-[10px] font-medium transition-all whitespace-nowrap leading-none ${
                   filterStatus === 'ALL' ? 'bg-slate-800 text-white' : 'text-slate-500 hover:bg-slate-50'
                 }`}
               >
@@ -439,7 +442,7 @@ function MasterArchiveContent() {
               <button
                 type="button"
                 onClick={() => setFilterStatus('반납')}
-                className={`px-2 h-full rounded-md text-[10px] font-black transition-all whitespace-nowrap leading-none ${
+                className={`px-2 h-full rounded-md text-[10px] font-medium transition-all whitespace-nowrap leading-none ${
                   filterStatus === '반납' ? 'bg-amber-500 text-white' : 'text-slate-500 hover:bg-slate-50'
                 }`}
               >
@@ -448,7 +451,7 @@ function MasterArchiveContent() {
               <button
                 type="button"
                 onClick={() => setFilterStatus('폐기')}
-                className={`px-2 h-full rounded-md text-[10px] font-black transition-all whitespace-nowrap leading-none ${
+                className={`px-2 h-full rounded-md text-[10px] font-medium transition-all whitespace-nowrap leading-none ${
                   filterStatus === '폐기' ? 'bg-rose-600 text-white' : 'text-slate-500 hover:bg-slate-50'
                 }`}
               >
@@ -457,7 +460,7 @@ function MasterArchiveContent() {
               <button
                 type="button"
                 onClick={() => setFilterStatus('재판매')}
-                className={`px-2 h-full rounded-md text-[10px] font-black transition-all whitespace-nowrap leading-none ${
+                className={`px-2 h-full rounded-md text-[10px] font-medium transition-all whitespace-nowrap leading-none ${
                   filterStatus === '재판매' ? 'bg-emerald-600 text-white' : 'text-slate-500 hover:bg-slate-50'
                 }`}
               >
@@ -466,15 +469,15 @@ function MasterArchiveContent() {
             </div>
 
             <div className={`flex items-center gap-1.5 bg-white px-2.5 rounded-lg border border-slate-200 shadow-sm shrink-0 h-7 box-border ${orgMenuOpen ? 'relative z-[90]' : ''}`}>
-              <span className="text-[10px] font-black text-slate-400 uppercase whitespace-nowrap leading-none">조직</span>
+              <span className="text-[10px] font-medium text-slate-400 whitespace-nowrap leading-none">조직</span>
               <div className="relative inline-flex items-center" ref={orgMenuRef}>
                 <button
                   type="button"
                   onClick={() => setOrgMenuOpen((open) => !open)}
                   className={`max-w-[120px] truncate text-left text-[11px] leading-none py-0 px-0 m-0 h-4 inline-flex items-center border-0 appearance-none outline-none cursor-pointer bg-transparent ${
                     selectedOrgUnit && isBoldOrgType(selectedOrgUnit.unit_type)
-                      ? 'font-black text-slate-900'
-                      : 'font-bold text-slate-800'
+                      ? 'font-medium text-slate-900'
+                      : 'font-medium text-slate-800'
                   }`}
                 >
                   {selectedOrgUnit?.unit_name || organizationUnit?.unit_name || '조직 선택'}
@@ -495,7 +498,7 @@ function MasterArchiveContent() {
                             setOrgMenuOpen(false);
                           }}
                           className={`w-full text-left pr-3 py-1.5 text-[11px] ${
-                            bold ? 'font-black text-slate-900' : 'font-medium text-slate-600'
+                            bold ? 'font-medium text-slate-900' : 'font-medium text-slate-600'
                           } ${active ? 'bg-slate-100' : 'hover:bg-slate-50'}`}
                           style={{ paddingLeft: `${12 + o.depth * 12}px` }}
                         >
@@ -509,11 +512,11 @@ function MasterArchiveContent() {
 
               <div className="w-px h-3 bg-slate-300 shrink-0" />
 
-              <span className="text-[10px] font-black text-slate-400 uppercase whitespace-nowrap leading-none">분류</span>
+              <span className="text-[10px] font-medium text-slate-400 whitespace-nowrap leading-none">분류</span>
               <select
                 value={filterType}
                 onChange={(e) => setFilterType(e.target.value)}
-                className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent max-w-[88px] h-4 leading-none py-0"
+                className="text-[11px] font-medium text-slate-800 outline-none cursor-pointer bg-transparent max-w-[88px] h-4 leading-none py-0"
               >
                 <option value="ALL">전체</option>
                 {uniqueTypes.map((t) => (
@@ -523,14 +526,14 @@ function MasterArchiveContent() {
 
               <div className="w-px h-3 bg-slate-300 shrink-0" />
 
-              <span className="text-[10px] font-black text-slate-400 uppercase whitespace-nowrap leading-none">연도</span>
+              <span className="text-[10px] font-medium text-slate-400 whitespace-nowrap leading-none">연도</span>
               <select
                 value={selectedYear}
                 onChange={(e) => {
                   setSelectedYear(e.target.value);
                   setSelectedMonth('ALL');
                 }}
-                className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent h-4 leading-none py-0"
+                className="text-[11px] font-medium text-slate-800 outline-none cursor-pointer bg-transparent h-4 leading-none py-0"
               >
                 <option value="ALL">전체</option>
                 {availableYears.map((year) => (
@@ -540,11 +543,11 @@ function MasterArchiveContent() {
 
               <div className="w-px h-3 bg-slate-300 shrink-0" />
 
-              <span className="text-[10px] font-black text-slate-400 uppercase whitespace-nowrap leading-none">월</span>
+              <span className="text-[10px] font-medium text-slate-400 whitespace-nowrap leading-none">월</span>
               <select
                 value={selectedMonth}
                 onChange={(e) => setSelectedMonth(e.target.value)}
-                className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent h-4 leading-none py-0"
+                className="text-[11px] font-medium text-slate-800 outline-none cursor-pointer bg-transparent h-4 leading-none py-0"
               >
                 <option value="ALL">전체</option>
                 {HISTORY_MONTHS.map((month) => (
@@ -560,7 +563,7 @@ function MasterArchiveContent() {
                 placeholder="자산번호"
                 value={codeQuery}
                 onChange={(e) => setCodeQuery(e.target.value)}
-                className="w-full pl-6 pr-2 py-1 bg-white border border-slate-200 rounded-lg text-[11px] font-bold outline-none focus:border-indigo-500 shadow-sm transition-colors"
+                className="w-full pl-6 pr-2 py-1 bg-white border border-slate-200 rounded-lg text-[11px] font-medium outline-none focus:border-indigo-500 shadow-sm transition-colors"
               />
             </div>
             <div className="relative w-28 shrink-0">
@@ -570,14 +573,14 @@ function MasterArchiveContent() {
                 placeholder="모델명"
                 value={modelQuery}
                 onChange={(e) => setModelQuery(e.target.value)}
-                className="w-full pl-6 pr-2 py-1 bg-white border border-slate-200 rounded-lg text-[11px] font-bold outline-none focus:border-indigo-500 shadow-sm transition-colors"
+                className="w-full pl-6 pr-2 py-1 bg-white border border-slate-200 rounded-lg text-[11px] font-medium outline-none focus:border-indigo-500 shadow-sm transition-colors"
               />
             </div>
 
             <button
               type="button"
               onClick={handleExportExcel}
-              className="px-2 py-1 bg-emerald-600 text-white rounded-lg text-[10px] font-black shadow-sm hover:bg-emerald-700 transition-all whitespace-nowrap shrink-0"
+              className="px-2 py-1 bg-emerald-600 text-white rounded-lg text-[10px] font-medium shadow-sm hover:bg-emerald-700 transition-all whitespace-nowrap shrink-0"
             >
               {selectedIds.size > 0 ? `EXCEL(${selectedIds.size})` : 'EXCEL'}
             </button>
@@ -585,7 +588,7 @@ function MasterArchiveContent() {
               <button
                 type="button"
                 onClick={handleDeleteSelected}
-                className="px-2 py-1 bg-white text-rose-600 border border-rose-200 rounded-lg text-[10px] font-black shadow-sm hover:bg-rose-50 transition-all whitespace-nowrap shrink-0"
+                className="px-2 py-1 bg-white text-rose-600 border border-rose-200 rounded-lg text-[10px] font-medium shadow-sm hover:bg-rose-50 transition-all whitespace-nowrap shrink-0"
               >
                 {selectedIds.size > 0 ? `삭제(LV_1)(${selectedIds.size})` : '삭제(LV_1)'}
               </button>
@@ -610,7 +613,7 @@ function MasterArchiveContent() {
               <col className="w-[72px]" />
               <col className="w-[110px]" />
             </colgroup>
-            <thead className="bg-slate-100 text-slate-700 text-[10px] font-black uppercase tracking-widest border-b border-slate-200">
+            <thead className="bg-slate-100 text-slate-700 text-[10px] font-medium tracking-wide border-b border-slate-200">
               <tr>
                 <th className="h-12 px-2 text-center">
                   <input
@@ -638,7 +641,7 @@ function MasterArchiveContent() {
                 <th className="h-12 px-2 text-center whitespace-nowrap border-l border-slate-200">관리액션(Edit)</th>
               </tr>
             </thead>
-            <tbody className="bg-white divide-y divide-slate-100 text-[11px] font-bold text-slate-700">
+            <tbody className="bg-white divide-y divide-slate-100 text-[11px] font-medium text-slate-700">
               {currentData.length === 0 ? (
                 <tr>
                   <td colSpan={13} className="p-16 text-center text-slate-400 text-xs">
@@ -670,7 +673,7 @@ function MasterArchiveContent() {
                           className="accent-slate-800"
                         />
                       </td>
-                      <td className="px-2 text-center font-mono text-slate-500 tabular-nums">{rowNo}</td>
+                      <td className="px-2 text-center font-medium text-slate-500 tabular-nums">{rowNo}</td>
                       <td className="px-2 text-center whitespace-nowrap tabular-nums text-slate-800">{terminatedAt}</td>
                       <td className="px-2 text-left">
                         <div className="leading-tight min-w-0" title={`${h.dept || '-'} / ${h.user || '공용'}`}>
@@ -679,25 +682,25 @@ function MasterArchiveContent() {
                         </div>
                       </td>
                       <td className="px-2 text-center">
-                        <span className="text-[9px] font-black uppercase tracking-wider text-indigo-600 bg-indigo-50 border border-indigo-100 px-2 py-0.5 rounded-md whitespace-nowrap">
+                        <span className="text-[9px] font-medium text-indigo-600 bg-indigo-50 border border-indigo-100 px-2 py-0.5 rounded-md whitespace-nowrap">
                           {h.it_type || '일반'}
                         </span>
                       </td>
                       <td className="px-2 text-slate-900 truncate" title={h.code || ''}>{h.code || '-'}</td>
                       <td className="px-2 text-slate-800 truncate" title={h.model || ''}>{h.model || '-'}</td>
-                      <td className="px-2 text-slate-500 font-mono truncate" title={h.sn || ''}>{h.sn || '-'}</td>
+                      <td className="px-2 text-slate-500 font-medium truncate" title={h.sn || ''}>{h.sn || '-'}</td>
                       <td className="px-2 border-l border-slate-200 text-slate-700 truncate" title={h.reason || ''}>
                         {h.reason ? `"${h.reason}"` : '-'}
                       </td>
                       <td className="px-2 text-left text-slate-800 truncate" title={h.reseller || ''}>
                         {h.reseller || <span className="text-slate-300">-</span>}
                       </td>
-                      <td className="px-2 text-center font-mono tabular-nums text-slate-800">
+                      <td className="px-2 text-center font-medium tabular-nums text-slate-800">
                         {h.resellPrice ? formatNumber(h.resellPrice) : <span className="text-slate-300">-</span>}
                       </td>
                       <td className="px-2 text-center">
                         <span
-                          className={`inline-block border px-1.5 py-0.5 rounded text-[10px] font-bold whitespace-nowrap ${
+                          className={`inline-block border px-1.5 py-0.5 rounded text-[10px] font-medium whitespace-nowrap ${
                             h.status === '폐기'
                               ? 'bg-rose-50 text-rose-600 border-rose-200'
                               : h.status === '재판매'
@@ -714,7 +717,7 @@ function MasterArchiveContent() {
                           disabled={!canEdit}
                           onClick={() => handleRestore(h.id)}
                           title={canEdit ? '운영 대장으로 복구' : '편집 권한 필요'}
-                          className={`px-1.5 py-1.5 rounded-md text-[10px] font-black whitespace-nowrap border ${
+                          className={`px-1.5 py-1.5 rounded-md text-[10px] font-medium whitespace-nowrap border ${
                             canEdit
                               ? 'bg-indigo-50 text-indigo-600 border-indigo-200 hover:bg-indigo-100 shadow-sm'
                               : 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed opacity-70'
@@ -737,7 +740,7 @@ function MasterArchiveContent() {
               type="button"
               disabled={currentPage === 1}
               onClick={() => setCurrentPage((p) => p - 1)}
-              className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors"
+              className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-medium text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors"
             >
               이전
             </button>
@@ -746,7 +749,7 @@ function MasterArchiveContent() {
                 type="button"
                 key={i}
                 onClick={() => setCurrentPage(i + 1)}
-                className={`w-8 h-8 rounded-xl font-black text-xs transition-all ${
+                className={`w-8 h-8 rounded-xl font-medium text-xs transition-all ${
                   currentPage === i + 1
                     ? 'bg-slate-800 text-white shadow-sm scale-105'
                     : 'bg-white border border-slate-200 text-slate-500 hover:bg-slate-50'
@@ -759,7 +762,7 @@ function MasterArchiveContent() {
               type="button"
               disabled={currentPage === totalPages}
               onClick={() => setCurrentPage((p) => p + 1)}
-              className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors"
+              className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-medium text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors"
             >
               다음
             </button>

@@ -9,6 +9,10 @@ import {
   resolveProdMailShortcutUrl,
   resolveProdMailSubjectTemplate,
 } from '@/lib/production-mail-template';
+import {
+  DEFAULT_PROD_GROUPWARE_APPROVAL_URL,
+  resolveProdGroupwareApprovalUrl,
+} from '@/lib/production-groupware-approval';
 
 export const dynamic = 'force-dynamic';
 
@@ -30,6 +34,7 @@ type UserMailRow = {
   prod_mail_shortcut_url: string | null;
   prod_mail_subject_template: string | null;
   prod_mail_body_template: string | null;
+  prod_groupware_approval_url: string | null;
 };
 
 async function readDeptSettings(unitId: string): Promise<DeptMailRow | null> {
@@ -52,7 +57,8 @@ async function readUserSettings(userId: string): Promise<UserMailRow | null> {
   if (!userId) return null;
   try {
     const rows = await prisma.$queryRaw<UserMailRow[]>`
-      SELECT "prod_mail_shortcut_url", "prod_mail_subject_template", "prod_mail_body_template"
+      SELECT "prod_mail_shortcut_url", "prod_mail_subject_template", "prod_mail_body_template",
+             "prod_groupware_approval_url"
       FROM "User"
       WHERE id = ${userId}
       LIMIT 1
@@ -72,6 +78,7 @@ function serialize(opts: {
   const pUrl = String(opts.personal?.prod_mail_shortcut_url || '').trim();
   const pSubject = String(opts.personal?.prod_mail_subject_template || '');
   const pBody = String(opts.personal?.prod_mail_body_template || '');
+  const pApproval = String(opts.personal?.prod_groupware_approval_url || '').trim();
   const dUrl = String(opts.dept?.mailShortcutUrl || '').trim();
   const dSubject = String(opts.dept?.subjectTemplate || '');
   const dBody = String(opts.dept?.bodyTemplate || '');
@@ -81,12 +88,15 @@ function serialize(opts: {
     mailShortcutUrl: resolveProdMailShortcutUrl(pUrl || dUrl),
     subjectTemplate: resolveProdMailSubjectTemplate(pSubject || dSubject),
     bodyTemplate: resolveProdMailBodyTemplate(pBody || dBody),
+    groupwareApprovalUrl: resolveProdGroupwareApprovalUrl(pApproval),
     isPersonalUrl: !!pUrl,
     isPersonalTemplate: !!(pSubject.trim() || pBody.trim()),
+    isPersonalApprovalUrl: !!pApproval,
     defaults: {
       mailShortcutUrl: DEFAULT_PROD_MAIL_SHORTCUT_URL,
       subjectTemplate: DEFAULT_PROD_MAIL_SUBJECT,
       bodyTemplate: DEFAULT_PROD_MAIL_BODY,
+      groupwareApprovalUrl: DEFAULT_PROD_GROUPWARE_APPROVAL_URL,
     },
   };
 }
@@ -131,17 +141,23 @@ export async function PUT(req: Request) {
       body.bodyTemplate != null
         ? String(body.bodyTemplate || '')
         : String(existing?.prod_mail_body_template || '');
+    const nextApproval =
+      body.groupwareApprovalUrl != null
+        ? resolveProdGroupwareApprovalUrl(body.groupwareApprovalUrl)
+        : String(existing?.prod_groupware_approval_url || '').trim();
 
     await prisma.$executeRawUnsafe(
       `UPDATE "User" SET
          "prod_mail_shortcut_url" = $1,
          "prod_mail_subject_template" = $2,
          "prod_mail_body_template" = $3,
+         "prod_groupware_approval_url" = $4,
          "updatedAt" = NOW()
-       WHERE id = $4`,
+       WHERE id = $5`,
       nextUrl,
       nextSubject,
       nextBody,
+      nextApproval,
       auth.user.id
     );
 

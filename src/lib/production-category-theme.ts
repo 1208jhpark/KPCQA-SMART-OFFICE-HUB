@@ -13,6 +13,7 @@ export const PRODUCTION_CATEGORY_THEME = {
     toggleIdle: 'bg-white text-slate-600 hover:bg-slate-50 border border-slate-200',
     folderActive: 'bg-slate-900 text-white border-slate-900 border-b-white z-10 -mb-px',
     folderIdle: FOLDER_TAB_IDLE,
+    boardBar: 'bg-slate-800 border-slate-700',
   },
   SIGN: {
     badge: 'bg-rose-600 text-white border-rose-500',
@@ -22,6 +23,7 @@ export const PRODUCTION_CATEGORY_THEME = {
     toggleIdle: 'bg-white text-rose-700 hover:bg-rose-50 border border-rose-200',
     folderActive: 'bg-rose-600 text-white border-rose-500 border-b-white z-10 -mb-px shadow-sm',
     folderIdle: FOLDER_TAB_IDLE,
+    boardBar: 'bg-rose-600 border-rose-500',
   },
   JEBON: {
     badge: 'bg-blue-600 text-white border-blue-500',
@@ -31,6 +33,7 @@ export const PRODUCTION_CATEGORY_THEME = {
     toggleIdle: 'bg-white text-blue-700 hover:bg-blue-50 border border-blue-200',
     folderActive: 'bg-blue-600 text-white border-blue-500 border-b-white z-10 -mb-px shadow-sm',
     folderIdle: FOLDER_TAB_IDLE,
+    boardBar: 'bg-blue-600 border-blue-500',
   },
   PRINT: {
     badge: 'bg-amber-500 text-white border-amber-400',
@@ -40,6 +43,7 @@ export const PRODUCTION_CATEGORY_THEME = {
     toggleIdle: 'bg-white text-amber-800 hover:bg-amber-50 border border-amber-200',
     folderActive: 'bg-amber-500 text-white border-amber-400 border-b-white z-10 -mb-px shadow-sm',
     folderIdle: FOLDER_TAB_IDLE,
+    boardBar: 'bg-amber-500 border-amber-400',
   },
   OFFICE_SUPPLIES: {
     badge: 'bg-emerald-600 text-white border-emerald-500',
@@ -49,6 +53,7 @@ export const PRODUCTION_CATEGORY_THEME = {
     toggleIdle: 'bg-white text-emerald-800 hover:bg-emerald-50 border border-emerald-200',
     folderActive: 'bg-emerald-600 text-white border-emerald-500 border-b-white z-10 -mb-px shadow-sm',
     folderIdle: FOLDER_TAB_IDLE,
+    boardBar: 'bg-emerald-600 border-emerald-500',
   },
 } as const;
 
@@ -85,4 +90,13 @@ export function getProductionCategoryFolderTabClasses(
   const key = categoryId as ProductionCategoryThemeKey;
   const theme = PRODUCTION_CATEGORY_THEME[key] ?? PRODUCTION_CATEGORY_THEME.ALL;
   return isActive ? theme.folderActive : theme.folderIdle;
+}
+
+/** 대장 헤더 바 — 선택 중인 분류 칩과 동일 배경 */
+export function getProductionCategoryBoardBarClass(categoryId: string): string {
+  const key = categoryId as ProductionCategoryThemeKey;
+  return (
+    PRODUCTION_CATEGORY_THEME[key]?.boardBar ??
+    PRODUCTION_CATEGORY_THEME.ALL.boardBar
+  );
 }

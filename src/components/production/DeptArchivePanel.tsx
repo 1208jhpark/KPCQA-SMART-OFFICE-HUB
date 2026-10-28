@@ -1,6 +1,7 @@
 'use client';
 
 import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useRouter, useSearchParams } from 'next/navigation';
 import type { StatementFileRecord } from '@/app/api/production/custom/admin/statement-file/route';
 import * as XLSX from 'xlsx';
@@ -10,7 +11,9 @@ import WindowedPagination from '@/components/common/WindowedPagination';
 import { resolveInterfaceEditState, isSystemLv1User } from '@/lib/permission-utils';
 import ProductionRequestDetailModal from '@/components/production/ProductionRequestDetailModal';
 import ProductionStatementCompareModal from '@/components/production/ProductionStatementCompareModal';
+import DeptAssigneeLine, { useDeptAssignees } from '@/components/common/DeptAssigneeLine';
 import {
+  getProductionCategoryBoardBarClass,
   getProductionCategoryFolderTabClasses,
 } from '@/lib/production-category-theme';
 import {
@@ -25,6 +28,8 @@ import {
   buildSignOrderExcelRows,
 } from '@/lib/production-sign-excel';
 import {
+  collectSuppliesQuoteAttachments,
+  downloadSuppliesQuoteAttachments,
   getOfficeQuoteLinesFromOptions,
   makeOfficeQuoteLineId,
   normalizeOfficeQuoteLines,
@@ -202,6 +207,14 @@ function isBatchHandConfirmed(batch: ArchiveBatch): boolean {
 /** 명세표 대조 저장으로 확정된 묶음 (수기 변경 없이도 대조확정) */
 function isBatchCompareConfirmed(batch: ArchiveBatch): boolean {
   return Boolean(resolveSettlementLastEdit(batch));
+}
+
+/** 파일 검수 전원일치 또는 수기/대조 저장 → 대조 확정 */
+function isBatchStatementConfirmed(batch: ArchiveBatch): boolean {
+  if (getBatchInspectStatus(batch) === 'match') return true;
+  if (isBatchHandConfirmed(batch)) return true;
+  if (isBatchCompareConfirmed(batch)) return true;
+  return false;
 }
 
 /** 마스터 보관함 이동 가능: 검수 일치 또는 명세표 대조 수기확정/대조확정 */
@@ -544,17 +557,32 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
   const isMasterDashboard = variant === 'master';
   const isMasterArchive = variant === 'master-archive';
   const isDeptArchive = variant === 'dept-archive';
-  const isSettledArchiveView = isMasterArchive || isDeptArchive;
-  /** 부서 정산완료 보관함은 조회 전용 — 선택 체크박스 불필요 */
-  const showBatchSelect = !isDeptArchive;
-  /** 대조완료/정산완료 보관함 공통 대장 표 (조직 솔트는 마스터만) */
-  const useArchiveLedgerTable = isSettledArchiveView;
+  /** admin/dept 보관함 공통 — admin archive 표 레이아웃 (부서는 API 스코프로 자기 부서만) */
+  const isArchiveBoard = isMasterArchive || isDeptArchive;
+  const isSettledArchiveView = isArchiveBoard;
+  /** 보관함·정산·대시보드 공통 선택 체크 (영구삭제는 마스터만) */
+  const showBatchSelect = true;
+  /** 구 대장 표 미사용 — 보관함은 admin archive와 동일 레이아웃 */
+  const useArchiveLedgerTable = false;
   const isDeptSettlement = variant === 'dept';
-  /** 정산·마스터 대시보드 공통: 2단 그룹헤더 + 명세표 대조 + 세로줄 */
-  const showGroupedSettlementTable = isDeptSettlement || isMasterDashboard;
-  /** 마스터 대시보드·부서 정산: 명세표 대조 상태 칼럼 (대조완료 보관함은 제외) */
-  const showStatementCompareColumn = showGroupedSettlementTable;
+  /** 정산·마스터 대시보드·보관함: 2단 그룹헤더 + 신청상세(클릭) */
+  const showGroupedSettlementTable =
+    isDeptSettlement || isMasterDashboard || isArchiveBoard;
+  /** 마스터 대시보드·부서 정산: 명세표 수기 대조 칼럼 (보관함은 명세확인금액으로 대체) */
+  const showStatementCompareColumn = isDeptSettlement || isMasterDashboard;
+  /** 명세서 업로드 검수 칼럼 — 보관함에서는 미표시 */
+  const showInspectStatusColumn = isDeptSettlement || isMasterDashboard;
+  /** 정산·마스터: 선택은 검수 칸 / 보관함: 맨 앞 칸 */
+  const showLeadingSelect = showBatchSelect && !showInspectStatusColumn;
+  /** 보관함 공통: 명세 확인 금액 */
+  const showArchiveAmountColumn = isArchiveBoard;
+  /** 마스터 보관함만: 처리자·완료처리일자 */
+  const showArchiveMetaColumns = isMasterArchive;
+  /** 신청 상세 펼침 */
+  const canExpandBatchDetail = true;
   const isMaster = isMasterDashboard || isMasterArchive;
+  /** 검수·정산과 같이 선택 분류 칩 색을 대장 헤더에 반영 */
+  const useCategoryBoardBar = isDeptSettlement || isMasterDashboard;
   const menuPath = isMasterArchive
     ? '/production/custom/admin/archive'
     : isMasterDashboard
@@ -571,6 +599,7 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
     ? `${MASTER_API_PATH}?view=settled-archive`
     : apiPath;
 
+  const { editorNames } = useDeptAssignees(menuPath);
   const router = useRouter();
   const searchParams = useSearchParams();
   const [batches, setBatches] = useState<ArchiveBatch[]>([]);
@@ -606,9 +635,16 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
   const [priceBaselines, setPriceBaselines] = useState<Record<string, string>>({});
   const [savingStatement, setSavingStatement] = useState(false);
   const [isCompareModalOpen, setIsCompareModalOpen] = useState(false);
+  const [actionMenu, setActionMenu] = useState<{ id: string; top: number; left: number } | null>(
+    null
+  );
+  const actionMenuRef = useRef<HTMLDivElement | null>(null);
 
   const selectedBatchesForCompare = useMemo(
-    () => batches.filter((b) => selectedBatchIds.has(b.id)),
+    () =>
+      batches.filter(
+        (b) => selectedBatchIds.has(b.id) && !isBatchStatementConfirmed(b)
+      ),
     [batches, selectedBatchIds]
   );
 
@@ -670,10 +706,13 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
     }
   };
 
-  const canEdit = useMemo(
-    () => resolveInterfaceEditState(currentUser, interfaceConfig).isEditor,
-    [currentUser, interfaceConfig]
-  );
+  /** 부서 정산: Access. 마스터 대시보드 비용·확정 액션: Edit. 보관함: Edit */
+  const canEdit = useMemo(() => {
+    if (isDeptSettlement) return true;
+    return resolveInterfaceEditState(currentUser, interfaceConfig).isEditor;
+  }, [currentUser, interfaceConfig, isDeptSettlement]);
+  /** 마스터 명세표 보드(기간공지·등록·공유): Access만 (Edit 미사용) */
+  const canBoardAct = isMasterDashboard;
   /** 정산완료 아카이브 영구삭제 — 시스템 LV_1만 (메뉴 Master 제외) */
   const canPurgeLv1 = useMemo(() => isSystemLv1User(currentUser), [currentUser]);
   const [purgingBatches, setPurgingBatches] = useState(false);
@@ -762,7 +801,7 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
   }, []);
 
   const handleSetStatementPublish = async (published: boolean) => {
-    if (!canEdit) return alert('편집 권한(Edit)이 없습니다.');
+    if (!canBoardAct && !canEdit) return alert('편집 권한(Edit)이 없습니다.');
     if (published === statementPublished) return;
     const label = CATEGORY_LABEL[activeCategory] || activeCategory;
     if (
@@ -838,14 +877,14 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
   };
 
   const handleOpenConfirmModal = () => {
-    if (!canEdit) return alert('편집 권한(Edit)이 없습니다.');
+    if (!canBoardAct && !canEdit) return alert('편집 권한(Edit)이 없습니다.');
     setConfirmRequestedAt(toDatetimeLocalValue(confirmRequest?.requestedAt));
     setConfirmMemo(confirmRequest?.memo || '');
     setIsConfirmModalOpen(true);
   };
 
   const handleSaveConfirmRequest = async () => {
-    if (!canEdit) return alert('편집 권한(Edit)이 없습니다.');
+    if (!canBoardAct && !canEdit) return alert('편집 권한(Edit)이 없습니다.');
     if (!confirmRequestedAt.trim()) return alert('확인 완료 기한(날짜·시간)을 선택해 주세요.');
     setConfirmSaving(true);
     try {
@@ -874,7 +913,7 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
   };
 
   const handleClearConfirmRequest = async () => {
-    if (!canEdit) return alert('편집 권한(Edit)이 없습니다.');
+    if (!canBoardAct && !canEdit) return alert('편집 권한(Edit)이 없습니다.');
     if (!confirmRequest) return;
     if (!confirm('이 코너의 확인 완료 기한을 삭제할까요?')) return;
     setConfirmSaving(true);
@@ -904,7 +943,7 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
   }, [statementFiles, activeCategory]);
 
   const handleOpenUploadModal = () => {
-    if (!canEdit) return alert('편집 권한이 필요합니다.');
+    if (!canBoardAct && !canEdit) return alert('편집 권한이 필요합니다.');
     setUploadCategory(activeCategory);
     setUploadVendorName('');
     setUploadCustomVendor('');
@@ -914,7 +953,7 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
 
   const handleUploadStatementSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!canEdit) return alert('편집 권한이 필요합니다.');
+    if (!canBoardAct && !canEdit) return alert('편집 권한이 필요합니다.');
     if (!uploadFile) return alert('업로드할 명세표 파일(PDF 또는 Excel)을 선택해 주세요.');
 
     const finalVendor = (
@@ -947,7 +986,7 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
   };
 
   const handleDeleteStatement = async (fileId: string, vendorName: string) => {
-    if (!canEdit) return alert('편집 권한이 필요합니다.');
+    if (!canBoardAct && !canEdit) return alert('편집 권한이 필요합니다.');
     if (
       !confirm(
         `[${vendorName}] 거래명세표 파일을 삭제하시겠습니까?\n삭제 시 부서 화면에서도 해당 외주사의 명세표가 노출되지 않습니다.`
@@ -1043,6 +1082,7 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
   useEffect(() => {
     setCurrentPage(1);
     setSelectedBatchIds(new Set());
+    setActionMenu(null);
   }, [
     activeCategory,
     selectedYear,
@@ -1052,6 +1092,39 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
     searchUserQuery,
     searchTitleQuery,
   ]);
+
+  useEffect(() => {
+    if (!actionMenu) return;
+    const onDoc = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (actionMenuRef.current?.contains(t)) return;
+      if ((e.target as HTMLElement | null)?.closest?.('[data-action-kebab]')) return;
+      setActionMenu(null);
+    };
+    const onWin = () => setActionMenu(null);
+    document.addEventListener('mousedown', onDoc);
+    window.addEventListener('scroll', onWin, true);
+    window.addEventListener('resize', onWin);
+    return () => {
+      document.removeEventListener('mousedown', onDoc);
+      window.removeEventListener('scroll', onWin, true);
+      window.removeEventListener('resize', onWin);
+    };
+  }, [actionMenu]);
+
+  const openActionMenu = (e: React.MouseEvent<HTMLButtonElement>, id: string) => {
+    const width = 248;
+    const r = e.currentTarget.getBoundingClientRect();
+    setActionMenu((prev) =>
+      prev?.id === id
+        ? null
+        : {
+            id,
+            top: r.bottom + 4,
+            left: Math.min(Math.max(12, r.right - width), window.innerWidth - width - 12),
+          }
+    );
+  };
 
   const orgOptions = useMemo(() => flattenUnitsInSortOrder(units), [units]);
   const organizationUnit = useMemo(
@@ -1067,8 +1140,10 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
 
   useEffect(() => {
     if (!isMaster || selectedOrg !== 'ALL' || !organizationUnit) return;
+    /** 대조완료 보관함: 전체 부서 조회를 기본으로 유지 */
+    if (isMasterArchive) return;
     setSelectedOrg(organizationUnit.id);
-  }, [isMaster, selectedOrg, organizationUnit]);
+  }, [isMaster, isMasterArchive, selectedOrg, organizationUnit]);
 
   useEffect(() => {
     if (!orgMenuOpen) return;
@@ -1212,7 +1287,7 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
     units,
   ]);
 
-  /** 마스터 아카이브 상단 통계 — 연/월·조직·검색 반영, 분류별 정산단가 합계 */
+  /** 보관함 상단 통계 — 연/월·부서·외주업체·검색 반영, 분류별 금액 합계 */
   const archiveCategoryAmountStats = useMemo(() => {
     const qUser = searchUserQuery.trim().toLowerCase();
     const qTitle = searchTitleQuery.trim().toLowerCase();
@@ -1228,9 +1303,21 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
       );
       if (selectedYear !== 'ALL' && ym?.year !== selectedYear) continue;
       if (selectedMonth !== 'ALL' && ym?.month !== selectedMonth) continue;
+      if (
+        selectedVendor !== 'ALL' &&
+        !(batch.vendors || []).includes(selectedVendor)
+      ) {
+        continue;
+      }
       for (const item of batch.items || []) {
         if (!totals[item.category]) continue;
         if (isMaster && !itemMatchesOrg(item, selectedOrg, units)) continue;
+        if (selectedVendor !== 'ALL') {
+          const itemVendor = String(
+            (item.options as { vendor?: unknown } | null | undefined)?.vendor || ''
+          ).trim();
+          if (itemVendor && itemVendor !== selectedVendor) continue;
+        }
         if (qUser && !String(item.userName || '').toLowerCase().includes(qUser)) continue;
         if (qTitle && !String(item.title || '').toLowerCase().includes(qTitle)) continue;
         const price = Number(item.finalPrice);
@@ -1245,6 +1332,7 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
     selectedYear,
     selectedMonth,
     selectedOrg,
+    selectedVendor,
     searchUserQuery,
     searchTitleQuery,
     isMaster,
@@ -1290,16 +1378,20 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
       return next;
     });
   };
+  const selectablePageBatches = showInspectStatusColumn
+    ? pageBatches.filter((b) => !isBatchStatementConfirmed(b))
+    : pageBatches;
   const allPageBatchesSelected =
-    pageBatches.length > 0 && pageBatches.every((b) => selectedBatchIds.has(b.id));
+    selectablePageBatches.length > 0 &&
+    selectablePageBatches.every((b) => selectedBatchIds.has(b.id));
 
   const handleSelectAllBatches = () => {
     setSelectedBatchIds((prev) => {
       const next = new Set(prev);
       if (allPageBatchesSelected) {
-        pageBatches.forEach((b) => next.delete(b.id));
+        selectablePageBatches.forEach((b) => next.delete(b.id));
       } else {
-        pageBatches.forEach((b) => next.add(b.id));
+        selectablePageBatches.forEach((b) => next.add(b.id));
       }
       return next;
     });
@@ -1312,6 +1404,15 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
       else next.add(batchId);
       return next;
     });
+  };
+
+  const handleOfficeQuoteDownload = (batch: ArchiveBatch) => {
+    const items =
+      activeCategory === 'ALL'
+        ? batch.items || []
+        : (batch.items || []).filter((i) => i.category === activeCategory);
+    const result = downloadSuppliesQuoteAttachments(collectSuppliesQuoteAttachments(items));
+    if (!result.ok) alert(result.message);
   };
 
   const handleBatchExcel = (batch: ArchiveBatch) => {
@@ -1399,7 +1500,12 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
       관리용제목: r.title,
       수량: `${r.quantity}${formatQuantityUnit(r)}`,
       외주업체: (r.options as any)?.vendor || '',
-      상태: productionStatusLabel(r.status, r.options as Record<string, unknown> | null),
+      상태: productionStatusLabel(
+        r.status,
+        r.options as Record<string, unknown> | null,
+        'ops',
+        r.category
+      ),
     }));
     const ws = XLSX.utils.json_to_sheet(rows);
     const wb = XLSX.utils.book_new();
@@ -1723,21 +1829,30 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
       <div className="w-full space-y-3">
         {/* 거래명세표 등록·목록 — 정산 화면만 (정산완료 보관함/아카이브 제외) */}
         {!isSettledArchiveView && (
-        <div className="rounded-2xl border border-indigo-100 bg-gradient-to-r from-indigo-50/80 via-white to-indigo-50/50 p-4 shadow-sm flex flex-col gap-3">
-          {/* 헤더: 그리드 고정 — 분류 탭 전환·메모 유무에 레이아웃이 흔들리지 않음 */}
-          <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(16rem,22rem)_auto] gap-3 items-stretch">
+        <div className="rounded-2xl border border-indigo-100 bg-gradient-to-r from-indigo-50/80 via-white to-indigo-50/50 p-4 shadow-sm flex gap-3 items-stretch">
+          <div className="flex-1 min-w-0 flex flex-col gap-3">
+          {/* 헤더: 제목 · 기한/전달(인라인) · 게시상태 — 카드형 플로팅 제거 */}
+          <div
+            className={`grid grid-cols-1 gap-3 items-center ${
+              isMasterDashboard || confirmRequest
+                ? 'lg:grid-cols-[minmax(0,1fr)_minmax(14rem,20rem)_auto]'
+                : 'lg:grid-cols-[minmax(0,1fr)_auto]'
+            }`}
+          >
             <div className="flex items-center gap-2.5 min-w-0">
               <span className="text-xl shrink-0">📑</span>
               <div className="min-w-0">
                 <div className="flex items-center gap-2 flex-wrap">
-                  <span className="text-xs font-black text-indigo-950">
-                    {isMasterDashboard ? '이달의 외주 거래명세표' : '마스터 등록 외주 거래명세표'}
-                  </span>
-                  <span className="px-2 py-0.5 rounded text-[11px] font-black bg-indigo-100 text-indigo-800 border border-indigo-200">
+                  <h2 className="text-sm font-bold text-slate-800 tracking-tight">
+                    {isMasterDashboard
+                      ? '이달의 외주 거래명세표'
+                      : '경영기획센터 등록 외주사 거래명세표'}
+                  </h2>
+                  <span className="px-2 py-0.5 rounded text-[11px] font-medium bg-indigo-100 text-indigo-800 border border-indigo-200">
                     {CATEGORY_LABEL[activeCategory] || activeCategory}
                   </span>
                   <span
-                    className={`px-2 py-0.5 rounded text-[10px] font-black ${
+                    className={`px-2 py-0.5 rounded text-[10px] font-medium ${
                       currentCategoryStatementFiles.length > 0
                         ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
                         : 'bg-slate-100 text-slate-500'
@@ -1748,102 +1863,99 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                       : '등록 명세표 없음'}
                   </span>
                 </div>
-                <p className="text-[11px] font-bold text-slate-500 mt-0.5 line-clamp-2">
-                  {isMasterDashboard
-                    ? `[${CATEGORY_LABEL[activeCategory] || activeCategory}] 코너의 외주사별 명세표(PDF/Excel)를 등록하면 부서 및 관리자 페이지 명세 대조에 즉시 연동됩니다.`
-                    : `[${CATEGORY_LABEL[activeCategory] || activeCategory}] 코너에 관리자가 등록한 외주 거래명세표 목록입니다.`}
-                </p>
+                {isMasterDashboard && (
+                  <p className="text-[11px] font-medium text-slate-500 mt-0.5">
+                    [{CATEGORY_LABEL[activeCategory] || activeCategory}] 명세표(PDF/Excel)를
+                    등록하면 각 부서 보드와 연동됩니다.
+                  </p>
+                )}
               </div>
             </div>
 
-            {/* 확인 완료 기한 · 전달사항 — 높이 고정 슬롯(분류마다 메모 길이가 달라도 영역 유지) */}
-            <div
-              className={`w-full h-[4.75rem] px-3 py-2 rounded-xl border shadow-sm flex flex-col overflow-hidden ${
-                confirmRequest
-                  ? 'bg-amber-50 border-amber-200'
-                  : 'bg-slate-50/80 border-dashed border-slate-200'
-              }`}
-            >
-              {confirmRequest ? (
-                <>
-                  <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 shrink-0">
-                    <span className="text-[10px] font-black text-amber-800 tracking-wide">
+            {(isMasterDashboard || confirmRequest) && (
+              <div className="w-full min-w-0 border-l-2 border-amber-400 pl-3 py-0.5 font-sans">
+                {confirmRequest ? (
+                  <>
+                    <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                      <span className="text-[10px] font-medium text-slate-500">
+                        확인 완료 기한
+                      </span>
+                      <span className="text-xs font-medium text-slate-800 tabular-nums">
+                        {formatConfirmRequestLabel(confirmRequest.requestedAt)}
+                      </span>
+                      {confirmRequest.updatedBy ? (
+                        <span className="text-[10px] font-medium text-slate-500 truncate max-w-[8rem]">
+                          · {confirmRequest.updatedBy}
+                        </span>
+                      ) : null}
+                    </div>
+                    {confirmRequest.memo ? (
+                      <p
+                        className="mt-0.5 text-[11px] font-medium text-slate-600 whitespace-pre-wrap break-words leading-snug line-clamp-2"
+                        title={confirmRequest.memo}
+                      >
+                        {confirmRequest.memo}
+                      </p>
+                    ) : (
+                      <p className="mt-0.5 text-[10px] font-medium text-slate-400">
+                        전달사항 없음
+                      </p>
+                    )}
+                  </>
+                ) : (
+                  <div>
+                    <span className="text-[10px] font-medium text-slate-400">
                       확인 완료 기한
                     </span>
-                    <span className="text-[12px] font-black text-amber-950 font-mono tabular-nums">
-                      {formatConfirmRequestLabel(confirmRequest.requestedAt)}
-                    </span>
-                    {confirmRequest.updatedBy ? (
-                      <span className="text-[10px] font-bold text-amber-700/80 truncate max-w-[8rem]">
-                        · {confirmRequest.updatedBy}
-                      </span>
-                    ) : null}
-                  </div>
-                  {confirmRequest.memo ? (
-                    <p
-                      className="mt-1 flex-1 min-h-0 overflow-y-auto text-[11px] font-bold text-amber-900/90 whitespace-pre-wrap break-words leading-snug"
-                      title={confirmRequest.memo}
-                    >
-                      📝 {confirmRequest.memo}
+                    <p className="mt-0.5 text-[11px] font-medium text-slate-400">
+                      이 분류에 등록된 기한·메모 없음
                     </p>
-                  ) : (
-                    <p className="mt-0.5 text-[10px] font-bold text-amber-700/60">전달사항 없음</p>
-                  )}
-                </>
-              ) : (
-                <div className="flex flex-1 flex-col justify-center">
-                  <span className="text-[10px] font-black text-slate-400 tracking-wide">
-                    확인 완료 기한
-                  </span>
-                  <p className="mt-0.5 text-[11px] font-bold text-slate-400">
-                    이 분류에 등록된 기한·메모 없음
-                  </p>
-                </div>
-              )}
-            </div>
+                  </div>
+                )}
+              </div>
+            )}
 
             <div className="flex items-center gap-2 shrink-0 flex-wrap justify-end lg:justify-self-end self-center">
               {isMasterDashboard && (
-                <>
+                <div className="flex flex-col items-stretch gap-1.5">
+                  <div className="flex items-center gap-2 flex-wrap justify-end">
                   <button
                     type="button"
-                    disabled={!canEdit}
+                    disabled={!canBoardAct}
                     onClick={handleOpenConfirmModal}
-                    title={!canEdit ? '편집 권한(Edit) 필요' : undefined}
-                    className={`px-3.5 py-1.5 rounded-xl text-xs font-black shadow-sm transition-colors flex items-center gap-1.5 ${
-                      canEdit
+                    className={`px-3.5 py-1.5 rounded-xl text-xs font-medium shadow-sm transition-colors flex items-center gap-1.5 ${
+                      canBoardAct
                         ? 'bg-amber-500 hover:bg-amber-600 text-white'
                         : DISABLED_ACTION_BTN
                     }`}
                   >
-                    <span>➕ 확인 완료 기한 등록(Edit)</span>
+                    <span>기간공지 등록</span>
                   </button>
                   <button
                     type="button"
-                    disabled={!canEdit}
+                    disabled={!canBoardAct}
                     onClick={handleOpenUploadModal}
-                    title={!canEdit ? '편집 권한(Edit) 필요' : undefined}
-                    className={`px-3.5 py-1.5 rounded-xl text-xs font-black shadow-sm transition-colors flex items-center gap-1.5 ${
-                      canEdit
+                    className={`px-3.5 py-1.5 rounded-xl text-xs font-medium shadow-sm transition-colors flex items-center gap-1.5 ${
+                      canBoardAct
                         ? 'bg-indigo-600 hover:bg-indigo-700 text-white'
                         : DISABLED_ACTION_BTN
                     }`}
                   >
                     <span>
-                      ➕ {CATEGORY_LABEL[activeCategory] || activeCategory} 명세표 등록(Edit)
+                      ➕ {CATEGORY_LABEL[activeCategory] || activeCategory} 명세표 등록
                     </span>
                   </button>
                   <div className="inline-flex items-center gap-1.5 shrink-0">
                     <span
-                      className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-[11px] font-black border shadow-sm ${
+                      className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-[11px] font-medium border shadow-sm ${
                         statementPublished
                           ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
                           : 'bg-slate-100 text-slate-500 border-slate-200'
                       }`}
                       title={
                         statementPublished
-                          ? '부서 정산 화면에 명세표가 공개된 상태입니다'
-                          : '부서 정산 화면에서 명세표가 숨겨진 상태입니다'
+                          ? '부서 정산 화면에 명세표가 공유된 상태입니다'
+                          : '부서 정산 화면에서 명세표 공유가 내려간 상태입니다'
                       }
                     >
                       <span
@@ -1855,35 +1967,42 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                     </span>
                     <button
                       type="button"
-                      disabled={!canEdit || publishBusy}
+                      disabled={!canBoardAct || publishBusy}
                       onClick={() => handleSetStatementPublish(!statementPublished)}
-                      className={`px-3.5 py-1.5 rounded-xl text-xs font-black shadow-sm transition-colors ${
-                        !canEdit || publishBusy
+                      className={`px-3.5 py-1.5 rounded-xl text-xs font-medium shadow-sm transition-colors ${
+                        !canBoardAct || publishBusy
                           ? DISABLED_ACTION_BTN
                           : statementPublished
                             ? 'bg-white text-slate-700 border border-slate-300 hover:bg-slate-50'
                             : 'bg-emerald-600 hover:bg-emerald-700 text-white'
                       }`}
                       title={
-                        !canEdit
-                          ? '편집 권한(Edit) 필요'
-                          : statementPublished
-                            ? '부서 화면에서 명세표 숨기기 · 검수/대조 비활성'
-                            : '부서 화면에 명세표 게시하기 · 검수/대조 활성'
+                        statementPublished
+                          ? '부서 화면에서 명세표 공유 내리기 · 검수/대조 비활성'
+                          : '부서 화면에 명세표 공유 올리기 · 검수/대조 활성'
                       }
                     >
                       {publishBusy
                         ? '처리 중…'
                         : statementPublished
-                          ? '숨기기(Edit)'
-                          : '게시하기(Edit)'}
+                          ? '명세표 공유 내리기'
+                          : '명세표 공유 올리기'}
                     </button>
                   </div>
-                </>
+                  </div>
+                  <div
+                    className="flex w-full items-center"
+                    title="기간공지 → 명세표 등록 → 게시 → 부서 공유"
+                    aria-hidden
+                  >
+                    <div className="h-2.5 flex-1 rounded-l-full bg-amber-500/80" />
+                    <div className="h-0 w-0 shrink-0 border-y-[10px] border-y-transparent border-l-[16px] border-l-amber-500/80" />
+                  </div>
+                </div>
               )}
               {isDeptSettlement && (
                 <div
-                  className={`shrink-0 px-2.5 py-1 rounded-lg text-[10px] font-black border ${
+                  className={`shrink-0 px-2.5 py-1 rounded-lg text-[10px] font-medium border ${
                     statementPublished
                       ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
                       : 'bg-slate-100 text-slate-500 border-slate-200'
@@ -1908,24 +2027,24 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
               {currentCategoryStatementFiles.map((file) => (
                 <div
                   key={file.id}
-                  className="p-3 bg-white/95 border border-indigo-100 rounded-xl shadow-xs flex items-center justify-between gap-3 text-xs hover:border-indigo-200 transition-colors"
+                  className="p-3 bg-white/95 border border-indigo-100 rounded-xl shadow-xs flex items-center justify-between gap-3 text-xs font-sans hover:border-indigo-200 transition-colors"
                 >
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-1.5">
-                      <span className="px-1.5 py-0.5 rounded text-[10px] font-black bg-indigo-50 text-indigo-700 border border-indigo-200 truncate max-w-[140px]">
+                      <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-indigo-50 text-indigo-700 border border-indigo-200 truncate max-w-[140px]">
                         🏢 {file.vendorName}
                       </span>
-                      <span className="text-[10px] text-slate-400 font-bold">
+                      <span className="text-[10px] text-slate-400 font-medium">
                         ({(file.fileSize / 1024).toFixed(1)} KB)
                       </span>
                     </div>
                     <p
-                      className="font-mono text-slate-800 text-[11px] font-black truncate mt-1"
+                      className="text-slate-800 text-[11px] font-medium truncate mt-1"
                       title={file.fileName}
                     >
                       {file.fileName}
                     </p>
-                    <p className="text-[10px] text-slate-400 mt-0.5">
+                    <p className="text-[10px] text-slate-400 font-medium mt-0.5 tabular-nums">
                       {getKSTDateString(file.uploadedAt)} · {file.uploadedBy}
                     </p>
                   </div>
@@ -1939,7 +2058,7 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                           '_blank'
                         )
                       }
-                      className="px-2 py-1 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-lg text-[10px] font-bold text-slate-700 transition-colors flex items-center justify-center gap-0.5"
+                      className="px-2 py-1 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-lg text-[10px] font-medium text-slate-700 transition-colors flex items-center justify-center gap-0.5"
                       title="명세표 다운로드"
                     >
                       <span>📥 다운</span>
@@ -1947,12 +2066,12 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                     {isMasterDashboard && (
                       <button
                         type="button"
-                        disabled={!canEdit}
+                        disabled={!canBoardAct}
                         onClick={() => handleDeleteStatement(file.id, file.vendorName)}
-                        className="px-2 py-1 bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-200 rounded-lg text-[10px] font-bold transition-colors"
-                        title={!canEdit ? '편집 권한 필요' : '명세표 삭제'}
+                        className="px-2 py-1 bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-200 rounded-lg text-[10px] font-medium transition-colors"
+                        title="명세표 삭제"
                       >
-                        🗑 삭제(Edit)
+                        🗑 삭제
                       </button>
                     )}
                   </div>
@@ -1969,10 +2088,22 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
             </div>
           )}
           </div>
+          </div>
+
+          {isDeptSettlement && (
+            <div
+              className="hidden sm:flex flex-col items-center self-stretch shrink-0 w-4"
+              title="명세표 확인 후 아래에서 대조"
+              aria-hidden
+            >
+              <div className="w-2.5 flex-1 min-h-[2.5rem] rounded-t-full bg-amber-500/80" />
+              <div className="h-0 w-0 border-x-[9px] border-x-transparent border-t-[12px] border-t-amber-500/80" />
+            </div>
+          )}
         </div>
         )}
 
-        {/* 마스터 아카이브: 거래명세표 영역 자리 → 분류별 정산금액 통계 */}
+        {/* 보관함: 분류별 금액 합계 통계 */}
         {isSettledArchiveView && (
           <div className="rounded-2xl border border-slate-200 bg-gradient-to-r from-slate-50 via-white to-indigo-50/40 p-4 shadow-sm flex flex-col gap-3">
             <div className="flex flex-wrap items-center justify-between gap-3">
@@ -1980,22 +2111,25 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                 <span className="text-xl shrink-0">📊</span>
                 <div>
                   <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-xs font-black text-slate-900">분류별 정산금액 합계</span>
-                    <span className="px-2 py-0.5 rounded text-[10px] font-black bg-indigo-100 text-indigo-800 border border-indigo-200">
+                    <span className="text-sm font-medium text-slate-800 tracking-tight">
+                      분류별 금액 합계
+                    </span>
+                    <span className="px-2 py-0.5 rounded text-[11px] font-medium bg-indigo-100 text-indigo-800 border border-indigo-200">
                       {selectedYear === 'ALL' ? '전체 연도' : `${selectedYear}년`}
                       {selectedMonth === 'ALL'
                         ? ' · 월 전체'
                         : ` · ${parseInt(selectedMonth, 10)}월`}
+                      {selectedVendor !== 'ALL' ? ` · ${selectedVendor}` : ''}
                     </span>
                   </div>
-                  <p className="text-[11px] font-bold text-slate-500 mt-0.5">
-                    아카이브 이관 건 기준입니다. 연·월·부서·검색 필터가 반영됩니다.
+                  <p className="text-[11px] font-medium text-slate-500 mt-0.5">
+                    연·월·부서·외주업체·검색 필터가 반영됩니다.
                   </p>
                 </div>
               </div>
               <div className="text-right shrink-0 px-3 py-1.5 rounded-xl bg-white border border-slate-200 shadow-sm">
-                <p className="text-[10px] font-bold text-slate-400">합계</p>
-                <p className="text-sm font-black text-indigo-700 font-mono tabular-nums">
+                <p className="text-[10px] font-medium text-slate-400">합계</p>
+                <p className="text-sm font-medium text-indigo-700 tabular-nums">
                   ₩{archiveStatsGrandTotal.toLocaleString('ko-KR')}
                 </p>
               </div>
@@ -2015,14 +2149,14 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                   >
                     <div className="flex items-center gap-1.5 min-w-0">
                       <span className="text-base leading-none shrink-0">{cat.icon}</span>
-                      <span className="text-[11px] font-black text-slate-700 truncate">
+                      <span className="text-[11px] font-medium text-slate-700 truncate">
                         {cat.label}
                       </span>
                     </div>
-                    <p className="text-lg font-black text-slate-900 font-mono tabular-nums tracking-tight">
+                    <p className="text-lg font-medium text-slate-900 tabular-nums tracking-tight">
                       ₩{row.amount.toLocaleString('ko-KR')}
                     </p>
-                    <p className="text-[10px] font-bold text-slate-400">
+                    <p className="text-[10px] font-medium text-slate-400">
                       {row.count.toLocaleString('ko-KR')}건
                       {row.quantity > 0
                         ? ` · 수량 ${row.quantity.toLocaleString('ko-KR')}`
@@ -2078,31 +2212,49 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
           }`}
         >
           <div
-            className={`p-4 px-6 bg-slate-200/70 border-b border-slate-300 flex flex-wrap items-center justify-between gap-4 relative ${
-              orgMenuOpen ? 'z-[80] overflow-visible' : ''
-            }`}
+            className={`p-4 px-6 border-b flex flex-wrap items-center justify-between gap-4 relative ${
+              useCategoryBoardBar
+                ? getProductionCategoryBoardBarClass(activeCategory)
+                : 'bg-slate-200/70 border-slate-300'
+            } ${orgMenuOpen ? 'z-[80] overflow-visible' : ''}`}
           >
             <div className="flex items-start gap-2">
-              <div className="w-2.5 h-2.5 rounded-full bg-slate-700 mt-1.5 shrink-0" />
+              <div
+                className={`w-2.5 h-2.5 rounded-full mt-1.5 shrink-0 ${
+                  useCategoryBoardBar ? 'bg-white' : 'bg-slate-700'
+                }`}
+              />
               <div>
-                <h2 className="text-sm font-medium text-slate-800 tracking-tight">
-                  {isMasterArchive
-                    ? '대조완료 보관함'
-                    : isDeptArchive
-                      ? '정산완료 보관함'
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h2
+                    className={`text-sm font-medium tracking-tight ${
+                      useCategoryBoardBar ? 'text-white' : 'text-slate-800'
+                    }`}
+                  >
+                    {isArchiveBoard
+                      ? '대조완료 보관함'
                       : isMaster
                         ? '전사 수령완료 묶음 대장 (명세 대조)'
-                        : '명세표 대조'}
-                </h2>
-                <p className="text-[11px] text-slate-500 font-medium mt-1">
-                  {isMasterArchive
-                    ? '마스터에서 명세 대조 확정 후 보관함으로 이관된 묶음'
-                    : isDeptArchive
-                      ? '마스터에서 정산완료 이관된 묶음 · 조회 전용'
-                      : isMaster
-                        ? '각 부서에서 수령 완료 후 이관된 묶음 · 부서별 조회 · 정산상태'
-                        : '경영기획센터에서 올린 거래명세표를 대조합니다.'}
-                </p>
+                        : '우리 부서 발주내역과 명세 대조·검수'}
+                  </h2>
+                  <DeptAssigneeLine
+                    editorNames={editorNames}
+                    onColor={useCategoryBoardBar}
+                  />
+                </div>
+                {!isDeptSettlement && (
+                  <p
+                    className={`text-[11px] font-medium mt-1 ${
+                      useCategoryBoardBar ? 'text-white/80' : 'text-slate-500'
+                    }`}
+                  >
+                    {isMasterArchive
+                      ? '마스터에서 명세 대조 확정 후 보관함으로 이관된 묶음'
+                      : isDeptArchive
+                        ? '우리 부서 이관 건만 조회 · 마스터 대조완료 보관함과 동일'
+                        : '각 부서에서 수령 완료 후 이관된 외주 발주 묶음 · 명세 대조'}
+                  </p>
+                )}
               </div>
             </div>
 
@@ -2111,7 +2263,13 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                 orgMenuOpen ? 'relative z-[90] overflow-visible' : ''
               }`}
             >
-              <span className="text-[11px] font-medium bg-slate-300/80 text-slate-700 px-2 py-0.5 rounded-md">
+              <span
+                className={`text-[11px] font-medium px-2 py-0.5 rounded-md ${
+                  useCategoryBoardBar
+                    ? 'bg-white/20 text-white'
+                    : 'bg-slate-300/80 text-slate-700'
+                }`}
+              >
                 {filteredBatches.length}묶음
               </span>
               {isMasterArchive && (
@@ -2148,7 +2306,7 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                     orgMenuOpen ? '' : 'group-hover/filter:block'
                   }`}
                 >
-                  연도 → 월 · 연계필터{isMaster ? ' / 조직은 마스터 정렬' : ''}
+                  연도 → 월 · 연계필터{isMaster ? ' / 부서는 마스터 정렬' : ''}
                 </span>
                 <span className="text-[10px] font-medium text-slate-400 uppercase leading-none">
                   연도
@@ -2184,53 +2342,71 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                     </option>
                   ))}
                 </select>
-                {isMaster && (
-                  <>
-                    <div className="w-px h-3 bg-slate-300 shrink-0" />
-                    <span className="text-[10px] font-medium text-slate-400 uppercase leading-none">
-                      조직
-                    </span>
-                    <div className="relative inline-flex items-center" ref={orgMenuRef}>
+              </div>
+              {isMaster && (
+                <div
+                  className={`relative flex items-center gap-1.5 bg-white px-2.5 rounded-lg border border-slate-200 shadow-sm h-7 box-border ${
+                    orgMenuOpen ? 'z-[90]' : ''
+                  }`}
+                  ref={orgMenuRef}
+                >
+                  <span className="text-[10px] font-medium text-slate-400 uppercase leading-none whitespace-nowrap">
+                    부서
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setOrgMenuOpen((open) => !open)}
+                    className={`max-w-[200px] truncate text-left text-[11px] leading-none py-0 px-0 m-0 h-4 inline-flex items-center border-0 appearance-none outline-none cursor-pointer bg-transparent ${
+                      selectedOrg === 'ALL'
+                        ? 'font-medium text-slate-800'
+                        : selectedOrgUnit && isBoldOrgType(selectedOrgUnit.unit_type)
+                          ? 'font-medium text-slate-900'
+                          : 'font-medium text-slate-800'
+                    }`}
+                  >
+                    {selectedOrg === 'ALL'
+                      ? '전체 부서'
+                      : selectedOrgUnit
+                        ? selectedOrgUnit.unit_name
+                        : organizationUnit?.unit_name || '부서 선택'}
+                  </button>
+                  {orgMenuOpen && (
+                    <div className="absolute right-0 top-full mt-1.5 z-[100] min-w-[240px] max-h-72 overflow-y-auto bg-white border border-slate-200 rounded-lg shadow-xl py-1">
                       <button
                         type="button"
-                        onClick={() => setOrgMenuOpen((open) => !open)}
-                        className={`max-w-[220px] truncate text-left text-[11px] leading-none py-0 px-0 m-0 h-4 inline-flex items-center border-0 appearance-none outline-none cursor-pointer bg-transparent ${
-                          selectedOrgUnit && isBoldOrgType(selectedOrgUnit.unit_type)
-                            ? 'font-medium text-slate-900'
-                            : 'font-medium text-slate-800'
+                        onClick={() => {
+                          setSelectedOrg('ALL');
+                          setOrgMenuOpen(false);
+                        }}
+                        className={`w-full text-left px-3 py-1.5 text-[11px] font-medium text-slate-800 ${
+                          selectedOrg === 'ALL' ? 'bg-indigo-50' : 'hover:bg-slate-50'
                         }`}
                       >
-                        {selectedOrgUnit
-                          ? selectedOrgUnit.unit_name
-                          : organizationUnit?.unit_name || '조직 선택'}
+                        전체 부서
                       </button>
-                      {orgMenuOpen && (
-                        <div className="absolute right-0 top-full mt-1.5 z-[100] min-w-[240px] max-h-72 overflow-y-auto bg-white border border-slate-200 rounded-lg shadow-xl py-1">
-                          {orgOptions.map((dept) => {
-                            const bold = isBoldOrgType(dept.unit_type);
-                            return (
-                              <button
-                                key={dept.id}
-                                type="button"
-                                onClick={() => {
-                                  setSelectedOrg(dept.id);
-                                  setOrgMenuOpen(false);
-                                }}
-                                className={`w-full text-left pr-3 py-1.5 text-[11px] ${
-                                  bold ? 'font-black text-slate-900' : 'font-medium text-slate-600'
-                                } ${selectedOrg === dept.id ? 'bg-indigo-50' : 'hover:bg-slate-50'}`}
-                                style={{ paddingLeft: `${12 + dept.depth * 12}px` }}
-                              >
-                                {dept.unit_name}
-                              </button>
-                            );
-                          })}
-                        </div>
-                      )}
+                      {orgOptions.map((dept) => {
+                        const bold = isBoldOrgType(dept.unit_type);
+                        return (
+                          <button
+                            key={dept.id}
+                            type="button"
+                            onClick={() => {
+                              setSelectedOrg(dept.id);
+                              setOrgMenuOpen(false);
+                            }}
+                            className={`w-full text-left pr-3 py-1.5 text-[11px] ${
+                              bold ? 'font-medium text-slate-900' : 'font-medium text-slate-600'
+                            } ${selectedOrg === dept.id ? 'bg-indigo-50' : 'hover:bg-slate-50'}`}
+                            style={{ paddingLeft: `${12 + dept.depth * 12}px` }}
+                          >
+                            {dept.unit_name}
+                          </button>
+                        );
+                      })}
                     </div>
-                  </>
-                )}
-              </div>
+                  )}
+                </div>
+              )}
               <div className="relative flex items-center gap-1.5 bg-white px-2.5 rounded-lg border border-slate-200 shadow-sm h-7 box-border">
                 <span className="text-[10px] font-medium text-slate-400 uppercase leading-none whitespace-nowrap">
                   외주업체
@@ -2302,27 +2478,41 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                     <col className="w-28" />
                   </colgroup>
                 )}
-                {isMasterDashboard && (
+                {(isMasterDashboard || isArchiveBoard) && (
                   <colgroup>
-                    <col className="w-10" />
+                    {showLeadingSelect && <col className="w-10" />}
                     <col className="w-12" />
                     <col className="w-64" />
-                    {/* 발주확정일 · 신청상세 · 발주정보 · 명세 · 관리액션 */}
+                    {/* 발주생성일 · 신청상세 · 발주정보(다운·확정일·담당) · (검수·대조·액션 | 금액·처리자·완료일) */}
                     <col />
                     <col className="w-[180px]" />
                     <col />
                     <col />
                     <col />
-                    <col />
-                    <col />
+                    {isArchiveBoard ? (
+                      <>
+                        <col />
+                        {showArchiveMetaColumns && (
+                          <>
+                            <col />
+                            <col className="w-28" />
+                          </>
+                        )}
+                      </>
+                    ) : (
+                      <>
+                        <col />
+                        <col />
+                        <col />
+                      </>
+                    )}
                   </colgroup>
                 )}
                 {isDeptSettlement && (
                   <colgroup>
-                    <col className="w-10" />
                     <col className="w-12" />
                     <col className="w-64" />
-                    {/* 발주확정일 · 신청상세 · 발주정보 · 명세 · 관리액션 */}
+                    {/* 발주생성일 · 신청상세 · 발주정보(다운·확정일·담당) · 명세 · 관리액션 */}
                     <col />
                     <col className="w-[180px]" />
                     <col />
@@ -2336,50 +2526,65 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                   {showGroupedSettlementTable && (
                     <tr>
                       <th
-                        colSpan={5}
+                        colSpan={showLeadingSelect ? 5 : 4}
                         className="bg-slate-100 text-slate-700 border-b border-r border-slate-300 font-medium text-center text-xs py-1.5 normal-case tracking-normal"
                       >
                         신청/기본정보
                       </th>
                       <th
-                        colSpan={2}
-                        className="bg-blue-50 text-blue-700 border-b border-r border-slate-300 font-medium text-center text-xs py-1.5 normal-case tracking-normal"
+                        colSpan={3}
+                        className="bg-slate-100 text-slate-700 border-b border-r border-slate-300 font-medium text-center text-xs py-1.5 normal-case tracking-normal"
                       >
-                        <div className="flex flex-col items-center gap-1 px-2">
-                          <span>발주정보</span>
-                          <div
-                            className="flex w-full max-w-full items-center"
-                            title="발주 정보"
-                            aria-hidden
-                          >
-                            <div className="h-2.5 flex-1 rounded-l-full bg-blue-500/80" />
-                            <div className="h-0 w-0 shrink-0 border-y-[10px] border-y-transparent border-l-[16px] border-l-blue-500/80" />
+                        발주정보
+                      </th>
+                      {!isArchiveBoard && (
+                        <th
+                          colSpan={2}
+                          className="bg-amber-50 text-amber-800 border-b border-r border-slate-300 font-medium text-center text-xs py-1.5 normal-case tracking-normal"
+                        >
+                          <div className="flex flex-col items-center gap-1 px-2">
+                            <span>
+                              명세 대조·검수
+                              {isMasterDashboard ? (
+                                <span className="text-indigo-600 font-medium">
+                                  (각 부서보드와 연동)
+                                </span>
+                              ) : isDeptSettlement ? (
+                                <span className="text-indigo-600 font-medium">
+                                  (경영기획센터 보드 연동)
+                                </span>
+                              ) : null}
+                            </span>
+                            <div
+                              className="flex w-full max-w-full items-center gap-1.5"
+                              title="파일 검수 또는 수기 대조 중 하나로 확정"
+                            >
+                              <div className="h-2.5 flex-1 rounded-l-full bg-amber-500/80" />
+                              <span className="shrink-0 text-[10px] font-medium text-amber-800 whitespace-nowrap">
+                                또는
+                              </span>
+                              <div className="h-2.5 flex-1 bg-amber-500/80" />
+                              <div className="h-0 w-0 shrink-0 border-y-[10px] border-y-transparent border-l-[16px] border-l-amber-500/80" />
+                            </div>
                           </div>
-                        </div>
-                      </th>
-                      <th
-                        colSpan={2}
-                        className="bg-amber-50 text-amber-800 border-b border-r border-slate-300 font-medium text-center text-xs py-1.5 normal-case tracking-normal"
-                      >
-                        <div className="flex flex-col items-center gap-1 px-2">
-                          <span>명세 대조·검수</span>
-                          <div
-                            className="flex w-full max-w-full items-center"
-                            title="명세 검수 진행 방향"
-                            aria-hidden
-                          >
-                            <div className="h-2.5 flex-1 rounded-l-full bg-amber-500/80" />
-                            <div className="h-0 w-0 shrink-0 border-y-[10px] border-y-transparent border-l-[16px] border-l-amber-500/80" />
-                          </div>
-                        </div>
-                      </th>
-                      <th className="bg-indigo-50 text-indigo-700 border-b border-indigo-200 font-medium text-center text-xs py-1.5 normal-case tracking-normal">
-                        관리 액션
-                      </th>
+                        </th>
+                      )}
+                      {isArchiveBoard ? (
+                        <th
+                          colSpan={showArchiveMetaColumns ? 3 : 1}
+                          className="bg-indigo-50 text-indigo-700 border-b border-indigo-200 font-medium text-center text-xs py-1.5 normal-case tracking-normal"
+                        >
+                          명세 대조 완료
+                        </th>
+                      ) : (
+                        <th className="bg-indigo-50 text-indigo-700 border-b border-indigo-200 font-medium text-center text-xs py-1.5 normal-case tracking-normal">
+                          관리 액션
+                        </th>
+                      )}
                     </tr>
                   )}
                   <tr className="bg-indigo-100">
-                    {showBatchSelect && (
+                    {showLeadingSelect && (
                     <th
                       className={`h-12 text-center ${
                         useArchiveLedgerTable || showGroupedSettlementTable
@@ -2421,7 +2626,11 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                           : 'w-[120px] px-4'
                       }`}
                     >
-                      발주확정일
+                      {showGroupedSettlementTable
+                        ? isDeptSettlement
+                          ? ''
+                          : '발주생성일'
+                        : '발주확정일'}
                     </th>
                     {useArchiveLedgerTable && (
                       <>
@@ -2429,7 +2638,7 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                         <th className="h-12 px-1 text-center">총 수량</th>
                       </>
                     )}
-                    {!isSettledArchiveView && (
+                    {canExpandBatchDetail && (
                       <th
                         className={`h-12 text-left border-r border-slate-300 ${
                           showGroupedSettlementTable
@@ -2449,22 +2658,17 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                     >
                       <div className="flex flex-col items-center justify-center gap-0.5 leading-tight">
                         {activeCategory === 'OFFICE_SUPPLIES' ? (
-                          <>
-                            <span className="whitespace-nowrap">외주 견적서 활용</span>
-                            <span className="text-[10px] font-medium text-indigo-700/80 normal-case tracking-normal whitespace-nowrap">
-                              (드림디포)
-                            </span>
-                          </>
+                          <span className="whitespace-nowrap">견적서</span>
                         ) : (
-                          <>
-                            <span className="whitespace-nowrap">발주서다운</span>
-                            <span className="text-[10px] font-medium text-indigo-700/80 normal-case tracking-normal whitespace-nowrap">
-                              (Edit · 엑셀)
-                            </span>
-                          </>
+                          <span className="whitespace-nowrap">발주서</span>
                         )}
                       </div>
                     </th>
+                    {showGroupedSettlementTable && (
+                      <th className="h-12 px-1 text-center whitespace-nowrap">
+                        발주확정일
+                      </th>
+                    )}
                     {(showGroupedSettlementTable || useArchiveLedgerTable) && (
                       <th
                         className={`h-12 text-left px-1 ${
@@ -2480,20 +2684,29 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                       <>
                         <th className="h-12 px-1 text-center">
                           <div className="flex flex-col items-center justify-center gap-0.5 leading-tight">
-                            <span className="whitespace-nowrap">최종 정산 금액</span>
+                            <span className="whitespace-nowrap">명세 확인 금액</span>
                             <span className="text-[9px] font-medium text-indigo-700/80 normal-case tracking-normal whitespace-nowrap">
                               (클릭·상세)
                             </span>
                           </div>
                         </th>
                         <th className="h-12 px-1 text-left">처리자</th>
-                        <th className="h-12 w-28 px-1 text-center">마감일자</th>
+                        <th className="h-12 w-28 px-1 text-center">완료처리일자</th>
                       </>
                     )}
-                    {!isSettledArchiveView && (
-                      <th className="h-12 w-[96px] min-w-[96px] max-w-[96px] px-0.5 text-center">
-                        <div className="flex flex-col items-center justify-center gap-1 px-0.5">
-                          <span className="whitespace-nowrap">명세서 업로드 검수</span>
+                    {showInspectStatusColumn && (
+                      <th
+                        className="h-12 px-0.5 text-center w-[148px] min-w-[148px] max-w-[148px]"
+                      >
+                        <div className="flex flex-col items-center justify-center gap-1 px-0.5 py-1">
+                          <span className="inline-flex items-center justify-center gap-0.5 whitespace-nowrap">
+                            명세서 업로드 검수
+                            {isMasterDashboard && (
+                              <span className="text-[10px] font-medium text-indigo-700/80 normal-case tracking-normal">
+                                (Edit)
+                              </span>
+                            )}
+                          </span>
                           <button
                             type="button"
                             onClick={openCompareModal}
@@ -2507,14 +2720,30 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                                     ? '비교할 발주 묶음을 체크박스로 선택해 주세요'
                                     : `상단 등록 명세표와 선택 ${selectedBatchIds.size}건을 대조 검수합니다`
                             }
-                            className={`px-1.5 py-1 font-medium text-[9px] rounded-lg shadow-sm whitespace-nowrap normal-case tracking-normal leading-tight ${
+                            className={`h-7 box-border inline-flex items-center justify-center px-2.5 text-[11px] font-medium rounded-lg whitespace-nowrap transition-colors ${
                               canEdit && settlementActionsEnabled
-                                ? 'bg-amber-500 hover:bg-amber-600 text-white disabled:opacity-40'
+                                ? 'bg-indigo-600 hover:bg-indigo-700 text-white'
                                 : DISABLED_ACTION_BTN
                             }`}
                           >
-                            선택 검수({selectedBatchIds.size}건)
+                            선택건 파일로 검수({selectedBatchIds.size}건)
                           </button>
+                          <input
+                            type="checkbox"
+                            onChange={handleSelectAllBatches}
+                            checked={allPageBatchesSelected}
+                            disabled={selectablePageBatches.length === 0}
+                            className={`w-3 h-3 accent-indigo-600 ${
+                              selectablePageBatches.length === 0
+                                ? 'cursor-not-allowed opacity-40'
+                                : 'cursor-pointer'
+                            }`}
+                            title={
+                              selectablePageBatches.length === 0
+                                ? '선택할 미확정 묶음이 없습니다'
+                                : '현재 페이지 전체 선택'
+                            }
+                          />
                         </div>
                       </th>
                     )}
@@ -2522,26 +2751,39 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                       <th className="h-12 w-[132px] min-w-[132px] px-1 text-center border-r border-slate-300">
                         <div className="flex flex-col items-center justify-center gap-0.5 leading-tight">
                           <span className="whitespace-nowrap">명세표 수기 대조</span>
-                          <span className="text-[10px] font-medium text-indigo-700/80 normal-case tracking-normal whitespace-nowrap">
-                            (Edit)
+                          {isMasterDashboard && (
+                            <span className="text-[10px] font-medium text-indigo-700/80 normal-case tracking-normal whitespace-nowrap">
+                              (Edit)
+                            </span>
+                          )}
+                        </div>
+                      </th>
+                    )}
+                    {showArchiveAmountColumn && (
+                      <th className="h-12 px-1 text-center">
+                        <div className="flex flex-col items-center justify-center gap-0.5 leading-tight">
+                          <span className="whitespace-nowrap">명세 확인 금액</span>
+                          <span className="text-[9px] font-medium text-indigo-700/80 normal-case tracking-normal whitespace-nowrap">
+                            (클릭·상세)
                           </span>
                         </div>
                       </th>
                     )}
+                    {showArchiveMetaColumns && (
+                      <>
+                        <th className="h-12 px-1 text-left">처리자</th>
+                        <th className="h-12 w-28 px-1 text-center">완료처리일자</th>
+                      </>
+                    )}
                     {isDeptSettlement && (
-                      <th className="h-12 w-[108px] min-w-[108px] px-0.5 text-center">
-                        <div className="flex flex-col items-center justify-center gap-0.5 leading-tight">
-                          <span className="whitespace-nowrap">↺ 발주진행</span>
-                          <span className="text-[10px] font-medium text-indigo-700/80 normal-case tracking-normal whitespace-nowrap">
-                            (Edit)
-                          </span>
-                        </div>
+                      <th className="h-12 w-[44px] min-w-[44px] px-0.5 text-center" title="보조 관리 액션">
+                        <span className="sr-only">관리 메뉴</span>
                       </th>
                     )}
                     {isMasterDashboard && (
-                      <th className="h-12 w-[88px] min-w-[88px] px-0.5 text-center">
+                      <th className="h-12 w-[120px] min-w-[120px] px-0.5 text-center">
                         <div className="flex flex-col items-center justify-center gap-0.5 leading-tight">
-                          <span className="whitespace-nowrap">보관함</span>
+                          <span className="whitespace-nowrap">명세대조 완료 처리</span>
                           <span className="text-[10px] font-medium text-indigo-700/80 normal-case tracking-normal whitespace-nowrap">
                             (Edit)
                           </span>
@@ -2555,23 +2797,18 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                     <tr>
                       <td
                         colSpan={
-                          isMasterDashboard
-                            ? 10
-                            : isDeptSettlement
-                              ? 10
-                              : useArchiveLedgerTable
-                                ? showBatchSelect
-                                  ? 11
-                                  : 10
-                                : 10
+                          isArchiveBoard
+                            ? (showBatchSelect ? 1 : 0) +
+                              7 +
+                              (showArchiveAmountColumn ? 1 : 0) +
+                              (showArchiveMetaColumns ? 2 : 0)
+                            : 10
                         }
                         className="p-16 text-center text-slate-400 text-[11px] font-medium"
                       >
-                        {isMasterArchive
+                        {isArchiveBoard
                           ? '대조완료 보관함에 이동된 묶음이 없습니다.'
-                          : isSettledArchiveView
-                            ? '정산완료 보관함에 이동된 묶음이 없습니다.'
-                            : '정산 대상 묶음이 없습니다. 검수 탭에서 수령완료 후 정산 이동해 주세요.'}
+                          : '정산 대상 묶음이 없습니다. 검수 탭에서 수령완료 후 정산 이동해 주세요.'}
                       </td>
                     </tr>
                   ) : (
@@ -2592,7 +2829,7 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                                 : 'hover:bg-indigo-50/40'
                             }`}
                           >
-                            {showBatchSelect && (
+                            {showLeadingSelect && (
                             <td
                               className={`text-center ${
                                 ledgerCell ? 'w-10 px-0' : 'px-4'
@@ -2616,11 +2853,11 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                             <td
                               className={`text-slate-800 whitespace-nowrap truncate ${
                                 ledgerCell ? 'w-64 px-3 text-left' : 'px-2 text-left'
-                              } ${isSettledArchiveView ? '' : 'cursor-pointer'}`}
+                              } ${canExpandBatchDetail ? 'cursor-pointer' : ''}`}
                               onClick={
-                                isSettledArchiveView
-                                  ? undefined
-                                  : () => toggleBatchExpand(batch.id)
+                                canExpandBatchDetail
+                                  ? () => toggleBatchExpand(batch.id)
+                                  : undefined
                               }
                               title={formatBatchDisplayName(batch.id, kind)}
                             >
@@ -2631,9 +2868,15 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                                 ledgerCell ? 'px-1' : 'px-4'
                               }`}
                             >
-                              {batch.dispatchedAt
-                                ? getKSTDateString(batch.dispatchedAt)
-                                : '-'}
+                              {showGroupedSettlementTable
+                                ? isDeptSettlement
+                                  ? null
+                                  : batch.orderedAt
+                                    ? getKSTDateString(batch.orderedAt)
+                                    : '-'
+                                : batch.dispatchedAt
+                                  ? getKSTDateString(batch.dispatchedAt)
+                                  : '-'}
                             </td>
                             {useArchiveLedgerTable && (
                               <>
@@ -2648,7 +2891,7 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                                 </td>
                               </>
                             )}
-                            {!isSettledArchiveView && (
+                            {canExpandBatchDetail && (
                               <td
                                 className={`text-left cursor-pointer border-r border-slate-200 min-w-0 ${
                                   showGroupedSettlementTable ? 'px-2' : 'px-4'
@@ -2689,12 +2932,14 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                                     items.every((i) => i.category === 'OFFICE_SUPPLIES'));
                                 if (isOffice) {
                                   return (
-                                    <span
-                                      className="inline-block text-[11px] font-medium whitespace-nowrap text-slate-500"
-                                      title="발주서 엑셀은 없습니다. 드림디포 견적서를 메일에 별첨하세요."
+                                    <button
+                                      type="button"
+                                      onClick={() => handleOfficeQuoteDownload(batch)}
+                                      title="취합 견적서 다운로드"
+                                      className="h-7 box-border inline-flex items-center justify-center px-2.5 text-[11px] font-medium rounded-lg whitespace-nowrap transition-colors bg-white hover:bg-slate-50 text-slate-700 border border-slate-200"
                                     >
-                                      +드림디포 견적서 별첨
-                                    </span>
+                                      취합 견적서↓
+                                    </button>
                                   );
                                 }
                                 return (
@@ -2709,6 +2954,13 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                                 );
                               })()}
                             </td>
+                            {showGroupedSettlementTable && (
+                              <td className="px-1 text-center text-slate-800 whitespace-nowrap">
+                                {batch.dispatchedAt
+                                  ? getKSTDateString(batch.dispatchedAt)
+                                  : '-'}
+                              </td>
+                            )}
                             {(showGroupedSettlementTable || useArchiveLedgerTable) && (
                               <td
                                 className={`text-left px-1 ${
@@ -2738,7 +2990,7 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                                         type="button"
                                         title="건별 정산금액 표 보기"
                                         onClick={() => openStatementModal(batch)}
-                                        className="text-[11px] font-black text-indigo-700 font-mono tabular-nums underline underline-offset-2 hover:text-indigo-900"
+                                        className="text-[11px] font-medium text-indigo-700 tabular-nums underline underline-offset-2 hover:text-indigo-900"
                                       >
                                         ₩{amount.toLocaleString('ko-KR')}
                                       </button>
@@ -2748,38 +3000,59 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                                 <td className="px-1 text-left">
                                   {renderPersonTwoLine(getBatchProcessor(batch))}
                                 </td>
-                                <td className="w-28 px-1 text-center font-mono text-slate-800 tabular-nums whitespace-nowrap text-[11px]">
+                                <td className="w-28 px-1 text-center text-slate-800 tabular-nums whitespace-nowrap text-[11px] font-medium">
                                   {getBatchClosingDateLabel(batch)}
                                 </td>
                               </>
                             )}
-                            {!isSettledArchiveView && (
+                            {showInspectStatusColumn && (
                               <td className="px-1 text-center">
                                 {(() => {
                                   const inspect = getBatchInspectStatus(batch);
+                                  const confirmed =
+                                    inspect === 'match' ||
+                                    isBatchHandConfirmed(batch) ||
+                                    isBatchCompareConfirmed(batch);
                                   const { matchCount, mismatchCount } =
                                     getBatchInspectCounts(batch);
-                                  if (inspect === 'match') {
-                                    return (
-                                      <span className="font-medium text-emerald-600 whitespace-nowrap">
-                                        일치{matchCount > 0 ? ` ${matchCount}건` : ''}
-                                      </span>
-                                    );
-                                  }
-                                  if (inspect === 'mismatch') {
-                                    return (
-                                      <span
-                                        className="font-medium text-rose-600 whitespace-nowrap"
-                                        title={`일치 ${matchCount}건 / 불일치 ${mismatchCount}건`}
-                                      >
-                                        불일치 {mismatchCount}건 / 일치 {matchCount}건
-                                      </span>
-                                    );
-                                  }
                                   return (
-                                    <span className="font-medium text-slate-400 whitespace-nowrap">
-                                      미검수
-                                    </span>
+                                    <div className="flex flex-col items-center justify-center gap-1">
+                                      <input
+                                        type="checkbox"
+                                        checked={
+                                          !confirmed && selectedBatchIds.has(batch.id)
+                                        }
+                                        disabled={confirmed}
+                                        onChange={() => handleSelectBatchRow(batch.id)}
+                                        className={`w-3 h-3 accent-indigo-600 ${
+                                          confirmed
+                                            ? 'cursor-not-allowed opacity-40'
+                                            : 'cursor-pointer'
+                                        }`}
+                                        title={
+                                          confirmed
+                                            ? '대조 확정된 묶음은 선택할 수 없습니다'
+                                            : '명세 대조 검수 대상 선택'
+                                        }
+                                      />
+                                      {!confirmed &&
+                                        (inspect === 'match' ? (
+                                          <span className="font-medium text-emerald-600 whitespace-nowrap">
+                                            일치{matchCount > 0 ? ` ${matchCount}건` : ''}
+                                          </span>
+                                        ) : inspect === 'mismatch' ? (
+                                          <span
+                                            className="font-medium text-rose-600 whitespace-nowrap"
+                                            title={`일치 ${matchCount}건 / 불일치 ${mismatchCount}건`}
+                                          >
+                                            불일치 {mismatchCount}건 / 일치 {matchCount}건
+                                          </span>
+                                        ) : (
+                                          <span className="font-medium text-slate-400 whitespace-nowrap">
+                                            미검수
+                                          </span>
+                                        ))}
+                                    </div>
                                   );
                                 })()}
                               </td>
@@ -2790,13 +3063,31 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                                   const handConfirmed = isBatchHandConfirmed(batch);
                                   const compareConfirmed =
                                     !handConfirmed && isBatchCompareConfirmed(batch);
-                                  const label = handConfirmed
-                                    ? '대조 확정됨'
-                                    : compareConfirmed
-                                      ? '대조 확정됨'
-                                      : '명세표 대조';
+                                  const inspectMatched =
+                                    getBatchInspectStatus(batch) === 'match';
+                                  const label = '명세표 수기 대조';
                                   const locked = !settlementActionsEnabled;
                                   const editBlocked = !canEdit;
+                                  const confirmed =
+                                    handConfirmed || compareConfirmed || inspectMatched;
+                                  if (confirmed) {
+                                    return (
+                                      <button
+                                        type="button"
+                                        onClick={() => openStatementModal(batch)}
+                                        title={
+                                          handConfirmed
+                                            ? '수기 단가 확정됨 · 다시 열어 수정 가능'
+                                            : inspectMatched
+                                              ? '파일 검수 전원 일치 · 다시 열어 확인 가능'
+                                              : '명세표 대조 확정됨 · 다시 열어 수정 가능'
+                                        }
+                                        className="font-medium text-emerald-600 whitespace-nowrap hover:underline underline-offset-2"
+                                      >
+                                        대조 확정됨
+                                      </button>
+                                    );
+                                  }
                                   return (
                                     <button
                                       type="button"
@@ -2806,19 +3097,13 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                                           ? '마스터 명세표 게시 후 이용 가능'
                                           : editBlocked
                                             ? '편집 권한 필요'
-                                          : handConfirmed
-                                            ? '수기 단가 확정됨 · 다시 열어 수정 가능'
-                                            : compareConfirmed
-                                              ? '명세표 대조 확정됨 · 다시 열어 수정 가능'
-                                              : '검수 불일치여도 수기 단가로 확정할 수 있습니다'
+                                            : '검수 불일치여도 수기 단가로 확정할 수 있습니다'
                                       }
                                       onClick={() => openStatementModal(batch)}
                                       className={`h-7 box-border inline-flex items-center justify-center px-2.5 text-[11px] font-medium rounded-lg whitespace-nowrap transition-colors ${
                                         locked || editBlocked
                                           ? DISABLED_ACTION_BTN
-                                          : handConfirmed || compareConfirmed
-                                            ? 'bg-indigo-600 hover:bg-indigo-700 text-white'
-                                            : 'bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200'
+                                          : 'bg-indigo-600 hover:bg-indigo-700 text-white'
                                       }`}
                                     >
                                       {label}
@@ -2828,23 +3113,23 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                               </td>
                             )}
                             {isDeptSettlement && (
-                              <td className="px-1 text-center">
+                              <td className="px-0.5 text-center whitespace-nowrap">
                                 <button
                                   type="button"
-                                  disabled={!canEdit}
-                                  title={
-                                    !canEdit
-                                      ? '편집 권한 필요'
-                                      : '명세대조 직전 상태(발주진행·수령검수)로 되돌립니다'
-                                  }
-                                  onClick={() => handleRevertToInspection(batch)}
-                                  className={`h-7 box-border inline-flex items-center justify-center px-2.5 text-[11px] font-medium rounded-lg w-[6.25rem] whitespace-nowrap transition-colors ${
-                                    canEdit
-                                      ? 'bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-200'
-                                      : DISABLED_ACTION_BTN
+                                  data-action-kebab
+                                  title={!canEdit ? '편집 권한 필요' : '더보기'}
+                                  onClick={(e) => openActionMenu(e, batch.id)}
+                                  className={`inline-flex items-center justify-center w-7 h-7 rounded-lg transition-colors ${
+                                    actionMenu?.id === batch.id
+                                      ? 'bg-slate-200 text-slate-800'
+                                      : 'text-slate-500 hover:bg-slate-100 hover:text-slate-800'
                                   }`}
                                 >
-                                  ↺ 발주진행
+                                  <svg viewBox="0 0 20 20" className="w-4 h-4" fill="currentColor" aria-hidden>
+                                    <circle cx="10" cy="4.5" r="1.6" />
+                                    <circle cx="10" cy="10" r="1.6" />
+                                    <circle cx="10" cy="15.5" r="1.6" />
+                                  </svg>
                                 </button>
                               </td>
                             )}
@@ -2857,7 +3142,7 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                                     title={
                                       !canEdit
                                         ? '편집 권한 필요'
-                                        : '검수 일치·대조확정 → 정산완료 아카이브로 이동'
+                                        : '검수 일치·대조확정 → 명세대조 완료 처리'
                                     }
                                     onClick={() => handleMasterArchiveBatch(batch)}
                                     className={`px-2.5 py-1 text-[11px] font-medium rounded-lg w-full whitespace-nowrap transition-colors ${
@@ -2866,16 +3151,50 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                                         : DISABLED_ACTION_BTN
                                     }`}
                                   >
-                                    →보관함 이동
+                                    완료 처리
                                   </button>
                                 ) : (
                                   <span className="font-medium text-slate-300">—</span>
                                 )}
                               </td>
                             )}
+                            {showArchiveAmountColumn && (
+                              <td className="px-1 text-center">
+                                {(() => {
+                                  const amount = getBatchFinalAmount(batch);
+                                  if (amount <= 0) {
+                                    return (
+                                      <span className="text-[10px] font-medium text-slate-300">
+                                        —
+                                      </span>
+                                    );
+                                  }
+                                  return (
+                                    <button
+                                      type="button"
+                                      title="건별 정산금액 표 보기"
+                                      onClick={() => openStatementModal(batch)}
+                                      className="text-[11px] font-medium text-indigo-700 tabular-nums underline underline-offset-2 hover:text-indigo-900"
+                                    >
+                                      ₩{amount.toLocaleString('ko-KR')}
+                                    </button>
+                                  );
+                                })()}
+                              </td>
+                            )}
+                            {showArchiveMetaColumns && (
+                              <>
+                                <td className="px-1 text-left">
+                                  {renderPersonTwoLine(getBatchProcessor(batch))}
+                                </td>
+                                <td className="w-28 px-1 text-center text-slate-800 tabular-nums whitespace-nowrap text-[11px] font-medium">
+                                  {getBatchClosingDateLabel(batch)}
+                                </td>
+                              </>
+                            )}
                           </tr>
 
-                          {!isSettledArchiveView && expanded &&
+                          {canExpandBatchDetail && expanded &&
                             (getBatchLabelKind(batch, activeCategory) === 'office' ? (
                               <tr className="bg-slate-200/90 text-slate-700 text-[10px] font-medium border-y border-slate-300">
                                 <td className="h-9 px-2 text-center border-l-4 border-l-blue-500 bg-slate-200/90">
@@ -2895,10 +3214,34 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                                 >
                                   견적 품목 (발주서~발주담당)
                                 </td>
-                                <td className="h-9 px-1 text-center text-slate-400 border-r border-slate-300">
-                                  —
-                                </td>
-                                <td className="h-9 px-1 text-center text-slate-400">—</td>
+                                {showGroupedSettlementTable ? (
+                                  isArchiveBoard ? (
+                                    <>
+                                      <td className="h-9 px-1 text-center text-slate-400">—</td>
+                                      {showArchiveMetaColumns && (
+                                        <>
+                                          <td className="h-9 px-1 text-center text-slate-400">—</td>
+                                          <td className="h-9 px-1 text-center text-slate-400">—</td>
+                                        </>
+                                      )}
+                                    </>
+                                  ) : (
+                                    <>
+                                      <td className="h-9 px-1 text-center text-slate-400">—</td>
+                                      <td className="h-9 px-1 text-center text-slate-400 border-r border-slate-300">
+                                        —
+                                      </td>
+                                      <td className="h-9 px-1 text-center text-slate-400">—</td>
+                                    </>
+                                  )
+                                ) : (
+                                  <>
+                                    <td className="h-9 px-1 text-center text-slate-400 border-r border-slate-300">
+                                      —
+                                    </td>
+                                    <td className="h-9 px-1 text-center text-slate-400">—</td>
+                                  </>
+                                )}
                               </tr>
                             ) : (
                               <tr className="bg-slate-200/90 text-slate-700 text-[10px] font-medium border-y border-slate-300">
@@ -2912,17 +3255,34 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                                   부서·이름
                                 </td>
                                 <td className="h-9 px-1 text-center whitespace-nowrap">원문확인</td>
+                                {showGroupedSettlementTable && (
+                                  <td className="h-9 px-1 text-center text-slate-400">—</td>
+                                )}
                                 <td className="h-9 px-1 text-center text-slate-400 border-r border-slate-300">
                                   —
                                 </td>
-                                <td className="h-9 px-1 text-center text-slate-400">—</td>
-                                <td className="h-9 px-1 text-center text-slate-400 border-r border-slate-300">
-                                  —
-                                </td>
-                                <td className="h-9 px-1 text-center text-slate-400">—</td>
+                                {isArchiveBoard ? (
+                                  <>
+                                    <td className="h-9 px-1 text-center text-slate-400">—</td>
+                                    {showArchiveMetaColumns && (
+                                      <>
+                                        <td className="h-9 px-1 text-center text-slate-400">—</td>
+                                        <td className="h-9 px-1 text-center text-slate-400">—</td>
+                                      </>
+                                    )}
+                                  </>
+                                ) : (
+                                  <>
+                                    <td className="h-9 px-1 text-center text-slate-400">—</td>
+                                    <td className="h-9 px-1 text-center text-slate-400 border-r border-slate-300">
+                                      —
+                                    </td>
+                                    <td className="h-9 px-1 text-center text-slate-400">—</td>
+                                  </>
+                                )}
                               </tr>
                             ))}
-                          {!isSettledArchiveView &&
+                          {canExpandBatchDetail &&
                             expanded &&
                             (batch.items || []).flatMap((item, itemIdx) => {
                               const officeStats =
@@ -2939,14 +3299,35 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                                   —
                                 </td>
                               );
-                              const trailing = (
+                              const trailing = isArchiveBoard ? (
                                 <>
+                                  {dashTd('t0')}
+                                  {dashTd('t1', 'border-r border-slate-300')}
+                                  {showArchiveAmountColumn && dashTd('t2')}
+                                  {showArchiveMetaColumns && (
+                                    <>
+                                      {dashTd('t3')}
+                                      {dashTd('t4')}
+                                    </>
+                                  )}
+                                </>
+                              ) : (
+                                <>
+                                  {showGroupedSettlementTable && dashTd('t0')}
                                   {dashTd('t1', 'border-r border-slate-300')}
                                   {dashTd('t2')}
                                   {dashTd('t3', 'border-r border-slate-300')}
                                   {dashTd('t4')}
                                 </>
                               );
+                              const settleColSpan = isArchiveBoard
+                                ? (showBatchSelect ? 1 : 0) +
+                                  7 +
+                                  (showArchiveAmountColumn ? 1 : 0) +
+                                  (showArchiveMetaColumns ? 2 : 0)
+                                : 10;
+                              /** 발주서다운 · (발주확정일) · 발주담당자 */
+                              const officeQuoteColSpan = 3;
 
                               if (item.category === 'OFFICE_SUPPLIES') {
                                 const canForceEdit =
@@ -3022,17 +3403,44 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                                       </span>
                                     </td>
                                     <td
-                                      colSpan={3}
+                                      colSpan={officeQuoteColSpan}
                                       className="px-2 text-center text-[10px] font-medium text-slate-400 border-r border-slate-300 bg-slate-50/80"
                                     >
                                       견적 {lineRows.length}품목 ↓
                                     </td>
-                                    <td className="px-1 text-center text-slate-300 border-r border-slate-300 bg-slate-50/80">
-                                      —
-                                    </td>
-                                    <td className="px-1 text-center text-slate-300 bg-slate-50/80">
-                                      —
-                                    </td>
+                                    {isArchiveBoard ? (
+                                      <>
+                                        {showArchiveAmountColumn && (
+                                          <td className="px-1 text-center text-slate-300 bg-slate-50/80">
+                                            —
+                                          </td>
+                                        )}
+                                        {showArchiveMetaColumns && (
+                                          <>
+                                            <td className="px-1 text-center text-slate-300 bg-slate-50/80">
+                                              —
+                                            </td>
+                                            <td className="px-1 text-center text-slate-300 bg-slate-50/80">
+                                              —
+                                            </td>
+                                          </>
+                                        )}
+                                      </>
+                                    ) : (
+                                      <>
+                                        {showGroupedSettlementTable && (
+                                          <td className="px-1 text-center text-slate-300 bg-slate-50/80">
+                                            —
+                                          </td>
+                                        )}
+                                        <td className="px-1 text-center text-slate-300 border-r border-slate-300 bg-slate-50/80">
+                                          —
+                                        </td>
+                                        <td className="px-1 text-center text-slate-300 bg-slate-50/80">
+                                          —
+                                        </td>
+                                      </>
+                                    )}
                                   </tr>
                                 );
 
@@ -3062,7 +3470,7 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                                       —
                                     </td>
                                     <td
-                                      colSpan={3}
+                                      colSpan={officeQuoteColSpan}
                                       className="px-2 text-left border-r border-slate-300 bg-slate-50/50"
                                       title={line.productName || ''}
                                     >
@@ -3141,12 +3549,39 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                                         </div>
                                       )}
                                     </td>
-                                    <td className="px-1 text-center text-slate-300 border-r border-slate-300 bg-slate-50/50">
-                                      —
-                                    </td>
-                                    <td className="px-1 text-center text-slate-300 bg-slate-50/50">
-                                      —
-                                    </td>
+                                    {isArchiveBoard ? (
+                                      <>
+                                        {showArchiveAmountColumn && (
+                                          <td className="px-1 text-center text-slate-300 bg-slate-50/50">
+                                            —
+                                          </td>
+                                        )}
+                                        {showArchiveMetaColumns && (
+                                          <>
+                                            <td className="px-1 text-center text-slate-300 bg-slate-50/50">
+                                              —
+                                            </td>
+                                            <td className="px-1 text-center text-slate-300 bg-slate-50/50">
+                                              —
+                                            </td>
+                                          </>
+                                        )}
+                                      </>
+                                    ) : (
+                                      <>
+                                        {showGroupedSettlementTable && (
+                                          <td className="px-1 text-center text-slate-300 bg-slate-50/50">
+                                            —
+                                          </td>
+                                        )}
+                                        <td className="px-1 text-center text-slate-300 border-r border-slate-300 bg-slate-50/50">
+                                          —
+                                        </td>
+                                        <td className="px-1 text-center text-slate-300 bg-slate-50/50">
+                                          —
+                                        </td>
+                                      </>
+                                    )}
                                   </tr>
                                 ));
 
@@ -3159,7 +3594,7 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                                         className="bg-amber-50/70 border-y border-slate-200"
                                       >
                                         <td
-                                          colSpan={10}
+                                          colSpan={settleColSpan}
                                           className="px-3 py-2 border-l-4 border-l-blue-500"
                                         >
                                           <div className="flex flex-wrap items-center justify-end gap-2">
@@ -3210,7 +3645,7 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                                         className="bg-slate-50/80 border-y border-slate-200"
                                       >
                                         <td
-                                          colSpan={10}
+                                          colSpan={settleColSpan}
                                           className="px-3 py-2 text-right border-l-4 border-l-blue-500"
                                         >
                                           <button
@@ -3545,7 +3980,11 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                       title={!canEdit ? '편집 권한 필요' : '명세표 대조 저장'}
                       className="px-4 py-2.5 rounded-xl text-[11px] font-black text-white bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50"
                     >
-                      {savingStatement ? '저장 중…' : '대조 저장(Edit)'}
+                      {savingStatement
+                        ? '저장 중…'
+                        : isDeptSettlement
+                          ? '대조 저장'
+                          : '대조 저장(Edit)'}
                     </button>
                   </>
                 )}
@@ -3612,7 +4051,7 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                 onClick={handleClearConfirmRequest}
                 className="px-3 py-2 rounded-xl text-xs font-black text-rose-600 bg-rose-50 hover:bg-rose-100 border border-rose-200 disabled:opacity-40"
               >
-                기한 삭제(Edit)
+                기한 삭제
               </button>
               <div className="flex items-center gap-2">
                 <button
@@ -3783,6 +4222,31 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
           </form>
         </div>
       )}
+
+      {isDeptSettlement &&
+        actionMenu &&
+        createPortal(
+          <div
+            ref={actionMenuRef}
+            style={{ top: actionMenu.top, left: actionMenu.left }}
+            className="fixed z-[500] w-[248px] rounded-xl border border-slate-200 bg-white shadow-lg py-1 text-left"
+          >
+            <button
+              type="button"
+              disabled={!canEdit}
+              className="w-full px-3 py-2 text-left text-[11px] font-medium text-rose-600 hover:bg-rose-50 disabled:opacity-50 disabled:text-slate-400 disabled:hover:bg-white whitespace-nowrap"
+              onClick={() => {
+                const batch = batches.find((b) => b.id === actionMenu.id);
+                setActionMenu(null);
+                if (!batch) return;
+                void handleRevertToInspection(batch);
+              }}
+            >
+              ↺ 발주진행 · 이전 단계 복구
+            </button>
+          </div>,
+          document.body
+        )}
 
       {detailItem && (
         <ProductionRequestDetailModal

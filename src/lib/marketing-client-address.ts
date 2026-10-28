@@ -4,6 +4,29 @@
  * - 제작 실배송지 연동 시: zip→shippingZipCode, road→shippingAddressRoad, detail→shippingAddressDetail
  */
 
+/** 저장용 표시명 — trim + 연속 공백 축약 */
+export function normalizeMarketingClientName(name: unknown): string {
+  return String(name ?? '')
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
+/**
+ * 고객사명 중복 판정 키
+ * - `(주)` / `㈜` / `주식회사` 무시
+ * - 공백·대소문자 무시 (공백 차이 = 동일 회사명)
+ */
+export function marketingClientNameDupKey(name: unknown): string {
+  return String(name ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/주식회사/g, '')
+    .replace(/\(주\)/g, '')
+    .replace(/（주）/g, '')
+    .replace(/㈜/g, '')
+    .replace(/\s+/g, '');
+}
+
 export type MarketingClientAddressParts = {
   zip_code?: string | null;
   address_road?: string | null;

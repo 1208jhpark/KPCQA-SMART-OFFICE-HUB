@@ -401,7 +401,7 @@ export async function GET() {
 /** [PUT] 명세서 검수 결과 저장 */
 export async function PUT(req: Request) {
   try {
-    const auth = await authorizeApi(MENU_PATH, { requireEditor: true });
+    const auth = await authorizeApi(MENU_PATH);
     const scope = buildSettlementScope(auth);
     if (!scope || isProductionScopeEmpty(scope)) {
       return NextResponse.json(
@@ -436,7 +436,7 @@ export async function POST(req: Request) {
 
     if (action === 'inspect') {
       // UI는 PUT 사용. POST는 호환용 — 로직은 persistInspectBatches 한곳만.
-      const auth = await authorizeApi(MENU_PATH, { requireEditor: true });
+      const auth = await authorizeApi(MENU_PATH);
       const scope = buildSettlementScope(auth);
       if (!scope || isProductionScopeEmpty(scope)) {
         return NextResponse.json(
@@ -453,7 +453,7 @@ export async function POST(req: Request) {
     }
 
     if (action === 'statement-match') {
-      const auth = await authorizeApi(MENU_PATH, { requireEditor: true });
+      const auth = await authorizeApi(MENU_PATH);
       const scope = buildSettlementScope(auth);
       if (!scope || isProductionScopeEmpty(scope)) {
         return NextResponse.json(
@@ -557,7 +557,7 @@ export async function POST(req: Request) {
 
     // 정산 → 검수 되돌리기 (inspection의 archive-batch 반대)
     if (action === 'revert-to-inspection') {
-      const auth = await authorizeApi(MENU_PATH, { requireEditor: true });
+      const auth = await authorizeApi(MENU_PATH);
       const scope = buildSettlementScope(auth);
       if (!scope || isProductionScopeEmpty(scope)) {
         return NextResponse.json(
@@ -623,7 +623,7 @@ export async function POST(req: Request) {
     // 정상 UI는 inspection `archive-batch` 사용.
     // settlement에도 동일 action·메타를 맞춰 두면 경로가 갈라져도 이관자 기록이 비지 않음.
     if (action === 'archive-batch') {
-      const auth = await authorizeApi(MENU_PATH, { requireEditor: true });
+      const auth = await authorizeApi(MENU_PATH);
       const scope = buildSettlementScope(auth);
       if (!scope || isProductionScopeEmpty(scope)) {
         return NextResponse.json(

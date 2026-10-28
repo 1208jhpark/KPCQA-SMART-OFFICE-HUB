@@ -133,7 +133,8 @@ export async function GET(req: Request) {
  */
 export async function POST(req: Request) {
   try {
-    const auth = await authorizeApi(MASTER_PATH, { requireEditor: true });
+    // 마스터 대시보드 Access면 업로드 가능 — Edit 미사용
+    const auth = await authorizeApi(MASTER_PATH);
     await ensureDir();
 
     const formData = await req.formData();
@@ -217,7 +218,7 @@ export async function POST(req: Request) {
  */
 export async function DELETE(req: Request) {
   try {
-    await authorizeApi(MASTER_PATH, { requireEditor: true });
+    await authorizeApi(MASTER_PATH);
     await ensureDir();
 
     let targetId: string | null = null;

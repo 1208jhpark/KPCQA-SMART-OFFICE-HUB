@@ -13,6 +13,7 @@ import { isGlobalMgmtOrgMember } from '@/utils/orgUnits';
 import { SNOOZABLE_ALARM_IDS } from '@/lib/alarm-snooze';
 import { SUPPLY_REQUEST_PENDING_STATUSES } from '@/utils/supplyRequestStatus';
 import { hashSurveyParticipantEmail } from '@/lib/survey-anonymous-hash';
+import { isCustomerDirectShip } from '@/lib/production-shipping';
 
 export type HomeAlarm = {
   id: string;
@@ -739,21 +740,29 @@ export async function buildHomeAlarms(user: SessionUser): Promise<HomeAlarm[]> {
       }
     })(),
     (async () => {
-      // apply/history 「수령완료」(VERIFIED) · inspection에서 명세대조(보관) 이동 전
+      // apply/history 「수령완료」(VERIFIED) · 명세대조 이동 전
+      // 고객사 직발송(발주확정 시 완료)은 수령 대기 알람 제외
       const rows = await prisma.productionRequest.findMany({
         where: {
           isArchived: false,
           status: 'VERIFIED',
           userEmail: { equals: email, mode: 'insensitive' },
         },
-        select: { updatedAt: true, createdAt: true },
+        select: { updatedAt: true, createdAt: true, category: true, options: true },
       });
+      const hqReceiveRows = rows.filter(
+        (r) =>
+          !isCustomerDirectShip({
+            category: r.category,
+            options: (r.options as Record<string, unknown> | null) || null,
+          })
+      );
       pushAlarm(alarms, {
         id: 'prod-receive',
         label: '[제작물] 물품 수령 대기',
-        count: rows.length,
+        count: hqReceiveRows.length,
         href: '/production/custom/my-orders/history',
-        at: maxAt(...rows.map((r) => maxAt(r.updatedAt, r.createdAt))),
+        at: maxAt(...hqReceiveRows.map((r) => maxAt(r.updatedAt, r.createdAt))),
       });
     })(),
     (async () => {

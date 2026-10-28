@@ -175,7 +175,8 @@ export async function POST(req: Request) {
 
 export async function PUT(req: Request) {
   try {
-    await authorizeAnyMenuPaths(READ_PATHS, { requireEditor: true });
+    // 부서 공정(발주/원문검수 등) Access면 수정 가능 — Edit 미사용
+    await authorizeAnyMenuPaths(READ_PATHS);
     const body = await req.json();
     const id = String(body.id || '').trim();
     if (!id) return NextResponse.json({ message: '업체 ID가 필요합니다.' }, { status: 400 });

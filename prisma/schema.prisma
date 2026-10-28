@@ -91,6 +91,8 @@ model User {
 
   /// 제작물 검수 — 개인 그룹웨어 메일 바로가기 URL (미설정 시 부서 설정 폴백)
   prod_mail_shortcut_url     String @default("")
+  /// 제작물 검수(사무문구) — 개인 그룹웨어 결재 기안 바로가기 URL
+  prod_groupware_approval_url String @default("")
   /// 제작물 검수 — 개인 메일 제목/본문 양식 (미설정 시 부서·시스템 기본)
   prod_mail_subject_template String @default("")
   prod_mail_body_template    String @default("")

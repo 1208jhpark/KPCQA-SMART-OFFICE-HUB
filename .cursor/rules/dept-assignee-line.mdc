@@ -1,0 +1,29 @@
+---
+description: 부서 Edit 표 헤더에 부서 담당자 팝업 붙이기
+globs: src/components/{asset,production,marketing,equipment,survey}/**/*.{ts,tsx}
+alwaysApply: false
+---
+
+# 부서 담당자 (Edit 표 헤더)
+
+부서 화면에서 **수정(Edit)·삭제(Edit)** 같은 Edit 장부가 있는 접힘 표만, 누가 수정할 수 있는지 헤더에서 바로 확인하게 한다. 조회·실사·정보수정 요청만 있는 목록(예: `/equipment/it/dept` 부서 업무자산 목록)에는 넣지 않는다.
+
+## UI
+
+- 회색 서브텍스트(예: `부서 전용 장부 · …`) **바로 옆**에 `DeptAssigneeLine` (사람 아이콘 + 파란 `부서 담당자`).
+- 클릭 시 제목 행을 늘리지 말고 **portal 메모 팝업** (`z-[500]`, 최소 가로 520px, 이름 5명 한 줄).
+- 팝업: 파란 라벨 `부서 편집 담당자` + 이름 나열. **알람 수신 담당자는 넣지 않음.**
+- `overflow-hidden` 카드 안에 absolute 팝업을 두지 말 것.
+
+```tsx
+import DeptAssigneeLine, { useDeptAssignees } from '@/components/common/DeptAssigneeLine';
+
+const { editorNames } = useDeptAssignees('/equipment/it/dept');
+<DeptAssigneeLine editorNames={editorNames} />
+```
+
+## 데이터
+
+- `useDeptAssignees(menuPath)` → `GET /api/admin/interface/dept-assignees?path=`
+- **부서 편집 담당자**: 로그인 사용자 **본인 부서** Active 중 해당 메뉴 `isEditor`
+- 전사 LV_1·다른 부서 지정자는 넣지 않음.

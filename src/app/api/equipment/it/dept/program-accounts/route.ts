@@ -188,17 +188,17 @@ export async function GET(req: Request) {
   }
 }
 
-/** [POST] 신규 등록 — Edit 필요 */
+/** [POST] 신규 등록 — 메뉴 Access(열람 범위)면 가능, Edit 불필요 */
 export async function POST(req: Request) {
   try {
     const ctx = await loadAuthContext();
-    if (!ctx.isEditor || ctx.editableUnits.length === 0) {
-      return NextResponse.json({ error: '등록 권한이 없습니다. (Edit 필요)' }, { status: 403 });
+    if (ctx.accessibleUnits.length === 0) {
+      return NextResponse.json({ error: '등록 권한이 없습니다.' }, { status: 403 });
     }
 
     const body = await req.json().catch(() => ({}));
     const unitId = String(body.unit_id || ctx.myUnit.id).trim();
-    const target = ctx.editableUnits.find((u) => u.id === unitId);
+    const target = ctx.accessibleUnits.find((u) => u.id === unitId);
     if (!target) {
       return NextResponse.json({ error: '해당 조직에 등록할 권한이 없습니다.' }, { status: 403 });
     }

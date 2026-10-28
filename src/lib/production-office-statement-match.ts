@@ -115,6 +115,79 @@ export function applyOfficeQuoteLinesToOptions(
   };
 }
 
+export type SuppliesQuoteAttachment = {
+  fileName: string;
+  storedFileName?: string;
+  fileSize?: number;
+  mimeType?: string;
+  url: string;
+  uploadedAt?: string;
+};
+
+/** 신청 options에 저장된 드림디포 견적서 첨부 */
+export function getSuppliesQuoteAttachment(
+  options: unknown
+): SuppliesQuoteAttachment | null {
+  if (!options || typeof options !== 'object' || Array.isArray(options)) return null;
+  const raw = (options as Record<string, unknown>).suppliesQuoteAttachment;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const rec = raw as Record<string, unknown>;
+  const url = String(rec.url || '').trim();
+  if (!url) return null;
+  const fileName = String(rec.fileName || rec.storedFileName || '').trim();
+  return {
+    fileName: fileName || '드림디포_견적서',
+    storedFileName: rec.storedFileName ? String(rec.storedFileName) : undefined,
+    fileSize: typeof rec.fileSize === 'number' ? rec.fileSize : undefined,
+    mimeType: rec.mimeType ? String(rec.mimeType) : undefined,
+    url,
+    uploadedAt: rec.uploadedAt ? String(rec.uploadedAt) : undefined,
+  };
+}
+
+export function formatSuppliesQuoteFileSize(bytes?: number): string {
+  if (!bytes || bytes <= 0) return '';
+  if (bytes < 1024) return `${bytes}B`;
+  return `${Math.max(1, Math.round(bytes / 1024))}KB`;
+}
+
+export function collectSuppliesQuoteAttachments(
+  items: Array<{ options?: unknown } | null | undefined>
+): SuppliesQuoteAttachment[] {
+  const out: SuppliesQuoteAttachment[] = [];
+  for (const item of items) {
+    const att = getSuppliesQuoteAttachment(item?.options);
+    if (att) out.push(att);
+  }
+  return out;
+}
+
+/** 브라우저에서 견적서 첨부 다운로드 (여러 건이면 순차) */
+export function downloadSuppliesQuoteAttachments(
+  attachments: SuppliesQuoteAttachment[]
+): { ok: boolean; message?: string } {
+  const files = attachments.filter((a) => String(a.url || '').trim());
+  if (files.length === 0) {
+    return { ok: false, message: '신청 시 첨부된 드림디포 견적서가 없습니다.' };
+  }
+  if (typeof document === 'undefined') {
+    return { ok: false, message: '다운로드를 실행할 수 없습니다.' };
+  }
+  files.forEach((f, i) => {
+    window.setTimeout(() => {
+      const a = document.createElement('a');
+      a.href = f.url;
+      a.download = f.fileName || '드림디포_견적서';
+      a.target = '_blank';
+      a.rel = 'noopener noreferrer';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    }, i * 200);
+  });
+  return { ok: true };
+}
+
 /** 견적 줄 목록 — 강제수정본(suppliesQuoteLines) 우선, 없으면 붙여넣기 파싱 */
 export function getOfficeQuoteLinesFromOptions(
   options: Record<string, unknown> | null | undefined
@@ -151,6 +224,104 @@ export function normalizeOfficeQuoteLines(raw: unknown): OfficeQuoteLine[] {
     });
   }
   return out;
+}
+
+const QUOTE_AOA_FOOTER = /배송료|결제금액|공급가액|총합계|총액|^합계$/;
+
+function compactOfficeQuoteCell(v: unknown) {
+  return String(v ?? '')
+    .replace(/\s+/g, '')
+    .trim();
+}
+
+type OfficeQuoteAoaCol = 'no' | 'code' | 'name' | 'price' | 'qty' | 'sum';
+
+function mapOfficeQuoteAoaHeader(h: unknown): OfficeQuoteAoaCol | null {
+  const t = compactOfficeQuoteCell(h);
+  if (!t || /사업자/.test(t)) return null;
+  if (t.includes('번호')) return 'no';
+  if (t.includes('코드')) return 'code';
+  if (t.includes('제품명') || t.includes('품명') || t.includes('품목')) return 'name';
+  if (t.includes('단가')) return 'price';
+  if (t.includes('수량')) return 'qty';
+  if (t.includes('합계') || t === '금액') return 'sum';
+  return null;
+}
+
+function findOfficeQuoteAoaHeaderRow(aoa: unknown[][]): number {
+  const max = Math.min(aoa.length, 40);
+  for (let i = 0; i < max; i++) {
+    const row = Array.isArray(aoa[i]) ? aoa[i] : [];
+    const cells = row.map(compactOfficeQuoteCell);
+    const hasName = cells.some(
+      (c) => c.includes('제품명') || c.includes('품명') || c.includes('품목')
+    );
+    const hasQty = cells.some((c) => c.includes('수량'));
+    if (hasName && hasQty) return i;
+  }
+  return -1;
+}
+
+/** 드림디포 견적서 시트(번호/코드/제품명/단가/수량/합계) → 줄 목록 */
+export function parseOfficeQuoteFromAoa(aoa: unknown[][]): OfficeQuoteLine[] {
+  if (!Array.isArray(aoa) || aoa.length === 0) return [];
+  const headerIdx = findOfficeQuoteAoaHeaderRow(aoa);
+  if (headerIdx < 0) return [];
+  const headerRow = Array.isArray(aoa[headerIdx]) ? aoa[headerIdx] : [];
+  const colOf: Partial<Record<OfficeQuoteAoaCol, number>> = {};
+  headerRow.forEach((h, i) => {
+    const key = mapOfficeQuoteAoaHeader(h);
+    if (key && colOf[key] == null) colOf[key] = i;
+  });
+  if (colOf.name == null) return [];
+
+  const raw: unknown[] = [];
+  for (let r = headerIdx + 1; r < aoa.length; r++) {
+    const row = Array.isArray(aoa[r]) ? aoa[r] : [];
+    const filled = row.map((c) => String(c ?? '').trim()).filter(Boolean);
+    if (filled.length === 0) continue;
+    const text = compactOfficeQuoteCell(filled.join(''));
+    if (QUOTE_AOA_FOOTER.test(text)) break;
+
+    const pick = (key: OfficeQuoteAoaCol) => {
+      const idx = colOf[key];
+      return idx == null ? '' : row[idx] ?? '';
+    };
+    const productName = String(pick('name') ?? '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    const noText = String(pick('no') ?? '').trim();
+    const qtyNum = parseMoney(pick('qty'));
+    if (!productName) continue;
+    if (!/^\d+$/.test(noText) && !(qtyNum > 0)) continue;
+
+    raw.push({
+      lineNo: parseMoney(pick('no')) || 0,
+      code: String(pick('code') ?? '').trim(),
+      productName,
+      unitPrice: parseMoney(pick('price')),
+      qty: qtyNum || 1,
+      supplyPrice: parseMoney(pick('sum')),
+    });
+  }
+  return normalizeOfficeQuoteLines(raw);
+}
+
+/** 워크북에서 견적 본문 시트 1장을 골라 품목 파싱 (빈 Sheet2/3 제외) */
+export function parseOfficeQuoteFromWorkbook(
+  workbook: OfficeSheetWorkbook | null | undefined,
+  sheetToJson: (sheet: unknown) => unknown[][]
+): OfficeQuoteLine[] {
+  if (!workbook) return [];
+  for (const name of workbook.SheetNames || []) {
+    const compact = String(name || '').replace(/\s+/g, '');
+    if (/^sheet[23]$/i.test(compact)) continue;
+    const sheet = workbook.Sheets?.[name];
+    if (!sheet) continue;
+    const lines = parseOfficeQuoteFromAoa(sheetToJson(sheet));
+    if (lines.length > 0) return lines;
+  }
+  return [];
 }
 
 export type OfficeSheetWorkbook = {
@@ -198,6 +369,86 @@ export function mergeOfficeProductAliases(
     );
   }
   return merged;
+}
+
+export type OfficeAliasLearnPair = {
+  quoteName: string;
+  stmtName: string;
+  code?: string;
+};
+
+/** 자동/수기 매칭된 견적명 ↔ 명세 품명 짝 */
+export function collectOfficeAliasLearnPairs(
+  itemMatches: ItemMatchResult[],
+  statementRows: ParsedStatementRow[]
+): OfficeAliasLearnPair[] {
+  const out: OfficeAliasLearnPair[] = [];
+  const seen = new Set<string>();
+  const rowByIndex = new Map(statementRows.map((r) => [r.rawIndex, r]));
+
+  for (const m of itemMatches || []) {
+    if (m.matchStatus !== 'match' && !m.adminOverride) continue;
+    if (m.matchedRowIndex == null) continue;
+    const quoteName = String(m.plateLabel || '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!quoteName || quoteName === '견적 품목 미파싱') continue;
+    const row = rowByIndex.get(m.matchedRowIndex);
+    const stmtName = String(row?.categoryTitle || row?.rawItem || '')
+      .replace(/^\[[^\]]+\]\s*/, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (stmtName.length < 2 || quoteName.length < 2) continue;
+    if (QUOTE_AOA_FOOTER.test(compactOfficeQuoteCell(stmtName))) continue;
+    if (normalizeKo(quoteName) === normalizeKo(stmtName)) continue;
+    const key = `${normalizeKo(quoteName)}|${normalizeKo(stmtName)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const code = String(m.certType || m.plateSize || '').trim();
+    out.push({
+      quoteName,
+      stmtName,
+      ...(code && /^\d{4,}$/.test(code) ? { code } : {}),
+    });
+  }
+  return out;
+}
+
+/** 명세 축약명 그룹에 견적 풀네임(·코드)을 별칭으로 누적 */
+export function mergeLearnedOfficeProductAliases(
+  existing: Record<string, string[]> | null | undefined,
+  pairs: OfficeAliasLearnPair[]
+): { next: Record<string, string[]>; added: number } {
+  const next = sanitizeOfficeProductAliases(existing);
+  let added = 0;
+  const push = (rawKey: string, rawAlias: string) => {
+    const key = String(rawKey || '')
+      .trim()
+      .slice(0, 80);
+    const alias = String(rawAlias || '')
+      .trim()
+      .slice(0, 80);
+    if (!key || !alias || key.length < 2 || alias.length < 2) return;
+    if (normalizeKo(key) === normalizeKo(alias)) return;
+    const list = next[key] || [];
+    if (list.some((x) => normalizeKo(x) === normalizeKo(alias))) return;
+    if (list.length >= 20) return;
+    next[key] = [...list, alias];
+    added += 1;
+  };
+
+  for (const pair of pairs || []) {
+    const quote = String(pair.quoteName || '').trim();
+    const stmt = String(pair.stmtName || '').trim();
+    if (!quote || !stmt) continue;
+    const stmtKey = shortenOfficeProductLabel(stmt) || stmt;
+    const quoteKey = shortenOfficeProductLabel(quote) || quote;
+    push(stmtKey, quote);
+    if (stmtKey !== stmt) push(stmtKey, stmt);
+    if (pair.code) push(stmtKey, String(pair.code).trim());
+    push(quoteKey, stmtKey);
+  }
+  return { next, added };
 }
 
 /** 견적 풀네임 → 규칙 UI용 짧은 라벨 */
@@ -649,6 +900,7 @@ export type OfficeMatchRunResult = {
 
 export type OfficeDbItemSource = ProductionDbItem & {
   quoteRawText?: string;
+  quoteLines?: OfficeQuoteLine[];
 };
 
 /**
@@ -675,7 +927,9 @@ export function runOfficeSuppliesStatementMatch(
 
   for (const item of dbItems) {
     const quoteText = String(item.quoteRawText || '').trim();
-    const quoteLines = parseOfficeSuppliesQuoteText(quoteText);
+    const structured = normalizeOfficeQuoteLines(item.quoteLines);
+    const quoteLines =
+      structured.length > 0 ? structured : parseOfficeSuppliesQuoteText(quoteText);
     const sheetNames = pickSheetsForItem(statementRows, item, quoteText);
     let scoped = statementRows.filter((r) => sheetNames.includes(r.dept));
 
@@ -718,7 +972,7 @@ export function runOfficeSuppliesStatementMatch(
         materialMatch: false,
         matchStatus: 'mismatch',
         adminOverride: false,
-        resultNote: '견적서 붙여넣기에서 제품 리스트를 파싱하지 못했습니다',
+        resultNote: '견적 품목(엑셀 자동인식 또는 붙여넣기)을 읽지 못했습니다',
       });
       continue;
     }

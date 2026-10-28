@@ -1,12 +1,13 @@
 'use client';
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useRouter } from 'next/navigation';
 import { getKSTDateString, getKSTNowYearMonth, getKSTYearMonthParts } from '@/utils/dateUtils';
 import LoadingState from '@/components/common/LoadingState';
 import WindowedPagination from '@/components/common/WindowedPagination';
-import { resolveInterfaceEditState } from '@/lib/permission-utils';
 import ProductionRequestDetailModal from '@/components/production/ProductionRequestDetailModal';
+import DeptAssigneeLine, { useDeptAssignees } from '@/components/common/DeptAssigneeLine';
 import {
   getProductionCategoryTextClass,
   getProductionCategoryFolderTabClasses,
@@ -42,10 +43,8 @@ const DEPT_HISTORY_CATEGORIES = [
   { id: 'OFFICE_SUPPLIES', label: '사무문구류', icon: '📎' },
 ];
 
-/** 묶음발주대기 서류철 — 사무문구는 발주서·묶음발주 없음 → 개별발주만 */
-const BATCH_FOLDER_CATEGORIES = DEPT_HISTORY_CATEGORIES.filter(
-  (c) => c.id !== 'OFFICE_SUPPLIES'
-);
+/** 묶음발주대기 서류철 — 분류별 후보 보드 */
+const BATCH_FOLDER_CATEGORIES = DEPT_HISTORY_CATEGORIES;
 
 const BATCH_CATEGORY_IDS = BATCH_FOLDER_CATEGORIES.map((c) => c.id);
 
@@ -109,15 +108,18 @@ export default function DeptOrderPanel() {
   const [rejectTarget, setRejectTarget] = useState<ProductionRequestRow | null>(null);
   const [rejectReason, setRejectReason] = useState('');
   const [savingReject, setSavingReject] = useState(false);
+  const [actionMenu, setActionMenu] = useState<{ id: string; top: number; left: number } | null>(
+    null
+  );
+  const actionMenuRef = useRef<HTMLDivElement | null>(null);
   const [batchShippingOpen, setBatchShippingOpen] = useState(false);
   const [pendingOrderIds, setPendingOrderIds] = useState<string[]>([]);
   /** 개별발주→배송지 모달만: 닫으면 ACCEPTED를 신청검수(PENDING)로 되돌림 */
   const [shippingCancelRevertIds, setShippingCancelRevertIds] = useState<string[]>([]);
 
-  const canEdit = useMemo(
-    () => resolveInterfaceEditState(currentUser, interfaceConfig).isEditor,
-    [currentUser, interfaceConfig]
-  );
+  /** 부서 발주 관리액션: 메뉴 Access면 처리 가능 (Edit 미사용) */
+  const canAct = true;
+  const { editorNames } = useDeptAssignees(MENU_PATH);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -221,12 +223,11 @@ export default function DeptOrderPanel() {
     [pendingScopeBase]
   );
 
-  /** 묶음발주대기 대상 — 사무문구류 제외 */
+  /** 묶음발주대기 대상 */
   const acceptedScopeBase = useMemo(() => {
     const titleQ = searchTitleQuery.trim().toLowerCase();
     return afterYearList.filter((r) => {
       if (r.status !== PRODUCTION_STATUS.ACCEPTED) return false;
-      if (r.category === 'OFFICE_SUPPLIES') return false;
       const ym = getKSTYearMonthParts(r.createdAt);
       const matchYear = selectedYear === 'ALL' || ym?.year === selectedYear;
       const matchMonth = selectedMonth === 'ALL' || ym?.month === selectedMonth;
@@ -244,6 +245,7 @@ export default function DeptOrderPanel() {
       SIGN: acceptedScopeBase.filter((r) => r.category === 'SIGN').length,
       JEBON: acceptedScopeBase.filter((r) => r.category === 'JEBON').length,
       PRINT: acceptedScopeBase.filter((r) => r.category === 'PRINT').length,
+      OFFICE_SUPPLIES: acceptedScopeBase.filter((r) => r.category === 'OFFICE_SUPPLIES').length,
     }),
     [acceptedScopeBase]
   );
@@ -266,20 +268,8 @@ export default function DeptOrderPanel() {
         const matchTitle = !titleQ || (r.title || '').toLowerCase().includes(titleQ);
 
         if (activeCategory === 'ALL') {
-          // 신청검수: PENDING + (과거 묶음대기로 남은 사무문구 ACCEPTED)
-          if (r.status === PRODUCTION_STATUS.PENDING) {
-            /* ok */
-          } else if (
-            r.status === PRODUCTION_STATUS.ACCEPTED &&
-            r.category === 'OFFICE_SUPPLIES'
-          ) {
-            /* ok — 대기열 제외용 */
-          } else {
-            return false;
-          }
+          if (r.status !== PRODUCTION_STATUS.PENDING) return false;
         } else if (r.status !== PRODUCTION_STATUS.ACCEPTED) {
-          return false;
-        } else if (r.category === 'OFFICE_SUPPLIES') {
           return false;
         }
 
@@ -296,12 +286,6 @@ export default function DeptOrderPanel() {
     searchTitleQuery,
   ]);
 
-  useEffect(() => {
-    if (activeCategory === 'OFFICE_SUPPLIES') {
-      setActiveCategory('ALL');
-    }
-  }, [activeCategory]);
-
   const totalPages = Math.max(1, Math.ceil(filteredRequests.length / ITEMS_PER_PAGE));
   const paginatedRequests = filteredRequests.slice(
     (currentPage - 1) * ITEMS_PER_PAGE,
@@ -311,7 +295,31 @@ export default function DeptOrderPanel() {
   useEffect(() => {
     setCurrentPage(1);
     setSelectedIds(new Set());
+    setActionMenu(null);
   }, [activeCategory, selectedYear, selectedMonth, selectedUnitId, searchUserQuery, searchTitleQuery]);
+
+  useEffect(() => {
+    if (!actionMenu) return;
+    const onDoc = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (actionMenuRef.current?.contains(t)) return;
+      if ((e.target as HTMLElement | null)?.closest?.('[data-action-kebab]')) return;
+      setActionMenu(null);
+    };
+    const onWin = () => setActionMenu(null);
+    document.addEventListener('mousedown', onDoc);
+    window.addEventListener('scroll', onWin, true);
+    window.addEventListener('resize', onWin);
+    return () => {
+      document.removeEventListener('mousedown', onDoc);
+      window.removeEventListener('scroll', onWin, true);
+      window.removeEventListener('resize', onWin);
+    };
+  }, [actionMenu]);
+
+  useEffect(() => {
+    setActionMenu(null);
+  }, [currentPage]);
 
   const toggleSelectAll = () => {
     const pageIds = paginatedRequests
@@ -332,12 +340,8 @@ export default function DeptOrderPanel() {
     setSelectedIds(next);
   };
 
-  /** 접수대기 → 묶음발주대기(ACCEPTED)만 — 사무문구는 개별발주만 */
+  /** 접수대기 → 묶음발주대기(ACCEPTED) */
   const handleApprove = async (row: ProductionRequestRow) => {
-    if (!canEdit) return alert('접수 권한(Edit)이 없습니다.');
-    if (row.category === 'OFFICE_SUPPLIES') {
-      return alert('사무문구류는 묶음발주대기를 사용하지 않습니다. 개별발주로 진행해 주세요.');
-    }
     if (
       !confirm(
         `[${row.postNumber}] 묶음발주대기로 보낼까요?\n${getCategoryLabel(row.category)} 분류에서 선택 후 묶음 발주할 수 있습니다.`
@@ -369,7 +373,6 @@ export default function DeptOrderPanel() {
 
   const handleRejectSubmit = async () => {
     if (!rejectTarget) return;
-    if (!canEdit) return alert('반려 권한(Edit)이 없습니다.');
     const reason = rejectReason.trim();
     if (!reason) return alert('반려 사유를 입력해 주세요.');
     setSavingReject(true);
@@ -533,10 +536,9 @@ export default function DeptOrderPanel() {
   };
 
   const handleBatchOrder = async () => {
-    if (!canEdit) return alert('묶음 발주 권한(Edit)이 없습니다.');
     const ids = Array.from(selectedIds).filter((id) => {
       const row = requests.find((r) => r.id === id);
-      return row && row.category !== 'OFFICE_SUPPLIES';
+      return Boolean(row);
     });
     if (ids.length === 0) return alert('발주대기(접수완료) 건을 선택해 주세요.');
 
@@ -544,9 +546,7 @@ export default function DeptOrderPanel() {
       !confirm(
         [
           `선택한 ${ids.length}건을 묶음 발주 처리할까요?`,
-          '배송주소가 미등록된 경우에는 주소 설정이 필요합니다.',
-          '확인 후 발주진행/물품수령 검수 탭으로 이동합니다.',
-          '발주서를 확인해 주세요.',
+          '배송주소 설정 후 다음 탭으로 이동합니다.',
         ].join('\n')
       )
     ) {
@@ -567,15 +567,12 @@ export default function DeptOrderPanel() {
 
   /** 접수대기 → 접수(ACCEPTED) 후 바로 개별발주(검수 탭) */
   const handleDirectSingleOrder = async (row: ProductionRequestRow) => {
-    if (!canEdit) return alert('발주 권한(Edit)이 없습니다.');
     if (row.status !== PRODUCTION_STATUS.PENDING) return;
     if (
       !confirm(
         [
           `[${row.postNumber}] 개별발주 처리할까요?`,
-          '배송주소가 미등록된 경우에는 주소 설정이 필요합니다.',
-          '확인 후 발주진행/물품수령 검수 탭으로 이동합니다.',
-          '발주서를 확인해 주세요.',
+          '배송주소 설정 후 다음 탭으로 이동합니다.',
         ].join('\n')
       )
     ) {
@@ -618,11 +615,10 @@ export default function DeptOrderPanel() {
   };
 
   const handleRevertAccept = async (item: ProductionRequestRow) => {
-    if (!canEdit) return alert('신청검수 복귀 권한(Edit)이 없습니다.');
     if (item.status !== PRODUCTION_STATUS.ACCEPTED) return;
     if (
       !confirm(
-        `[${item.postNumber}] 묶음발주 대기열에서 제외하고 신청검수로 되돌릴까요?`
+        `[${item.postNumber}] 묶음발주 대기열에서 제외하고 신청검토로 되돌릴까요?`
       )
     ) {
       return;
@@ -636,7 +632,7 @@ export default function DeptOrderPanel() {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        alert(data.message || '신청검수 복귀에 실패했습니다.');
+        alert(data.message || '신청검토 복귀에 실패했습니다.');
         return;
       }
       setRequests((prev) =>
@@ -652,6 +648,21 @@ export default function DeptOrderPanel() {
     } finally {
       setActionBusyId(null);
     }
+  };
+
+  const openActionMenu = (e: React.MouseEvent<HTMLButtonElement>, id: string) => {
+    if (!canAct) return;
+    const width = 220;
+    const r = e.currentTarget.getBoundingClientRect();
+    setActionMenu((prev) =>
+      prev?.id === id
+        ? null
+        : {
+            id,
+            top: r.bottom + 4,
+            left: Math.min(Math.max(12, r.right - width), window.innerWidth - width - 12),
+          }
+    );
   };
 
   const handleBatchShippingBeforeOrder = async ({ shipping, scope }: BatchShippingSubmitPayload) => {
@@ -695,7 +706,7 @@ export default function DeptOrderPanel() {
   const isReviewStage = activeCategory === 'ALL';
   const acceptedBatchTotal = acceptedScopeBase.length;
   const tableTitle = isReviewStage
-    ? '신청검수/개별발주 목록'
+    ? '신청검토/개별발주 목록'
     : `${getCategoryLabel(activeCategory)} · 묶음발주대기`;
 
   const openBatchStage = () => {
@@ -711,21 +722,21 @@ export default function DeptOrderPanel() {
       {/* 단계 전환 + 분류 서류철 — 배너는 dept-master/layout ProductionDeptShell */}
       <div className="w-full space-y-3">
         <div className="bg-amber-50 border border-amber-200 rounded-xl p-3.5 text-[10px] text-amber-800 font-medium leading-relaxed">
-          💡{' '}
-          <span className="font-medium text-slate-900">발주 전</span>
+          💡프로세스
+          <span className="font-medium text-slate-900">[발주전 검수]</span>
           {' : '}
-          <span className="font-medium">[신청검수/개별발주]</span> 원문검수 후 개별발주 또는 묶음발주대기로 분기
-          (사무문구류는 개별발주만){' '}
+          원문검토{' '}
           <b className="font-medium text-amber-600">→</b>{' '}
-          <span className="font-medium">[묶음발주대기]</span> 현판·제본·기타제작 분류별 후보 선택·발주 이동
+          <span className="font-medium">[개별발주]</span> 진행 또는{' '}
+          <span className="font-medium">[묶음발주대기]</span> 이동
         </div>
 
         {/* 서류철 탭이 아래 표에 붙음 · 신청검수 | 묶음발주대기(분류) */}
         <div>
           <div
-            className="flex flex-wrap items-end gap-1 border-b border-slate-200"
+            className="flex flex-wrap items-end gap-1 border-b border-slate-300"
             role="tablist"
-            aria-label="신청검수/개별발주 · 묶음발주대기"
+            aria-label="신청검토/개별발주 · 묶음발주대기"
           >
             <button
               type="button"
@@ -736,7 +747,7 @@ export default function DeptOrderPanel() {
             >
               <span className="text-sm leading-none">⏳</span>
               <span className="flex items-center gap-1">
-                <span>신청검수/개별발주</span>
+                <span>신청검토/개별발주</span>
                 {pendingTabCounts.ALL > 0 ? (
                   <span
                     className={`tabular-nums ${isReviewStage ? 'opacity-95' : 'text-indigo-600'}`}
@@ -792,7 +803,7 @@ export default function DeptOrderPanel() {
             })}
           </div>
 
-        <div className="bg-white border border-t-0 border-slate-200 rounded-b-[2.5rem] rounded-tr-2xl shadow-sm overflow-hidden -mt-px">
+        <div className="bg-white border border-t-0 border-slate-200 rounded-b-sm rounded-tr-sm shadow-sm overflow-hidden">
         <div className="p-4 px-6 bg-slate-200/70 border-b border-slate-300 flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-2 flex-wrap">
             <div className="w-2.5 h-2.5 rounded-full bg-blue-600" />
@@ -800,6 +811,7 @@ export default function DeptOrderPanel() {
             <span className="text-[11px] font-medium bg-slate-300/80 text-slate-700 px-2 py-0.5 rounded-md">
               {filteredRequests.length}건
             </span>
+            <DeptAssigneeLine editorNames={editorNames} />
             {selectedIds.size > 0 && (
               <span className="text-[10px] font-medium text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-md border border-indigo-200">
                 {selectedIds.size}개 선택
@@ -870,20 +882,29 @@ export default function DeptOrderPanel() {
               <button
                 type="button"
                 onClick={handleBatchOrder}
-                disabled={!canEdit || ordering || selectedIds.size === 0}
-                title={!canEdit ? '편집 권한 필요' : undefined}
-                className={`inline-flex items-center gap-1 text-[10px] font-medium rounded-lg px-4 py-1.5 transition-colors shadow-sm whitespace-nowrap ${
-                  canEdit
+                disabled={!canAct || ordering || selectedIds.size === 0}
+                title={undefined}
+                className={`inline-flex items-center gap-2 text-[10px] font-medium rounded-lg px-4 py-1.5 transition-colors shadow-sm whitespace-nowrap ${
+                  canAct
                     ? 'bg-indigo-600 text-white border border-indigo-600 hover:bg-indigo-700 disabled:opacity-50'
                     : DISABLED_ACTION_BTN
                 }`}
               >
-                <span>→</span>
                 <span>
                   {ordering
                     ? '발주 처리 중…'
-                    : `선택된 ${selectedIds.size}건 묶음발주 이동 🚀`}
+                    : `선택된 ${selectedIds.size}건 묶음발주(취합) 이동`}
                 </span>
+                {!ordering && (
+                  <span
+                    className="flex w-10 shrink-0 items-center"
+                    title="묶음발주(취합) 이동"
+                    aria-hidden
+                  >
+                    <span className="h-2 flex-1 rounded-l-full bg-amber-300" />
+                    <span className="h-0 w-0 shrink-0 border-y-[7px] border-y-transparent border-l-[11px] border-l-amber-300" />
+                  </span>
+                )}
               </button>
             )}
           </div>
@@ -896,52 +917,97 @@ export default function DeptOrderPanel() {
             <table className="w-full table-fixed text-left border-collapse">
               <colgroup>
                 <col style={{ width: '2.5rem' }} />
-                <col style={{ width: '2.5rem' }} />
                 <col style={{ width: '10%' }} />
                 <col style={{ width: '6.5%' }} />
                 <col style={{ width: '8.5%' }} />
                 <col style={{ width: '7%' }} />
                 <col />
                 <col style={{ width: '5.5rem' }} />
-                <col style={{ width: '5.5rem' }} />
                 <col style={{ width: '9%' }} />
                 <col style={{ width: '5.5rem' }} />
-                {/* 신청검수(버튼 3개) 기준 — 묶음발주대기 탭에서도 동일 폭 유지 */}
-                <col style={{ width: '15.5rem' }} />
+                <col style={{ width: '9.75rem' }} />
+                {isReviewStage ? (
+                  <>
+                    <col style={{ width: '5.75rem' }} />
+                    <col style={{ width: '8.75rem' }} />
+                    <col style={{ width: '2.5rem' }} />
+                  </>
+                ) : (
+                  <col style={{ width: '6.5rem' }} />
+                )}
               </colgroup>
               <thead className="bg-slate-100 text-slate-700 text-[10px] font-medium border-b border-slate-200">
                 <tr>
-                  <th className="h-12 pl-4 text-center">
-                    <input
-                      type="checkbox"
-                      className="w-3 h-3 accent-indigo-600 rounded cursor-pointer"
-                      checked={allAcceptedSelected && acceptedSelectableOnPage.length > 0}
-                      onChange={toggleSelectAll}
-                      title="묶음발주대기 건만 선택"
-                    />
-                  </th>
                   <th className="h-12 px-2 text-center">No</th>
                   <th className="h-12 px-2 text-center whitespace-nowrap">관리번호</th>
                   <th className="h-12 px-2 text-center whitespace-nowrap">신청일</th>
                   <th className="h-12 px-2 text-left whitespace-nowrap">부서 / 신청자</th>
                   <th className="h-12 px-2 text-center whitespace-nowrap">분류</th>
                   <th className="h-12 px-2 text-left">관리용 제목</th>
-                  <th className="h-12 px-2 text-center whitespace-nowrap">신청내역</th>
                   <th className="h-12 px-2 text-center whitespace-nowrap">
                     {activeCategory === 'OFFICE_SUPPLIES' ? '건' : '수량'}
                   </th>
                   <th className="h-12 px-2 text-left whitespace-nowrap">외주업체</th>
                   <th className="h-12 px-2 text-center whitespace-nowrap">공정상태</th>
-                  <th className="h-12 px-2 text-center whitespace-nowrap">관리액션</th>
+                  <th className="h-12 px-2 text-center whitespace-nowrap border-l border-r border-slate-300 bg-amber-50 text-amber-800">
+                    <div className="flex flex-col items-center gap-1 px-1">
+                      <span>신청내역</span>
+                      <div
+                        className="flex w-full max-w-[4.5rem] items-center"
+                        title="신청내역 확인"
+                        aria-hidden
+                      >
+                        <div className="h-2.5 flex-1 rounded-l-full bg-amber-500/80" />
+                        <div className="h-0 w-0 shrink-0 border-y-[10px] border-y-transparent border-l-[16px] border-l-amber-500/80" />
+                      </div>
+                    </div>
+                  </th>
+                  <th
+                    colSpan={isReviewStage ? 3 : 1}
+                    className="h-12 px-2 text-center whitespace-nowrap bg-indigo-50 text-indigo-700"
+                  >
+                    {isReviewStage ? (
+                      <div className="flex flex-col items-center gap-1 px-1">
+                        <span>관리액션</span>
+                        <div
+                          className="flex w-full max-w-full items-center"
+                          title="관리 액션 진행"
+                          aria-hidden
+                        >
+                          <div className="h-2.5 flex-1 rounded-l-full bg-indigo-500/80" />
+                          <div className="h-0 w-0 shrink-0 border-y-[10px] border-y-transparent border-l-[16px] border-l-indigo-500/80" />
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="flex flex-col items-center gap-0.5 px-1">
+                        <div
+                          className="flex flex-col items-center"
+                          title="위쪽 묶음발주(취합) 버튼으로 이동"
+                          aria-hidden
+                        >
+                          <div className="h-0 w-0 border-x-[7px] border-x-transparent border-b-[10px] border-b-indigo-500/80" />
+                          <div className="h-2.5 w-2 rounded-b-full bg-indigo-500/80" />
+                        </div>
+                        <span>관리액션</span>
+                        <input
+                          type="checkbox"
+                          className="w-3 h-3 accent-indigo-600 rounded cursor-pointer"
+                          checked={allAcceptedSelected && acceptedSelectableOnPage.length > 0}
+                          onChange={toggleSelectAll}
+                          title="묶음발주(취합)할 건 선택"
+                        />
+                      </div>
+                    )}
+                  </th>
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-slate-100 text-[11px] font-medium text-slate-700">
                 {paginatedRequests.length === 0 ? (
                   <tr>
-                    <td colSpan={12} className="p-16 text-center text-slate-400 text-xs">
+                    <td colSpan={isReviewStage ? 13 : 11} className="p-16 text-center text-slate-400 text-xs">
                       {isReviewStage
-                        ? '신청검수 중인 신규 신청이 없습니다.'
-                        : '묶음발주대기 건이 없습니다. 신청검수에서 이동한 뒤 이 분류를 확인해 주세요.'}
+                        ? '신청검토 중인 신규 신청이 없습니다.'
+                        : '묶음발주대기 건이 없습니다. 신청검토에서 이동한 뒤 이 분류를 확인해 주세요.'}
                     </td>
                   </tr>
                 ) : (
@@ -956,15 +1022,6 @@ export default function DeptOrderPanel() {
                           selectedIds.has(item.id) ? 'bg-indigo-50/30' : 'hover:bg-slate-50/50'
                         }`}
                       >
-                        <td className="pl-4 text-center">
-                          <input
-                            type="checkbox"
-                            className="w-3 h-3 accent-indigo-600 rounded cursor-pointer disabled:opacity-30"
-                            checked={selectedIds.has(item.id)}
-                            disabled={item.status !== PRODUCTION_STATUS.ACCEPTED}
-                            onChange={() => toggleSelectOne(item.id, item.status)}
-                          />
-                        </td>
                         <td className="px-2 text-center text-slate-500">
                           {rowNo}
                         </td>
@@ -996,25 +1053,6 @@ export default function DeptOrderPanel() {
                         <td className="px-2 text-left text-slate-800 truncate max-w-0" title={item.title || ''}>
                           {item.title || '-'}
                         </td>
-                        <td className="px-2 text-center">
-                          {isPending ? (
-                            <button
-                              type="button"
-                              onClick={() => setDetailItem(item)}
-                              className="px-2.5 py-1 text-[10px] font-medium rounded-lg shadow-sm transition-colors bg-rose-600 text-white hover:bg-rose-700"
-                            >
-                              원문검수
-                            </button>
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={() => setDetailItem(item)}
-                              className="px-2.5 py-1 text-[10px] font-medium rounded-lg transition-colors bg-slate-200 text-slate-600 hover:bg-slate-300 border border-slate-300"
-                            >
-                              원문확인
-                            </button>
-                          )}
-                        </td>
                         <td className="px-2 text-center text-slate-900 whitespace-nowrap">
                           <span>{item.quantity}</span>
                           <span className="ml-0.5 text-[10px] font-medium text-slate-500">
@@ -1026,25 +1064,45 @@ export default function DeptOrderPanel() {
                         </td>
                         <td className="px-2 text-center">
                           <span
-                            className={`font-medium whitespace-nowrap ${productionStatusTextClass(item.status, item.options as Record<string, unknown> | null)}`}
+                            className={`font-medium whitespace-nowrap ${productionStatusTextClass(item.status, item.options as Record<string, unknown> | null, item.category)}`}
                           >
                             {productionStatusLabel(
                               item.status,
                               item.options as Record<string, unknown> | null,
-                              'deptQueue'
+                              'deptQueue',
+                              item.category
                             )}
                           </span>
                         </td>
-                        <td className="px-2 text-center align-middle">
-                          {isPending ? (
-                            <div className="flex items-center justify-center gap-1 flex-nowrap">
+                        <td className="px-2 text-center border-l border-r border-slate-300">
+                          {isPending || item.status === PRODUCTION_STATUS.ACCEPTED ? (
+                            <button
+                              type="button"
+                              onClick={() => setDetailItem(item)}
+                              className="px-2.5 py-1 text-[10px] font-medium rounded-lg shadow-sm transition-colors bg-rose-600 text-white hover:bg-rose-700 whitespace-nowrap"
+                            >
+                              원문검토 · 수정가능
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => setDetailItem(item)}
+                              className="px-2.5 py-1 text-[10px] font-medium rounded-lg transition-colors bg-slate-200 text-slate-600 hover:bg-slate-300 border border-slate-300"
+                            >
+                              원문확인
+                            </button>
+                          )}
+                        </td>
+                        {isPending ? (
+                          <>
+                            <td className="px-1 text-center align-middle">
                               <button
                                 type="button"
-                                disabled={!canEdit || ordering || actionBusyId === item.id}
-                                title={!canEdit ? '편집 권한 필요' : '접수 후 바로 개별발주(검수 탭)'}
+                                disabled={!canAct || ordering || actionBusyId === item.id}
+                                title={'접수 후 바로 개별발주(검수 탭)'}
                                 onClick={() => handleDirectSingleOrder(item)}
                                 className={`inline-flex items-center gap-1 px-2 py-1 text-[10px] font-medium rounded-lg transition-colors whitespace-nowrap ${
-                                  canEdit
+                                  canAct
                                     ? 'bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50'
                                     : DISABLED_ACTION_BTN
                                 }`}
@@ -1054,68 +1112,91 @@ export default function DeptOrderPanel() {
                                   {ordering || actionBusyId === item.id ? '처리중' : '개별발주'}
                                 </span>
                               </button>
-                              {item.category !== 'OFFICE_SUPPLIES' ? (
-                                <button
-                                  type="button"
-                                  disabled={!canEdit || ordering || actionBusyId === item.id}
-                                  title={!canEdit ? '편집 권한 필요' : '묶음발주대기로 이동'}
-                                  onClick={() => handleApprove(item)}
-                                  className={`inline-flex items-center gap-1 px-2 py-1 text-[10px] font-medium rounded-lg transition-colors whitespace-nowrap ${
-                                    canEdit
-                                      ? 'bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50'
-                                      : DISABLED_ACTION_BTN
-                                  }`}
-                                >
-                                  <span>→</span>
-                                  <span>
-                                    {actionBusyId === item.id ? '처리중' : '묶음발주대기'}
-                                  </span>
-                                </button>
-                              ) : null}
+                            </td>
+                            <td className="px-1 text-center align-middle">
                               <button
                                 type="button"
-                                disabled={!canEdit || ordering || actionBusyId === item.id}
-                                title={!canEdit ? '편집 권한 필요' : undefined}
-                                onClick={() => {
-                                  if (!canEdit) return alert('신청반려 권한(Edit)이 없습니다.');
-                                  setRejectTarget(item);
-                                  setRejectReason('');
-                                }}
-                                className={`px-2 py-1 text-[10px] font-medium rounded-lg transition-colors whitespace-nowrap ${
-                                  canEdit
-                                    ? 'bg-rose-50 border border-rose-200 hover:bg-rose-100 text-rose-600'
+                                disabled={!canAct || ordering || actionBusyId === item.id}
+                                title={'묶음발주대기(취합)로 이동'}
+                                onClick={() => handleApprove(item)}
+                                className={`inline-flex items-center gap-1 px-2 py-1 text-[10px] font-medium rounded-lg transition-colors whitespace-nowrap ${
+                                  canAct
+                                    ? 'bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50'
                                     : DISABLED_ACTION_BTN
                                 }`}
                               >
-                                신청반려
+                                <span>→</span>
+                                <span>
+                                  {actionBusyId === item.id ? '처리중' : '묶음발주대기(취합)'}
+                                </span>
+                              </button>
+                            </td>
+                            <td className="px-0.5 text-center align-middle">
+                              <button
+                                type="button"
+                                data-action-kebab
+                                disabled={!canAct || ordering || actionBusyId === item.id}
+                                title={!canAct ? '처리 권한 필요' : '더보기'}
+                                onClick={(e) => openActionMenu(e, item.id)}
+                                className={`inline-flex items-center justify-center w-7 h-7 rounded-lg transition-colors ${
+                                  canAct
+                                    ? actionMenu?.id === item.id
+                                      ? 'bg-slate-200 text-slate-800'
+                                      : 'text-slate-500 hover:bg-slate-100 hover:text-slate-800'
+                                    : 'text-slate-300 cursor-not-allowed'
+                                }`}
+                              >
+                                <svg viewBox="0 0 20 20" className="w-4 h-4" fill="currentColor" aria-hidden>
+                                  <circle cx="10" cy="4.5" r="1.6" />
+                                  <circle cx="10" cy="10" r="1.6" />
+                                  <circle cx="10" cy="15.5" r="1.6" />
+                                </svg>
+                              </button>
+                            </td>
+                          </>
+                        ) : item.status === PRODUCTION_STATUS.ACCEPTED &&
+                          activeCategory !== 'ALL' ? (
+                          <td className="px-1 text-center align-middle">
+                            <div className="inline-flex items-center justify-center gap-1">
+                              <input
+                                type="checkbox"
+                                className="w-3 h-3 accent-indigo-600 rounded cursor-pointer"
+                                checked={selectedIds.has(item.id)}
+                                onChange={() => toggleSelectOne(item.id, item.status)}
+                                title="묶음발주(취합) 대상"
+                              />
+                              <button
+                                type="button"
+                                data-action-kebab
+                                disabled={!canAct || ordering || actionBusyId === item.id}
+                                title={!canAct ? '처리 권한 필요' : '더보기'}
+                                onClick={(e) => openActionMenu(e, item.id)}
+                                className={`inline-flex items-center justify-center w-7 h-7 rounded-lg transition-colors ${
+                                  canAct
+                                    ? actionMenu?.id === item.id
+                                      ? 'bg-slate-200 text-slate-800'
+                                      : 'text-slate-500 hover:bg-slate-100 hover:text-slate-800'
+                                    : 'text-slate-300 cursor-not-allowed'
+                                }`}
+                              >
+                                <svg viewBox="0 0 20 20" className="w-4 h-4" fill="currentColor" aria-hidden>
+                                  <circle cx="10" cy="4.5" r="1.6" />
+                                  <circle cx="10" cy="10" r="1.6" />
+                                  <circle cx="10" cy="15.5" r="1.6" />
+                                </svg>
                               </button>
                             </div>
-                          ) : item.status === PRODUCTION_STATUS.ACCEPTED &&
-                            (activeCategory !== 'ALL' ||
-                              item.category === 'OFFICE_SUPPLIES') ? (
-                            <button
-                              type="button"
-                              disabled={!canEdit || ordering || actionBusyId === item.id}
-                              title={
-                                !canEdit
-                                  ? '편집 권한 필요'
-                                  : '묶음발주 대기열 제외 · 신청검수로 복귀'
-                              }
-                              onClick={() => handleRevertAccept(item)}
-                              className={`px-2 py-1 text-[10px] font-medium rounded-lg transition-colors whitespace-nowrap ${
-                                canEdit
-                                  ? 'bg-rose-50 border border-rose-200 hover:bg-rose-100 text-rose-600 disabled:opacity-50'
-                                  : DISABLED_ACTION_BTN
-                              }`}
-                            >
-                              {actionBusyId === item.id ? '처리중' : '↺ 신청검수'}
-                            </button>
-                          ) : (
+                          </td>
+                        ) : (
+                          <td
+                            colSpan={isReviewStage ? 3 : 1}
+                            className="px-2 text-center align-middle"
+                          >
                             <span className="text-[10px] text-slate-500 font-medium whitespace-nowrap">
                               {productionActionHint(item.status, item.options as Record<string, unknown> | null)}
                             </span>
-                          )}
-                        </td>
+                          </td>
+                        )}
                       </tr>
                     );
                   })
@@ -1135,6 +1216,48 @@ export default function DeptOrderPanel() {
         </div>
         </div>
       </div>
+
+      {actionMenu &&
+        createPortal(
+          <div
+            ref={actionMenuRef}
+            style={{ top: actionMenu.top, left: actionMenu.left }}
+            className="fixed z-[500] w-[220px] rounded-xl border border-slate-200 bg-white shadow-lg py-1 text-left"
+          >
+            {requests.find((r) => r.id === actionMenu.id)?.status ===
+            PRODUCTION_STATUS.ACCEPTED ? (
+              <button
+                type="button"
+                disabled={!canAct || ordering || actionBusyId === actionMenu.id}
+                className="w-full px-3 py-2 text-left text-[11px] font-medium text-rose-600 hover:bg-rose-50 disabled:opacity-50 whitespace-nowrap"
+                onClick={() => {
+                  const row = requests.find((r) => r.id === actionMenu.id);
+                  setActionMenu(null);
+                  if (!row) return;
+                  void handleRevertAccept(row);
+                }}
+              >
+                ↺ 신청검토 복구 · 묶음발주 취소
+              </button>
+            ) : (
+              <button
+                type="button"
+                disabled={!canAct || ordering || actionBusyId === actionMenu.id}
+                className="w-full px-3 py-2 text-left text-[11px] font-medium text-rose-600 hover:bg-rose-50 disabled:opacity-50"
+                onClick={() => {
+                  const row = requests.find((r) => r.id === actionMenu.id);
+                  setActionMenu(null);
+                  if (!row) return;
+                  setRejectTarget(row);
+                  setRejectReason('');
+                }}
+              >
+                신청반려
+              </button>
+            )}
+          </div>,
+          document.body
+        )}
 
       {rejectTarget && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-50 p-4 animate-fade-in">
@@ -1178,10 +1301,10 @@ export default function DeptOrderPanel() {
               </button>
               <button
                 type="button"
-                disabled={!canEdit || savingReject}
+                disabled={!canAct || savingReject}
                 onClick={handleRejectSubmit}
                 className={`flex-1 py-2.5 text-xs font-black rounded-lg ${
-                  canEdit
+                  canAct
                     ? 'bg-rose-600 text-white hover:bg-rose-700 disabled:opacity-50'
                     : DISABLED_ACTION_BTN
                 }`}
@@ -1218,9 +1341,8 @@ export default function DeptOrderPanel() {
         <ProductionRequestDetailModal
           item={detailItem}
           onClose={() => setDetailItem(null)}
-          allowEdit={canEdit}
-          editPermissionTag="Edit"
-          editableStatuses={['PENDING']}
+          allowEdit={canAct}
+          editableStatuses={['PENDING', 'ACCEPTED']}
           editApiPath="/api/production/custom/dept-master/order"
           onSaved={(updated) => {
             setRequests((prev) =>

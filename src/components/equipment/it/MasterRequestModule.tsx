@@ -5,6 +5,7 @@ import { getKSTDateString, getKSTNowYearMonth, getKSTYearMonthParts, toSortableT
 import { resolveInterfaceEditState } from '@/lib/permission-utils';
 import LoadingState from '@/components/common/LoadingState';
 import WindowedPagination from '@/components/common/WindowedPagination';
+import DeptAssigneeLine, { useDeptAssignees } from '@/components/common/DeptAssigneeLine';
 import ItMasterPageBanner from '@/components/equipment/it/ItMasterPageBanner';
 import { rowMatchesOrgUnit } from '@/lib/org-unit-match';
 
@@ -404,6 +405,7 @@ function rowAdminLabel(req: any) {
 const HISTORY_MONTHS = ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12'];
 
 function ITMasterRequestContent() {
+  const { editorNames } = useDeptAssignees(MENU_PATH);
   const [currentUser, setCurrentUser] = useState<any>(null);
   const [interfaceConfig, setInterfaceConfig] = useState<any>(null);
   const [requests, setRequests] = useState<any[]>([]);
@@ -420,7 +422,7 @@ function ITMasterRequestContent() {
   const [orgMenuOpen, setOrgMenuOpen] = useState(false);
   const orgMenuRef = useRef<HTMLDivElement>(null);
   const [filterType, setFilterType] = useState('ALL');
-  const [filterStatus, setFilterStatus] = useState<'ALL' | 'PENDING' | 'DONE'>('ALL');
+  const [filterStatus, setFilterStatus] = useState<'ALL' | 'PENDING' | 'DONE'>('PENDING');
   const [selectedYear, setSelectedYear] = useState(() => String(getKSTNowYearMonth().year));
   const [selectedMonth, setSelectedMonth] = useState('ALL');
   const [codeQuery, setCodeQuery] = useState('');
@@ -1034,14 +1036,14 @@ function ITMasterRequestContent() {
     const adminStarted = isAdminInquiryRow(req);
     const isNew = stage === 'NEW';
     const isDone = stage === 'DONE';
-    const userNewReceiptClass = isDone ? 'font-black text-slate-900' : 'font-black text-amber-600';
-    const adminNewReceiptClass = isDone ? 'font-black text-slate-900' : 'font-black text-blue-600';
+    const userNewReceiptClass = isDone ? 'font-medium text-slate-900' : 'font-medium text-amber-600';
+    const adminNewReceiptClass = isDone ? 'font-medium text-slate-900' : 'font-medium text-blue-600';
     const counterpartLabel = isDone ? '처리 완료(종료)' : isNew ? '대기중' : '진행중';
     const counterpartClass = isDone
-      ? 'font-black text-slate-800'
+      ? 'font-medium text-slate-800'
       : isNew
-        ? 'font-bold text-slate-400'
-        : 'font-black text-blue-600';
+        ? 'font-medium text-slate-400'
+        : 'font-medium text-blue-600';
     const actionLabel = isDone ? '처리 완료(종료)' : isNew ? '신규접수' : '진행중';
     const actionTextClass = isDone
       ? 'text-slate-900'
@@ -1068,7 +1070,7 @@ function ITMasterRequestContent() {
             className="accent-slate-800"
           />
         </td>
-        <td className="px-2 text-center font-mono text-slate-500 tabular-nums">{opts.rowNo}</td>
+        <td className="px-2 text-center font-medium text-slate-500 tabular-nums">{opts.rowNo}</td>
         <td className="px-2 text-left">
           {userLabel ? (
             <span className="text-slate-800 truncate block" title={userLabel}>{userLabel}</span>
@@ -1077,7 +1079,7 @@ function ITMasterRequestContent() {
           )}
         </td>
         <td className="px-2 text-center">
-          <span className="text-[9px] font-black uppercase tracking-wider text-indigo-600 bg-indigo-50 border border-indigo-100 px-2 py-0.5 rounded-md whitespace-nowrap">
+          <span className="text-[9px] font-medium text-indigo-600 bg-indigo-50 border border-indigo-100 px-2 py-0.5 rounded-md whitespace-nowrap">
             {req.assetType || req.category || '일반'}
           </span>
         </td>
@@ -1118,13 +1120,13 @@ function ITMasterRequestContent() {
                 : '클릭하여 대화 내역 확인'
             }
             onClick={() => openReqModal(latestRelated)}
-            className="inline-block max-w-full border px-2 py-1 rounded-md text-[10px] font-black whitespace-nowrap bg-white text-indigo-600 border-indigo-200 hover:bg-indigo-50 shadow-sm transition-colors"
+            className="inline-block max-w-full border px-2 py-1 rounded-md text-[10px] font-medium whitespace-nowrap bg-white text-indigo-600 border-indigo-200 hover:bg-indigo-50 shadow-sm transition-colors"
           >
             상세보기
           </button>
         </td>
         <td className="px-2 text-center overflow-hidden">
-          <span className={`text-[11px] font-black whitespace-nowrap ${actionTextClass}`}>
+          <span className={`text-[11px] font-medium whitespace-nowrap ${actionTextClass}`}>
             {actionLabel}
           </span>
         </td>
@@ -1148,10 +1150,11 @@ function ITMasterRequestContent() {
         <div className={`p-3 px-4 bg-slate-200/70 border-b border-slate-300 flex items-center gap-2 min-w-0 relative ${orgMenuOpen ? 'z-[80] overflow-visible' : ''}`}>
           <div className="flex items-center gap-1.5 shrink-0">
             <div className="w-2.5 h-2.5 rounded-full bg-blue-600 shrink-0" />
-            <h2 className="text-sm font-black text-slate-800 tracking-tight whitespace-nowrap">의견/요청 송수신 대장</h2>
-            <span className="text-[11px] font-bold bg-slate-300/80 text-slate-700 px-1.5 py-0.5 rounded-md whitespace-nowrap">
+            <h2 className="text-sm font-medium text-slate-800 tracking-tight whitespace-nowrap">의견/요청 송수신 대장</h2>
+            <span className="text-[11px] font-medium bg-slate-300/80 text-slate-700 px-1.5 py-0.5 rounded-md whitespace-nowrap">
               {filteredThreads.length}건
             </span>
+            <DeptAssigneeLine editorNames={editorNames} />
           </div>
 
           <div className={`flex items-center gap-1.5 flex-nowrap min-w-0 ml-auto ${orgMenuOpen ? 'overflow-visible relative z-[90]' : 'overflow-x-auto scrollbar-hide'}`}>
@@ -1159,7 +1162,7 @@ function ITMasterRequestContent() {
               <button
                 type="button"
                 onClick={() => setFilterStatus('ALL')}
-                className={`h-full px-2 rounded-md text-[10px] font-black transition-all whitespace-nowrap leading-none ${
+                className={`h-full px-2 rounded-md text-[10px] font-medium transition-all whitespace-nowrap leading-none ${
                   filterStatus === 'ALL' ? 'bg-slate-800 text-white' : 'text-slate-500 hover:bg-slate-50'
                 }`}
               >
@@ -1168,7 +1171,7 @@ function ITMasterRequestContent() {
               <button
                 type="button"
                 onClick={() => setFilterStatus('PENDING')}
-                className={`h-full px-2 rounded-md text-[10px] font-black transition-all whitespace-nowrap leading-none ${
+                className={`h-full px-2 rounded-md text-[10px] font-medium transition-all whitespace-nowrap leading-none ${
                   filterStatus === 'PENDING' ? 'bg-amber-500 text-white' : 'text-slate-500 hover:bg-slate-50'
                 }`}
               >
@@ -1177,7 +1180,7 @@ function ITMasterRequestContent() {
               <button
                 type="button"
                 onClick={() => setFilterStatus('DONE')}
-                className={`h-full px-2 rounded-md text-[10px] font-black transition-all whitespace-nowrap leading-none ${
+                className={`h-full px-2 rounded-md text-[10px] font-medium transition-all whitespace-nowrap leading-none ${
                   filterStatus === 'DONE' ? 'bg-emerald-600 text-white' : 'text-slate-500 hover:bg-slate-50'
                 }`}
               >
@@ -1186,15 +1189,15 @@ function ITMasterRequestContent() {
             </div>
 
             <div className={`flex items-center gap-1.5 bg-white px-2.5 rounded-lg border border-slate-200 shadow-sm shrink-0 h-7 box-border ${orgMenuOpen ? 'relative z-[90]' : ''}`}>
-              <span className="text-[10px] font-black text-slate-400 uppercase whitespace-nowrap leading-none">사용자조직</span>
+              <span className="text-[10px] font-medium text-slate-400 whitespace-nowrap leading-none">사용자조직</span>
               <div className="relative inline-flex items-center" ref={orgMenuRef}>
                 <button
                   type="button"
                   onClick={() => setOrgMenuOpen((open) => !open)}
                   className={`max-w-[120px] truncate text-left text-[11px] leading-none py-0 px-0 m-0 h-4 inline-flex items-center border-0 appearance-none outline-none cursor-pointer bg-transparent ${
                     selectedOrgUnit && isBoldOrgType(selectedOrgUnit.unit_type)
-                      ? 'font-black text-slate-900'
-                      : 'font-bold text-slate-800'
+                      ? 'font-medium text-slate-900'
+                      : 'font-medium text-slate-800'
                   }`}
                 >
                   {selectedOrgUnit?.unit_name || organizationUnit?.unit_name || '조직 선택'}
@@ -1215,7 +1218,7 @@ function ITMasterRequestContent() {
                             setOrgMenuOpen(false);
                           }}
                           className={`w-full text-left pr-3 py-1.5 text-[11px] ${
-                            bold ? 'font-black text-slate-900' : 'font-medium text-slate-600'
+                            bold ? 'font-medium text-slate-900' : 'font-medium text-slate-600'
                           } ${active ? 'bg-slate-100' : 'hover:bg-slate-50'}`}
                           style={{ paddingLeft: `${12 + o.depth * 12}px` }}
                         >
@@ -1229,11 +1232,11 @@ function ITMasterRequestContent() {
 
               <div className="w-px h-3 bg-slate-300 shrink-0" />
 
-              <span className="text-[10px] font-black text-slate-400 uppercase whitespace-nowrap leading-none">분류</span>
+              <span className="text-[10px] font-medium text-slate-400 whitespace-nowrap leading-none">분류</span>
               <select
                 value={filterType}
                 onChange={(e) => setFilterType(e.target.value)}
-                className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent max-w-[88px] h-4 leading-none py-0"
+                className="text-[11px] font-medium text-slate-800 outline-none cursor-pointer bg-transparent max-w-[88px] h-4 leading-none py-0"
               >
                 <option value="ALL">전체</option>
                 {uniqueTypes.map((t) => (
@@ -1243,14 +1246,14 @@ function ITMasterRequestContent() {
 
               <div className="w-px h-3 bg-slate-300 shrink-0" />
 
-              <span className="text-[10px] font-black text-slate-400 uppercase whitespace-nowrap leading-none">연도</span>
+              <span className="text-[10px] font-medium text-slate-400 whitespace-nowrap leading-none">연도</span>
               <select
                 value={selectedYear}
                 onChange={(e) => {
                   setSelectedYear(e.target.value);
                   setSelectedMonth('ALL');
                 }}
-                className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent h-4 leading-none py-0"
+                className="text-[11px] font-medium text-slate-800 outline-none cursor-pointer bg-transparent h-4 leading-none py-0"
               >
                 <option value="ALL">전체</option>
                 {availableYears.map((year) => (
@@ -1260,11 +1263,11 @@ function ITMasterRequestContent() {
 
               <div className="w-px h-3 bg-slate-300 shrink-0" />
 
-              <span className="text-[10px] font-black text-slate-400 uppercase whitespace-nowrap leading-none">월</span>
+              <span className="text-[10px] font-medium text-slate-400 whitespace-nowrap leading-none">월</span>
               <select
                 value={selectedMonth}
                 onChange={(e) => setSelectedMonth(e.target.value)}
-                className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent h-4 leading-none py-0"
+                className="text-[11px] font-medium text-slate-800 outline-none cursor-pointer bg-transparent h-4 leading-none py-0"
               >
                 <option value="ALL">전체</option>
                 {HISTORY_MONTHS.map((month) => (
@@ -1280,7 +1283,7 @@ function ITMasterRequestContent() {
                 placeholder="자산번호"
                 value={codeQuery}
                 onChange={(e) => setCodeQuery(e.target.value)}
-                className="w-full h-7 box-border pl-6 pr-2 py-0 bg-white border border-slate-200 rounded-lg text-[11px] font-bold outline-none focus:border-indigo-500 shadow-sm transition-colors"
+                className="w-full h-7 box-border pl-6 pr-2 py-0 bg-white border border-slate-200 rounded-lg text-[11px] font-medium outline-none focus:border-indigo-500 shadow-sm transition-colors"
               />
             </div>
             <div className="relative w-28 shrink-0 h-7">
@@ -1290,7 +1293,7 @@ function ITMasterRequestContent() {
                 placeholder="모델명"
                 value={modelQuery}
                 onChange={(e) => setModelQuery(e.target.value)}
-                className="w-full h-7 box-border pl-6 pr-2 py-0 bg-white border border-slate-200 rounded-lg text-[11px] font-bold outline-none focus:border-indigo-500 shadow-sm transition-colors"
+                className="w-full h-7 box-border pl-6 pr-2 py-0 bg-white border border-slate-200 rounded-lg text-[11px] font-medium outline-none focus:border-indigo-500 shadow-sm transition-colors"
               />
             </div>
             <div className="relative w-28 shrink-0 h-7">
@@ -1300,7 +1303,7 @@ function ITMasterRequestContent() {
                 placeholder="사용자"
                 value={userQuery}
                 onChange={(e) => setUserQuery(e.target.value)}
-                className="w-full h-7 box-border pl-6 pr-2 py-0 bg-white border border-slate-200 rounded-lg text-[11px] font-bold outline-none focus:border-indigo-500 shadow-sm transition-colors"
+                className="w-full h-7 box-border pl-6 pr-2 py-0 bg-white border border-slate-200 rounded-lg text-[11px] font-medium outline-none focus:border-indigo-500 shadow-sm transition-colors"
               />
             </div>
 
@@ -1308,7 +1311,7 @@ function ITMasterRequestContent() {
               <button
                 type="button"
                 onClick={handleDeleteSelected}
-                className="h-7 px-2 bg-white text-rose-600 border border-rose-200 rounded-lg text-[10px] font-black shadow-sm hover:bg-rose-50 transition-all whitespace-nowrap shrink-0 leading-none"
+                className="h-7 px-2 bg-white text-rose-600 border border-rose-200 rounded-lg text-[10px] font-medium shadow-sm hover:bg-rose-50 transition-all whitespace-nowrap shrink-0 leading-none"
               >
                 {selectedIds.size > 0 ? `삭제(LV_1)(${selectedIds.size})` : '삭제(LV_1)'}
               </button>
@@ -1332,7 +1335,7 @@ function ITMasterRequestContent() {
               <col className="w-[108px]" />
               <col className="w-[148px]" />
             </colgroup>
-            <thead className="bg-slate-100 text-slate-700 text-[10px] font-black tracking-widest border-b border-slate-200">
+            <thead className="bg-slate-100 text-slate-700 text-[10px] font-medium tracking-wide border-b border-slate-200">
               <tr>
                 <th rowSpan={2} className="h-10 px-2 text-center align-middle">
                   <input
@@ -1367,7 +1370,7 @@ function ITMasterRequestContent() {
                 <th className="h-10 px-2 text-left whitespace-nowrap bg-blue-50/40 text-blue-800">부서 / 관리자</th>
               </tr>
             </thead>
-            <tbody className="bg-white divide-y divide-slate-100 text-[11px] font-bold text-slate-700">
+            <tbody className="bg-white divide-y divide-slate-100 text-[11px] font-medium text-slate-700">
               {currentThreads.length === 0 ? (
                 <tr>
                   <td colSpan={12} className="p-16 text-center text-slate-400 text-xs">
@@ -1401,7 +1404,7 @@ function ITMasterRequestContent() {
               type="button"
               disabled={safePage === 1}
               onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
-              className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors"
+              className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-medium text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors"
             >
               이전
             </button>
@@ -1411,12 +1414,12 @@ function ITMasterRequestContent() {
               return (
                 <Fragment key={page}>
                   {showEllipsis && (
-                    <span className="px-1 text-[11px] font-bold text-slate-400">…</span>
+                    <span className="px-1 text-[11px] font-medium text-slate-400">…</span>
                   )}
                   <button
                     type="button"
                     onClick={() => setCurrentPage(page)}
-                    className={`w-8 h-8 rounded-xl font-black text-xs transition-all ${
+                    className={`w-8 h-8 rounded-xl font-medium text-xs transition-all ${
                       safePage === page
                         ? 'bg-slate-800 text-white shadow-sm scale-105'
                         : 'bg-white border border-slate-200 text-slate-500 hover:bg-slate-50'
@@ -1431,7 +1434,7 @@ function ITMasterRequestContent() {
               type="button"
               disabled={safePage === totalPages}
               onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
-              className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors"
+              className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-medium text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors"
             >
               다음
             </button>
@@ -1455,7 +1458,7 @@ function ITMasterRequestContent() {
               className="bg-white w-[500px] border border-slate-200 shadow-2xl p-8 rounded-3xl animate-in zoom-in-95 duration-200 flex flex-col max-h-[90vh]"
               onClick={(e) => e.stopPropagation()}
             >
-              <h4 className="text-[14px] font-black text-slate-900 tracking-tight mb-2">
+              <h4 className="text-[14px] font-medium text-slate-900 tracking-tight mb-2">
                 {threadClosed
                   ? '처리 완료(종료)'
                   : waitingForUser
@@ -1464,7 +1467,7 @@ function ITMasterRequestContent() {
                       ? '사용자 답변'
                       : '사용자 신규접수'}
               </h4>
-              <p className="text-[10px] font-bold text-slate-400 mb-6 border-b-2 border-slate-900 pb-3">
+              <p className="text-[10px] font-medium text-slate-400 mb-6 border-b-2 border-slate-900 pb-3">
                 {!canEdit
                   ? '주고받은 전체 이력을 확인할 수 있습니다 (조회 전용)'
                   : !openedIsLatest
@@ -1478,19 +1481,19 @@ function ITMasterRequestContent() {
 
               <div className="overflow-y-auto flex-1 pr-2 space-y-4 min-h-0">
                 <div className="rounded-xl bg-slate-50 border border-slate-100 px-4 py-3 space-y-2">
-                  <div className="flex justify-between gap-3 text-[11px] font-bold">
+                  <div className="flex justify-between gap-3 text-[11px] font-medium">
                     <span className="text-slate-400 shrink-0">대상자산</span>
                     <span className="text-slate-800 text-right">
                       {editingReq.assetType || editingReq.category || '-'} | {editingReq.assetCode || '-'} / {assetModel}
                     </span>
                   </div>
-                  <div className="flex justify-between gap-3 text-[11px] font-bold">
+                  <div className="flex justify-between gap-3 text-[11px] font-medium">
                     <span className="text-slate-400 shrink-0">대상 사용자</span>
                     <span className="text-slate-800 text-right">
                       {editingReq.requester || '-'} ({editingReq.dept || '-'})
                     </span>
                   </div>
-                  <div className="flex justify-between gap-3 text-[11px] font-bold">
+                  <div className="flex justify-between gap-3 text-[11px] font-medium">
                     <span className="text-slate-400 shrink-0">상태</span>
                     <span className={threadClosed ? 'text-slate-500' : waitingForUser ? 'text-blue-600' : 'text-amber-600'}>
                       {threadClosed
@@ -1516,7 +1519,7 @@ function ITMasterRequestContent() {
                         />
                         <div className="flex items-center justify-between gap-3 mb-1.5">
                           <span
-                            className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-black whitespace-nowrap ${
+                            className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium whitespace-nowrap ${
                               isAdmin
                                 ? 'bg-blue-100 text-blue-700'
                                 : 'bg-slate-100 text-slate-600'
@@ -1525,13 +1528,13 @@ function ITMasterRequestContent() {
                             [{roleTag}] {turn.name}
                           </span>
                           {turn.date && (
-                            <span className="text-[10px] font-bold text-slate-400 tabular-nums shrink-0">
+                            <span className="text-[10px] font-medium text-slate-400 tabular-nums shrink-0">
                               {turn.date}
                             </span>
                           )}
                         </div>
                         <div
-                          className={`rounded-md border p-3.5 text-[11px] font-semibold whitespace-pre-wrap leading-relaxed ${
+                          className={`rounded-md border p-3.5 text-[11px] font-medium whitespace-pre-wrap leading-relaxed ${
                             isAdmin
                               ? 'bg-blue-50/40 border-blue-200 text-slate-800'
                               : 'bg-white border-slate-200 text-slate-800'
@@ -1552,17 +1555,17 @@ function ITMasterRequestContent() {
                         aria-hidden
                       />
                       <div className="flex items-center justify-between gap-3 mb-1.5">
-                        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-black whitespace-nowrap bg-blue-100 text-blue-700">
+                        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium whitespace-nowrap bg-blue-100 text-blue-700">
                           [관리자] 관리자
                         </span>
-                        <span className="text-[10px] font-bold text-slate-400 tabular-nums shrink-0">작성 중</span>
+                        <span className="text-[10px] font-medium text-slate-400 tabular-nums shrink-0">작성 중</span>
                       </div>
                       <div className="rounded-md border border-blue-200 bg-blue-50/40 p-3.5">
                         <textarea
                           value={editOpinion}
                           onChange={(e) => setEditOpinion(e.target.value)}
                           placeholder="사용자에게 전달할 답변·조치 내용을 작성하세요."
-                          className="w-full min-h-[8rem] bg-transparent text-[11px] font-semibold text-slate-800 outline-none resize-none placeholder:text-slate-400 leading-relaxed"
+                          className="w-full min-h-[8rem] bg-transparent text-[11px] font-medium text-slate-800 outline-none resize-none placeholder:text-slate-400 leading-relaxed"
                         />
                       </div>
                     </div>
@@ -1576,17 +1579,17 @@ function ITMasterRequestContent() {
                         aria-hidden
                       />
                       <div className="flex items-center justify-between gap-3 mb-1.5">
-                        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-black whitespace-nowrap bg-blue-100 text-blue-700">
+                        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium whitespace-nowrap bg-blue-100 text-blue-700">
                           [관리자] 관리자
                         </span>
-                        <span className="text-[10px] font-bold text-slate-400 tabular-nums shrink-0">수정 중</span>
+                        <span className="text-[10px] font-medium text-slate-400 tabular-nums shrink-0">수정 중</span>
                       </div>
                       <div className="rounded-md border border-blue-200 bg-blue-50/40 p-3.5">
                         <textarea
                           value={editOpinion}
                           onChange={(e) => setEditOpinion(e.target.value)}
                           placeholder="사용자에게 전달할 내용을 수정하세요."
-                          className="w-full min-h-[8rem] bg-transparent text-[11px] font-semibold text-slate-800 outline-none resize-none placeholder:text-slate-400 leading-relaxed"
+                          className="w-full min-h-[8rem] bg-transparent text-[11px] font-medium text-slate-800 outline-none resize-none placeholder:text-slate-400 leading-relaxed"
                         />
                       </div>
                     </div>
@@ -1603,7 +1606,7 @@ function ITMasterRequestContent() {
                       setEditOpinion('');
                       setCommEditMode(false);
                     }}
-                    className="flex-1 py-3.5 bg-slate-100 text-slate-600 rounded-xl font-black text-[11px] hover:bg-slate-200 transition-colors"
+                    className="flex-1 py-3.5 bg-slate-100 text-slate-600 rounded-xl font-medium text-[11px] hover:bg-slate-200 transition-colors"
                   >
                     닫기
                   </button>
@@ -1615,16 +1618,16 @@ function ITMasterRequestContent() {
                         setCommEditMode(false);
                         setEditOpinion(opinionDisplay(latest.adminOpinion));
                       }}
-                      className="flex-1 py-3.5 bg-slate-100 text-slate-500 rounded-xl font-bold text-[11px] hover:bg-slate-200 transition-colors"
+                      className="flex-1 py-3.5 bg-slate-100 text-slate-500 rounded-xl font-medium text-[11px] hover:bg-slate-200 transition-colors"
                     >
                       편집 취소
                     </button>
                     <button
                       type="button"
                       onClick={handleUpdateAdminOutbound}
-                      className="flex-[2] py-3.5 bg-blue-600 text-white rounded-xl font-black text-[12px] shadow-md hover:bg-blue-700 active:scale-95 transition-all"
+                      className="flex-[2] py-3.5 bg-blue-600 text-white rounded-xl font-medium text-[12px] shadow-md hover:bg-blue-700 active:scale-95 transition-all"
                     >
-                      내용 저장
+                      내용 저장(Edit)
                     </button>
                   </>
                 ) : !openedIsLatest ? (
@@ -1636,16 +1639,16 @@ function ITMasterRequestContent() {
                         setEditOpinion('');
                         setCommEditMode(false);
                       }}
-                      className="flex-1 py-3.5 bg-slate-100 text-slate-600 rounded-xl font-black text-[11px] hover:bg-slate-200 transition-colors"
+                      className="flex-1 py-3.5 bg-slate-100 text-slate-600 rounded-xl font-medium text-[11px] hover:bg-slate-200 transition-colors"
                     >
                       닫기
                     </button>
                     <button
                       type="button"
                       onClick={() => openReqModal(latest)}
-                      className="flex-[1.6] py-3.5 bg-slate-900 text-white rounded-xl font-black text-[12px] shadow-md hover:bg-black active:scale-95 transition-all"
+                      className="flex-[1.6] py-3.5 bg-slate-900 text-white rounded-xl font-medium text-[12px] shadow-md hover:bg-black active:scale-95 transition-all"
                     >
-                      최신 행에서 조치
+                      최신 행에서 조치(Edit)
                     </button>
                   </>
                 ) : (
@@ -1657,7 +1660,7 @@ function ITMasterRequestContent() {
                         setEditOpinion('');
                         setCommEditMode(false);
                       }}
-                      className="flex-1 py-3.5 bg-slate-100 text-slate-600 rounded-xl font-black text-[11px] hover:bg-slate-200 transition-colors"
+                      className="flex-1 py-3.5 bg-slate-100 text-slate-600 rounded-xl font-medium text-[11px] hover:bg-slate-200 transition-colors"
                     >
                       닫기
                     </button>
@@ -1665,9 +1668,9 @@ function ITMasterRequestContent() {
                       <button
                         type="button"
                         onClick={() => handleCancelSend(String(latest.id))}
-                        className="flex-1 py-3.5 bg-rose-50 text-rose-600 border border-rose-200 rounded-xl font-black text-[11px] hover:bg-rose-100 transition-colors"
+                        className="flex-1 py-3.5 bg-rose-50 text-rose-600 border border-rose-200 rounded-xl font-medium text-[11px] hover:bg-rose-100 transition-colors"
                       >
-                        전송 취소
+                        전송 취소(Edit)
                       </button>
                     )}
                     {waitingForUser && (
@@ -1677,27 +1680,27 @@ function ITMasterRequestContent() {
                           setEditOpinion(opinionDisplay(latest.adminOpinion));
                           setCommEditMode(true);
                         }}
-                        className="flex-1 py-3.5 bg-white text-slate-700 border border-slate-300 rounded-xl font-black text-[11px] hover:bg-slate-50 transition-colors"
+                        className="flex-1 py-3.5 bg-white text-slate-700 border border-slate-300 rounded-xl font-medium text-[11px] hover:bg-slate-50 transition-colors"
                       >
-                        내용 수정
+                        내용 수정(Edit)
                       </button>
                     )}
                     {waitingForUser && (
                       <button
                         type="button"
                         onClick={() => submitThreadAction('close')}
-                        className="flex-1 py-3.5 bg-white text-slate-600 border border-slate-300 rounded-xl font-black text-[11px] hover:bg-slate-50 transition-colors"
+                        className="flex-1 py-3.5 bg-white text-slate-600 border border-slate-300 rounded-xl font-medium text-[11px] hover:bg-slate-50 transition-colors"
                       >
-                        처리 완료(종료)
+                        처리 완료(종료)(Edit)
                       </button>
                     )}
                     {threadClosed && (
                       <button
                         type="button"
                         onClick={() => openAdminCompose(editingReq)}
-                        className="flex-[1.4] py-3.5 bg-slate-900 text-white rounded-xl font-black text-[12px] shadow-md hover:bg-black active:scale-95 transition-all"
+                        className="flex-[1.4] py-3.5 bg-slate-900 text-white rounded-xl font-medium text-[12px] shadow-md hover:bg-black active:scale-95 transition-all"
                       >
-                        신규 요청하기
+                        신규 요청하기(Edit)
                       </button>
                     )}
                     {canAdminReply && (
@@ -1705,16 +1708,16 @@ function ITMasterRequestContent() {
                         <button
                           type="button"
                           onClick={() => submitThreadAction('reply')}
-                          className="flex-[1.4] py-3.5 bg-slate-900 text-white rounded-xl font-black text-[12px] shadow-md hover:bg-black active:scale-95 transition-all"
+                          className="flex-[1.4] py-3.5 bg-slate-900 text-white rounded-xl font-medium text-[12px] shadow-md hover:bg-black active:scale-95 transition-all"
                         >
-                          사용자에게 답변 전송
+                          사용자에게 답변 전송(Edit)
                         </button>
                         <button
                           type="button"
                           onClick={() => submitThreadAction('close')}
-                          className="flex-1 py-3.5 bg-white text-slate-600 border border-slate-300 rounded-xl font-black text-[11px] hover:bg-slate-50 transition-colors"
+                          className="flex-1 py-3.5 bg-white text-slate-600 border border-slate-300 rounded-xl font-medium text-[11px] hover:bg-slate-50 transition-colors"
                         >
-                          처리 완료(종료)
+                          처리 완료(종료)(Edit)
                         </button>
                       </>
                     )}
@@ -1732,20 +1735,20 @@ function ITMasterRequestContent() {
             className="bg-white w-[500px] border border-slate-200 shadow-2xl p-8 rounded-3xl animate-in zoom-in-95 duration-200 flex flex-col max-h-[90vh]"
             onClick={(e) => e.stopPropagation()}
           >
-            <h4 className="text-[14px] font-black text-slate-900 tracking-tight mb-2">신규 요청하기</h4>
-            <p className="text-[10px] font-bold text-slate-400 mb-6 border-b-2 border-slate-900 pb-3">
+            <h4 className="text-[14px] font-medium text-slate-900 tracking-tight mb-2">신규 요청하기</h4>
+            <p className="text-[10px] font-medium text-slate-400 mb-6 border-b-2 border-slate-900 pb-3">
               자산 사용자에게 전달할 요청·의견을 작성해 주세요
             </p>
 
             <div className="overflow-y-auto flex-1 pr-2 space-y-4 scrollbar-hide">
               <div className="rounded-md bg-slate-50 border border-slate-200 px-4 py-3 space-y-2">
-                <div className="flex justify-between gap-3 text-[11px] font-bold">
+                <div className="flex justify-between gap-3 text-[11px] font-medium">
                   <span className="text-slate-400 shrink-0">대상자산</span>
                   <span className="text-slate-800 text-right">
                     {adminComposeReq.assetType || adminComposeReq.category || '-'} | {adminComposeReq.assetCode || '-'} / {parseHistoryModel(adminComposeReq)}
                   </span>
                 </div>
-                <div className="flex justify-between gap-3 text-[11px] font-bold">
+                <div className="flex justify-between gap-3 text-[11px] font-medium">
                   <span className="text-slate-400 shrink-0">대상 사용자</span>
                   <span className="text-slate-800 text-right">
                     {adminComposeReq.requester || '-'} ({adminComposeReq.dept || '-'})
@@ -1760,10 +1763,10 @@ function ITMasterRequestContent() {
                     aria-hidden
                   />
                   <div className="flex items-center justify-between gap-3 mb-1.5">
-                    <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-black whitespace-nowrap bg-blue-100 text-blue-700">
+                    <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium whitespace-nowrap bg-blue-100 text-blue-700">
                       [관리자] 관리자
                     </span>
-                    <span className="text-[10px] font-bold text-slate-400 tabular-nums shrink-0">
+                    <span className="text-[10px] font-medium text-slate-400 tabular-nums shrink-0">
                       {formatKSTDateTime(new Date()) !== '-'
                         ? formatKSTDateTime(new Date())
                         : getKSTDateString()}
@@ -1774,7 +1777,7 @@ function ITMasterRequestContent() {
                       value={editOpinion}
                       onChange={(e) => setEditOpinion(e.target.value)}
                       placeholder="실사 안내, 자산 확인 요청, 교체 일정 협의 등 사용자에게 전달할 내용을 작성하세요."
-                      className="w-full min-h-[8rem] bg-transparent text-[11px] font-semibold text-slate-800 outline-none resize-none placeholder:text-slate-400 leading-relaxed"
+                      className="w-full min-h-[8rem] bg-transparent text-[11px] font-medium text-slate-800 outline-none resize-none placeholder:text-slate-400 leading-relaxed"
                     />
                   </div>
                 </div>
@@ -1785,7 +1788,7 @@ function ITMasterRequestContent() {
               <button
                 type="button"
                 onClick={closeAdminCompose}
-                className="flex-1 py-3.5 bg-slate-100 text-slate-600 rounded-xl font-black text-[11px] hover:bg-slate-200 transition-colors"
+                className="flex-1 py-3.5 bg-slate-100 text-slate-600 rounded-xl font-medium text-[11px] hover:bg-slate-200 transition-colors"
               >
                 닫기
               </button>
@@ -1793,9 +1796,9 @@ function ITMasterRequestContent() {
                 <button
                   type="button"
                   onClick={submitAdminOpinionRequest}
-                  className="flex-[2] py-3.5 bg-slate-900 text-white rounded-xl font-black text-[12px] shadow-md hover:bg-black active:scale-95 transition-all"
+                  className="flex-[2] py-3.5 bg-slate-900 text-white rounded-xl font-medium text-[12px] shadow-md hover:bg-black active:scale-95 transition-all"
                 >
-                  사용자에게 의견/요청 전송
+                  사용자에게 의견/요청 전송(Edit)
                 </button>
               )}
             </div>

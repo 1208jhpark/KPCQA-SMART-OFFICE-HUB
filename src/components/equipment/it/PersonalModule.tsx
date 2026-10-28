@@ -2,7 +2,7 @@
      
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import * as XLSX from 'xlsx'; 
-import { getKSTDateString, addMonthsToKSTDateOnly, getKSTDaysUntil, getKSTNowYearMonth, getKSTYearMonth } from '@/utils/dateUtils';
+import { getKSTDateString, getKSTDaysUntil } from '@/utils/dateUtils';
 import LoadingState from '@/components/common/LoadingState';
 import {
   buildInfoCorrectionPending,
@@ -12,50 +12,6 @@ import {
   parseInfoCorrectionPending,
   type InfoCorrectionField,
 } from '@/utils/itInfoCorrection';
-
-/** KST 연·월 문자열 (year: '2026', month: '07') */
-function getKSTYearMonthParts(dateInput: Date | string | number | null | undefined) {
-  if (dateInput === null || dateInput === undefined || dateInput === '') return null;
-  const raw = String(dateInput).trim();
-  const ymd = raw.match(/^(\d{4})-(\d{2})-(\d{2})/);
-  if (ymd) return { year: ymd[1], month: ymd[2] };
-  const ym = getKSTYearMonth(dateInput);
-  if (!ym) return null;
-  return {
-    year: String(ym.year),
-    month: String(ym.month).padStart(2, '0'),
-  };
-}
-
-/** 관리자가 먼저 건 문의인지 (확인·종결로 status가 바뀌어도 동일) */
-function isAdminInquiryRow(req: any) {
-  if (!req) return false;
-  const s = String(req.status || '').trim();
-  if (s === '관리자 의견발송' || s === '사용자 확인완료') return true;
-  if (s === '관리자 답변') return false;
-  if (s === '답변회신' || String(req.adminOpinion || '').includes(':::REPLY:::')) return false;
-  if (s === '의견전송' || s === '답변 대기중' || s === '대기중') return false;
-  const content = String(req.content || '').trim();
-  const hasUserContent = !!content && content !== '(관리자 의견)';
-  const adminText = String(req.adminOpinion || '').split(':::')[0].trim();
-  if (!hasUserContent && adminText) return true;
-  return false;
-}
-
-function historyStatusLabel(status: string, req?: any, opts?: { isThreadRoot?: boolean }) {
-  if (opts?.isThreadRoot) {
-    return isAdminInquiryRow(req) ? '관리자 문의/요청' : '사용자 문의/요청';
-  }
-  const s = String(status || '').trim();
-  if (s === '처리완료' || s === '관리자 확인완료') return '처리 완료';
-  if (s === '사용자 종료처리') return '처리 완료';
-  if (s === '사용자 확인완료' || isAdminInquiryRow(req)) return '관리자 문의/요청';
-  if (s === '관리자 답변') return '관리자 답변';
-  if (s === '관리자 의견발송') return '관리자 문의/요청';
-  if (s === '답변회신' || (req && String(req.adminOpinion || '').includes(':::REPLY:::'))) return '사용자 답변';
-  if (s === '의견전송' || s === '답변 대기중' || s === '대기중') return '사용자 문의/요청';
-  return s || '-';
-}
 
 function isUserPendingStatus(status: string) {
   return status === '의견전송' || status === '답변 대기중' || status === '답변회신';
@@ -139,6 +95,44 @@ function collectThreadMessages(req: any, allRequests: any[]) {
   return pool.filter((r) => rootOf(String(r.id)) === rootId).sort((a, b) => reqTime(a) - reqTime(b));
 }
 
+type AssetThread = { root: any; latest: any; msgs: any[]; closed: boolean };
+
+function collectAssetThreads(assetCode: string, allRequests: any[]): AssetThread[] {
+  const pool = allRequests.filter((r) => String(r?.assetCode || '').trim() === String(assetCode || '').trim());
+  if (!pool.length) return [];
+  const parentOf = new Map<string, string>();
+  pool.forEach((r) => {
+    const pid = getThreadParentId(r, pool);
+    if (pid) parentOf.set(String(r.id), pid);
+  });
+  const rootOf = (id: string) => {
+    let cur = String(id);
+    const seen = new Set<string>();
+    while (parentOf.has(cur) && !seen.has(cur)) {
+      seen.add(cur);
+      cur = parentOf.get(cur) as string;
+    }
+    return cur;
+  };
+  const groups = new Map<string, any[]>();
+  pool.forEach((r) => {
+    const rootId = rootOf(String(r.id));
+    const list = groups.get(rootId) || [];
+    list.push(r);
+    groups.set(rootId, list);
+  });
+  return Array.from(groups.values()).map((msgs) => {
+    const sorted = [...msgs].sort((a, b) => reqTime(a) - reqTime(b));
+    const latest = sorted[sorted.length - 1];
+    return {
+      root: sorted[0],
+      latest,
+      msgs: sorted,
+      closed: isClosedStatus(latest?.status),
+    };
+  });
+}
+
 function opinionDisplay(raw: string | null | undefined) {
   const parts = String(raw || '').split(':::');
   const text = (parts[0] || '').trim();
@@ -153,45 +147,175 @@ function threadTurns(req: any) {
   const adminText = opinionDisplay(req?.adminOpinion);
   const reqDate = getKSTDateString(req?.requestDate || req?.createdAt) || req?.requestDate || '';
   const doneDate = getKSTDateString(req?.completedAt || req?.updatedAt || req?.createdAt) || reqDate;
-  const turns: { role: 'admin' | 'user'; label: string; text: string; date: string }[] = [];
+  const userName = String(req?.requester || req?.name || '').trim() || '사용자';
+  const turns: { role: 'admin' | 'user'; name: string; text: string; date: string }[] = [];
   if (status === '관리자 의견발송' || status === '사용자 확인완료' || status === '관리자 답변') {
-    if (adminText) turns.push({ role: 'admin', label: status === '관리자 답변' ? '관리자 답변' : '관리자 문의/요청', text: adminText, date: reqDate });
+    if (adminText) turns.push({ role: 'admin', name: '관리자', text: adminText, date: reqDate });
   } else if (status === '답변회신' || status === '의견전송' || status === '답변 대기중') {
-    if (userOk) turns.push({ role: 'user', label: status === '답변회신' ? '사용자 답변' : '사용자 문의/요청', text: userText, date: reqDate });
+    if (userOk) turns.push({ role: 'user', name: userName, text: userText, date: reqDate });
   } else if (isClosedStatus(status)) {
-    if (userOk) turns.push({ role: 'user', label: '사용자 답변', text: userText, date: reqDate });
-    if (adminText) turns.push({ role: 'admin', label: '관리자 답변', text: adminText, date: doneDate });
+    if (userOk) turns.push({ role: 'user', name: userName, text: userText, date: reqDate });
+    if (adminText) turns.push({ role: 'admin', name: '관리자', text: adminText, date: doneDate });
   }
   return turns;
 }
 
-function ThreadTurnList({ turns }: { turns: { role: 'admin' | 'user'; label: string; text: string; date: string }[] }) {
+function TimelineTurns({ turns }: { turns: { role: 'admin' | 'user'; name: string; text: string; date: string }[] }) {
+  if (!turns.length) return null;
+  return (
+    <div className="border-l-2 border-slate-200 ml-2 space-y-4">
+      {turns.map((turn, idx) => {
+        const isAdmin = turn.role === 'admin';
+        const roleTag = isAdmin ? '관리자' : '사용자';
+        return (
+          <div key={`${turn.role}-${idx}`} className="relative pl-5">
+            <span
+              className={`absolute -left-[5px] top-2 w-2 h-2 rounded-full ring-2 ring-white ${
+                isAdmin ? 'bg-blue-500' : 'bg-slate-400'
+              }`}
+              aria-hidden
+            />
+            <div className="flex items-center justify-between gap-3 mb-1.5">
+              <span
+                className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium whitespace-nowrap ${
+                  isAdmin ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-600'
+                }`}
+              >
+                [{roleTag}] {turn.name}
+              </span>
+              {turn.date && (
+                <span className="text-[10px] font-medium text-slate-400 tabular-nums shrink-0">
+                  {turn.date}
+                </span>
+              )}
+            </div>
+            <div
+              className={`rounded-md border p-3.5 text-[11px] font-medium whitespace-pre-wrap leading-relaxed ${
+                isAdmin
+                  ? 'bg-blue-50/40 border-blue-200 text-slate-800'
+                  : 'bg-white border-slate-200 text-slate-800'
+              }`}
+            >
+              {turn.text}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function CommModalHeader({
+  title,
+  subtitle,
+  closedCount,
+  showClosedHistory,
+  onToggle,
+}: {
+  title: string;
+  subtitle: string;
+  closedCount: number;
+  showClosedHistory: boolean;
+  onToggle: () => void;
+}) {
   return (
     <>
-      {turns.map((turn, idx) => (
-        <div key={`${turn.role}-${idx}`}>
-          <p className={`text-[10px] font-black uppercase tracking-wider mb-2 ${turn.role === 'admin' ? 'text-rose-600' : 'text-amber-600'}`}>
-            {turn.label}
-          </p>
-          <div className={`w-full min-h-[4rem] p-4 text-[11px] font-bold rounded-xl whitespace-pre-wrap leading-relaxed ${
-            turn.role === 'admin'
-              ? 'bg-rose-50 border border-rose-100 text-rose-900'
-              : 'bg-amber-50 border border-amber-100 text-amber-900'
-          }`}>
-            {turn.text}
-          </div>
-          {turn.date && (
-            <p className="mt-1.5 text-[10px] font-bold text-slate-400 text-right tabular-nums">{turn.date}</p>
-          )}
-        </div>
-      ))}
+      <div className="flex items-start justify-between gap-3 mb-2">
+        <h4 className="text-[14px] font-medium text-slate-900 tracking-tight">{title}</h4>
+        <button
+          type="button"
+          disabled={closedCount === 0}
+          onClick={onToggle}
+          title={closedCount === 0 ? '완료된 문의 내역이 없습니다' : '같은 자산의 이전 완료 대화를 이어 봅니다'}
+          className={`shrink-0 px-2.5 py-1.5 rounded-lg border text-[10px] font-medium leading-tight text-right whitespace-nowrap transition-colors ${
+            closedCount === 0
+              ? 'border-slate-100 text-slate-300 cursor-not-allowed'
+              : showClosedHistory
+                ? 'border-indigo-200 bg-indigo-50 text-indigo-600'
+                : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+          }`}
+        >
+          {showClosedHistory ? '이전 내역 접기' : '완료된 문의 내역 보기'}
+        </button>
+      </div>
+      <p className="text-[10px] font-medium text-slate-400 mb-6 border-b-2 border-slate-900 pb-3">
+        {subtitle}
+      </p>
     </>
   );
 }
 
-/** 하단 표 '관리자 답변' / '관리자 문의/요청'과 동일 계열 (미확인) */
-function isAdminFeedbackStatus(status: string) {
-  return status === '관리자 의견발송' || status === '관리자 답변';
+function ClosedHistoryBlock({ threads }: { threads: AssetThread[] }) {
+  if (!threads.length) {
+    return (
+      <p className="text-[11px] font-medium text-slate-400 px-1">완료된 문의 내역이 없습니다.</p>
+    );
+  }
+  const ordered = [...threads].sort((a, b) => reqTime(a.latest) - reqTime(b.latest));
+  return (
+    <div className="space-y-5">
+      {ordered.map((thread, idx) => {
+        const turns = thread.msgs.flatMap(threadTurns);
+        if (!turns.length) return null;
+        const date =
+          getKSTDateString(thread.latest.completedAt || thread.latest.requestDate || thread.latest.createdAt) ||
+          '';
+        return (
+          <div key={String(thread.root?.id || idx)} className="space-y-3">
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] font-medium text-slate-500">완료된 문의 {idx + 1}</span>
+              {date && <span className="text-[10px] font-medium text-slate-400 tabular-nums">{date}</span>}
+            </div>
+            <TimelineTurns turns={turns} />
+          </div>
+        );
+      })}
+      <div className="flex items-center gap-2 py-1">
+        <div className="flex-1 h-px bg-slate-200" />
+        <span className="text-[10px] font-medium text-slate-400">현재 대화</span>
+        <div className="flex-1 h-px bg-slate-200" />
+      </div>
+    </div>
+  );
+}
+
+function TimelineCompose({
+  name,
+  dateLabel,
+  value,
+  onChange,
+  placeholder,
+}: {
+  name: string;
+  dateLabel: string;
+  value: string;
+  onChange: (v: string) => void;
+  placeholder: string;
+}) {
+  return (
+    <div className="border-l-2 border-slate-200 ml-2">
+      <div className="relative pl-5">
+        <span
+          className="absolute -left-[5px] top-2 w-2 h-2 rounded-full bg-slate-400 ring-2 ring-white"
+          aria-hidden
+        />
+        <div className="flex items-center justify-between gap-3 mb-1.5">
+          <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium whitespace-nowrap bg-slate-100 text-slate-600">
+            [사용자] {name}
+          </span>
+          <span className="text-[10px] font-medium text-slate-400 tabular-nums shrink-0">{dateLabel}</span>
+        </div>
+        <div className="rounded-md border border-slate-200 bg-white p-3.5">
+          <textarea
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+            placeholder={placeholder}
+            className="w-full min-h-[8rem] bg-transparent text-[11px] font-medium text-slate-800 outline-none resize-none placeholder:text-slate-400 leading-relaxed"
+          />
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function isAdminOutboundRequest(status: string) {
@@ -202,67 +326,6 @@ function feedbackAckStorageKey(email: string) {
   return `it_feedback_acked_${email}`;
 }
 
-function userRequestContent(raw: string | null | undefined) {
-  const text = String(raw || '').trim();
-  if (!text || text === '(관리자 의견)') return '-';
-  return `"${text}"`;
-}
-
-function parseHistoryModel(req: any, assets: any[]) {
-  const info = String(req?.assetInfo || '');
-  const slash = info.indexOf('/');
-  if (slash >= 0) {
-    const model = info.slice(slash + 1).trim();
-    if (model) return model;
-  }
-  const hit = assets.find((a) => a.code === req?.assetCode);
-  return hit?.model || '-';
-}
-
-/** adminOpinion 저장 포맷: 의견:::처리자이름:::처리자부서[:::USERACK:::확인자이름:::확인자부서] */
-function isMetaResponderName(name: string) {
-  const n = String(name || '').trim().toUpperCase();
-  return !n || n === '-' || n === 'REPLY' || n === 'USERACK';
-}
-
-function parseAdminOpinion(raw: string | null | undefined) {
-  const parts = String(raw || '').split(':::');
-  const opinionText = parts[0] || '';
-  const rawName = (parts[1] || '').trim();
-  const responderName = isMetaResponderName(rawName) ? '' : rawName;
-  const responderDept = isMetaResponderName(parts[2] || '') ? '' : (parts[2] || '').trim();
-  const responderLabel = [responderDept, responderName].filter(Boolean).join(' / ');
-  const ackIdx = parts.indexOf('USERACK');
-  const ackedName = ackIdx >= 0 ? (parts[ackIdx + 1] || '').trim() : '';
-  const ackedDept = ackIdx >= 0 ? (parts[ackIdx + 2] || '').trim() : '';
-  const ackedLabel = [ackedDept, ackedName].filter(Boolean).join(' / ');
-  return { opinionText, responderName, responderDept, responderLabel, ackedName, ackedDept, ackedLabel };
-}
-
-function pickThreadAdminLabel(members: any[]) {
-  for (const m of members) {
-    const parsed = parseAdminOpinion(m?.adminOpinion);
-    if (parsed.responderLabel) return parsed.responderLabel;
-  }
-  return '';
-}
-
-function threadUserLabel(root: any) {
-  return [root?.dept || root?.department, root?.requester || root?.name].filter(Boolean).join(' / ');
-}
-
-function samePersonLabel(a: string, b: string) {
-  return String(a || '').replace(/\s+/g, '') === String(b || '').replace(/\s+/g, '');
-}
-
-function isAdminSideStatus(status: string) {
-  return status === '관리자 의견발송' || status === '관리자 답변' || status === '사용자 확인완료' || status === '사용자 종료처리';
-}
-
-function rowAdminLabel(req: any) {
-  return pickThreadAdminLabel([req]);
-}
-     
 export default function PersonalModule() {
   const [currentUser, setCurrentUser] = useState<{name: string, dept: string, email: string} | null>(null);
   const [assets, setAssets] = useState<any[]>([]);
@@ -278,21 +341,18 @@ export default function PersonalModule() {
   // ✨ 자산 분류(it_type) 필터 추가 완료
   const [colFilters, setColFilters] = useState({ category: '', it_type: '', is_rental: '' });
   
-  const [showReplaceableOnly, setShowReplaceableOnly] = useState(false);
   const [showStatusFilter, setShowStatusFilter] = useState<'all' | 'done' | 'pending' | 'nudge' | 'info_correction'>('all');
   /** 의견/요청: 조치완료·관리자답변 중 미확인(확인처리 전)만 */
   const [showFeedbackOnly, setShowFeedbackOnly] = useState(false);
+  /** 의견/요청: 사용자→관리자 전송 후 답변 대기 */
+  const [showAwaitingOnly, setShowAwaitingOnly] = useState(false);
   const [ackedRequestIds, setAckedRequestIds] = useState<Set<string>>(() => new Set());
 
-  /** assets | history — personal 워크스페이스 탭 */
-  const [mainTab, setMainTab] = useState<'assets' | 'history'>('assets');
-  /** 송수신 대장 상태 필터 (의견/요청 대시보드 딥링크) */
-  const [historyStatusFilter, setHistoryStatusFilter] = useState<'ALL' | 'PENDING' | 'FEEDBACK'>('ALL');
-  
   const [unifiedCommModal, setUnifiedCommModal] = useState<any | null>(null);
   const [pendingRequest, setPendingRequest] = useState<any | null>(null);
   const [completedRequest, setCompletedRequest] = useState<any | null>(null);
   const [commEditMode, setCommEditMode] = useState(false);
+  const [showClosedHistory, setShowClosedHistory] = useState(false);
   /** 관리자 요청 확인 → 이력 유지한 채 답변 작성 */
   const [requestContent, setRequestContent] = useState('');
   const [confirmAuditModal, setConfirmAuditModal] = useState<any | null>(null);
@@ -300,17 +360,10 @@ export default function PersonalModule() {
   
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 10;
-  
-  const [historyTypeFilter, setHistoryTypeFilter] = useState('ALL');
-  const [historyYear, setHistoryYear] = useState(() => String(getKSTNowYearMonth().year));
-  const [historyMonth, setHistoryMonth] = useState('ALL');
-  const [historyCodeQuery, setHistoryCodeQuery] = useState('');
-  const [historyModelQuery, setHistoryModelQuery] = useState('');
-  const [historyExpandedIds, setHistoryExpandedIds] = useState<Set<string>>(new Set());
-  
+
   const todayStr = getKSTDateString();
 
-  useEffect(() => { setCurrentPage(1); }, [searchQuery, colFilters, showReplaceableOnly, showStatusFilter, showFeedbackOnly]);
+  useEffect(() => { setCurrentPage(1); }, [searchQuery, colFilters, showStatusFilter, showFeedbackOnly, showAwaitingOnly]);
 
   useEffect(() => {
     if (!currentUser?.email) return;
@@ -344,24 +397,21 @@ export default function PersonalModule() {
     persistAckedRequestIds(next);
   };
 
-  const goAssetsTab = () => setMainTab('assets');
-  const goHistoryTab = (status: 'ALL' | 'PENDING' | 'FEEDBACK' = 'ALL') => {
-    setMainTab('history');
-    setHistoryStatusFilter(status);
+  const toggleAwaitingAssetFilter = () => {
+    setShowStatusFilter('all');
     setShowFeedbackOnly(false);
-  };
-  const toggleHistoryStatus = (status: 'PENDING' | 'FEEDBACK') => {
-    setMainTab('history');
-    setShowFeedbackOnly(false);
-    setHistoryStatusFilter((prev) => (prev === status ? 'ALL' : status));
+    setShowAwaitingOnly((prev) => !prev);
   };
   /** 관리자 의견회신 → 하단 자산표의 조치완료(미확인) 필터 */
   const toggleFeedbackAssetFilter = () => {
-    setMainTab('assets');
-    setHistoryStatusFilter('ALL');
-    setShowReplaceableOnly(false);
     setShowStatusFilter('all');
+    setShowAwaitingOnly(false);
     setShowFeedbackOnly((prev) => !prev);
+  };
+  const toggleInfoCorrectionFilter = () => {
+    setShowFeedbackOnly(false);
+    setShowAwaitingOnly(false);
+    setShowStatusFilter((prev) => (prev === 'info_correction' ? 'all' : 'info_correction'));
   };
   
   const fetchAllData = async () => {
@@ -506,6 +556,13 @@ export default function PersonalModule() {
   const isAuditActive = myRunningAudits.length > 0;
   const activeAudit = focusedAudit;
 
+  useEffect(() => {
+    if (isAuditActive) return;
+    if (showStatusFilter === 'done' || showStatusFilter === 'pending' || showStatusFilter === 'nudge') {
+      setShowStatusFilter('all');
+    }
+  }, [isAuditActive, showStatusFilter]);
+
   const getCoveringAudit = (asset: any) => {
     const dept = String(asset?.dept || currentUser?.dept || '').trim();
     const covered = myRunningAudits.filter((a) => {
@@ -522,20 +579,6 @@ export default function PersonalModule() {
   };
   
   const getAssetLogic = (a: any) => {
-    let repDate = '-';
-    let dday: number | null = null;
-    let isTargetCount = false;
-    const baseDateString = (a.is_rental === '렌탈' && a.start_date) ? a.start_date : (a.in_date || todayStr);
-    const cycleNum = parseInt(a.cycle, 10) || 0;
-    if (baseDateString && cycleNum > 0) {
-      const computed = addMonthsToKSTDateOnly(baseDateString, cycleNum);
-      if (computed) {
-        repDate = computed;
-        dday = getKSTDaysUntil(computed);
-        isTargetCount = dday <= 30;
-      }
-    }
-    
     const lastAudit = a.last_audit_date || '';
     let auditStatusLabel = '미확인';
     let auditStatusDate: string | null = null;
@@ -553,10 +596,6 @@ export default function PersonalModule() {
         auditStatusColor = a.last_audit_by === 'admin'
           ? 'bg-violet-50 border-violet-200 text-violet-800 hover:bg-violet-100 shadow-sm cursor-pointer'
           : 'bg-slate-100 border-slate-300 text-slate-600 hover:bg-slate-200 shadow-sm cursor-pointer';
-      } else if (hasInfoCorrection) {
-        auditStatusLabel = '수정 대기중';
-        auditStatusDate = parseInfoCorrectionPending(a.info_correction_pending)?.requestedAt || null;
-        auditStatusColor = 'bg-amber-50 border-amber-300 text-amber-800 hover:bg-amber-100 cursor-pointer';
       } else if (isNudged) {
         auditStatusLabel = '마감 임박';
         auditStatusDate = a.audit_request_date || null;
@@ -576,29 +615,23 @@ export default function PersonalModule() {
         auditStatusLabel = '대상 외';
         auditStatusColor = 'bg-slate-100 text-slate-500 border-slate-200 border-dashed cursor-not-allowed';
       }
+    } else if (lastAudit) {
+      auditStatusLabel = getCompletedAuditLabel(a.last_audit_by);
+      auditStatusDate = lastAudit;
+      auditStatusColor = a.last_audit_by === 'admin'
+        ? 'bg-violet-50 border-violet-200 text-violet-800 cursor-not-allowed'
+        : 'bg-slate-100 text-slate-700 border-slate-300 cursor-not-allowed';
+      isVerified = true;
     } else {
-      if (hasInfoCorrection) {
-        auditStatusLabel = '수정 대기중';
-        auditStatusDate = parseInfoCorrectionPending(a.info_correction_pending)?.requestedAt || null;
-        auditStatusColor = 'bg-amber-50 border-amber-300 text-amber-800 hover:bg-amber-100 cursor-pointer';
-      } else if (lastAudit) {
-        auditStatusLabel = getCompletedAuditLabel(a.last_audit_by);
-        auditStatusDate = lastAudit;
-        auditStatusColor = a.last_audit_by === 'admin'
-          ? 'bg-violet-50 border-violet-200 text-violet-800 cursor-not-allowed'
-          : 'bg-slate-100 text-slate-700 border-slate-300 cursor-not-allowed';
-        isVerified = true;
-      } else {
-        auditStatusLabel = '미실사 장비';
-        auditStatusColor = 'bg-slate-100 text-slate-600 border-slate-300 cursor-not-allowed border-dashed';
-      }
+      auditStatusLabel = '미실사 장비';
+      auditStatusColor = 'bg-slate-100 text-slate-600 border-slate-300 cursor-not-allowed border-dashed';
     }
     const auditStatusText = auditStatusDate ? `${auditStatusLabel} (${auditStatusDate})` : auditStatusLabel;
      
     const assetRequests = requests.filter(r => r.assetCode === a.code).sort((r1, r2) => new Date(r2.createdAt).getTime() - new Date(r1.createdAt).getTime());
     const latestReq = assetRequests[0];
      
-    let commStatusLabel = '신규 요청하기';
+    let commStatusLabel = '관리자에게 문의하기';
     let commStatusDate: string | null = null;
     let commStatusColor = 'bg-slate-100 border-slate-300 text-slate-600 hover:bg-slate-200 shadow-sm';
     let hasUnreadFeedback = false;
@@ -607,7 +640,7 @@ export default function PersonalModule() {
     if (latestReq) {
       const reqDate = getKSTDateString(latestReq.requestDate || latestReq.createdAt) || latestReq.requestDate || null;
       if (isUserPendingStatus(latestReq.status)) {
-        commStatusLabel = isUserReplyRow(latestReq) ? '사용자 답변' : '사용자 문의/요청';
+        commStatusLabel = isUserReplyRow(latestReq) ? '추가 문의 접수 완료' : '문의 접수 완료';
         commStatusDate = reqDate;
         commStatusColor = 'bg-amber-50 border-amber-300 text-amber-800 hover:bg-amber-100';
         isAwaitingAdminReply = true;
@@ -617,7 +650,7 @@ export default function PersonalModule() {
         hasUnreadFeedback = true;
         commStatusColor = 'bg-rose-50 border-rose-300 text-rose-800 hover:bg-rose-100 animate-pulse shadow-sm';
       } else if (latestReq.status === '관리자 답변') {
-        commStatusLabel = '관리자 답변';
+        commStatusLabel = '관리자 답변 확인';
         commStatusDate = getKSTDateString(latestReq.completedAt || latestReq.updatedAt || latestReq.createdAt) || reqDate;
         hasUnreadFeedback = true;
         commStatusColor = 'bg-rose-50 border-rose-300 text-rose-800 hover:bg-rose-100 shadow-sm';
@@ -632,11 +665,21 @@ export default function PersonalModule() {
       }
     }
     const commStatusText = commStatusDate ? `${commStatusLabel} (${commStatusDate})` : commStatusLabel;
+
+    const infoEditDate = hasInfoCorrection
+      ? (parseInfoCorrectionPending(a.info_correction_pending)?.requestedAt || null)
+      : null;
+    const infoEditLabel = hasInfoCorrection ? '수정 대기중' : '정보수정하기';
+    const infoEditColor = hasInfoCorrection
+      ? 'bg-amber-50 border-amber-300 text-amber-800 hover:bg-amber-100'
+      : 'bg-white border-slate-300 text-slate-600 hover:bg-slate-50 shadow-sm';
+    const infoEditText = infoEditDate ? `${infoEditLabel} (${infoEditDate})` : infoEditLabel;
   
     return {
-      repDate, dday, isTargetCount, isVerified, isNudged, hasInfoCorrection,
+      isVerified, isNudged, hasInfoCorrection,
       auditStatusLabel, auditStatusDate, auditStatusText, auditStatusColor,
       commStatusLabel, commStatusDate, commStatusText, commStatusColor,
+      infoEditLabel, infoEditDate, infoEditText, infoEditColor,
       hasUnreadFeedback, isAwaitingAdminReply,
     };
   };
@@ -773,8 +816,8 @@ export default function PersonalModule() {
       if (logic.hasUnreadFeedback) feedbackCount++;
       if (logic.isAwaitingAdminReply) awaitingReplyCount++;
 
+      if (logic.hasInfoCorrection) infoCorrectionCount++;
       if (logic.isVerified) auditDoneCount++;
-      else if (logic.hasInfoCorrection) infoCorrectionCount++;
       else if (logic.isNudged) auditNudgeCount++;
       else auditPendingCount++;
     });
@@ -785,7 +828,6 @@ export default function PersonalModule() {
       awaitingReplyCount,
       typeCounts,
       total: assets.length,
-      replaceable: assets.filter(a => getAssetLogic(a).isTargetCount).length,
       unverified: assets.length - verified,
       auditDoneCount,
       auditPendingCount,
@@ -852,19 +894,19 @@ export default function PersonalModule() {
         const matchItType = !colFilters.it_type || a.it_type === colFilters.it_type;
         const matchRental = !colFilters.is_rental || a.is_rental === colFilters.is_rental;
 
-        const matchReplace = !showReplaceableOnly || logic.isTargetCount;
         let matchStatus = true;
         if (showStatusFilter === 'done') matchStatus = logic.isVerified;
         else if (showStatusFilter === 'pending') {
-          matchStatus = !logic.isVerified && !logic.hasInfoCorrection && !logic.isNudged;
+          matchStatus = !logic.isVerified && !logic.isNudged;
         } else if (showStatusFilter === 'nudge') {
-          matchStatus = !logic.isVerified && logic.isNudged && !logic.hasInfoCorrection;
+          matchStatus = !logic.isVerified && logic.isNudged;
         } else if (showStatusFilter === 'info_correction') {
           matchStatus = logic.hasInfoCorrection;
         }
         const matchFeedback = !showFeedbackOnly || logic.hasUnreadFeedback;
+        const matchAwaiting = !showAwaitingOnly || logic.isAwaitingAdminReply;
 
-        return matchSearch && matchCategory && matchItType && matchRental && matchReplace && matchStatus && matchFeedback;
+        return matchSearch && matchCategory && matchItType && matchRental && matchStatus && matchFeedback && matchAwaiting;
       })
       // 최신 등록이 위 · NO는 큰 수가 위
       .sort((a, b) => {
@@ -873,134 +915,29 @@ export default function PersonalModule() {
         if (tb !== ta) return tb - ta;
         return String(b.id || '').localeCompare(String(a.id || ''));
       });
-  }, [assets, searchQuery, colFilters, showReplaceableOnly, showStatusFilter, showFeedbackOnly, ackedRequestIds, activeAudit, requests]);
+  }, [assets, searchQuery, colFilters, showStatusFilter, showFeedbackOnly, showAwaitingOnly, ackedRequestIds, activeAudit, requests]);
   
   const paginatedAssets = filteredAssets.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
   const totalPages = Math.max(1, Math.ceil(filteredAssets.length / itemsPerPage));
   
-  const myBaseHistoryReqs = useMemo(() => {
-    if (!currentUser) return [];
-    return requests
-      .filter((r) => r.requester === currentUser.name)
-      .sort((a, b) => {
-        const ta = new Date(a.createdAt || a.requestDate || 0).getTime();
-        const tb = new Date(b.createdAt || b.requestDate || 0).getTime();
-        if (tb !== ta) return tb - ta;
-        return String(b.id || '').localeCompare(String(a.id || ''));
-      });
-  }, [requests, currentUser]);
-
-  const historyUniqueTypes = useMemo(() => {
-    const counts: Record<string, number> = {};
-    myBaseHistoryReqs.forEach((r) => {
-      const key = String(r.assetType || '').trim();
-      if (!key) return;
-      counts[key] = (counts[key] || 0) + 1;
-    });
-    return Object.entries(counts)
-      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'ko'))
-      .map(([k]) => k);
-  }, [myBaseHistoryReqs]);
-
-  const historyAvailableYears = useMemo(() => {
-    const years = myBaseHistoryReqs
-      .map((r) => getKSTYearMonthParts(r.requestDate || r.createdAt)?.year)
-      .filter(Boolean) as string[];
-    const unique = Array.from(new Set(years));
-    const curr = String(getKSTNowYearMonth().year);
-    if (!unique.includes(curr)) unique.push(curr);
-    return unique.sort((a, b) => b.localeCompare(a));
-  }, [myBaseHistoryReqs]);
-
-  const historyAvailableMonths = ['01','02','03','04','05','06','07','08','09','10','11','12'];
-
-  const myHistoryThreads = useMemo(() => {
-    const codeQ = historyCodeQuery.toLowerCase().trim();
-    const modelQ = historyModelQuery.toLowerCase().trim();
-    const parentOf = new Map<string, string>();
-    myBaseHistoryReqs.forEach((r) => {
-      const pid = getThreadParentId(r, myBaseHistoryReqs);
-      if (pid) parentOf.set(String(r.id), pid);
-    });
-    const childrenOf = new Map<string, any[]>();
-    const rootOf = (id: string) => {
-      let cur = String(id);
-      const seen = new Set<string>();
-      while (parentOf.has(cur) && !seen.has(cur)) {
-        seen.add(cur);
-        cur = parentOf.get(cur) as string;
-      }
-      return cur;
-    };
-    myBaseHistoryReqs.forEach((r) => {
-      const rootId = rootOf(String(r.id));
-      if (rootId === String(r.id)) return;
-      if (!myBaseHistoryReqs.some((x) => String(x.id) === rootId)) return;
-      const list = childrenOf.get(rootId) || [];
-      list.push(r);
-      childrenOf.set(rootId, list);
-    });
-    childrenOf.forEach((list) => list.sort((a, b) => reqTime(a) - reqTime(b)));
-
-    const matchesMeta = (r: any) => {
-      const ym = getKSTYearMonthParts(r.requestDate || r.createdAt);
-      const yearMatch = historyYear === 'ALL' || ym?.year === historyYear;
-      const monthMatch = historyMonth === 'ALL' || ym?.month === historyMonth;
-      const typeMatch = historyTypeFilter === 'ALL' || r.assetType === historyTypeFilter;
-      const model = parseHistoryModel(r, assets);
-      const codeMatch = !codeQ || String(r.assetCode || '').toLowerCase().includes(codeQ);
-      const modelMatch = !modelQ || String(model).toLowerCase().includes(modelQ);
-      return yearMatch && monthMatch && typeMatch && codeMatch && modelMatch;
-    };
-    const matchesStatus = (r: any) => {
-      const isPending = isUserPendingStatus(r.status);
-      const isFeedback = isAdminFeedbackStatus(r.status) && !ackedRequestIds.has(String(r.id || ''));
-      return (
-        historyStatusFilter === 'ALL' ||
-        (historyStatusFilter === 'PENDING' && isPending) ||
-        (historyStatusFilter === 'FEEDBACK' && isFeedback)
-      );
-    };
-
-    const roots = myBaseHistoryReqs.filter((r) => {
-      const pid = parentOf.get(String(r.id));
-      return !pid || !myBaseHistoryReqs.some((x) => String(x.id) === pid);
-    });
-
-    return roots
-      .map((root) => ({
-        root,
-        children: childrenOf.get(String(root.id)) || [],
-      }))
-      .filter((t) => {
-        const members = [t.root, ...t.children];
-        if (!members.some(matchesMeta)) return false;
-        return members.some(matchesStatus);
-      })
-      .sort((a, b) => {
-        const ta = Math.max(reqTime(a.root), ...a.children.map(reqTime));
-        const tb = Math.max(reqTime(b.root), ...b.children.map(reqTime));
-        return tb - ta;
-      });
-  }, [myBaseHistoryReqs, historyYear, historyMonth, historyTypeFilter, historyCodeQuery, historyModelQuery, historyStatusFilter, assets, ackedRequestIds]);
-
-  const toggleHistoryExpand = (id: string) => {
-    setHistoryExpandedIds((prev) => {
-      const next = new Set(prev);
-      const key = String(id);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
-  };
-  
   const handleExcelDownload = () => {
     const targetAssets = selectedIds.size > 0 ? filteredAssets.filter(a => selectedIds.has(a.id)) : filteredAssets;
     if (targetAssets.length === 0) return alert('다운로드할 데이터가 없습니다.');
-    const excelData = targetAssets.map((a, index) => {
-      const logic = getAssetLogic(a);
-      return { 'NO': targetAssets.length - index, '조직': a.dept || '-', '사용자': a.user || '-', '범주': a.category, '자산 분류': a.it_type, '조달유형': a.is_rental || '-', '자산번호': a.code, '모델명': a.model, 'S/N': a.sn, '제조사': a.brand || '-', '기본 사양': a.spec, '입고일': a.in_date || '-', '교체주기(M)': a.cycle, '교체예정일': logic.repDate, '최근실사일': a.last_audit_date || '-', '기타(메모)': a.memo };
-    });
+    const excelData = targetAssets.map((a, index) => ({
+      'NO': targetAssets.length - index,
+      '조직': a.dept || '-',
+      '사용자': a.user || '-',
+      '범주': a.category,
+      '자산 분류': a.it_type,
+      '조달유형': a.is_rental || '-',
+      '자산번호': a.code,
+      '모델명': a.model,
+      'S/N': a.sn,
+      '제조사': a.brand || '-',
+      '기본 사양': a.spec,
+      '최근실사일': a.last_audit_date || '-',
+      '기타(메모)': a.memo,
+    }));
     const ws = XLSX.utils.json_to_sheet(excelData); const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "My_Assets"); XLSX.writeFile(wb, `나의업무자산현황_${currentUser?.name}.xlsx`);
   };
@@ -1047,6 +984,7 @@ const closeCommModal = () => {
   setPendingRequest(null);
   setCompletedRequest(null);
   setCommEditMode(false);
+  setShowClosedHistory(false);
   setRequestContent('');
 };
 
@@ -1089,25 +1027,6 @@ const closeCompletedWithoutAck = () => {
   closeCommModal();
 };
 
-const assetFromRequest = (req: any) => {
-  if (!req) return null;
-  const hit = assets.find((a) => String(a.code || '').trim() === String(req.assetCode || '').trim());
-  if (hit) return hit;
-  return {
-    code: req.assetCode || '',
-    it_type: req.assetType || '일반',
-    model: parseHistoryModel(req, assets),
-    user: req.requester || currentUser?.name || '',
-    dept: req.dept || currentUser?.dept || '',
-  };
-};
-
-const openCommModalFromRequest = (req: any) => {
-  const asset = assetFromRequest(req);
-  if (!asset?.code) return;
-  openCommModal(asset);
-};
-
 const openCommModal = (asset: any) => {
   const assetReqs = requests
     .filter((r) => r.assetCode === asset.code)
@@ -1125,6 +1044,7 @@ const openCommModal = (asset: any) => {
 
   setUnifiedCommModal(asset);
   setCommEditMode(false);
+  setShowClosedHistory(false);
   if (isPending) {
     setPendingRequest(latestReq);
     setCompletedRequest(null);
@@ -1272,6 +1192,15 @@ const handleCancelRequest = async (id: string) => {
   }
 };
 
+  const closedHistoryThreads = useMemo(() => {
+    if (!unifiedCommModal) return [];
+    const threads = collectAssetThreads(unifiedCommModal.code, requests);
+    const current = pendingRequest || completedRequest;
+    if (!current) return threads.filter((t) => t.closed);
+    const currentIds = new Set(collectThreadMessages(current, requests).map((m) => String(m.id)));
+    return threads.filter((t) => t.closed && !t.msgs.some((m) => currentIds.has(String(m.id))));
+  }, [unifiedCommModal, requests, pendingRequest, completedRequest]);
+
   const latestAdminOpinion = useMemo(() => {
     if (!unifiedCommModal) return '수신된 관리자 의견이 없습니다.';
     const assetReqs = requests.filter(r => r.assetCode === unifiedCommModal.code).sort((r1, r2) => new Date(r2.createdAt).getTime() - new Date(r1.createdAt).getTime());
@@ -1285,7 +1214,7 @@ const handleCancelRequest = async (id: string) => {
   }, [unifiedCommModal, requests]);
      
   if (loading) return <LoadingState />;
-  if (!currentUser) return <div className="p-20 text-center font-black text-red-500">인증 정보가 없습니다. 다시 로그인해주세요.</div>;
+  if (!currentUser) return <div className="p-20 text-center font-medium text-red-500">인증 정보가 없습니다. 다시 로그인해주세요.</div>;
   
   return (
     <div className="w-full max-w-[1600px] mx-auto space-y-6 p-8 font-sans text-slate-900 pb-24 animate-fade-in">
@@ -1295,13 +1224,13 @@ const handleCancelRequest = async (id: string) => {
         <div className="absolute right-0 top-0 w-64 h-64 bg-indigo-500/12 rounded-full blur-3xl -translate-y-1/3 translate-x-1/4 pointer-events-none" />
         <div className="absolute left-1/4 bottom-0 w-48 h-48 bg-slate-500/10 rounded-full blur-3xl translate-y-1/2 pointer-events-none" />
         <div className="relative z-10 min-w-0">
-          <h3 className="text-[10px] font-black uppercase tracking-widest text-indigo-400 mb-2.5">
+          <h3 className="text-[10px] font-medium text-indigo-400 mb-2.5">
             IT ASSET PERSONAL DESK
           </h3>
-          <h1 className="text-2xl tracking-tight leading-none">
-            <span className="text-indigo-400 font-normal">{currentUser?.name || '임직원'} 님</span>
-            <span className="text-white/30 font-normal mx-2.5">|</span>
-            <span className="text-white font-extrabold">IT·업무자산 운영 현황</span>
+          <h1 className="text-2xl font-medium tracking-tight leading-none">
+            <span className="text-indigo-400">{currentUser?.name || '임직원'} 님</span>
+            <span className="text-white/30 mx-2.5">|</span>
+            <span className="text-white">IT·업무자산 운영 현황</span>
           </h1>
           <p className="text-slate-400 text-xs mt-3 leading-relaxed">
             보유 자산 현황을 확인하고 정기 실사·의견 요청을 처리합니다.
@@ -1312,21 +1241,21 @@ const handleCancelRequest = async (id: string) => {
       {/* 요약 위젯 3열 */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-stretch">
         {/* 카드 1: 나의 보유 자산 요약 */}
-        <div className="bg-white p-5 rounded-[1.5rem] border border-slate-200 shadow-sm flex flex-col min-h-[168px]">
+        <div className="bg-white p-5 rounded-[1.5rem] border border-slate-200 shadow-sm flex flex-col min-h-[14.5rem]">
           <div className="flex items-start justify-between gap-2 shrink-0">
             <div className="min-w-0">
-              <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest">나의 보유 자산</p>
-              <p className="text-[9px] font-bold text-slate-400 mt-0.5">유형별 요약</p>
+              <p className="text-[10px] font-medium text-slate-500">나의 보유 자산</p>
+              <p className="text-[9px] font-medium text-slate-400 mt-0.5">유형별 요약</p>
             </div>
             <div className="text-right shrink-0">
-              <p className="text-2xl font-black text-slate-900 tracking-tighter leading-none tabular-nums">{stats.total}</p>
-              <p className="text-[9px] font-bold text-slate-400 mt-1">총 보유</p>
+              <p className="text-2xl font-medium text-slate-900 tracking-tighter leading-none tabular-nums">{stats.total}</p>
+              <p className="text-[9px] font-medium text-slate-400 mt-1">총 보유</p>
             </div>
           </div>
           <div className="flex-1 min-h-0 mt-3 flex flex-wrap content-start gap-1.5">
             {Object.keys(stats.typeCounts).length === 0 ? (
               <div className="w-full h-full min-h-[64px] flex items-center justify-center rounded-xl border border-dashed border-slate-200 bg-slate-50/60">
-                <p className="text-[10px] font-bold text-slate-400">등록된 자산 없음</p>
+                <p className="text-[10px] font-medium text-slate-400">등록된 자산 없음</p>
               </div>
             ) : (
               Object.entries(stats.typeCounts).map(([type, count]) => {
@@ -1336,10 +1265,9 @@ const handleCancelRequest = async (id: string) => {
                     key={type}
                     type="button"
                     onClick={() => {
-                      goAssetsTab();
                       setColFilters({ ...colFilters, it_type: isSelected ? '' : type });
                     }}
-                    className={`px-2.5 py-1.5 rounded-lg border text-[10px] font-black transition-all ${
+                    className={`px-2.5 py-1.5 rounded-lg border text-[10px] font-medium transition-all ${
                       isSelected
                         ? 'bg-indigo-600 border-indigo-600 text-white shadow-sm'
                         : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100'
@@ -1351,32 +1279,14 @@ const handleCancelRequest = async (id: string) => {
               })
             )}
           </div>
-          <div className="pt-3 mt-auto border-t border-slate-100">
-            <button
-              type="button"
-              onClick={() => {
-                goAssetsTab();
-                setShowFeedbackOnly(false);
-                setShowReplaceableOnly(!showReplaceableOnly);
-              }}
-              className={`w-full px-3 py-2 rounded-xl text-[10px] font-black border transition-all ${
-                showReplaceableOnly
-                  ? 'bg-blue-600 border-blue-600 text-white'
-                  : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
-              }`}
-            >
-              교체대상 <span className="font-bold opacity-80">(D-30부터)</span>{' '}
-              <span className={showReplaceableOnly ? 'text-white' : 'text-blue-600'}>{stats.replaceable}</span>
-            </button>
-          </div>
         </div>
 
         {/* 카드 2: 실사 운영 상태 */}
-        <div className="bg-white p-5 rounded-[1.5rem] border border-slate-200 shadow-sm flex flex-col min-h-[168px]">
+        <div className="bg-white p-5 rounded-[1.5rem] border border-slate-200 shadow-sm flex flex-col min-h-[14.5rem]">
           <div className="shrink-0 flex items-start justify-between gap-2">
             <div className="min-w-0">
-              <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest">실사 운영 상태</p>
-              <p className="text-[9px] font-bold text-slate-400 mt-0.5">Audit Status</p>
+              <p className="text-[10px] font-medium text-slate-500">실사 운영 상태</p>
+              <p className="text-[9px] font-medium text-slate-400 mt-0.5">Audit Status</p>
             </div>
             {myRunningAudits.length > 0 && (
               <div className="flex flex-wrap gap-1 justify-end max-w-[58%]">
@@ -1390,7 +1300,7 @@ const handleCancelRequest = async (id: string) => {
                       type="button"
                       title={`${a.title || '실사'}\n${a.startDate} ~ ${a.endDate} ${endTime}\n내 소속: ${currentUser?.dept || '-'}`}
                       onClick={() => setFocusedAuditId(a.id)}
-                      className={`px-2 py-0.5 rounded-md text-[9px] font-black border transition-all whitespace-nowrap ${
+                      className={`px-2 py-0.5 rounded-md text-[9px] font-medium border transition-all whitespace-nowrap ${
                         selected
                           ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm'
                           : 'bg-white text-indigo-700 border-indigo-200 hover:bg-indigo-50'
@@ -1406,43 +1316,44 @@ const handleCancelRequest = async (id: string) => {
           <div className="flex-1 mt-3 flex flex-col justify-center gap-3">
             <div className="flex items-center justify-between gap-2">
               {isAuditActive ? (
-                <span className="px-3 py-1.5 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-lg font-black text-[11px] animate-pulse">
+                <span className="px-3 py-1.5 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-lg font-medium text-[11px] animate-pulse">
                   🟢 실사 진행 중{myRunningAudits.length > 1 ? ` · ${myRunningAudits.length}건` : ''}
                 </span>
               ) : (
-                <span className="px-3 py-1.5 bg-slate-100 text-slate-600 border border-slate-200 rounded-lg font-black text-[11px]">
-                  ⚪ 실사 대기 중
+                <span className="px-3 py-1.5 bg-slate-100 text-slate-600 border border-slate-200 rounded-lg font-medium text-[11px]">
+                  ⚪ 실사 미진행
                 </span>
               )}
               {isAuditActive && auditDaysLeft !== null && (
                 <div className="text-right">
-                  <p className="text-xl font-black text-indigo-600 tracking-tighter leading-none tabular-nums">
+                  <p className="text-xl font-medium text-indigo-600 tracking-tighter leading-none tabular-nums">
                     {auditDaysLeft >= 0 ? `D-${auditDaysLeft}` : `D+${Math.abs(auditDaysLeft)}`}
                   </p>
-                  <p className="text-[9px] font-bold text-slate-400 mt-0.5">남은 기간</p>
+                  <p className="text-[9px] font-medium text-slate-400 mt-0.5">남은 기간</p>
                 </div>
               )}
             </div>
             {isAuditActive && focusedAudit && (
               <div className="rounded-xl bg-slate-50 border border-slate-100 px-3.5 py-2.5">
-                <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">
+                <p className="text-[9px] font-medium text-slate-400">
                   현재 실사 운영 기간
                 </p>
-                <p className="mt-1 text-[13px] font-black tracking-tight text-indigo-700">
+                <p className="mt-1 text-[13px] font-medium tracking-tight text-indigo-700">
                   {focusedAudit.startDate} ~ {focusedAudit.endDate}
                 </p>
-                <p className="mt-1 text-[10px] font-bold text-slate-400 font-mono">
+                <p className="mt-1 text-[10px] font-medium text-slate-400 tabular-nums">
                   마감 {(focusedAudit.endTime || '23:59').trim() || '23:59'}
                 </p>
               </div>
             )}
           </div>
-          <div className="pt-3 mt-auto border-t border-slate-100 grid grid-cols-4 gap-1.5">
+          {isAuditActive && (
+          <div className="pt-3 mt-auto border-t border-slate-100 grid grid-cols-3 gap-1.5">
             <button
               type="button"
               onClick={() => {
-                goAssetsTab();
                 setShowFeedbackOnly(false);
+                setShowAwaitingOnly(false);
                 setShowStatusFilter((prev) => (prev === 'done' ? 'all' : 'done'));
               }}
               className={`w-full py-2 px-1 rounded-xl border flex flex-col items-center transition-all ${
@@ -1451,14 +1362,14 @@ const handleCancelRequest = async (id: string) => {
                   : 'bg-white border-slate-200 text-emerald-600 hover:bg-emerald-50'
               }`}
             >
-              <span className="text-[8px] font-black mb-0.5 leading-tight text-center">실사 완료장비</span>
-              <span className="text-sm font-black tabular-nums">{stats.auditDoneCount}</span>
+              <span className="text-[8px] font-medium mb-0.5 leading-tight text-center">실사 완료장비</span>
+              <span className="text-sm font-medium tabular-nums">{stats.auditDoneCount}</span>
             </button>
             <button
               type="button"
               onClick={() => {
-                goAssetsTab();
                 setShowFeedbackOnly(false);
+                setShowAwaitingOnly(false);
                 setShowStatusFilter((prev) => (prev === 'pending' ? 'all' : 'pending'));
               }}
               className={`w-full py-2 px-1 rounded-xl border flex flex-col items-center transition-all ${
@@ -1467,14 +1378,14 @@ const handleCancelRequest = async (id: string) => {
                   : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
               }`}
             >
-              <span className="text-[8px] font-black mb-0.5 leading-tight text-center">미실사 장비</span>
-              <span className="text-sm font-black tabular-nums">{stats.auditPendingCount}</span>
+              <span className="text-[8px] font-medium mb-0.5 leading-tight text-center">미실사 장비</span>
+              <span className="text-sm font-medium tabular-nums">{stats.auditPendingCount}</span>
             </button>
             <button
               type="button"
               onClick={() => {
-                goAssetsTab();
                 setShowFeedbackOnly(false);
+                setShowAwaitingOnly(false);
                 setShowStatusFilter((prev) => (prev === 'nudge' ? 'all' : 'nudge'));
               }}
               className={`w-full py-2 px-1 rounded-xl border flex flex-col items-center transition-all ${
@@ -1483,131 +1394,99 @@ const handleCancelRequest = async (id: string) => {
                   : 'bg-white border-slate-200 text-rose-600 hover:bg-rose-50'
               }`}
             >
-              <span className="text-[8px] font-black mb-0.5 leading-tight text-center">미실사/마감 임박 장비</span>
-              <span className="text-sm font-black tabular-nums">{stats.auditNudgeCount}</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                goAssetsTab();
-                setShowFeedbackOnly(false);
-                setShowStatusFilter((prev) => (prev === 'info_correction' ? 'all' : 'info_correction'));
-              }}
-              className={`w-full py-2 px-1 rounded-xl border flex flex-col items-center transition-all ${
-                showStatusFilter === 'info_correction'
-                  ? 'bg-amber-500 border-amber-400 text-amber-900 shadow-sm'
-                  : 'bg-white border-slate-200 text-amber-600 hover:bg-amber-50'
-              }`}
-            >
-              <span className="text-[8px] font-black mb-0.5 leading-tight text-center">수정 대기 장비</span>
-              <span className="text-sm font-black tabular-nums">{stats.infoCorrectionCount}</span>
+              <span className="text-[8px] font-medium mb-0.5 leading-tight text-center">미실사/마감 임박 장비</span>
+              <span className="text-sm font-medium tabular-nums">{stats.auditNudgeCount}</span>
             </button>
           </div>
+          )}
         </div>
 
         {/* 카드 3: 의견/요청 대시보드 */}
-        <div className="bg-white p-5 rounded-[1.5rem] border border-slate-200 shadow-sm flex flex-col min-h-[168px]">
+        <div className="bg-white p-5 rounded-[1.5rem] border border-slate-200 shadow-sm flex flex-col min-h-[14.5rem]">
           <div className="shrink-0">
-            <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest">기타 의견/요청 대시보드</p>
-            <p className="text-[9px] font-bold text-slate-400 mt-0.5">대기중→송수신 대장 · 수신→자산 표</p>
+            <p className="text-[10px] font-medium text-slate-500">기타 의견/요청 대시보드</p>
+            <p className="text-[9px] font-medium text-slate-400 mt-0.5">클릭 시 자산 목록 필터</p>
           </div>
-          <div className="flex-1 mt-3 flex flex-col gap-2 justify-end">
+          <div className="flex-1 mt-3 flex flex-col gap-1.5 justify-end">
             <button
               type="button"
-              onClick={() => toggleHistoryStatus('PENDING')}
-              className={`w-full px-3 py-2.5 rounded-xl text-[11px] font-bold border transition-all flex items-center justify-between ${
-                mainTab === 'history' && historyStatusFilter === 'PENDING'
+              onClick={toggleAwaitingAssetFilter}
+              className={`w-full px-3 py-1.5 rounded-xl text-[11px] font-medium border transition-all flex items-center justify-between ${
+                showAwaitingOnly
                   ? 'bg-amber-500 border-amber-500 text-white shadow-sm'
                   : 'bg-white text-slate-700 border-slate-200 hover:bg-amber-50 hover:border-amber-200'
               }`}
             >
-              <span className="text-left leading-snug">나의 전송 내역<br /><span className="text-[10px] font-bold opacity-90">(사용자 → 관리자)</span></span>
-              <span className={`text-sm font-black tabular-nums shrink-0 ml-2 ${mainTab === 'history' && historyStatusFilter === 'PENDING' ? 'text-white' : 'text-amber-600'}`}>
+              <span className="text-left leading-snug">나의 전송 내역<br /><span className="text-[10px] font-medium opacity-90">(사용자 → 관리자)</span></span>
+              <span className={`text-sm font-medium tabular-nums shrink-0 ml-2 ${showAwaitingOnly ? 'text-white' : 'text-amber-600'}`}>
                 {stats.awaitingReplyCount}
               </span>
             </button>
             <button
               type="button"
               onClick={toggleFeedbackAssetFilter}
-              className={`w-full px-3 py-2.5 rounded-xl text-[11px] font-bold border transition-all flex items-center justify-between ${
-                mainTab === 'assets' && showFeedbackOnly
+              className={`w-full px-3 py-1.5 rounded-xl text-[11px] font-medium border transition-all flex items-center justify-between ${
+                showFeedbackOnly
                   ? 'bg-rose-600 border-rose-600 text-white shadow-sm'
                   : 'bg-white text-slate-700 border-slate-200 hover:bg-rose-50 hover:border-rose-200'
               }`}
             >
-              <span className="text-left leading-snug">나의 수신 내역<br /><span className="text-[10px] font-bold opacity-90">(관리자 → 사용자)</span></span>
-              <span className={`text-sm font-black tabular-nums ${mainTab === 'assets' && showFeedbackOnly ? 'text-white' : 'text-rose-600'}`}>
+              <span className="text-left leading-snug">나의 수신 내역<br /><span className="text-[10px] font-medium opacity-90">(관리자 → 사용자)</span></span>
+              <span className={`text-sm font-medium tabular-nums ${showFeedbackOnly ? 'text-white' : 'text-rose-600'}`}>
                 {stats.feedbackCount}
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={toggleInfoCorrectionFilter}
+              className={`w-full px-3 py-1.5 rounded-xl text-[11px] font-medium border transition-all flex items-center justify-between ${
+                showStatusFilter === 'info_correction'
+                  ? 'bg-amber-500 border-amber-500 text-white shadow-sm'
+                  : 'bg-white text-slate-700 border-slate-200 hover:bg-amber-50 hover:border-amber-200'
+              }`}
+            >
+              <span className="text-left leading-snug">정보수정 대기 장비<br /><span className="text-[10px] font-medium opacity-90">(관리자 승인 대기)</span></span>
+              <span className={`text-sm font-medium tabular-nums shrink-0 ml-2 ${showStatusFilter === 'info_correction' ? 'text-white' : 'text-amber-600'}`}>
+                {stats.infoCorrectionCount}
               </span>
             </button>
           </div>
         </div>
       </div>
 
-      {/* 업무자산 목록 ↔ 송수신 대장 탭 */}
-      <div className="flex items-center justify-between bg-white p-2 rounded-xl border border-slate-200 shadow-sm">
-        <div className="flex items-center gap-1.5 bg-slate-100/80 p-1 rounded-lg flex-wrap">
-          <button
-            type="button"
-            onClick={() => goAssetsTab()}
-            className={`px-5 py-2 rounded-md text-xs font-black transition-all ${
-              mainTab === 'assets'
-                ? 'bg-white text-indigo-600 shadow-sm border border-slate-200/80'
-                : 'text-slate-500 hover:text-slate-700'
-            }`}
-          >
-            🗂️ 업무자산 목록
-            <span className="ml-1.5 text-[10px] opacity-70">{filteredAssets.length}</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => goHistoryTab(historyStatusFilter === 'ALL' ? 'ALL' : historyStatusFilter)}
-            className={`px-5 py-2 rounded-md text-xs font-black transition-all ${
-              mainTab === 'history'
-                ? 'bg-white text-indigo-600 shadow-sm border border-slate-200/80'
-                : 'text-slate-500 hover:text-slate-700'
-            }`}
-          >
-            💬 기타 의견/요청 송수신 대장
-            <span className="ml-1.5 text-[10px] opacity-70">{myBaseHistoryReqs.length}</span>
-          </button>
-        </div>
-      </div>
-
-      {mainTab === 'assets' && (
       <div className="bg-white border border-slate-200 rounded-[2.5rem] shadow-sm overflow-hidden animate-in fade-in duration-300 slide-in-from-top-4">
         <div className="p-4 px-6 bg-slate-200/70 border-b border-slate-300 flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-2 flex-wrap min-w-0">
             <div className="w-2.5 h-2.5 rounded-full bg-blue-600 shrink-0" />
-            <h2 className="text-sm font-black text-slate-800 tracking-tight">나의 업무자산 목록</h2>
-            <span className="text-[11px] font-bold bg-slate-300/80 text-slate-700 px-2 py-0.5 rounded-md">{filteredAssets.length}건</span>
-            {showReplaceableOnly && (
-              <span className="text-[10px] font-black text-blue-600 bg-blue-50 border border-blue-200 px-2 py-0.5 rounded-md">교체대상만</span>
-            )}
+            <h2 className="text-sm font-medium text-slate-800 tracking-tight">나의 업무자산 목록</h2>
+            <span className="text-[11px] font-medium bg-slate-300/80 text-slate-700 px-2 py-0.5 rounded-md">{filteredAssets.length}건</span>
             {showStatusFilter === 'done' && (
-              <span className="text-[10px] font-black text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-md">실사 완료만</span>
+              <span className="text-[10px] font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-md">실사 완료만</span>
             )}
             {showStatusFilter === 'pending' && (
-              <span className="text-[10px] font-black text-slate-600 bg-slate-100 border border-slate-200 px-2 py-0.5 rounded-md">미실사만</span>
+              <span className="text-[10px] font-medium text-slate-600 bg-slate-100 border border-slate-200 px-2 py-0.5 rounded-md">미실사만</span>
             )}
             {showStatusFilter === 'nudge' && (
-              <span className="text-[10px] font-black text-rose-600 bg-rose-50 border border-rose-200 px-2 py-0.5 rounded-md">마감 임박만</span>
+              <span className="text-[10px] font-medium text-rose-600 bg-rose-50 border border-rose-200 px-2 py-0.5 rounded-md">마감 임박만</span>
             )}
             {showStatusFilter === 'info_correction' && (
-              <span className="text-[10px] font-black text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-md">수정 대기만</span>
+              <span className="text-[10px] font-medium text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-md">정보수정 대기만</span>
+            )}
+            {showAwaitingOnly && (
+              <span className="text-[10px] font-medium text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-md">문의 접수 대기만</span>
             )}
             {showFeedbackOnly && (
-              <span className="text-[10px] font-black text-rose-600 bg-rose-50 border border-rose-200 px-2 py-0.5 rounded-md">관리자 답변·요청(미확인)만</span>
+              <span className="text-[10px] font-medium text-rose-600 bg-rose-50 border border-rose-200 px-2 py-0.5 rounded-md">관리자 답변·요청(미확인)만</span>
             )}
           </div>
 
           <div className="flex items-center gap-2 flex-wrap">
             <div className="relative group/filter flex items-center gap-2 bg-white px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm">
-              <span className="text-[10px] font-black text-slate-400 uppercase">범주</span>
+              <span className="text-[10px] font-medium text-slate-400">범주</span>
               <select
                 value={colFilters.category}
                 onChange={(e) => setColFilters({ ...colFilters, category: e.target.value })}
-                className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent max-w-[120px]"
+                className="text-[11px] font-medium text-slate-800 outline-none cursor-pointer bg-transparent max-w-[120px]"
               >
                 <option value="">전체</option>
                 {uniqueCategories.map((cat) => (
@@ -1617,11 +1496,11 @@ const handleCancelRequest = async (id: string) => {
 
               <div className="w-px h-3.5 bg-slate-300 mx-0.5" />
 
-              <span className="text-[10px] font-black text-slate-400 uppercase">{typeLabel}</span>
+              <span className="text-[10px] font-medium text-slate-400">{typeLabel}</span>
               <select
                 value={colFilters.it_type}
                 onChange={(e) => setColFilters({ ...colFilters, it_type: e.target.value })}
-                className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent max-w-[120px]"
+                className="text-[11px] font-medium text-slate-800 outline-none cursor-pointer bg-transparent max-w-[120px]"
               >
                 <option value="">전체</option>
                 {uniqueItTypes.map((t) => (
@@ -1631,11 +1510,11 @@ const handleCancelRequest = async (id: string) => {
 
               <div className="w-px h-3.5 bg-slate-300 mx-0.5" />
 
-              <span className="text-[10px] font-black text-slate-400 uppercase whitespace-nowrap">조달유형</span>
+              <span className="text-[10px] font-medium text-slate-400 whitespace-nowrap">조달유형</span>
               <select
                 value={colFilters.is_rental}
                 onChange={(e) => setColFilters({ ...colFilters, is_rental: e.target.value })}
-                className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent"
+                className="text-[11px] font-medium text-slate-800 outline-none cursor-pointer bg-transparent"
               >
                 <option value="">전체</option>
                 {uniqueProcurementTypes.map((t) => (
@@ -1651,14 +1530,14 @@ const handleCancelRequest = async (id: string) => {
                 placeholder="모델명, S/N, 사양 검색..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full pl-7 pr-3 py-1.5 bg-white border border-slate-200 rounded-lg text-[11px] font-bold outline-none focus:border-indigo-500 shadow-sm transition-colors"
+                className="w-full pl-7 pr-3 py-1.5 bg-white border border-slate-200 rounded-lg text-[11px] font-medium outline-none focus:border-indigo-500 shadow-sm transition-colors"
               />
             </div>
 
             <button
               type="button"
               onClick={handleExcelDownload}
-              className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-[10px] font-black shadow-sm hover:bg-emerald-700 transition-all whitespace-nowrap"
+              className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-[10px] font-medium shadow-sm hover:bg-emerald-700 transition-all whitespace-nowrap"
             >
               {selectedIds.size > 0
                 ? `선택 EXCEL 다운로드(${selectedIds.size})`
@@ -1667,26 +1546,24 @@ const handleCancelRequest = async (id: string) => {
           </div>
         </div>
 
-        <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse table-fixed min-w-[1360px]">
+        <div className="overflow-x-hidden">
+          <table className="w-full text-left border-collapse table-fixed">
             <colgroup>
-              <col className="w-[40px]" />
-              <col className="w-[48px]" />
-              <col className="w-[72px]" />
-              <col className="w-[88px]" />
-              <col className="w-[72px]" />
-              <col className="w-[130px]" />
-              <col className="w-[140px]" />
-              <col className="w-[110px]" />
-              <col className="w-[96px]" />
-              <col className="w-[160px]" />
-              <col className="w-[96px]" />
-              <col className="w-[64px]" />
-              <col className="w-[110px]" />
-              <col className="w-[120px]" />
-              <col className="w-[120px]" />
+              <col style={{ width: '2.5%' }} />
+              <col style={{ width: '3%' }} />
+              <col style={{ width: '4.5%' }} />
+              <col style={{ width: '7.5%' }} />
+              <col style={{ width: '5%' }} />
+              <col style={{ width: '8%' }} />
+              <col style={{ width: '9%' }} />
+              <col style={{ width: '8%' }} />
+              <col style={{ width: '8.5%' }} />
+              <col style={{ width: '13%' }} />
+              <col style={{ width: '9.5%' }} />
+              <col style={{ width: '11%' }} />
+              <col style={{ width: '10.5%' }} />
             </colgroup>
-            <thead className="bg-slate-100 text-slate-700 text-[10px] font-black uppercase tracking-widest border-b border-slate-200">
+            <thead className="bg-slate-100 text-slate-700 text-[10px] font-medium border-b border-slate-200">
               <tr>
                 <th className="h-12 pl-2 text-center">
                   <input type="checkbox" checked={paginatedAssets.length > 0 && paginatedAssets.every(a => selectedIds.has(a.id))} onChange={() => {
@@ -1707,16 +1584,14 @@ const handleCancelRequest = async (id: string) => {
                 <th className="h-12 px-2 text-slate-900">S/N</th>
                 <th className="h-12 px-2 text-slate-900 whitespace-nowrap">제조사</th>
                 <th className="h-12 px-2 text-slate-900">기본 사양</th>
-                <th className="h-12 px-1 text-center text-slate-900 whitespace-nowrap">입고일</th>
-                <th className="h-12 px-1 text-center text-slate-900 whitespace-nowrap">교체주기(M)</th>
-                <th className="h-12 px-1 text-center whitespace-nowrap">교체예정일</th>
-                <th className="h-12 px-1 text-center border-l border-slate-200 whitespace-nowrap">실사 확인</th>
-                <th className="h-12 px-1 text-center text-rose-600 whitespace-nowrap">의견/요청</th>
+                <th className="h-12 px-1 text-center border-l border-slate-200 whitespace-nowrap min-w-[6.5rem]">실사 확인</th>
+                <th className="h-12 px-1 text-center text-rose-600 whitespace-nowrap min-w-[6.5rem]">의견/요청</th>
+                <th className="h-12 px-1 text-center text-amber-700 whitespace-nowrap min-w-[6.5rem]">정보수정</th>
               </tr>
             </thead>
-            <tbody className="bg-white divide-y divide-slate-100 text-[11px] font-bold text-slate-700">
+            <tbody className="bg-white divide-y divide-slate-100 text-[11px] font-medium text-slate-700">
               {paginatedAssets.length === 0 ? (
-                <tr><td colSpan={15} className="p-16 text-center text-slate-400 text-xs">조건에 맞는 자산이 없습니다.</td></tr>
+                <tr><td colSpan={13} className="p-16 text-center text-slate-400 text-xs">조건에 맞는 자산이 없습니다.</td></tr>
               ) : (
                 paginatedAssets.map((a, idx) => {
                   const logic = getAssetLogic(a);
@@ -1728,13 +1603,13 @@ const handleCancelRequest = async (id: string) => {
                       <td className="pl-2 text-center" onClick={(e) => e.stopPropagation()}>
                         <input type="checkbox" checked={isSelected} onChange={() => { const next = new Set(selectedIds); next.has(a.id) ? next.delete(a.id) : next.add(a.id); setSelectedIds(next); }} className="w-3 h-3 accent-indigo-600 cursor-pointer" />
                       </td>
-                      <td className="px-1 text-center font-mono text-slate-500 tabular-nums">
+                      <td className="px-1 text-center text-slate-500 tabular-nums">
                         {rowNo}
                       </td>
                       <td className="px-1 text-center truncate" title={a.category || ''}>
                         {a.category || '-'}
                       </td>
-                      <td className="px-1 text-center text-indigo-700 font-black truncate border-r border-slate-200" title={a.it_type || ''}>
+                      <td className="px-1 text-center text-indigo-700 font-medium truncate border-r border-slate-200" title={a.it_type || ''}>
                         {a.it_type || '-'}
                       </td>
                       <td className="px-1 text-center whitespace-nowrap text-slate-800" title={a.is_rental || ''}>
@@ -1743,19 +1618,19 @@ const handleCancelRequest = async (id: string) => {
                       <td className="px-2 truncate" title={getDisplayFieldValue(a, 'code').value}>
                         {(() => {
                           const d = getDisplayFieldValue(a, 'code');
-                          return <span className={d.isPending ? 'text-red-600 font-black' : 'text-slate-900'}>{d.value || '-'}</span>;
+                          return <span className={d.isPending ? 'text-red-600 font-medium' : 'text-slate-900'}>{d.value || '-'}</span>;
                         })()}
                       </td>
                       <td className="px-2 truncate" title={getDisplayFieldValue(a, 'model').value}>
                         {(() => {
                           const d = getDisplayFieldValue(a, 'model');
-                          return <span className={d.isPending ? 'text-red-600 font-black' : 'text-slate-800'}>{d.value || '-'}</span>;
+                          return <span className={d.isPending ? 'text-red-600 font-medium' : 'text-slate-800'}>{d.value || '-'}</span>;
                         })()}
                       </td>
-                      <td className="px-2 font-mono truncate" title={getDisplayFieldValue(a, 'sn').value}>
+                      <td className="px-2 truncate tabular-nums" title={getDisplayFieldValue(a, 'sn').value}>
                         {(() => {
                           const d = getDisplayFieldValue(a, 'sn');
-                          return <span className={d.isPending ? 'text-red-600 font-black' : 'text-slate-900'}>{d.value || '-'}</span>;
+                          return <span className={d.isPending ? 'text-red-600 font-medium' : 'text-slate-900'}>{d.value || '-'}</span>;
                         })()}
                       </td>
                       <td className="px-2 truncate" title={a.brand || ''}>
@@ -1764,67 +1639,56 @@ const handleCancelRequest = async (id: string) => {
                       <td className="px-2 truncate" title={getDisplayFieldValue(a, 'spec').value}>
                         {(() => {
                           const d = getDisplayFieldValue(a, 'spec');
-                          return <span className={d.isPending ? 'text-red-600 font-black' : 'text-slate-900'}>{d.value || '-'}</span>;
+                          return <span className={d.isPending ? 'text-red-600 font-medium' : 'text-slate-900'}>{d.value || '-'}</span>;
                         })()}
                       </td>
-                      <td className="px-1 text-center text-slate-900 font-mono tabular-nums whitespace-nowrap" title={a.in_date || ''}>
-                        {a.in_date || '-'}
-                      </td>
-                      <td className="px-1 text-center text-slate-900 tabular-nums">{a.cycle ?? '-'}</td>
-                      <td className="px-1 text-center whitespace-nowrap" title={logic.repDate}>
-                        <span className="text-slate-800 tabular-nums">{logic.repDate}</span>
-                        {logic.dday !== null && logic.dday <= 30 && (
-                          <span
-                            className={`ml-1 px-2 py-0.5 rounded-md text-[9px] font-black animate-pulse shadow-sm ${
-                              logic.dday > 0
-                                ? 'bg-blue-500 text-white'
-                                : logic.dday === 0
-                                  ? 'bg-amber-400 text-amber-900'
-                                  : 'bg-rose-500 text-white'
-                            }`}
-                          >
-                            {logic.dday > 0 ? `D-${logic.dday}` : logic.dday === 0 ? 'D-Day' : `D+${Math.abs(logic.dday)}`}
-                          </span>
-                        )}
-                      </td>
-                      <td className="px-1 text-center border-l border-slate-200">
-                        {isAuditActive || logic.hasInfoCorrection ? (
+                      <td className="px-1 text-center border-l border-slate-200 min-w-[6.5rem]">
+                        {isAuditActive ? (
                           <button
                             type="button"
                             title={logic.auditStatusText}
                             onClick={() => {
-                              if (logic.hasInfoCorrection) {
-                                openInfoCorrectionModal(a);
-                                return;
-                              }
                               setConfirmAuditModal({ ...a, action: logic.isVerified ? 'CANCEL' : 'VERIFY' });
                             }}
-                            className={`w-full h-[2.25rem] px-0.5 rounded text-[10px] font-black tracking-tight transition-all shadow-sm border leading-tight flex flex-col items-center justify-center ${logic.auditStatusColor}`}
+                            className={`w-full h-[2.25rem] px-0.5 rounded text-[10px] font-medium tracking-tight transition-all shadow-sm border leading-tight flex flex-col items-center justify-center ${logic.auditStatusColor}`}
                           >
                             <span className="truncate max-w-full">{logic.auditStatusLabel}</span>
                             {logic.auditStatusDate && (
-                              <span className="text-[9px] font-bold tabular-nums mt-0.5 opacity-90">({logic.auditStatusDate})</span>
+                              <span className="text-[9px] font-medium tabular-nums mt-0.5 opacity-90">({logic.auditStatusDate})</span>
                             )}
                           </button>
                         ) : (
-                          <div title={logic.auditStatusText} className={`w-full h-[2.25rem] px-0.5 rounded text-[10px] font-black tracking-tight border leading-tight flex flex-col items-center justify-center ${logic.auditStatusColor}`}>
+                          <div title={logic.auditStatusText} className={`w-full h-[2.25rem] px-0.5 rounded text-[10px] font-medium tracking-tight border leading-tight flex flex-col items-center justify-center ${logic.auditStatusColor}`}>
                             <span className="truncate max-w-full">{logic.auditStatusLabel}</span>
                             {logic.auditStatusDate && (
-                              <span className="text-[9px] font-bold tabular-nums mt-0.5 opacity-90">({logic.auditStatusDate})</span>
+                              <span className="text-[9px] font-medium tabular-nums mt-0.5 opacity-90">({logic.auditStatusDate})</span>
                             )}
                           </div>
                         )}
                       </td>
-                      <td className="px-1 text-center">
+                      <td className="px-1 text-center min-w-[6.5rem]">
                         <button
                           type="button"
                           title={logic.commStatusText}
                           onClick={() => openCommModal(a)}
-                          className={`w-full h-[2.25rem] px-0.5 rounded text-[10px] font-black border transition-all shadow-sm cursor-pointer leading-tight flex flex-col items-center justify-center ${logic.commStatusColor}`}
+                          className={`w-full h-[2.25rem] px-0.5 rounded text-[10px] font-medium border transition-all shadow-sm cursor-pointer leading-tight flex flex-col items-center justify-center ${logic.commStatusColor}`}
                         >
                           <span className="truncate max-w-full">{logic.commStatusLabel}</span>
                           {logic.commStatusDate && (
-                            <span className="text-[9px] font-bold tabular-nums mt-0.5 opacity-90">({logic.commStatusDate})</span>
+                            <span className="text-[9px] font-medium tabular-nums mt-0.5 opacity-90">({logic.commStatusDate})</span>
+                          )}
+                        </button>
+                      </td>
+                      <td className="px-1 text-center min-w-[6.5rem]">
+                        <button
+                          type="button"
+                          title={logic.infoEditText}
+                          onClick={() => openInfoCorrectionModal(a)}
+                          className={`w-full h-[2.25rem] px-0.5 rounded text-[10px] font-medium border transition-all cursor-pointer leading-tight flex flex-col items-center justify-center ${logic.infoEditColor}`}
+                        >
+                          <span className="truncate max-w-full">{logic.infoEditLabel}</span>
+                          {logic.infoEditDate && (
+                            <span className="text-[9px] font-medium tabular-nums mt-0.5 opacity-90">({logic.infoEditDate})</span>
                           )}
                         </button>
                       </td>
@@ -1838,355 +1702,63 @@ const handleCancelRequest = async (id: string) => {
 
         {filteredAssets.length > 0 && (
           <div className="flex justify-center items-center gap-1.5 py-3 border-t border-slate-100 bg-white">
-            <button disabled={currentPage === 1} onClick={() => setCurrentPage(p => p - 1)} className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors">이전</button>
+            <button disabled={currentPage === 1} onClick={() => setCurrentPage(p => p - 1)} className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-medium text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors">이전</button>
             {Array.from({ length: totalPages }).map((_, i) => (
-              <button key={i} onClick={() => setCurrentPage(i + 1)} className={`w-8 h-8 rounded-xl font-black text-xs transition-all ${currentPage === i + 1 ? 'bg-slate-800 text-white shadow-sm scale-105' : 'bg-white border border-slate-200 text-slate-500 hover:bg-slate-50'}`}>{i + 1}</button>
+              <button key={i} onClick={() => setCurrentPage(i + 1)} className={`w-8 h-8 rounded-xl font-medium text-xs transition-all ${currentPage === i + 1 ? 'bg-slate-800 text-white shadow-sm scale-105' : 'bg-white border border-slate-200 text-slate-500 hover:bg-slate-50'}`}>{i + 1}</button>
             ))}
-            <button disabled={currentPage === totalPages} onClick={() => setCurrentPage(p => p + 1)} className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors">다음</button>
+            <button disabled={currentPage === totalPages} onClick={() => setCurrentPage(p => p + 1)} className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-medium text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors">다음</button>
           </div>
         )}
       </div>
-      )}
-
-      {mainTab === 'history' && (
-      <div className="bg-white border border-slate-200 rounded-[2.5rem] shadow-sm overflow-hidden animate-in fade-in duration-300 slide-in-from-top-4">
-        <div className="p-4 px-6 bg-slate-200/70 border-b border-slate-300 flex flex-wrap items-center justify-between gap-4">
-          <div className="flex items-center gap-2 flex-wrap min-w-0">
-            <div className="w-2.5 h-2.5 rounded-full bg-blue-600 shrink-0" />
-            <h2 className="text-sm font-black text-slate-800 tracking-tight">나의 의견 및 요구사항 송수신 대장</h2>
-            <span className="text-[11px] font-bold bg-slate-300/80 text-slate-700 px-2 py-0.5 rounded-md">{myHistoryThreads.length}건</span>
-            {historyStatusFilter === 'PENDING' && (
-              <span className="text-[10px] font-black text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-md">답변대기만</span>
-            )}
-            {historyStatusFilter === 'FEEDBACK' && (
-              <span className="text-[10px] font-black text-rose-600 bg-rose-50 border border-rose-200 px-2 py-0.5 rounded-md">관리자 답변·요청(미확인)만</span>
-            )}
-          </div>
-
-          <div className="flex items-center gap-2 flex-wrap">
-            <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm">
-              <span className="text-[10px] font-black text-slate-400 uppercase whitespace-nowrap">{typeLabel}</span>
-              <select
-                value={historyTypeFilter}
-                onChange={(e) => setHistoryTypeFilter(e.target.value)}
-                className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent max-w-[120px]"
-              >
-                <option value="ALL">전체</option>
-                {historyUniqueTypes.map((t) => (
-                  <option key={t} value={t}>{t}</option>
-                ))}
-              </select>
-
-              <div className="w-px h-3.5 bg-slate-300 mx-0.5" />
-
-              <span className="text-[10px] font-black text-slate-400 uppercase">연도</span>
-              <select
-                value={historyYear}
-                onChange={(e) => {
-                  setHistoryYear(e.target.value);
-                  setHistoryMonth('ALL');
-                }}
-                className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent"
-              >
-                <option value="ALL">전체</option>
-                {historyAvailableYears.map((year) => (
-                  <option key={year} value={year}>{year}년</option>
-                ))}
-              </select>
-
-              <div className="w-px h-3.5 bg-slate-300 mx-0.5" />
-
-              <span className="text-[10px] font-black text-slate-400 uppercase">월별</span>
-              <select
-                value={historyMonth}
-                onChange={(e) => setHistoryMonth(e.target.value)}
-                className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent"
-              >
-                <option value="ALL">전체</option>
-                {historyAvailableMonths.map((month) => (
-                  <option key={month} value={month}>{month}월</option>
-                ))}
-              </select>
-            </div>
-
-            <div className="relative w-32">
-              <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-[10px]">🔢</span>
-              <input
-                type="text"
-                placeholder="자산번호 검색..."
-                value={historyCodeQuery}
-                onChange={(e) => setHistoryCodeQuery(e.target.value)}
-                className="w-full pl-7 pr-3 py-1.5 bg-white border border-slate-200 rounded-lg text-[11px] font-bold outline-none focus:border-indigo-500 shadow-sm transition-colors"
-              />
-            </div>
-            <div className="relative w-36">
-              <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-[10px]">💻</span>
-              <input
-                type="text"
-                placeholder="모델명 검색..."
-                value={historyModelQuery}
-                onChange={(e) => setHistoryModelQuery(e.target.value)}
-                className="w-full pl-7 pr-3 py-1.5 bg-white border border-slate-200 rounded-lg text-[11px] font-bold outline-none focus:border-indigo-500 shadow-sm transition-colors"
-              />
-            </div>
-          </div>
-        </div>
-
-        <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse table-fixed min-w-[1420px]">
-            <colgroup>
-              <col className="w-[48px]" />
-              <col className="w-[120px]" />
-              <col className="w-[96px]" />
-              <col className="w-[110px]" />
-              <col className="w-[130px]" />
-              <col className="w-[180px]" />
-              <col className="w-[180px]" />
-              <col className="w-[120px]" />
-              <col className="w-[110px]" />
-              <col className="w-[140px]" />
-              <col className="w-[120px]" />
-            </colgroup>
-            <thead className="bg-slate-100 text-slate-700 text-[10px] font-black tracking-widest border-b border-slate-200">
-              <tr>
-                <th rowSpan={2} className="h-10 px-2 text-center align-middle">NO</th>
-                <th colSpan={5} className="h-8 px-2 text-center bg-amber-50 text-amber-800 border-b border-amber-100">
-                  사용자 영역
-                </th>
-                <th colSpan={2} className="h-8 px-2 text-center bg-rose-50 text-rose-800 border-b border-rose-100 border-l border-slate-200">
-                  관리자 영역
-                </th>
-                <th rowSpan={2} className="h-10 px-2 text-center align-middle whitespace-nowrap border-l border-slate-200">요청/처리일자</th>
-                <th rowSpan={2} className="h-10 px-2 text-center align-middle border-l border-slate-200">상태</th>
-                <th rowSpan={2} className="h-10 px-2 text-center align-middle whitespace-nowrap border-l border-slate-200">관리 액션</th>
-              </tr>
-              <tr>
-                <th className="h-10 px-2 text-center whitespace-nowrap">부서 / 사용자</th>
-                <th className="h-10 px-2 text-center whitespace-nowrap">자산 분류</th>
-                <th className="h-10 px-2">자산번호</th>
-                <th className="h-10 px-2">모델명</th>
-                <th className="h-10 px-2">사용자 요청/답변</th>
-                <th className="h-10 px-2 border-l border-slate-200">관리자 요청/답변</th>
-                <th className="h-10 px-2 text-center whitespace-nowrap">부서 / 관리자</th>
-              </tr>
-            </thead>
-            <tbody className="bg-white divide-y divide-slate-100 text-[11px] font-bold text-slate-700">
-              {myHistoryThreads.length === 0 ? (
-                <tr>
-                  <td colSpan={11} className="p-16 text-center text-slate-400 text-xs">조건에 맞는 송수신 내역이 없습니다.</td>
-                </tr>
-              ) : (
-                myHistoryThreads.map((thread, idx) => {
-                  const expanded = historyExpandedIds.has(String(thread.root.id));
-                  const rowNo = myHistoryThreads.length - idx;
-                  const userLabel = threadUserLabel(thread.root);
-                  const adminLabel = pickThreadAdminLabel([thread.root, ...thread.children]);
-                  const renderHistoryRow = (req: any, depth: number, no: number | string) => {
-                    const threadLatestId = String((thread.children[thread.children.length - 1] || thread.root).id);
-                    const isLatestInThread = String(req.id) === threadLatestId;
-                    const waitingReply = isUserPendingStatus(req.status) && isLatestInThread;
-                    const isPastStep = depth > 0 && !isLatestInThread;
-                    // 각 행은 자기 내용에 맞는 상태만 표기 (첫 행도 최종상태 아님)
-                    const statusLabel = historyStatusLabel(req.status, req, { isThreadRoot: depth === 0 });
-                    const rowIsAdminStart = statusLabel === '관리자 문의/요청';
-                    const rowIsAdminReply = statusLabel === '관리자 답변';
-                    const rowIsUserStart = statusLabel === '사용자 문의/요청';
-                    const rowIsUserReply = statusLabel === '사용자 답변';
-                    const { opinionText } = parseAdminOpinion(req.adminOpinion);
-                    const modelName = parseHistoryModel(req, assets);
-                    const rowDate =
-                      getKSTDateString(req.completedAt || req.requestDate || req.createdAt) ||
-                      req.completedAt ||
-                      req.requestDate ||
-                      '-';
-                    const isRoot = depth === 0;
-                    const thisUserLabel = threadUserLabel(req);
-                    const thisAdminLabel = rowAdminLabel(req);
-                    const isAdminMsg = isAdminSideStatus(req.status);
-                    const isUserMsg = isUserPendingStatus(req.status) || String(req.adminOpinion || '').includes(':::REPLY:::');
-                    let rowUserLabel = '';
-                    let rowAdminName = '';
-                    if (isRoot) {
-                      rowUserLabel = userLabel;
-                      rowAdminName = adminLabel;
-                    } else {
-                      if (isUserMsg && thisUserLabel && !samePersonLabel(thisUserLabel, userLabel)) rowUserLabel = thisUserLabel;
-                      if (isAdminMsg && thisAdminLabel && !samePersonLabel(thisAdminLabel, adminLabel)) rowAdminName = thisAdminLabel;
-                      if (isClosedStatus(req.status)) {
-                        if (thisUserLabel && !samePersonLabel(thisUserLabel, userLabel)) rowUserLabel = thisUserLabel;
-                        if (thisAdminLabel && !samePersonLabel(thisAdminLabel, adminLabel)) rowAdminName = thisAdminLabel;
-                      }
-                    }
-                    const childCount = depth === 0 ? thread.children.length : 0;
-                    const hasChildren = childCount > 0;
-
-                    return (
-                      <tr
-                        key={req.id || `${depth}-${no}`}
-                        className={`h-12 transition-colors ${
-                          depth > 0 ? 'bg-amber-50/60 hover:bg-amber-50' : 'hover:bg-slate-50/50'
-                        }`}
-                      >
-                        <td className="px-2 text-center font-mono text-slate-500 tabular-nums">
-                          {depth > 0 ? <span className="text-amber-400">└</span> : no}
-                        </td>
-                        <td className="px-2 text-center">
-                          {rowUserLabel ? (
-                            <span className="text-slate-800 truncate block" title={rowUserLabel}>{rowUserLabel}</span>
-                          ) : (
-                            <span className="text-slate-300">-</span>
-                          )}
-                        </td>
-                        <td className="px-2 text-center">
-                          {isRoot ? (
-                            <span className="text-[9px] font-black uppercase tracking-wider text-indigo-600 bg-indigo-50 border border-indigo-100 px-2 py-0.5 rounded-md whitespace-nowrap">
-                              {req.assetType || '일반'}
-                            </span>
-                          ) : (
-                            <span className="text-slate-300">-</span>
-                          )}
-                        </td>
-                        <td className="px-2 text-slate-900 truncate" title={isRoot ? (req.assetCode || '') : ''}>
-                          {isRoot ? (req.assetCode || '-') : <span className="text-slate-300">-</span>}
-                        </td>
-                        <td className="px-2 text-slate-800 truncate" title={isRoot ? modelName : ''}>
-                          {isRoot ? modelName : <span className="text-slate-300">-</span>}
-                        </td>
-                        <td className="px-2 text-slate-700 truncate" title={userRequestContent(req.content)}>
-                          {userRequestContent(req.content)}
-                        </td>
-                        <td className="px-2 border-l border-slate-200">
-                          {waitingReply ? (
-                            <span className="text-slate-400 italic font-bold">아직 답변이 없습니다.</span>
-                          ) : (
-                            <span className="text-slate-700 truncate block w-full" title={opinionText}>
-                              {opinionText ? `" ${opinionText} "` : '-'}
-                            </span>
-                          )}
-                        </td>
-                        <td className="px-2 text-center">
-                          {rowAdminName ? (
-                            <span className="text-slate-800 truncate block" title={rowAdminName}>{rowAdminName}</span>
-                          ) : (
-                            <span className="text-slate-300">-</span>
-                          )}
-                        </td>
-                        <td className="px-2 text-center whitespace-nowrap tabular-nums text-slate-800 border-l border-slate-200">{rowDate}</td>
-                        <td className="px-2 text-center overflow-hidden border-l border-slate-200">
-                          <button
-                            type="button"
-                            title="클릭하여 대화 내역 확인"
-                            onClick={() => openCommModalFromRequest(req)}
-                            className={`inline-block max-w-full border px-1.5 py-0.5 rounded text-[10px] font-bold whitespace-nowrap cursor-pointer hover:scale-105 transition-transform ${
-                              statusLabel === '처리 완료'
-                                ? 'bg-emerald-50 text-emerald-600 border-emerald-200'
-                                : isPastStep
-                                  ? 'bg-slate-50 text-slate-500 border-slate-200'
-                                  : rowIsUserReply
-                                    ? 'bg-amber-50 text-amber-800 border-amber-200'
-                                    : rowIsUserStart
-                                      ? 'bg-amber-50 text-amber-800 border-amber-200'
-                                      : rowIsAdminReply || rowIsAdminStart
-                                        ? 'bg-rose-50 text-rose-700 border-rose-200'
-                                        : 'bg-slate-100 text-slate-500 border-slate-300'
-                            }`}
-                          >
-                            {statusLabel}
-                          </button>
-                        </td>
-                        <td className="px-2 text-center border-l border-slate-200 overflow-hidden">
-                          <div className="inline-flex items-center justify-center gap-1.5 flex-nowrap">
-                            {hasChildren && (
-                              <button
-                                type="button"
-                                title={expanded ? '연관 회신 접기' : '연관 회신 상세보기'}
-                                onClick={() => toggleHistoryExpand(req.id)}
-                                className="inline-flex items-center gap-0.5 px-1.5 py-1 bg-white text-slate-600 border border-slate-200 rounded-md text-[10px] font-black hover:bg-slate-50 whitespace-nowrap"
-                              >
-                                상세보기
-                                <span className="text-[11px] leading-none">{expanded ? '▲' : '▼'}</span>
-                              </button>
-                            )}
-                            {waitingReply ? (
-                              <button
-                                type="button"
-                                onClick={() => handleCancelRequest(req.id)}
-                                className="px-1.5 py-1 bg-slate-100 text-slate-500 border border-slate-200 rounded-md text-[10px] font-black hover:text-red-500 hover:bg-red-50 whitespace-nowrap"
-                                title="답변이 오기 전에만 전송을 취소할 수 있습니다."
-                              >
-                                전송 취소
-                              </button>
-                            ) : !hasChildren ? (
-                              <span className="text-slate-300">-</span>
-                            ) : null}
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  };
-
-                  return (
-                    <React.Fragment key={thread.root.id}>
-                      {renderHistoryRow(thread.root, 0, rowNo)}
-                      {expanded && thread.children.map((child) => renderHistoryRow(child, 1, ''))}
-                    </React.Fragment>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
-      )}
   
       {/* ✨ 신규: 실사 확인 모달 (인증 / 취소 / 정보수정) */}
       {confirmAuditModal && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[400] flex items-center justify-center p-4">
           <div className={`bg-white border border-slate-200 shadow-2xl p-8 rounded-3xl animate-in zoom-in-95 duration-200 flex flex-col max-h-[90vh] ${
-            confirmAuditModal.action === 'EDIT_INFO' || confirmAuditModal.action === 'EDIT_INFO_PENDING'
-              ? 'w-[500px] text-left'
-              : 'w-[400px] text-center'
+            confirmAuditModal.action === 'CANCEL'
+              ? 'w-[400px] text-center'
+              : 'w-[500px] text-left'
           }`}>
             {confirmAuditModal.action === 'CANCEL' ? (
               <>
                 <div className="text-5xl mb-4 text-center">↩️</div>
-                <h4 className="text-lg font-black text-rose-600 tracking-tight mb-2 text-center">실사 인증 내역 취소</h4>
-                <p className="text-[11px] font-bold text-slate-500 mb-6 leading-relaxed bg-rose-50 p-4 rounded-xl border border-rose-100 text-center">
-                  <span className="text-slate-900 font-black">[{confirmAuditModal.code}]</span> 장비에 대한<br/>
+                <h4 className="text-lg font-medium text-rose-600 tracking-tight mb-2 text-center">실사 인증 내역 취소</h4>
+                <p className="text-[11px] font-medium text-slate-500 mb-6 leading-relaxed bg-rose-50 p-4 rounded-xl border border-rose-100 text-center">
+                  <span className="text-slate-900 font-medium">[{confirmAuditModal.code}]</span> 장비에 대한<br/>
                   실사 인증 내역을 <span className="text-rose-600">미확인 상태</span>로 되돌리시겠습니까?
                 </p>
                 <div className="flex gap-2">
-                  <button type="button" onClick={() => setConfirmAuditModal(null)} className="flex-1 py-3.5 bg-slate-100 text-slate-500 rounded-xl font-bold text-[11px] hover:bg-slate-200 transition-colors">닫기</button>
-                  <button type="button" onClick={executeAuditVerify} className="flex-[2] py-3.5 bg-rose-600 text-white rounded-xl font-black text-[12px] shadow-md hover:bg-rose-700 active:scale-95 transition-all">실사 취소하기</button>
+                  <button type="button" onClick={() => setConfirmAuditModal(null)} className="flex-1 py-3.5 bg-slate-100 text-slate-500 rounded-xl font-medium text-[11px] hover:bg-slate-200 transition-colors">닫기</button>
+                  <button type="button" onClick={executeAuditVerify} className="flex-[2] py-3.5 bg-rose-600 text-white rounded-xl font-medium text-[12px] shadow-md hover:bg-rose-700 active:scale-95 transition-all">실사 취소하기</button>
                 </div>
               </>
             ) : confirmAuditModal.action === 'EDIT_INFO_PENDING' ? (
               <>
-                <h4 className="text-[14px] font-black text-slate-900 tracking-tight mb-2">정보수정 요청 내역</h4>
-                <p className="text-[10px] font-bold text-slate-400 mb-6 border-b-2 border-slate-900 pb-3">
+                <h4 className="text-[14px] font-medium text-slate-900 tracking-tight mb-2">정보수정 요청 내역</h4>
+                <p className="text-[10px] font-medium text-slate-400 mb-6 border-b-2 border-slate-900 pb-3">
                   관리자 승인 전 · 취소 또는 내용 수정 가능
                 </p>
 
                 <div className="overflow-y-auto flex-1 pr-2 space-y-4 scrollbar-hide">
                   <div className="rounded-xl bg-slate-50 border border-slate-100 px-4 py-3 space-y-2">
-                    <div className="flex justify-between gap-3 text-[11px] font-bold">
+                    <div className="flex justify-between gap-3 text-[11px] font-medium">
                       <span className="text-slate-400 shrink-0">대상자산</span>
                       <span className="text-slate-800 text-right">{confirmAuditModal.it_type} | {confirmAuditModal.code} / {confirmAuditModal.model || '-'}</span>
                     </div>
-                    <div className="flex justify-between gap-3 text-[11px] font-bold">
+                    <div className="flex justify-between gap-3 text-[11px] font-medium">
                       <span className="text-slate-400 shrink-0">요청일</span>
                       <span className="text-slate-800 tabular-nums">
                         {parseInfoCorrectionPending(confirmAuditModal.info_correction_pending)?.requestedAt || '-'}
                       </span>
                     </div>
-                    <div className="flex justify-between gap-3 text-[11px] font-bold">
+                    <div className="flex justify-between gap-3 text-[11px] font-medium">
                       <span className="text-slate-400 shrink-0">상태</span>
                       <span className="text-amber-600">정보수정 승인 대기중</span>
                     </div>
                   </div>
 
                   <div className="space-y-3">
-                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider">수정 요청 내용</p>
+                    <p className="text-[10px] font-medium text-slate-400">수정 요청 내용</p>
                     {([
                       ['code', '자산번호'],
                       ['model', '모델명'],
@@ -2197,7 +1769,7 @@ const handleCancelRequest = async (id: string) => {
                       const dirty = String(infoEditDraft[key] ?? '').trim() !== String(confirmAuditModal[key] ?? '').trim();
                       return (
                         <label key={key} className="block">
-                          <span className="flex items-center justify-between gap-2 text-[10px] font-black text-slate-500 uppercase tracking-wider">
+                          <span className="flex items-center justify-between gap-2 text-[10px] font-medium text-slate-500">
                             <span>{label}</span>
                             {dirty && <span className="text-rose-600 normal-case truncate max-w-[60%]" title={original}>원본: {original}</span>}
                           </span>
@@ -2205,7 +1777,7 @@ const handleCancelRequest = async (id: string) => {
                             type="text"
                             value={infoEditDraft[key]}
                             onChange={(e) => setInfoEditDraft((prev) => ({ ...prev, [key]: e.target.value }))}
-                            className={`mt-1 w-full px-3 py-2.5 rounded-xl border text-[12px] font-bold outline-none transition-colors ${
+                            className={`mt-1 w-full px-3 py-2.5 rounded-xl border text-[12px] font-medium outline-none transition-colors ${
                               dirty
                                 ? 'border-red-300 bg-red-50 text-red-700 focus:border-red-500'
                                 : 'border-slate-200 bg-slate-50 text-slate-800 focus:border-indigo-500 focus:bg-white'
@@ -2221,21 +1793,21 @@ const handleCancelRequest = async (id: string) => {
                   <button
                     type="button"
                     onClick={cancelInfoCorrection}
-                    className="flex-1 py-3.5 bg-rose-50 text-rose-600 border border-rose-200 rounded-xl font-black text-[11px] hover:bg-rose-100 transition-colors"
+                    className="flex-1 py-3.5 bg-rose-50 text-rose-600 border border-rose-200 rounded-xl font-medium text-[11px] hover:bg-rose-100 transition-colors"
                   >
                     요청취소
                   </button>
                   <button
                     type="button"
                     onClick={submitInfoCorrection}
-                    className="flex-[1.4] py-3.5 bg-amber-500 text-white rounded-xl font-black text-[11px] shadow-md hover:bg-amber-600 active:scale-95 transition-all leading-tight px-2"
+                    className="flex-[1.4] py-3.5 bg-amber-500 text-white rounded-xl font-medium text-[11px] shadow-md hover:bg-amber-600 active:scale-95 transition-all leading-tight px-2"
                   >
-                    수정완료<br /><span className="text-[9px] font-bold opacity-90">(관리자 확인요청)</span>
+                    수정완료<br /><span className="text-[9px] font-medium opacity-90">(관리자 확인요청)</span>
                   </button>
                   <button
                     type="button"
                     onClick={() => setConfirmAuditModal(null)}
-                    className="flex-1 py-3.5 bg-slate-900 text-white rounded-xl font-black text-[11px] hover:bg-black transition-colors"
+                    className="flex-1 py-3.5 bg-slate-900 text-white rounded-xl font-medium text-[11px] hover:bg-black transition-colors"
                   >
                     확인-닫기
                   </button>
@@ -2243,8 +1815,8 @@ const handleCancelRequest = async (id: string) => {
               </>
             ) : confirmAuditModal.action === 'EDIT_INFO' ? (
               <>
-                <h4 className="text-[14px] font-black text-slate-900 tracking-tight mb-2">정보수정 요청</h4>
-                <p className="text-[10px] font-bold text-slate-400 mb-6 border-b-2 border-slate-900 pb-3">
+                <h4 className="text-[14px] font-medium text-slate-900 tracking-tight mb-2">정보수정 요청</h4>
+                <p className="text-[10px] font-medium text-slate-400 mb-6 border-b-2 border-slate-900 pb-3">
                   등록값 기준으로 표시됩니다. 틀린 칸만 수정한 뒤 관리자 확인을 요청하세요.
                 </p>
                 <div className="overflow-y-auto flex-1 pr-2 space-y-3 scrollbar-hide mb-2">
@@ -2254,16 +1826,23 @@ const handleCancelRequest = async (id: string) => {
                     ['sn', 'S/N'],
                     ['spec', '기본 사양'],
                   ] as [InfoCorrectionField, string][]).map(([key, label]) => {
-                    const original = String(confirmAuditModal[key] ?? '');
-                    const dirty = String(infoEditDraft[key] ?? '').trim() !== original.trim();
+                    const original = String(confirmAuditModal[key] ?? '') || '-';
+                    const dirty = String(infoEditDraft[key] ?? '').trim() !== String(confirmAuditModal[key] ?? '').trim();
                     return (
                       <label key={key} className="block">
-                        <span className="text-[10px] font-black text-slate-500 uppercase tracking-wider">{label}</span>
+                        <span className="flex items-center justify-between gap-2 text-[10px] font-medium text-slate-500">
+                          <span>{label}</span>
+                          {dirty && (
+                            <span className="text-rose-600 normal-case truncate max-w-[60%]" title={original}>
+                              원본: {original}
+                            </span>
+                          )}
+                        </span>
                         <input
                           type="text"
                           value={infoEditDraft[key]}
                           onChange={(e) => setInfoEditDraft((prev) => ({ ...prev, [key]: e.target.value }))}
-                          className={`mt-1 w-full px-3 py-2.5 rounded-xl border text-[12px] font-bold outline-none transition-colors ${
+                          className={`mt-1 w-full px-3 py-2.5 rounded-xl border text-[12px] font-medium outline-none transition-colors ${
                             dirty
                               ? 'border-red-300 bg-red-50 text-red-700 focus:border-red-500'
                               : 'border-slate-200 bg-slate-50 text-slate-800 focus:border-indigo-500 focus:bg-white'
@@ -2274,29 +1853,45 @@ const handleCancelRequest = async (id: string) => {
                   })}
                 </div>
                 <div className="flex gap-2 mt-4 pt-4 border-t border-slate-100">
-                  <button type="button" onClick={() => setConfirmAuditModal(null)} className="flex-1 py-3.5 bg-slate-100 text-slate-500 rounded-xl font-bold text-[11px] hover:bg-slate-200 transition-colors">취소</button>
-                  <button type="button" onClick={submitInfoCorrection} className="flex-[2] py-3.5 bg-amber-500 text-white rounded-xl font-black text-[12px] shadow-md hover:bg-amber-600 active:scale-95 transition-all">수정완료 (관리자 확인요청)</button>
+                  <button type="button" onClick={() => setConfirmAuditModal(null)} className="flex-1 py-3.5 bg-slate-100 text-slate-500 rounded-xl font-medium text-[11px] hover:bg-slate-200 transition-colors">취소</button>
+                  <button type="button" onClick={submitInfoCorrection} className="flex-[2] py-3.5 bg-amber-500 text-white rounded-xl font-medium text-[12px] shadow-md hover:bg-amber-600 active:scale-95 transition-all">수정완료 (관리자 확인요청)</button>
                 </div>
               </>
             ) : (
               <>
-                <div className="text-5xl mb-4">📋</div>
-                <h4 className="text-lg font-black text-slate-900 tracking-tight mb-2">자산 실사 내역 확인</h4>
-                <p className="text-[11px] font-bold text-slate-500 mb-6 leading-relaxed bg-slate-50 p-4 rounded-xl border border-slate-100">
-                  현재 보유 중이신 <span className="text-indigo-600 font-black">[{confirmAuditModal.code}] {confirmAuditModal.model}</span> 장비의 <br/>
-                  제품 사양 정보를 확인하셨습니까?<br/><br/>
-                  이상이 없다면 <span className="text-emerald-600 font-black">실사 확인 완료</span>를,<br/>
-                  정보가 틀리다면 <span className="text-amber-600 font-black">정보수정 요청</span>을 눌러 주세요.
+                <h4 className="text-[14px] font-medium text-slate-900 tracking-tight mb-2">자산 실사 내역 확인</h4>
+                <p className="text-[10px] font-medium text-slate-400 mb-4 border-b-2 border-slate-900 pb-3">
+                  등록된 정보를 확인한 뒤 이상이 없으면 실사 확인 완료를 눌러 주세요.
+                </p>
+                <div className="overflow-y-auto flex-1 rounded-xl bg-slate-50 border border-slate-100 px-4 py-3 space-y-2 mb-4">
+                  {([
+                    ['범주', confirmAuditModal.category],
+                    ['자산 분류', confirmAuditModal.it_type],
+                    ['조달유형', confirmAuditModal.is_rental],
+                    ['자산번호', confirmAuditModal.code],
+                    ['모델명', confirmAuditModal.model],
+                    ['S/N', confirmAuditModal.sn],
+                    ['제조사', confirmAuditModal.brand],
+                    ['기본 사양', confirmAuditModal.spec],
+                  ] as [string, unknown][]).map(([label, value]) => (
+                    <div key={label} className="flex justify-between gap-3 text-[11px] font-medium">
+                      <span className="text-slate-400 shrink-0">{label}</span>
+                      <span className="text-slate-800 text-right break-all">{String(value ?? '').trim() || '-'}</span>
+                    </div>
+                  ))}
+                </div>
+                <p className="text-[10px] font-medium text-slate-400 mb-4">
+                  정보가 틀리면 <span className="text-amber-600">정보수정 요청</span>을 눌러 주세요.
                 </p>
                 <div className="flex flex-col gap-2">
                   <div className="flex gap-2">
-                    <button type="button" onClick={() => setConfirmAuditModal(null)} className="flex-1 py-3.5 bg-slate-100 text-slate-500 rounded-xl font-bold text-[11px] hover:bg-slate-200 transition-colors">취소</button>
-                    <button type="button" onClick={executeAuditVerify} className="flex-[2] py-3.5 bg-emerald-600 text-white rounded-xl font-black text-[12px] shadow-md hover:bg-emerald-700 active:scale-95 transition-all">✅ 실사 확인 완료</button>
+                    <button type="button" onClick={() => setConfirmAuditModal(null)} className="flex-1 py-3.5 bg-slate-100 text-slate-500 rounded-xl font-medium text-[11px] hover:bg-slate-200 transition-colors">취소</button>
+                    <button type="button" onClick={executeAuditVerify} className="flex-[2] py-3.5 bg-emerald-600 text-white rounded-xl font-medium text-[12px] shadow-md hover:bg-emerald-700 active:scale-95 transition-all">✅ 실사 확인 완료</button>
                   </div>
                   <button
                     type="button"
                     onClick={() => openInfoCorrectionModal(confirmAuditModal)}
-                    className="w-full py-3.5 bg-white text-amber-700 border border-amber-300 rounded-xl font-black text-[12px] hover:bg-amber-50 transition-all"
+                    className="w-full py-3.5 bg-white text-amber-700 border border-amber-300 rounded-xl font-medium text-[12px] hover:bg-amber-50 transition-all"
                   >
                     정보수정 요청하기
                   </button>
@@ -2309,8 +1904,11 @@ const handleCancelRequest = async (id: string) => {
 
       {/* 의견/요청 전송·조회 모달 */}
       {unifiedCommModal && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[300] flex items-center justify-center p-4">
-          <div className="bg-white w-[500px] border border-slate-200 shadow-2xl p-8 rounded-3xl animate-in zoom-in-95 duration-200 flex flex-col max-h-[90vh]">
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[300] flex items-center justify-center p-4 animate-in fade-in duration-200">
+          <div
+            className="bg-white w-[500px] border border-slate-200 shadow-2xl p-8 rounded-3xl animate-in zoom-in-95 duration-200 flex flex-col max-h-[90vh]"
+            onClick={(e) => e.stopPropagation()}
+          >
             {pendingRequest ? (
               (() => {
                 const isReply = pendingRequest.status === '답변회신';
@@ -2318,51 +1916,52 @@ const handleCancelRequest = async (id: string) => {
                 const priorTurns = threadMsgs
                   .filter((m) => String(m.id) !== String(pendingRequest.id))
                   .flatMap(threadTurns);
+                const allTurns = threadMsgs.flatMap(threadTurns);
+                const userName = currentUser?.name || '사용자';
                 return (
               <>
-                <h4 className="text-[14px] font-black text-slate-900 tracking-tight mb-2">
-                  {isReply ? '사용자 답변' : '사용자 문의/요청'}
-                </h4>
-                <p className="text-[10px] font-bold text-slate-400 mb-6 border-b-2 border-slate-900 pb-3">
-                  관리자 답변 전 · 전송 취소 또는 내용 수정 가능
-                </p>
+                <CommModalHeader
+                  title={isReply ? '추가 문의 접수 완료' : '사용자 문의/요청'}
+                  subtitle="관리자 답변 전 · 전송 취소 또는 내용 수정 가능"
+                  closedCount={closedHistoryThreads.length}
+                  showClosedHistory={showClosedHistory}
+                  onToggle={() => setShowClosedHistory((v) => !v)}
+                />
 
                 <div className="overflow-y-auto flex-1 pr-2 space-y-4 min-h-0">
                   <div className="rounded-xl bg-slate-50 border border-slate-100 px-4 py-3 space-y-2">
-                    <div className="flex justify-between gap-3 text-[11px] font-bold">
+                    <div className="flex justify-between gap-3 text-[11px] font-medium">
                       <span className="text-slate-400 shrink-0">대상자산</span>
                       <span className="text-slate-800 text-right">{unifiedCommModal.it_type} | {unifiedCommModal.code} / {unifiedCommModal.model || '-'}</span>
                     </div>
-                    <div className="flex justify-between gap-3 text-[11px] font-bold">
+                    <div className="flex justify-between gap-3 text-[11px] font-medium">
                       <span className="text-slate-400 shrink-0">{isReply ? '회신일' : '요청일'}</span>
                       <span className="text-slate-800 tabular-nums">
                         {getKSTDateString(pendingRequest.requestDate || pendingRequest.createdAt) || pendingRequest.requestDate || '-'}
                       </span>
                     </div>
-                    <div className="flex justify-between gap-3 text-[11px] font-bold">
+                    <div className="flex justify-between gap-3 text-[11px] font-medium">
                       <span className="text-slate-400 shrink-0">상태</span>
                       <span className="text-amber-600">대화 진행중</span>
                     </div>
                   </div>
 
-                  <ThreadTurnList turns={priorTurns} />
+                  {showClosedHistory && <ClosedHistoryBlock threads={closedHistoryThreads} />}
 
-                  <div>
-                    <p className="text-[10px] font-black text-amber-600 uppercase tracking-wider mb-2">
-                      {isReply ? '답변 내용' : '요청 내용'}
-                    </p>
-                    {commEditMode ? (
-                      <textarea
+                  {commEditMode ? (
+                    <>
+                      <TimelineTurns turns={priorTurns} />
+                      <TimelineCompose
+                        name={userName}
+                        dateLabel="수정 중"
                         value={requestContent}
-                        onChange={(e) => setRequestContent(e.target.value)}
-                        className="w-full h-32 bg-white border border-amber-300 p-4 text-[11px] font-bold rounded-xl outline-none focus:border-amber-500 focus:ring-1 focus:ring-amber-300 transition-all resize-none shadow-inner"
+                        onChange={setRequestContent}
+                        placeholder={isReply ? '관리자 요청에 대한 답변을 수정하세요.' : '관리자에게 전달할 내용을 수정하세요.'}
                       />
-                    ) : (
-                      <div className="w-full min-h-[8rem] bg-slate-50 border border-slate-200 p-4 text-[11px] font-bold text-slate-800 rounded-xl whitespace-pre-wrap leading-relaxed">
-                        {pendingRequest.content || '-'}
-                      </div>
-                    )}
-                  </div>
+                    </>
+                  ) : (
+                    <TimelineTurns turns={allTurns} />
+                  )}
                 </div>
 
                 <div className="flex flex-col gap-2 mt-6 pt-4 border-t border-slate-100">
@@ -2374,14 +1973,14 @@ const handleCancelRequest = async (id: string) => {
                           setCommEditMode(false);
                           setRequestContent(pendingRequest.content || '');
                         }}
-                        className="flex-1 py-3.5 bg-slate-100 text-slate-500 rounded-xl font-bold text-[11px] hover:bg-slate-200 transition-colors"
+                        className="flex-1 py-3.5 bg-slate-100 text-slate-500 rounded-xl font-medium text-[11px] hover:bg-slate-200 transition-colors"
                       >
                         편집 취소
                       </button>
                       <button
                         type="button"
                         onClick={handleUpdatePendingRequest}
-                        className="flex-[2] py-3.5 bg-amber-500 text-white rounded-xl font-black text-[12px] shadow-md hover:bg-amber-600 active:scale-95 transition-all"
+                        className="flex-[2] py-3.5 bg-amber-500 text-white rounded-xl font-medium text-[12px] shadow-md hover:bg-amber-600 active:scale-95 transition-all"
                       >
                         내용 저장
                       </button>
@@ -2391,21 +1990,21 @@ const handleCancelRequest = async (id: string) => {
                       <button
                         type="button"
                         onClick={() => handleCancelRequest(pendingRequest.id)}
-                        className="flex-1 py-3.5 bg-rose-50 text-rose-600 border border-rose-200 rounded-xl font-black text-[11px] hover:bg-rose-100 transition-colors"
+                        className="flex-1 py-3.5 bg-rose-50 text-rose-600 border border-rose-200 rounded-xl font-medium text-[11px] hover:bg-rose-100 transition-colors"
                       >
                         전송 취소
                       </button>
                       <button
                         type="button"
                         onClick={() => setCommEditMode(true)}
-                        className="flex-1 py-3.5 bg-white text-slate-700 border border-slate-300 rounded-xl font-black text-[11px] hover:bg-slate-50 transition-colors"
+                        className="flex-1 py-3.5 bg-white text-slate-700 border border-slate-300 rounded-xl font-medium text-[11px] hover:bg-slate-50 transition-colors"
                       >
                         내용 수정
                       </button>
                       <button
                         type="button"
                         onClick={closeCommModal}
-                        className="flex-1 py-3.5 bg-slate-100 text-slate-600 rounded-xl font-black text-[11px] hover:bg-slate-200 transition-colors"
+                        className="flex-1 py-3.5 bg-slate-100 text-slate-600 rounded-xl font-medium text-[11px] hover:bg-slate-200 transition-colors"
                       >
                         닫기
                       </button>
@@ -2425,26 +2024,31 @@ const handleCancelRequest = async (id: string) => {
                 const turns = threadMsgs.flatMap(threadTurns);
                 return (
                   <>
-                    <h4 className="text-[14px] font-black text-slate-900 tracking-tight mb-2">
-                      {threadClosed
-                        ? (userClosed ? '사용자 종료 처리' : '관리자 종료 처리')
-                        : latest.status === '관리자 답변'
-                          ? '관리자 답변'
-                          : '관리자 문의/요청'}
-                    </h4>
-                    <p className="text-[10px] font-bold text-slate-400 mb-6 border-b-2 border-slate-900 pb-3">
-                      {threadClosed
-                        ? '주고받은 전체 이력을 확인할 수 있습니다'
-                        : '답변을 작성하거나 사용자 종료 처리할 수 있습니다'}
-                    </p>
+                    <CommModalHeader
+                      title={
+                        threadClosed
+                          ? (userClosed ? '사용자 종료 처리' : '관리자 종료 처리')
+                          : latest.status === '관리자 답변'
+                            ? '관리자 답변 확인'
+                            : '관리자 문의/요청'
+                      }
+                      subtitle={
+                        threadClosed
+                          ? '주고받은 전체 이력을 확인할 수 있습니다'
+                          : '답변을 작성하거나 사용자 종료 처리할 수 있습니다'
+                      }
+                      closedCount={closedHistoryThreads.length}
+                      showClosedHistory={showClosedHistory}
+                      onToggle={() => setShowClosedHistory((v) => !v)}
+                    />
 
                     <div className="overflow-y-auto flex-1 pr-2 space-y-4 min-h-0">
                       <div className="rounded-xl bg-slate-50 border border-slate-100 px-4 py-3 space-y-2">
-                        <div className="flex justify-between gap-3 text-[11px] font-bold">
+                        <div className="flex justify-between gap-3 text-[11px] font-medium">
                           <span className="text-slate-400 shrink-0">대상자산</span>
                           <span className="text-slate-800 text-right">{unifiedCommModal.it_type} | {unifiedCommModal.code} / {unifiedCommModal.model || '-'}</span>
                         </div>
-                        <div className="flex justify-between gap-3 text-[11px] font-bold">
+                        <div className="flex justify-between gap-3 text-[11px] font-medium">
                           <span className="text-slate-400 shrink-0">상태</span>
                           <span className={threadClosed ? 'text-slate-500' : 'text-rose-600'}>
                             {threadClosed
@@ -2454,18 +2058,18 @@ const handleCancelRequest = async (id: string) => {
                         </div>
                       </div>
 
-                      <ThreadTurnList turns={turns} />
+                      {showClosedHistory && <ClosedHistoryBlock threads={closedHistoryThreads} />}
+
+                      <TimelineTurns turns={turns} />
 
                       {canUserReply && (
-                        <div>
-                          <p className="text-[10px] font-black text-amber-600 uppercase tracking-wider mb-2">답변 내용</p>
-                          <textarea
-                            value={requestContent}
-                            onChange={(e) => setRequestContent(e.target.value)}
-                            placeholder="관리자 요청에 대한 답변을 작성하세요."
-                            className="w-full min-h-[8rem] bg-white border border-amber-200 p-4 text-[11px] font-bold text-slate-800 rounded-xl outline-none focus:border-amber-500 focus:ring-1 focus:ring-amber-300 transition-all resize-none shadow-inner"
-                          />
-                        </div>
+                        <TimelineCompose
+                          name={currentUser?.name || '사용자'}
+                          dateLabel="작성 중"
+                          value={requestContent}
+                          onChange={setRequestContent}
+                          placeholder="관리자 요청에 대한 답변을 작성하세요."
+                        />
                       )}
                     </div>
 
@@ -2473,7 +2077,7 @@ const handleCancelRequest = async (id: string) => {
                       <button
                         type="button"
                         onClick={closeCompletedWithoutAck}
-                        className="flex-1 py-3.5 bg-slate-100 text-slate-600 rounded-xl font-black text-[11px] hover:bg-slate-200 transition-colors"
+                        className="flex-1 py-3.5 bg-slate-100 text-slate-600 rounded-xl font-medium text-[11px] hover:bg-slate-200 transition-colors"
                       >
                         닫기
                       </button>
@@ -2481,9 +2085,9 @@ const handleCancelRequest = async (id: string) => {
                         <button
                           type="button"
                           onClick={startNewRequestFromHistory}
-                          className="flex-[1.4] py-3.5 bg-slate-900 text-white rounded-xl font-black text-[12px] shadow-md hover:bg-black active:scale-95 transition-all"
+                          className="flex-[1.4] py-3.5 bg-slate-900 text-white rounded-xl font-medium text-[12px] shadow-md hover:bg-black active:scale-95 transition-all"
                         >
-                          신규 요청하기
+                          관리자에게 문의하기
                         </button>
                       ) : (
                         <>
@@ -2491,7 +2095,7 @@ const handleCancelRequest = async (id: string) => {
                             <button
                               type="button"
                               onClick={handleSubmitAdminReply}
-                              className="flex-[1.4] py-3.5 bg-slate-900 text-white rounded-xl font-black text-[12px] shadow-md hover:bg-black active:scale-95 transition-all"
+                              className="flex-[1.4] py-3.5 bg-slate-900 text-white rounded-xl font-medium text-[12px] shadow-md hover:bg-black active:scale-95 transition-all"
                             >
                               관리자에게 답변 전송
                             </button>
@@ -2499,7 +2103,7 @@ const handleCancelRequest = async (id: string) => {
                           <button
                             type="button"
                             onClick={() => handleCompleteThread(completedRequest)}
-                            className="flex-1 py-3.5 bg-white text-slate-600 border border-slate-300 rounded-xl font-black text-[11px] hover:bg-slate-50 transition-colors"
+                            className="flex-1 py-3.5 bg-white text-slate-600 border border-slate-300 rounded-xl font-medium text-[11px] hover:bg-slate-50 transition-colors"
                           >
                             사용자 종료 처리
                           </button>
@@ -2511,50 +2115,53 @@ const handleCancelRequest = async (id: string) => {
               })()
             ) : (
               <>
-                <h4 className="text-[14px] font-black text-slate-900 tracking-tight mb-2">신규 요청하기</h4>
-                <p className="text-[10px] font-bold text-slate-400 mb-6 border-b-2 border-slate-900 pb-3">
-                  관리자에게 전달할 내용을 작성해 주세요
-                </p>
+                <CommModalHeader
+                  title="관리자에게 문의하기"
+                  subtitle="관리자에게 전달할 내용을 작성해 주세요"
+                  closedCount={closedHistoryThreads.length}
+                  showClosedHistory={showClosedHistory}
+                  onToggle={() => setShowClosedHistory((v) => !v)}
+                />
 
                 <div className="overflow-y-auto flex-1 pr-2 space-y-4 scrollbar-hide">
-                  <div className="rounded-xl bg-slate-50 border border-slate-100 px-4 py-3 space-y-2">
-                    <div className="flex justify-between gap-3 text-[11px] font-bold">
+                  <div className="rounded-md bg-slate-50 border border-slate-200 px-4 py-3 space-y-2">
+                    <div className="flex justify-between gap-3 text-[11px] font-medium">
                       <span className="text-slate-400 shrink-0">대상자산</span>
                       <span className="text-slate-800 text-right">{unifiedCommModal.it_type} | {unifiedCommModal.code} / {unifiedCommModal.model || '-'}</span>
                     </div>
-                    <div className="flex justify-between gap-3 text-[11px] font-bold">
+                    <div className="flex justify-between gap-3 text-[11px] font-medium">
                       <span className="text-slate-400 shrink-0">요청일</span>
                       <span className="text-slate-800 tabular-nums">{todayStr}</span>
                     </div>
-                    <div className="flex justify-between gap-3 text-[11px] font-bold">
+                    <div className="flex justify-between gap-3 text-[11px] font-medium">
                       <span className="text-slate-400 shrink-0">요청자</span>
                       <span className="text-slate-800 text-right">{currentUser?.name || '-'} ({currentUser?.dept || '-'})</span>
                     </div>
                   </div>
 
-                  <div>
-                    <p className="text-[10px] font-black text-amber-600 uppercase tracking-wider mb-2">요청 내용</p>
-                    <textarea
-                      value={requestContent}
-                      onChange={(e) => setRequestContent(e.target.value)}
-                      placeholder="장비 불량, 교체 희망, 소프트웨어 설치 지원 등 관리자에게 전달할 내용을 작성하세요."
-                      className="w-full min-h-[8rem] bg-white border border-amber-200 p-4 text-[11px] font-bold text-slate-800 rounded-xl outline-none focus:border-amber-500 focus:ring-1 focus:ring-amber-300 transition-all resize-none shadow-inner"
-                    />
-                  </div>
+                  {showClosedHistory && <ClosedHistoryBlock threads={closedHistoryThreads} />}
+
+                  <TimelineCompose
+                    name={currentUser?.name || '사용자'}
+                    dateLabel={todayStr}
+                    value={requestContent}
+                    onChange={setRequestContent}
+                    placeholder="장비 불량, 교체 희망, 소프트웨어 설치 지원 등 관리자에게 전달할 내용을 작성하세요."
+                  />
                 </div>
 
                 <div className="flex gap-2 mt-6 pt-4 border-t border-slate-100">
                   <button
                     type="button"
                     onClick={closeCommModal}
-                    className="flex-1 py-3.5 bg-slate-100 text-slate-600 rounded-xl font-black text-[11px] hover:bg-slate-200 transition-colors"
+                    className="flex-1 py-3.5 bg-slate-100 text-slate-600 rounded-xl font-medium text-[11px] hover:bg-slate-200 transition-colors"
                   >
                     닫기
                   </button>
                   <button
                     type="button"
                     onClick={handleSubmitRequest}
-                    className="flex-[2] py-3.5 bg-slate-900 text-white rounded-xl font-black text-[12px] shadow-md hover:bg-black active:scale-95 transition-all"
+                    className="flex-[2] py-3.5 bg-slate-900 text-white rounded-xl font-medium text-[12px] shadow-md hover:bg-black active:scale-95 transition-all"
                   >
                     관리자에게 의견/요청 전송
                   </button>

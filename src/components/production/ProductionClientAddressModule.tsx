@@ -1,17 +1,19 @@
 'use client';
 
 /**
- * 제작물 코너 — 고객사 주소 관리
- * ClientSearchModule 기능을 복사·축소.
+ * 제작물 코너 — 고객사 주소 관리 (구 마케팅 client-search 이관)
  * 제외: 부서관리 · 지급이력 · 보관함(주고객사는 운영/보관 구분 없음)
- * 데이터: 동일 `/api/marketing/clients`
+ * 데이터: `/api/marketing/clients`
  */
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import * as XLSX from 'xlsx';
 import { getKSTDateString } from '@/utils/dateUtils';
 import { resolveInterfaceEditState, isSystemLv1User } from '@/lib/permission-utils';
-import { formatMarketingClientLocation } from '@/lib/marketing-client-address';
+import {
+  formatMarketingClientLocation,
+  marketingClientNameDupKey,
+} from '@/lib/marketing-client-address';
 import LoadingState from '@/components/common/LoadingState';
 import WindowedPagination from '@/components/common/WindowedPagination';
 
@@ -213,7 +215,34 @@ export default function ProductionClientAddressModule() {
     if (!canEditMaster) setSelectedClientIds(new Set());
   }, [canEditMaster]);
 
-  const clientHasDistributions = (client: any) => Number(client?.distCount ?? 0) > 0;
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const scriptId = 'kakao-postcode-script-production-clients';
+    if (!document.getElementById(scriptId)) {
+      const script = document.createElement('script');
+      script.id = scriptId;
+      script.src = '//t1.daumcdn.net/mapjsapi/bundle/postcode/prod/postcode.v2.js';
+      script.async = true;
+      document.head.appendChild(script);
+    }
+  }, []);
+
+  const openClientPostcode = () => {
+    if (typeof window !== 'undefined' && (window as any).daum?.Postcode) {
+      new (window as any).daum.Postcode({
+        oncomplete: (data: { zonecode?: string; roadAddress?: string; address?: string }) => {
+          setFormData((prev) => ({
+            ...prev,
+            zip_code: String(data.zonecode || '').trim(),
+            address_road: String(data.roadAddress || data.address || '').trim(),
+            address_detail: '',
+          }));
+        },
+      }).open();
+    } else {
+      alert('주소 검색 엔진을 로드 중입니다. 잠시 후 다시 클릭해 주세요.');
+    }
+  };
 
   const handleSelectAll = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.checked) {
@@ -248,7 +277,7 @@ export default function ProductionClientAddressModule() {
       우편번호: c.zip_code || '-',
       '기본(도로명)주소': c.address_road || '-',
       상세주소: c.address_detail || '-',
-      비고: c.note || '-',
+      관리비고: c.note || '-',
       등록일: c.createdAt ? getKSTDateString(c.createdAt) : '-',
       수정일: c.updatedAt ? getKSTDateString(c.updatedAt) : '-',
     }));
@@ -270,7 +299,6 @@ export default function ProductionClientAddressModule() {
   };
 
   const handleExcelTemplateDownload = async () => {
-    if (!canEditMaster) return alert('업로드 양식 다운로드는 편집 권한이 필요합니다.');
     const categories =
       masterCategories.length > 0
         ? masterCategories.map((c) => String(c).trim()).filter(Boolean)
@@ -295,17 +323,15 @@ export default function ProductionClientAddressModule() {
       const headers = [
         '고객사명',
         '업무범주',
-        '소재지',
         '우편번호',
         '기본(도로명)주소',
         '상세주소',
-        '비고',
+        '관리비고',
       ];
       sheet.addRow(headers);
       sheet.addRow([
         '예시고객사',
         sampleCategory,
-        '',
         '12345',
         '서울특별시 예시구 예시로 1',
         '101호',
@@ -317,7 +343,7 @@ export default function ProductionClientAddressModule() {
         pattern: 'solid',
         fgColor: { argb: 'FFE2E8F0' },
       };
-      [22, 22, 16, 12, 36, 18, 24].forEach((w, i) => {
+      [22, 22, 12, 36, 18, 24].forEach((w, i) => {
         sheet.getColumn(i + 1).width = w;
       });
 
@@ -372,10 +398,6 @@ export default function ProductionClientAddressModule() {
   };
 
   const handleExcelUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (!canEditMaster) {
-      e.target.value = '';
-      return alert('엑셀 업로드는 편집 권한이 필요합니다.');
-    }
     const file = e.target.files?.[0];
     if (!file) return;
 
@@ -391,8 +413,9 @@ export default function ProductionClientAddressModule() {
           return;
         }
 
+        /** (주)/주식회사·공백 무시 키 */
         const existingNames = new Set(
-          clients.map((c) => String(c.name || '').trim().toLowerCase()).filter(Boolean)
+          clients.map((c) => marketingClientNameDupKey(c.name)).filter(Boolean)
         );
         const valid: Array<{
           name: string;
@@ -400,7 +423,6 @@ export default function ProductionClientAddressModule() {
           zip_code: string;
           address_road: string;
           address_detail: string;
-          location: string;
           note: string;
         }> = [];
         let skippedDup = 0;
@@ -412,9 +434,10 @@ export default function ProductionClientAddressModule() {
             skippedInvalid++;
             continue;
           }
-          const nameKey = name.toLowerCase();
-          if (existingNames.has(nameKey)) {
-            skippedDup++;
+          const nameKey = marketingClientNameDupKey(name);
+          if (!nameKey || existingNames.has(nameKey)) {
+            if (nameKey) skippedDup++;
+            else skippedInvalid++;
             continue;
           }
 
@@ -441,8 +464,7 @@ export default function ProductionClientAddressModule() {
             zip_code: cellStr(row, '우편번호'),
             address_road: cellStr(row, '기본(도로명)주소'),
             address_detail: cellStr(row, '상세주소'),
-            location: cellStr(row, '소재지'),
-            note: cellStr(row, '비고'),
+            note: cellStr(row, '관리비고', '비고'),
           });
         }
 
@@ -552,17 +574,26 @@ export default function ProductionClientAddressModule() {
     }
   };
 
+  const myEmail = String(currentUser?.email || '')
+    .trim()
+    .toLowerCase();
+  const isOwnClient = (client: { creator_email?: string | null }) => {
+    const creator = String(client?.creator_email || '')
+      .trim()
+      .toLowerCase();
+    return Boolean(myEmail && creator && myEmail === creator);
+  };
+  const canDeleteClient = (client: any) => canEditMaster || isOwnClient(client);
+
   const handleDeleteClient = async (id: string) => {
     const client = clients.find((c) => c.id === id);
-    if (!canEditMaster) {
-      return alert('삭제는 편집(Edit) 권한이 필요합니다.');
-    }
-    if (clientHasDistributions(client)) {
-      return alert('지급 이력이 있어 삭제할 수 없습니다.');
+    if (!client) return;
+    if (!canDeleteClient(client)) {
+      return alert('삭제는 편집(Edit) 권한이 있거나, 본인이 등록한 고객사만 가능합니다.');
     }
     if (
       !confirm(
-        '정말 삭제하시겠습니까?\n이 작업은 되돌릴 수 없으며, 마스터에서 완전히 삭제됩니다.'
+        '정말 삭제하시겠습니까?\n주소 목록에서 제거되며, 기존 지급 이력 문구는 유지됩니다.'
       )
     ) {
       return;
@@ -640,39 +671,37 @@ export default function ProductionClientAddressModule() {
 
       <div className="flex items-center justify-end gap-2 flex-wrap px-0.5">
         {canEditMaster && (
-          <>
-            <button
-              type="button"
-              onClick={handleExcelDownload}
-              className="px-3 py-1.5 rounded-lg text-[10px] font-black shadow-sm whitespace-nowrap transition-all bg-emerald-600 text-white hover:bg-emerald-700"
-            >
-              {selectedClientIds.size > 0
-                ? `선택 EXCEL 다운로드(${selectedClientIds.size})(Edit)`
-                : '화면 목록 EXCEL 다운로드(Edit)'}
-            </button>
-            <button
-              type="button"
-              onClick={handleExcelTemplateDownload}
-              className="px-3 py-1.5 rounded-lg text-[10px] font-black shadow-sm whitespace-nowrap transition-all bg-white text-emerald-700 border border-emerald-200 hover:bg-emerald-50"
-            >
-              업로드 양식 다운(Edit)
-            </button>
-            <button
-              type="button"
-              onClick={() => excelUploadInputRef.current?.click()}
-              className="px-3 py-1.5 rounded-lg text-[10px] font-black shadow-sm whitespace-nowrap transition-all bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-600 hover:text-white"
-            >
-              + 엑셀 업로드(Edit)
-            </button>
-            <input
-              type="file"
-              ref={excelUploadInputRef}
-              onChange={handleExcelUpload}
-              accept=".xlsx,.xls"
-              className="hidden"
-            />
-          </>
+          <button
+            type="button"
+            onClick={handleExcelDownload}
+            className="px-3 py-1.5 rounded-lg text-[10px] font-medium shadow-sm whitespace-nowrap transition-all bg-emerald-600 text-white hover:bg-emerald-700"
+          >
+            {selectedClientIds.size > 0
+              ? `선택 EXCEL 다운로드(${selectedClientIds.size})(Edit)`
+              : '화면 목록 EXCEL 다운로드(Edit)'}
+          </button>
         )}
+        <button
+          type="button"
+          onClick={handleExcelTemplateDownload}
+          className="px-3 py-1.5 rounded-lg text-[10px] font-medium shadow-sm whitespace-nowrap transition-all bg-white text-emerald-700 border border-emerald-200 hover:bg-emerald-50"
+        >
+          업로드 양식 다운
+        </button>
+        <button
+          type="button"
+          onClick={() => excelUploadInputRef.current?.click()}
+          className="px-3 py-1.5 rounded-lg text-[10px] font-medium shadow-sm whitespace-nowrap transition-all bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-600 hover:text-white"
+        >
+          + 엑셀 업로드
+        </button>
+        <input
+          type="file"
+          ref={excelUploadInputRef}
+          onChange={handleExcelUpload}
+          accept=".xlsx,.xls"
+          className="hidden"
+        />
         <button
           type="button"
           onClick={() => {
@@ -680,7 +709,7 @@ export default function ProductionClientAddressModule() {
             setFormData(emptyClientForm);
             setShowModal(true);
           }}
-          className="px-3 py-1.5 bg-slate-900 text-white rounded-lg text-[10px] font-black shadow-sm hover:bg-sky-700 transition-all whitespace-nowrap"
+          className="px-3 py-1.5 bg-slate-900 text-white rounded-lg text-[10px] font-medium shadow-sm hover:bg-sky-700 transition-all whitespace-nowrap"
         >
           + 신규 등록
         </button>
@@ -732,11 +761,21 @@ export default function ProductionClientAddressModule() {
         </HeaderLight>
 
         <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse min-w-[900px]">
+          <table className="w-full table-fixed text-left border-collapse min-w-[960px]">
+            <colgroup>
+              {showSelection && <col className="w-10" />}
+              <col className="w-12" />
+              <col className="w-[20%]" />
+              <col className="w-[12%]" />
+              <col className="w-[30%]" />
+              <col className="w-[14%]" />
+              <col className="w-[110px]" />
+              <col className="w-[160px]" />
+            </colgroup>
             <thead className="bg-slate-100 text-slate-700 text-[10px] font-black uppercase tracking-widest border-b border-slate-200">
               <tr>
                 {showSelection && (
-                  <th className="h-12 text-center w-[40px] pl-4">
+                  <th className="h-12 text-center pl-4">
                     <input
                       type="checkbox"
                       checked={isAllPageSelected}
@@ -745,13 +784,13 @@ export default function ProductionClientAddressModule() {
                     />
                   </th>
                 )}
-                <th className="h-12 text-center w-[50px]">NO</th>
-                <th className="h-12 pl-3 text-left w-[240px]">회사명</th>
-                <th className="h-12 px-3 text-left w-[140px]">업무범주</th>
+                <th className="h-12 text-center">NO</th>
+                <th className="h-12 pl-3 text-left">회사명</th>
+                <th className="h-12 px-3 text-left">업무범주</th>
                 <th className="h-12 px-3 text-left">소재지 주소</th>
-                <th className="h-12 px-3 text-left w-[180px]">비고</th>
-                <th className="h-12 px-2 text-center w-[110px] whitespace-nowrap">등록/수정일</th>
-                <th className="h-12 pr-4 text-center w-[160px] whitespace-nowrap">관리액션</th>
+                <th className="h-12 px-3 text-left">관리비고</th>
+                <th className="h-12 px-2 text-center whitespace-nowrap">등록/수정일</th>
+                <th className="h-12 pr-4 text-center whitespace-nowrap">관리액션</th>
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-slate-100 text-xs font-bold text-slate-700">
@@ -777,19 +816,22 @@ export default function ProductionClientAddressModule() {
                       <td className="text-center font-black tabular-nums text-slate-400">
                         {filteredClients.length - ((currentPage - 1) * itemsPerPage + idx)}
                       </td>
-                      <td className="pl-3 truncate pr-2 text-left">
-                        <span className="font-black text-[13px] text-slate-900 truncate" title={client.name}>
+                      <td className="pl-3 pr-2 text-left max-w-0">
+                        <span
+                          className="block font-black text-[13px] text-slate-900 truncate"
+                          title={client.name}
+                        >
                           {client.name}
                         </span>
                       </td>
                       <td
-                        className="px-3 text-left text-sky-700 font-black text-[11px] truncate"
+                        className="px-3 text-left text-sky-700 font-black text-[11px] truncate max-w-0"
                         title={client.category}
                       >
                         {client.category || '-'}
                       </td>
                       <td
-                        className="px-3 text-left text-slate-500 text-[11px] truncate"
+                        className="px-3 text-left text-slate-500 text-[11px] truncate max-w-0"
                         title={formatMarketingClientLocation(client) || '-'}
                       >
                         {formatMarketingClientLocation(client) || '-'}
@@ -851,23 +893,20 @@ export default function ProductionClientAddressModule() {
                                 >
                                   수정
                                 </button>
-                            {canEditMaster && !clientHasDistributions(client) && (
+                            {canDeleteClient(client) && (
                               <button
                                 type="button"
                                 onClick={() => handleDeleteClient(client.id)}
-                                className="px-3 py-1 bg-red-50 border border-red-200 text-red-500 rounded-lg text-[9px] font-black hover:bg-red-500 hover:text-white shadow-sm"
+                                className="px-3 py-1 bg-red-50 border border-red-200 text-red-500 rounded-lg text-[9px] font-medium hover:bg-red-500 hover:text-white shadow-sm"
+                                title={
+                                  isOwnClient(client)
+                                    ? '본인이 등록한 고객사 삭제'
+                                    : '편집 권한으로 삭제'
+                                }
                               >
-                                삭제(Edit)
+                                {isOwnClient(client) ? '삭제' : '삭제(Edit)'}
                               </button>
                             )}
-                            {canEditMaster && clientHasDistributions(client) && (
-                                <span
-                                  className="px-2 py-1 text-[9px] font-black text-slate-400 border border-slate-200 rounded-lg"
-                                  title="지급 이력이 있어 삭제할 수 없습니다"
-                                >
-                                  삭제불가
-                                </span>
-                              )}
                           </div>
                       </td>
                     </tr>
@@ -952,45 +991,49 @@ export default function ProductionClientAddressModule() {
                 )}
               </div>
               <div className="space-y-3">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[12px] font-medium text-slate-600">배송지 주소</span>
+                  <button
+                    type="button"
+                    onClick={openClientPostcode}
+                    className="px-2.5 py-1.5 bg-slate-900 text-white rounded-lg text-[10px] font-medium hover:bg-slate-800 transition-colors shadow-sm"
+                    title="우편번호 검색"
+                  >
+                    신규 검색
+                  </button>
+                </div>
                 <div className="space-y-1.5">
-                  <label className="text-[12px] font-black text-slate-600">우편번호</label>
+                  <label className="text-[12px] font-medium text-slate-600">우편번호</label>
                   <input
                     type="text"
-                    inputMode="numeric"
-                    maxLength={5}
+                    readOnly
                     value={formData.zip_code}
-                    onChange={(e) =>
-                      setFormData({
-                        ...formData,
-                        zip_code: e.target.value.replace(/[^\d]/g, '').slice(0, 5),
-                      })
-                    }
-                    className="w-full p-3.5 bg-slate-50 border border-slate-200 rounded-xl text-[13px] font-bold outline-none focus:border-sky-500 font-mono"
-                    placeholder="5자리 우편번호"
+                    className="w-full p-3.5 bg-slate-50 border border-slate-200 rounded-xl text-[13px] font-medium outline-none font-mono text-sky-700"
+                    placeholder="신규 검색으로 자동 입력"
                   />
                 </div>
                 <div className="space-y-1.5">
-                  <label className="text-[12px] font-black text-slate-600">기본(도로명) 주소</label>
+                  <label className="text-[12px] font-medium text-slate-600">기본(도로명) 주소</label>
                   <input
                     type="text"
                     value={formData.address_road}
                     onChange={(e) => setFormData({ ...formData, address_road: e.target.value })}
-                    className="w-full p-3.5 bg-slate-50 border border-slate-200 rounded-xl text-[13px] font-bold outline-none focus:border-sky-500"
-                    placeholder="도로명 주소"
+                    className="w-full p-3.5 bg-slate-50 border border-slate-200 rounded-xl text-[13px] font-medium outline-none focus:border-sky-500 focus:bg-white"
+                    placeholder="검색 후 필요 시 수정 가능"
                   />
                 </div>
                 <div className="space-y-1.5">
-                  <label className="text-[12px] font-black text-slate-600">상세주소</label>
+                  <label className="text-[12px] font-medium text-slate-600">상세주소</label>
                   <input
                     type="text"
                     value={formData.address_detail}
                     onChange={(e) => setFormData({ ...formData, address_detail: e.target.value })}
-                    className="w-full p-3.5 bg-slate-50 border border-slate-200 rounded-xl text-[13px] font-bold outline-none focus:border-sky-500"
+                    className="w-full p-3.5 bg-slate-50 border border-slate-200 rounded-xl text-[13px] font-medium outline-none focus:border-sky-500 focus:bg-white"
                     placeholder="동·호수·층 등"
                   />
                 </div>
                 <div className="space-y-1.5">
-                  <label className="text-[12px] font-black text-slate-600">비고</label>
+                  <label className="text-[12px] font-medium text-slate-600">관리비고</label>
                   <textarea
                     value={formData.note}
                     onChange={(e) => setFormData({ ...formData, note: e.target.value })}

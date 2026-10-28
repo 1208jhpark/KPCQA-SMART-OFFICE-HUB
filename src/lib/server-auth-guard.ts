@@ -19,7 +19,6 @@ export const MARKETING_MENU = {
   catalog: '/marketing/distribution/catalog',
   register: '/marketing/distribution/register',
   dept: '/marketing/distribution/dept',
-  clientSearch: '/marketing/distribution/client-search',
 } as const;
 
 /** 제작물 코너 고객사 주소관리 (동일 clients API 공유) */
@@ -36,7 +35,6 @@ export const MARKETING_MENU_PATHS = [
   MARKETING_MENU.catalog,
   MARKETING_MENU.register,
   MARKETING_MENU.dept,
-  MARKETING_MENU.clientSearch,
 ];
 
 type MarketingAuthOptions = { requireEditor?: boolean };
@@ -77,7 +75,7 @@ export function authorizeMarketingPurchasesWrite(options?: MarketingAuthOptions)
   );
 }
 
-/** 고객사 조회: client-search · 제작물 client(+ register lite 선택용) */
+/** 고객사 조회: 제작물 client(+ register lite 선택용) */
 export function authorizeMarketingClientsRead(options?: {
   requireEditor?: boolean;
   /** lite=지급신청·제작 실배송지 고객사 주소 — register·production apply 접근도 허용 */
@@ -88,40 +86,32 @@ export function authorizeMarketingClientsRead(options?: {
     ? [
         PRODUCTION_CLIENT_ADDRESS,
         '/production/custom/my-orders/request',
-        MARKETING_MENU.clientSearch,
         MARKETING_MENU.register,
       ]
-    : [PRODUCTION_CLIENT_ADDRESS, MARKETING_MENU.clientSearch];
+    : [PRODUCTION_CLIENT_ADDRESS];
   return authorizeAnyMenuPaths(paths, authOpts);
 }
 
-/** 고객사 쓰기: client-search · 제작물 client */
+/** 고객사 쓰기: 제작물 client */
 export function authorizeMarketingClientsWrite(options?: MarketingAuthOptions) {
-  return authorizeAnyMenuPaths(
-    [MARKETING_MENU.clientSearch, PRODUCTION_CLIENT_ADDRESS],
-    {
-      ...options,
-      requireEditor: true,
-    }
-  );
+  return authorizeAnyMenuPaths([PRODUCTION_CLIENT_ADDRESS], {
+    ...options,
+    requireEditor: true,
+  });
 }
 
-/** 고객사 신규 등록: client-search · 제작물 client 접근자 전원 (편집자 불필요) */
+/** 고객사 신규 등록: 제작물 client 접근자 전원 (편집자 불필요) */
 export function authorizeMarketingClientsCreate(options?: MarketingAuthOptions) {
-  return authorizeAnyMenuPaths(
-    [MARKETING_MENU.clientSearch, PRODUCTION_CLIENT_ADDRESS],
-    options
-  );
+  return authorizeAnyMenuPaths([PRODUCTION_CLIENT_ADDRESS], options);
 }
 
-/** 지급 이력 조회: register·dept·catalog·client-search·dashboard */
+/** 지급 이력 조회: register·dept·catalog·dashboard */
 export function authorizeMarketingDistributionsRead(options?: MarketingAuthOptions) {
   return authorizeAnyMenuPaths(
     [
       MARKETING_MENU.register,
       MARKETING_MENU.dept,
       MARKETING_MENU.catalog,
-      MARKETING_MENU.clientSearch,
       MARKETING_MENU.dashboard,
     ],
     options

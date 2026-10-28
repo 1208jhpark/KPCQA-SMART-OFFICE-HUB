@@ -33,6 +33,7 @@ import {
   parseOfficeSuppliesQuoteText,
   buildOfficeKeywordMasterLabels,
   sanitizeOfficeProductAliases,
+  collectOfficeAliasLearnPairs,
   type OfficeDbItemSource,
 } from '@/lib/production-office-statement-match';
 
@@ -331,6 +332,7 @@ export default function ProductionStatementCompareModal({
       return {
         ...di,
         quoteRawText,
+        quoteLines: lines,
       };
     });
   }, [dbItems, isOfficeCategory, selectedBatches]);
@@ -619,6 +621,33 @@ export default function ProductionStatementCompareModal({
     categoryKey,
   ]);
 
+  const persistOfficeAliasLearning = useCallback(
+    async (matches: ItemMatchResult[], rows: ParsedStatementRow[]) => {
+      if (!isOfficeCategory) return;
+      const pairs = collectOfficeAliasLearnPairs(matches, rows);
+      if (pairs.length === 0) return;
+      try {
+        const res = await fetch('/api/production/custom/admin/statement-rules', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            category: 'OFFICE_SUPPLIES',
+            mode: 'learn',
+            pairs,
+          }),
+        });
+        if (!res.ok) return;
+        const data = await res.json().catch(() => ({}));
+        if (data.added > 0 && data.rules) {
+          setRules(data.rules);
+        }
+      } catch {
+        /* 학습 실패는 대조 결과를 막지 않음 */
+      }
+    },
+    [isOfficeCategory]
+  );
+
   // 분석 수행 함수
   const analyzeStatementFile = async (file: File, currentRules: ProductionStatementRules = rules) => {
     setAnalyzing(true);
@@ -660,6 +689,7 @@ export default function ProductionStatementCompareModal({
             `✅ 멀티시트 파싱 완료: ${workbook.SheetNames.length}탭 · 품목 ${matchResult.statementRows.length}행`,
             `🎯 신청 ${officeDbItems.length}건 중 ${matchResult.itemMatches.filter((m) => m.matchStatus === 'match').length}건 일치`,
           ]);
+          void persistOfficeAliasLearning(matchResult.itemMatches, matchResult.statementRows);
         } else {
           const sheet = workbook.Sheets[workbook.SheetNames[0]];
           const json: any[][] = XLSX.utils.sheet_to_json(sheet, { header: 1 });
@@ -759,13 +789,15 @@ export default function ProductionStatementCompareModal({
         const reMatched = runOfficeSuppliesStatementMatch(
           officeDbItems,
           statementRows,
-          nextOverrides
+          nextOverrides,
+          rules.plateItemKeywords
         );
         setGroupSummaries(reMatched.groupSummaries);
         setItemMatches(reMatched.itemMatches);
         setTotalDocPrice(reMatched.totalDocPrice);
         setMatchedBatchDocPrice(reMatched.matchedBatchDocPrice);
         setAllMatched(reMatched.allMatched);
+        void persistOfficeAliasLearning(reMatched.itemMatches, statementRows);
         return;
       }
       const reMatched = runProductionStatementMatch(
@@ -780,7 +812,7 @@ export default function ProductionStatementCompareModal({
       setMatchedBatchDocPrice(reMatched.matchedBatchDocPrice);
       setAllMatched(reMatched.allMatched);
     },
-    [dbItems, isOfficeCategory, officeDbItems, rules, statementRows]
+    [dbItems, isOfficeCategory, officeDbItems, persistOfficeAliasLearning, rules, statementRows]
   );
 
   const handleAssignRowToItem = (itemId: string, rowIndex: number) => {

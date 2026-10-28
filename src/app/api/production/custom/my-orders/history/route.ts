@@ -6,6 +6,7 @@ import {
   authErrorToResponse,
 } from '@/lib/server-auth-guard';
 import { withProductionDeptDisplayNames } from '@/lib/production-dept-scope';
+import { canEditProductionApplicantSource } from '@/lib/production-status';
 
 export const dynamic = 'force-dynamic';
 
@@ -84,14 +85,42 @@ export async function PATCH(req: Request) {
     }
 
     if (action === 'cancel') {
-      if (row.status !== 'PENDING') {
+      if (row.status !== 'PENDING' && row.status !== 'REJECTED') {
         return NextResponse.json(
-          { message: '접수대기(미접수) 상태에서만 신청을 취소할 수 있습니다.' },
+          { message: '접수대기 또는 반려 상태에서만 신청을 취소할 수 있습니다.' },
           { status: 400 }
         );
       }
       await prisma.productionRequest.delete({ where: { id } });
       return NextResponse.json({ message: '신청이 취소되어 삭제되었습니다.' });
+    }
+
+    if (action === 'reapply') {
+      if (row.status !== 'REJECTED') {
+        return NextResponse.json(
+          { message: '반려된 신청만 재신청할 수 있습니다.' },
+          { status: 400 }
+        );
+      }
+      const prevOptions =
+        row.options && typeof row.options === 'object' && !Array.isArray(row.options)
+          ? (row.options as Record<string, unknown>)
+          : {};
+      const updated = await prisma.productionRequest.update({
+        where: { id },
+        data: {
+          status: 'PENDING',
+          statusChangedAt: new Date(),
+          options: {
+            ...prevOptions,
+            reappliedAt: new Date().toISOString(),
+          } as Prisma.InputJsonValue,
+        },
+      });
+      return NextResponse.json({
+        message: '재신청되어 접수대기로 올렸습니다.',
+        data: updated,
+      });
     }
 
     if (action === 'revert-accept' || action === 'unaccept') {
@@ -122,20 +151,20 @@ export async function PATCH(req: Request) {
     }
 
     if (action === 'update') {
-      if (row.status !== 'PENDING') {
-        return NextResponse.json(
-          { message: '접수대기(미접수) 상태에서만 수정할 수 있습니다.' },
-          { status: 400 }
-        );
-      }
-      const prevOptions =
+      const rowOptions =
         row.options && typeof row.options === 'object' && !Array.isArray(row.options)
           ? (row.options as Record<string, unknown>)
           : {};
+      if (!canEditProductionApplicantSource(row.status, rowOptions)) {
+        return NextResponse.json(
+          { message: '신청대기·묶음발주대기·반려 상태에서만 수정할 수 있습니다.' },
+          { status: 400 }
+        );
+      }
       const nextOptions =
         body.options && typeof body.options === 'object' && !Array.isArray(body.options)
-          ? { ...prevOptions, ...body.options }
-          : prevOptions;
+          ? { ...rowOptions, ...body.options }
+          : rowOptions;
 
       const title = body.title != null ? String(body.title).trim() : row.title;
       if (!title) {

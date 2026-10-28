@@ -278,7 +278,7 @@ export async function GET() {
 /** [POST] 외주 발주확인 / 수령완료 / 발주 취소 / 보관함 이동 / 단가승인 */
 export async function POST(req: Request) {
   try {
-    const auth = await authorizeApi(MENU_PATH, { requireEditor: true });
+    const auth = await authorizeApi(MENU_PATH);
     const body = await req.json().catch(() => ({}));
     const action = String(body.action || '').trim().toLowerCase();
 
@@ -338,7 +338,7 @@ export async function POST(req: Request) {
           where: { id: row.id },
           data: {
             options: asInputJson(nextOpts),
-            // 발주확정(UI: 발주완료) 또는 직발송 수령완료 — 공정상태 전환
+            // 발주확정 → 발주완료 / 고객사 직발송은 완료이력(VERIFIED, 표기: 발주완료(고객사직발송))
             ...productionStatusChangedStamp(),
             ...(direct ? { status: 'VERIFIED' } : {}),
           },
@@ -350,7 +350,7 @@ export async function POST(req: Request) {
       return NextResponse.json({
         message:
           autoReceived > 0
-            ? `${dispatched}건 외주 발주완료 처리했습니다. (고객사 직발송 ${autoReceived}건은 수령절차 생략)`
+            ? `${dispatched}건 외주 발주완료 처리했습니다. (고객사 직발송 ${autoReceived}건 → 발주완료(고객사직발송)·완료이력)`
             : `${dispatched}건 외주 발주완료 처리했습니다.`,
         count: dispatched,
         autoReceived,

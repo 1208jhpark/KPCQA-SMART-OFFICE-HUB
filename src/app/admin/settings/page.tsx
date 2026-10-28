@@ -245,7 +245,7 @@ export default function AdminSettingsPage() {
       items: [
         {
           label: '고객사 마스터 > 업무 범주',
-          path: '/marketing/distribution/client-search',
+          path: '/production/custom/clients',
           field: 'client_category_group',
           tag: 'client_category_group',
         },

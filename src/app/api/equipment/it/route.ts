@@ -50,6 +50,8 @@ const IT_MASTER_WRITE_PATHS = [
 
 /** 개인 실사·정보수정(본인 자산) */
 const IT_PERSONAL_PATH = '/equipment/it/personal';
+/** 부서 공용자산 실사·정보수정 */
+const IT_DEPT_PATH = '/equipment/it/dept';
 
 function isLv1(user: any) {
   const roles = Array.isArray(user?.roles) ? user.roles : [];
@@ -424,10 +426,10 @@ export async function GET(req: Request) {
   }
 }
 
-// 🚀 2. IT 자산 신규 등록 (POST) — 마스터 대시보드/아카이브 Edit
+// 🚀 2. IT 자산 신규 등록 (POST) — 마스터 대시보드/아카이브 Access (Edit 불필요)
 export async function POST(req: Request) {
   try {
-    const auth = await authorizeAnyMenuPaths([...IT_MASTER_WRITE_PATHS], { requireEditor: true });
+    const auth = await authorizeAnyMenuPaths([...IT_MASTER_WRITE_PATHS]);
 
     const body = await req.json();
     const cleanData = await enrichOwnerIdentity(sanitizeAndParsePayload(body));
@@ -542,11 +544,38 @@ export async function PATCH(req: Request) {
       }
     }
 
+    const existing = await prisma.iTAsset.findUnique({ where: { id } });
+    if (!existing) return NextResponse.json({ message: '자산 없음' }, { status: 404 });
+
+    // 부서 Access → 공용 자산 + 실사/정보수정 필드만
+    try {
+      const deptAuth = await authorizeAnyMenuPaths([IT_DEPT_PATH]);
+      if (String(existing.user || '').trim() === '공용') {
+        const config = await prisma.systemConfig.findUnique({
+          where: { id: 'global' },
+          select: { global_mgmt_dept: true },
+        });
+        const scope = resolveDeptScope(deptAuth, config?.global_mgmt_dept || '');
+        const inScope =
+          scope === null ||
+          (!!existing.unit_id && scope.scopeIds.includes(String(existing.unit_id))) ||
+          scope.scopeNames.includes(String(existing.dept || '').trim());
+        if (inScope) {
+          const cleanData = sanitizePersonalSelfPatch(body);
+          const updated = await prisma.iTAsset.update({ where: { id }, data: cleanData });
+          return NextResponse.json(withItAssetScheduleFields(updated));
+        }
+      }
+    } catch (deptErr) {
+      const msg = deptErr instanceof Error ? deptErr.message : '';
+      if (!['FORBIDDEN', 'FORBIDDEN_EDIT', 'MENU_NOT_CONFIGURED'].includes(msg)) {
+        throw deptErr;
+      }
+    }
+
     // 개인 Access → 본인 자산 + 실사/정보수정 필드만
     const personalAuth = await authorizeAnyMenuPaths([IT_PERSONAL_PATH]);
     const identity = toItIdentity(personalAuth.user);
-    const existing = await prisma.iTAsset.findUnique({ where: { id } });
-    if (!existing) return NextResponse.json({ message: '자산 없음' }, { status: 404 });
     if (!assetMatchesIdentity(existing, identity)) {
       return NextResponse.json({ message: '본인 자산만 수정할 수 있습니다.' }, { status: 403 });
     }

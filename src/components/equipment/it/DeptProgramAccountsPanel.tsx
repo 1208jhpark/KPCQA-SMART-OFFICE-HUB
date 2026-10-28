@@ -2,6 +2,7 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
 import * as XLSX from 'xlsx';
+import DeptAssigneeLine, { useDeptAssignees } from '@/components/common/DeptAssigneeLine';
 import { getKSTDateString } from '@/utils/dateUtils';
 
 type ProgramRow = {
@@ -37,7 +38,7 @@ const emptyForm = (): Omit<ProgramRow, 'id' | 'unit_id'> & { unit_id?: string } 
 });
 
 type Props = {
-  /** 메뉴 Edit 권한 (신규·수정·삭제·비밀번호 평문) */
+  /** 메뉴 Edit 권한 (수정·삭제·엑셀 비밀번호 평문) */
   isEditor: boolean;
   defaultUnitId: string;
   defaultDeptName: string;
@@ -55,6 +56,7 @@ export default function DeptProgramAccountsPanel({
   const [modalMode, setModalMode] = useState<'add' | 'edit' | null>(null);
   const [form, setForm] = useState(emptyForm());
   const [editingId, setEditingId] = useState<string | null>(null);
+  const { editorNames: deptEditorNames } = useDeptAssignees('/equipment/it/dept');
 
   const loadRows = useCallback(async () => {
     setLoading(true);
@@ -82,7 +84,6 @@ export default function DeptProgramAccountsPanel({
   }, [open, loadRows]);
 
   const openAdd = () => {
-    if (!isEditor) return alert('신규 등록은 Edit 권한이 필요합니다.');
     setEditingId(null);
     setForm({ ...emptyForm(), unit_id: defaultUnitId });
     setModalMode('add');
@@ -125,7 +126,7 @@ export default function DeptProgramAccountsPanel({
   };
 
   const handleSave = async () => {
-    if (!isEditor) return;
+    if (modalMode === 'edit' && !isEditor) return;
     if (!String(form.person_name || '').trim()) return alert('이름을 입력해 주세요.');
     setSaving(true);
     try {
@@ -178,27 +179,25 @@ export default function DeptProgramAccountsPanel({
   };
 
   const handleExcel = async () => {
+    if (!isEditor) return alert('EXCEL 다운로드는 Edit 권한이 필요합니다.');
+    if (rows.length === 0) return alert('다운로드할 데이터가 없습니다.');
     let exportRows = rows;
-    // Edit: 서버에서 평문 재조회 후 엑셀에 비밀번호 포함 / Access: ****
-    if (isEditor) {
-      try {
-        const res = await fetch(
-          `/api/equipment/it/dept/program-accounts?reveal=1&t=${Date.now()}`,
-          { cache: 'no-store' }
-        );
-        const data = await res.json().catch(() => ({}));
-        if (res.ok && Array.isArray(data.rows)) {
-          exportRows = data.rows;
-        }
-      } catch {
-        /* 목록 마스킹 값으로 폴백 */
+    try {
+      const res = await fetch(
+        `/api/equipment/it/dept/program-accounts?reveal=1&t=${Date.now()}`,
+        { cache: 'no-store' }
+      );
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && Array.isArray(data.rows)) {
+        exportRows = data.rows;
       }
+    } catch {
+      /* 목록 값으로 폴백 */
     }
 
     const excelData = exportRows.map((r, i) => {
       const pw = String(r.program_password || '').trim();
-      const passwordCell =
-        isEditor && pw && pw !== '****' ? pw : pw ? '****' : '-';
+      const passwordCell = pw && pw !== '****' ? pw : pw ? '****' : '-';
       return {
         NO: exportRows.length - i,
         이름: r.person_name,
@@ -212,7 +211,6 @@ export default function DeptProgramAccountsPanel({
         'S/N': r.note1 || '-',
         비고1: r.note2 || '-',
         비고2: r.note3 || '-',
-        소속: r.dept || defaultDeptName || '-',
       };
     });
     const ws = XLSX.utils.json_to_sheet(excelData);
@@ -232,60 +230,87 @@ export default function DeptProgramAccountsPanel({
 
   return (
     <div className="bg-white border border-slate-200 rounded-[2.5rem] shadow-sm overflow-hidden">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className="w-full p-4 px-6 bg-slate-100/80 border-b border-slate-200 flex flex-wrap items-center justify-between gap-3 text-left hover:bg-slate-100 transition-colors"
+      <div
+        className={`p-4 px-6 bg-slate-200/70 flex flex-wrap items-center justify-between gap-3 ${
+          open ? 'border-b border-slate-300' : ''
+        }`}
       >
-        <div className="flex items-center gap-2 flex-wrap min-w-0">
-          <span className="text-slate-500 font-black text-sm tabular-nums w-4">
-            {open ? '▾' : '▸'}
-          </span>
-          <div className="w-2.5 h-2.5 rounded-full bg-violet-600 shrink-0" />
-          <h2 className="text-sm font-black text-slate-800 tracking-tight">
-            부서 인력별 프로그램사용 관리
-          </h2>
-          <span className="text-[11px] font-bold bg-slate-300/80 text-slate-700 px-2 py-0.5 rounded-md">
-            {rows.length}건
-          </span>
-          <span className="text-[10px] font-bold text-slate-400">
-            부서 전용 장부 · 마스터와 공유되지 않음
-          </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 flex-wrap">
+            <button
+              type="button"
+              onClick={() => setOpen((v) => !v)}
+              className="inline-flex items-center gap-2 min-w-0 rounded-lg hover:bg-white/50 px-1.5 py-1 -ml-1.5 transition-colors"
+              aria-expanded={open}
+              title={open ? '목록 접기' : '목록 펼치기'}
+            >
+              <span
+                className={`text-slate-500 text-[10px] font-medium transition-transform ${open ? 'rotate-90' : ''}`}
+                aria-hidden
+              >
+                ▶
+              </span>
+              <span className="w-2.5 h-2.5 rounded-full bg-violet-600 shrink-0" />
+              <h2 className="text-sm font-medium text-slate-800 tracking-tight">
+                부서 인력별 프로그램 사용 관리
+              </h2>
+            </button>
+            <span className="text-[11px] font-medium bg-slate-300/80 text-slate-700 px-2 py-0.5 rounded-md">
+              {rows.length}건
+            </span>
+            <span className="text-[10px] font-medium text-slate-400">
+              부서 전용 장부 · 전사 관리자와 공유되지 않음
+            </span>
+            <DeptAssigneeLine editorNames={deptEditorNames} />
+          </div>
         </div>
-        <span className="text-[10px] font-bold text-slate-400 shrink-0">
-          {open ? '접기' : '펼치기'}
-        </span>
-      </button>
+        {!open && (
+          <button
+            type="button"
+            onClick={() => setOpen(true)}
+            className="text-[10px] font-medium text-indigo-600 hover:underline shrink-0"
+          >
+            펼치기
+          </button>
+        )}
+        {open && (
+        <div className="flex items-center gap-2 flex-wrap shrink-0">
+          <button
+            type="button"
+            onClick={handleExcel}
+            disabled={!isEditor || rows.length === 0}
+            title={
+              !isEditor
+                ? 'EXCEL 다운로드는 Edit 권한이 필요합니다.'
+                : rows.length === 0
+                  ? '다운로드할 데이터가 없습니다.'
+                  : 'EXCEL 다운로드'
+            }
+            className={`px-3 py-1.5 rounded-lg text-[10px] font-medium shadow-sm transition-all ${
+              isEditor
+                ? 'bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed'
+                : 'bg-slate-200 text-slate-400 cursor-not-allowed'
+            }`}
+          >
+            EXCEL 다운로드(Edit)
+          </button>
+          <button
+            type="button"
+            onClick={openAdd}
+            title="신규 등록"
+            className="px-3 py-1.5 rounded-lg text-[10px] font-medium shadow-sm transition-all bg-indigo-600 text-white hover:bg-indigo-700 cursor-pointer"
+          >
+            + 신규 추가
+          </button>
+        </div>
+        )}
+      </div>
 
       {open && (
         <>
-          <div className="p-4 px-6 border-b border-slate-100 flex flex-wrap items-center justify-end gap-2 bg-white">
-            <button
-              type="button"
-              onClick={handleExcel}
-              disabled={rows.length === 0}
-              className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-[10px] font-black shadow-sm hover:bg-emerald-700 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              EXCEL 다운로드
-            </button>
-            <button
-              type="button"
-              disabled={!isEditor}
-              onClick={openAdd}
-              title={isEditor ? '신규 등록' : '신규 등록은 Edit 권한이 필요합니다.'}
-              className={`px-3 py-1.5 rounded-lg text-[10px] font-black shadow-sm transition-all ${
-                isEditor
-                  ? 'bg-indigo-600 text-white hover:bg-indigo-700 cursor-pointer'
-                  : 'bg-slate-200 text-slate-400 cursor-not-allowed'
-              }`}
-            >
-              + 신규 추가(Edit)
-            </button>
-          </div>
-
           <div className="overflow-x-auto">
             <table className="w-full text-left border-collapse min-w-[1280px]">
-              <thead className="bg-slate-100 text-slate-700 text-[10px] font-black uppercase tracking-widest border-b border-slate-200">
+              <thead className="bg-slate-100 text-slate-700 text-[10px] font-medium border-b border-slate-200">
                 <tr>
                   <th className="h-11 px-2 text-center w-12">NO</th>
                   <th className="h-11 px-2">이름</th>
@@ -302,7 +327,7 @@ export default function DeptProgramAccountsPanel({
                   <th className="h-11 px-2 text-center whitespace-nowrap">관리액션</th>
                 </tr>
               </thead>
-              <tbody className="bg-white divide-y divide-slate-100 text-[11px] font-bold text-slate-700">
+              <tbody className="bg-white divide-y divide-slate-100 text-[11px] font-medium text-slate-700">
                 {loading ? (
                   <tr>
                     <td colSpan={13} className="p-10 text-center text-slate-400 text-xs">
@@ -318,7 +343,7 @@ export default function DeptProgramAccountsPanel({
                 ) : (
                   rows.map((row, idx) => (
                     <tr key={row.id} className="h-12 hover:bg-slate-50/60">
-                      <td className="px-2 text-center text-slate-400 font-mono text-[10px]">
+                      <td className="px-2 text-center text-slate-400 tabular-nums text-[10px]">
                         {rows.length - idx}
                       </td>
                       <td className="px-2 text-slate-900">{row.person_name}</td>
@@ -330,20 +355,20 @@ export default function DeptProgramAccountsPanel({
                       </td>
                       <td className="px-2 text-center">
                         {row.program_used ? (
-                          <span className="px-2 py-0.5 rounded-md text-[10px] font-black bg-emerald-50 text-emerald-700 border border-emerald-100">
+                          <span className="px-2 py-0.5 rounded-md text-[10px] font-medium bg-emerald-50 text-emerald-700 border border-emerald-100">
                             사용
                           </span>
                         ) : (
                           <span className="text-slate-400">-</span>
                         )}
                       </td>
-                      <td className="px-2 font-mono text-[10px]">{row.program_id || '-'}</td>
-                      <td className="px-2 font-mono text-[10px] tracking-wider">
+                      <td className="px-2 tabular-nums text-[10px]">{row.program_id || '-'}</td>
+                      <td className="px-2 tabular-nums text-[10px]">
                         {displayPassword(row)}
                       </td>
-                      <td className="px-2 font-mono text-[10px] tracking-normal">{row.ip_address || '-'}</td>
-                      <td className="px-2 font-mono text-[10px] tracking-normal">{row.mac_address || '-'}</td>
-                      <td className="px-2 max-w-[140px] truncate font-mono text-[10px] tracking-normal" title={row.note1 || ''}>
+                      <td className="px-2 tabular-nums text-[10px]">{row.ip_address || '-'}</td>
+                      <td className="px-2 tabular-nums text-[10px]">{row.mac_address || '-'}</td>
+                      <td className="px-2 max-w-[140px] truncate tabular-nums text-[10px]" title={row.note1 || ''}>
                         {row.note1 || '-'}
                       </td>
                       <td className="px-2 max-w-[120px] truncate" title={row.note2 || ''}>
@@ -359,7 +384,7 @@ export default function DeptProgramAccountsPanel({
                             disabled={!isEditor}
                             onClick={() => openEdit(row)}
                             title={isEditor ? '수정' : '수정은 Edit 권한이 필요합니다.'}
-                            className={`px-2 py-1 rounded-lg text-[9px] font-black border transition-colors ${
+                            className={`px-2 py-1 rounded-lg text-[9px] font-medium border transition-colors ${
                               isEditor
                                 ? 'bg-white border-slate-300 text-slate-700 hover:bg-slate-50 cursor-pointer'
                                 : 'bg-slate-100 border-slate-200 text-slate-300 cursor-not-allowed'
@@ -372,7 +397,7 @@ export default function DeptProgramAccountsPanel({
                             disabled={!isEditor}
                             onClick={() => handleDelete(row)}
                             title={isEditor ? '삭제' : '삭제는 Edit 권한이 필요합니다.'}
-                            className={`px-2 py-1 rounded-lg text-[9px] font-black border transition-colors ${
+                            className={`px-2 py-1 rounded-lg text-[9px] font-medium border transition-colors ${
                               isEditor
                                 ? 'bg-white border-red-200 text-red-500 hover:bg-red-50 cursor-pointer'
                                 : 'bg-slate-100 border-slate-200 text-slate-300 cursor-not-allowed'
@@ -395,13 +420,13 @@ export default function DeptProgramAccountsPanel({
         <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-900/40 p-4">
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg border border-slate-200 overflow-hidden">
             <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
-              <h3 className="text-sm font-black text-slate-800">
+              <h3 className="text-sm font-medium text-slate-800">
                 {modalMode === 'add' ? '프로그램 사용 신규 등록' : '프로그램 사용 수정'}
               </h3>
               <button
                 type="button"
                 onClick={() => setModalMode(null)}
-                className="text-slate-400 hover:text-slate-600 text-xs font-bold"
+                className="text-slate-400 hover:text-slate-600 text-xs font-medium"
               >
                 닫기
               </button>
@@ -424,15 +449,15 @@ export default function DeptProgramAccountsPanel({
                 const monoKeys = new Set(['ip_address', 'mac_address', 'note1', 'program_id']);
                 return (
                   <label key={key} className="block">
-                    <span className="text-[10px] font-black text-slate-500 uppercase tracking-wide">
+                    <span className="text-[10px] font-medium text-slate-500">
                       {label}
                     </span>
                     <input
                       type={type}
                       value={String((form as any)[key] ?? '')}
                       onChange={(e) => setForm({ ...form, [key]: e.target.value })}
-                      className={`mt-1 w-full px-3 py-2 rounded-xl border border-slate-200 text-xs font-bold text-slate-800 outline-none focus:border-indigo-400 ${
-                        monoKeys.has(key) ? 'font-mono tracking-normal' : ''
+                      className={`mt-1 w-full px-3 py-2 rounded-xl border border-slate-200 text-xs font-medium text-slate-800 outline-none focus:border-indigo-400 ${
+                        monoKeys.has(key) ? 'tabular-nums' : ''
                       }`}
                     />
                   </label>
@@ -445,7 +470,7 @@ export default function DeptProgramAccountsPanel({
                   onChange={(e) => setForm({ ...form, program_used: e.target.checked })}
                   className="accent-indigo-600 w-3.5 h-3.5"
                 />
-                <span className="text-xs font-bold text-slate-700">프로그램 사용여부: 사용</span>
+                <span className="text-xs font-medium text-slate-700">프로그램 사용여부: 사용</span>
               </label>
             </div>
             <div className="px-5 py-4 border-t border-slate-100 flex justify-end gap-2 bg-slate-50">
@@ -453,7 +478,7 @@ export default function DeptProgramAccountsPanel({
                 type="button"
                 disabled={saving}
                 onClick={() => setModalMode(null)}
-                className="px-3 py-1.5 rounded-lg text-[10px] font-bold text-slate-500 border border-slate-200 bg-white"
+                className="px-3 py-1.5 rounded-lg text-[10px] font-medium text-slate-500 border border-slate-200 bg-white"
               >
                 취소
               </button>
@@ -461,7 +486,7 @@ export default function DeptProgramAccountsPanel({
                 type="button"
                 disabled={saving}
                 onClick={handleSave}
-                className="px-3 py-1.5 rounded-lg text-[10px] font-black text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50"
+                className="px-3 py-1.5 rounded-lg text-[10px] font-medium text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50"
               >
                 {saving ? '저장 중…' : '저장'}
               </button>

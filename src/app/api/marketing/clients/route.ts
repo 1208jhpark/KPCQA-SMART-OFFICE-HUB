@@ -13,12 +13,30 @@ import {
   authorizeMarketingClientsCreate,
   authErrorToResponse,
 } from '@/lib/server-auth-guard';
-import { buildMarketingClientAddressData } from '@/lib/marketing-client-address';
+import {
+  buildMarketingClientAddressData,
+  marketingClientNameDupKey,
+  normalizeMarketingClientName,
+} from '@/lib/marketing-client-address';
 
 export const dynamic = 'force-dynamic';
 
 function normalizeClientName(name: unknown) {
-  return String(name ?? '').trim().replace(/\s+/g, ' ');
+  return normalizeMarketingClientName(name);
+}
+
+async function findClientNameDuplicate(clientName: string, excludeId?: string) {
+  const key = marketingClientNameDupKey(clientName);
+  if (!key) return null;
+  const rows = await prisma.marketingClient.findMany({
+    select: { id: true, name: true, is_archived: true },
+  });
+  return (
+    rows.find(
+      (r) =>
+        (!excludeId || r.id !== excludeId) && marketingClientNameDupKey(r.name) === key
+    ) || null
+  );
 }
 
 function normalizeDeptName(name: unknown) {
@@ -296,7 +314,7 @@ export async function GET(req: Request) {
 export async function POST(req: Request) {
   let auth;
   try {
-    // 신규 등록: client-search 메뉴 접근자 전원 (편집자 불필요 — FE +신규등록과 동일)
+    // 신규 등록: 제작물 고객사 메뉴 접근자 전원 (편집자 불필요 — FE +신규등록과 동일)
     auth = await authorizeMarketingClientsCreate();
   } catch (e) {
     return authErrorToResponse(e);
@@ -310,16 +328,13 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: '고객사명은 필수입니다.' }, { status: 400 });
     }
 
-    const dup = await prisma.marketingClient.findFirst({
-      where: { name: { equals: clientName, mode: 'insensitive' } },
-      select: { id: true, is_archived: true },
-    });
+    const dup = await findClientNameDuplicate(clientName);
     if (dup) {
       return NextResponse.json(
         {
           error: dup.is_archived
-            ? `이미 보관함에 같은 고객사명("${clientName}")이 있습니다.`
-            : `이미 등록된 고객사명입니다. ("${clientName}")`,
+            ? `이미 보관함에 같은 고객사명("${dup.name}")이 있습니다.`
+            : `이미 등록된 고객사명입니다. ("${dup.name}")`,
         },
         { status: 409 }
       );
@@ -416,21 +431,16 @@ export async function PATCH(req: Request) {
         return NextResponse.json({ error: '고객사명은 필수입니다.' }, { status: 400 });
       }
       const nameChanged =
-        clientName.toLowerCase() !== normalizeClientName(clientBefore.name).toLowerCase();
+        marketingClientNameDupKey(clientName) !==
+        marketingClientNameDupKey(clientBefore.name);
       if (nameChanged) {
-        const dup = await prisma.marketingClient.findFirst({
-          where: {
-            id: { not: id },
-            name: { equals: clientName, mode: 'insensitive' },
-          },
-          select: { id: true, is_archived: true },
-        });
+        const dup = await findClientNameDuplicate(clientName, id);
         if (dup) {
           return NextResponse.json(
             {
               error: dup.is_archived
-                ? `이미 보관함에 같은 고객사명("${clientName}")이 있습니다.`
-                : `이미 등록된 고객사명입니다. ("${clientName}")`,
+                ? `이미 보관함에 같은 고객사명("${dup.name}")이 있습니다.`
+                : `이미 등록된 고객사명입니다. ("${dup.name}")`,
             },
             { status: 409 }
           );
@@ -514,13 +524,14 @@ export async function PATCH(req: Request) {
 }
 
 /**
- * 삭제 (지급 이력 있으면 거부).
- * 허용: Edit 권한 (제작물 고객사 주소관리 · 마케팅 client-search)
+ * 주소관리 삭제.
+ * 허용: Edit 권한 · 또는 본인이 신규 등록한 건(creator_email)
+ * 지급 이력이 있어도 삭제 가능 — 이력의 client_id만 해제(client_name 문자열은 유지)
  */
 export async function DELETE(req: Request) {
   let auth;
   try {
-    auth = await authorizeMarketingClientsWrite();
+    auth = await authorizeMarketingClientsCreate();
   } catch (e) {
     return authErrorToResponse(e);
   }
@@ -532,14 +543,27 @@ export async function DELETE(req: Request) {
   const existing = await prisma.marketingClient.findUnique({ where: { id } });
   if (!existing) return NextResponse.json({ error: '고객사 미존재' }, { status: 404 });
 
-  const distCount = await prisma.marketingDistribution.count({ where: { client_id: id } });
-  if (distCount > 0) {
+  const userEmail = String(auth.user?.email || '')
+    .trim()
+    .toLowerCase();
+  const creatorEmail = String(existing.creator_email || '')
+    .trim()
+    .toLowerCase();
+  const isOwner = Boolean(userEmail && creatorEmail && userEmail === creatorEmail);
+  const canDelete = Boolean(auth.permission?.isEditor) || isOwner;
+  if (!canDelete) {
     return NextResponse.json(
-      { error: `지급 이력이 ${distCount}건 있어 삭제할 수 없습니다.` },
-      { status: 400 }
+      { error: '삭제는 편집(Edit) 권한이 있거나, 본인이 등록한 고객사만 가능합니다.' },
+      { status: 403 }
     );
   }
 
-  await prisma.marketingClient.delete({ where: { id } });
+  await prisma.$transaction([
+    prisma.marketingDistribution.updateMany({
+      where: { client_id: id },
+      data: { client_id: null },
+    }),
+    prisma.marketingClient.delete({ where: { id } }),
+  ]);
   return NextResponse.json({ message: '삭제 완료' });
 }

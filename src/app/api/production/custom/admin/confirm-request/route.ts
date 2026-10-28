@@ -81,10 +81,10 @@ export async function GET(req: Request) {
   }
 }
 
-/** [POST] 확인 완료 요청일·전달사항 등록/수정 (마스터 Edit) */
+/** [POST] 확인 완료 요청일·전달사항 등록/수정 — 마스터 Access */
 export async function POST(req: Request) {
   try {
-    const auth = await authorizeApi(MASTER_PATH, { requireEditor: true });
+    const auth = await authorizeApi(MASTER_PATH);
     const body = await req.json().catch(() => ({}));
     const category = String(body.category || '').trim().toUpperCase();
     const requestedAt = String(body.requestedAt || '').trim();
@@ -134,7 +134,7 @@ export async function POST(req: Request) {
 /** [DELETE] ?category=PRINT — 해당 코너 요청 삭제 */
 export async function DELETE(req: Request) {
   try {
-    await authorizeApi(MASTER_PATH, { requireEditor: true });
+    await authorizeApi(MASTER_PATH);
     const { searchParams } = new URL(req.url);
     const category = String(searchParams.get('category') || '').trim().toUpperCase();
     if (!VALID_CATEGORIES.has(category)) {

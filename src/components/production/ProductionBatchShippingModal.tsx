@@ -397,15 +397,6 @@ export default function ProductionBatchShippingModal({
             </span>
             <button
               type="button"
-              onClick={loadRecentShipping}
-              disabled={!hasRecentShipping}
-              className="px-2.5 py-1.5 bg-white border border-indigo-200 rounded-lg text-[10px] font-medium text-indigo-700 hover:border-indigo-400 hover:bg-indigo-50 transition-colors shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
-              title={`${recentScopeLabel} 분류에서 직전에 입력·적용한 수령인~상세주소`}
-            >
-              최근 입력정보 불러오기({recentScopeLabel})
-            </button>
-            <button
-              type="button"
               onClick={openCompanyAddrPicker}
               className="px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg text-[10px] font-medium text-slate-700 hover:border-blue-400 hover:bg-blue-50 transition-colors shadow-sm"
               title="명함 등록 주소"
@@ -431,6 +422,15 @@ export default function ProductionBatchShippingModal({
             {selectedSourceLabel ? (
               <span className="text-[9px] text-blue-600 font-medium">선택됨: {selectedSourceLabel}</span>
             ) : null}
+            <button
+              type="button"
+              onClick={loadRecentShipping}
+              disabled={!hasRecentShipping}
+              className="ml-auto px-3 py-1.5 bg-amber-400 border border-amber-500 rounded-lg text-[10px] font-medium text-amber-950 hover:bg-amber-300 hover:border-amber-600 transition-colors shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
+              title={`${recentScopeLabel} 분류에서 직전에 입력·적용한 수령인~상세주소`}
+            >
+              최근 입력정보 불러오기({recentScopeLabel})
+            </button>
           </div>
 
           <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-2.5 space-y-2">

@@ -541,7 +541,8 @@ function extractPdfProductionStatementRows(
 
 export async function POST(req: Request) {
   try {
-    await authorizeAnyMenuPaths(READ_PATHS, { requireEditor: true });
+    // 부서 정산 Access면 OCR 대조 가능 — Edit 미사용 (마스터 UI는 별도 Edit 가드)
+    await authorizeAnyMenuPaths(READ_PATHS);
     const formData = await req.formData();
     const file = formData.get('file') as File;
     const dbItemsStr = formData.get('dbItems') as string;

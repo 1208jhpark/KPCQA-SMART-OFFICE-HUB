@@ -10,6 +10,7 @@ import {
   migrateLegacyZebCertKeywords,
   type ProductionStatementRules,
 } from '@/lib/production-statement-match';
+import { mergeLearnedOfficeProductAliases } from '@/lib/production-office-statement-match';
 
 export const dynamic = 'force-dynamic';
 
@@ -118,11 +119,47 @@ export async function GET(req: Request) {
  */
 export async function POST(req: Request) {
   try {
-    await authorizeAnyMenuPaths(WRITE_PATHS, { requireEditor: true });
-    await ensureDir();
-
     const body = await req.json();
     const category = String(body.category || 'SIGN').trim().toUpperCase() || 'SIGN';
+
+    if (body.mode === 'learn') {
+      await authorizeAnyMenuPaths(READ_PATHS);
+      if (category !== 'OFFICE_SUPPLIES') {
+        return NextResponse.json(
+          { error: '별칭 학습은 사무문구류만 지원합니다.' },
+          { status: 400 }
+        );
+      }
+      const stored = await getStoredRules(category);
+      const pairs = Array.isArray(body.pairs) ? body.pairs.slice(0, 80) : [];
+      const { next, added } = mergeLearnedOfficeProductAliases(
+        stored.plateItemKeywords,
+        pairs
+      );
+      if (added === 0) {
+        return NextResponse.json({
+          success: true,
+          category,
+          added: 0,
+          rules: stored,
+        });
+      }
+      const rules = migrateLegacyZebCertKeywords(
+        { ...stored, plateItemKeywords: next },
+        category
+      );
+      await ensureDir();
+      await fs.writeFile(getRulesFilePath(category), JSON.stringify(rules, null, 2), 'utf-8');
+      return NextResponse.json({
+        success: true,
+        category,
+        added,
+        rules,
+      });
+    }
+
+    await authorizeAnyMenuPaths(WRITE_PATHS, { requireEditor: true });
+    await ensureDir();
 
     const defaults = getDefaultRulesForCategory(category);
     const rules: ProductionStatementRules = migrateLegacyZebCertKeywords(

@@ -4,7 +4,7 @@
  */
 export function formatBusinessCardAdminStatusLabel(status: string | null | undefined): string {
   const s = String(status || '').trim();
-  if (s === '대기중') return '신청검수';
+  if (s === '대기중') return '신청검토';
   if (s === '접수완료') return '묶음발주대기';
   if (s === '수령완료') return '지급대기';
   return s || '-';

@@ -5,24 +5,23 @@ import * as XLSX from 'xlsx';
 import { getKSTDateString, getKSTNowYearMonth, getKSTYearMonthParts } from '@/utils/dateUtils';
 import LoadingState from '@/components/common/LoadingState';
 import WindowedPagination from '@/components/common/WindowedPagination';
-import { resolveInterfaceEditState } from '@/lib/permission-utils';
 import ProductionRequestDetailModal from '@/components/production/ProductionRequestDetailModal';
 import {
   getProductionCategoryBadgeClass,
   getProductionCategoryFolderTabClasses,
 } from '@/lib/production-category-theme';
-import { PRODUCTION_STATUS } from '@/lib/production-status';
+import {
+  PRODUCTION_STATUS,
+  productionStatusLabel,
+  productionStatusTextClass,
+} from '@/lib/production-status';
 import {
   buildSignDetailExcelRows,
   buildJebonDetailExcelRows,
   buildPrintDetailExcelRows,
   buildOfficeSuppliesDetailExcelRows,
 } from '@/lib/production-sign-excel';
-import { isVendorDispatched } from '@/lib/production-shipping';
-
-const MENU_PATH = '/production/custom/dept-master/history';
 const HISTORY_API = '/api/production/custom/dept-master/history';
-const ORDER_EDIT_API = '/api/production/custom/dept-master/order';
 const ITEMS_PER_PAGE = 10;
 
 const DEPT_HISTORY_CATEGORIES = [
@@ -35,34 +34,14 @@ const DEPT_HISTORY_CATEGORIES = [
 /** apply/history 공정상태와 동일 표기 */
 function getApplyHistoryStatusDisplay(item: {
   status?: string;
+  category?: string;
   options?: Record<string, unknown> | null;
 }) {
-  const status = String(item.status || '');
   const opts = (item.options || {}) as Record<string, unknown>;
-  const isDispatched = isVendorDispatched(opts) || opts.vendorDispatched === true;
-
-  if (status === PRODUCTION_STATUS.PENDING) {
-    return { label: '신청대기', className: 'text-orange-600 font-medium' };
-  }
-  if (
-    status === PRODUCTION_STATUS.ACCEPTED ||
-    (status === PRODUCTION_STATUS.ORDERED && !isDispatched)
-  ) {
-    return { label: '묶음발주대기', className: 'text-blue-600 font-medium' };
-  }
-  if (status === PRODUCTION_STATUS.ORDERED && isDispatched) {
-    return { label: '발주완료', className: 'text-emerald-700 font-medium' };
-  }
-  if (status === PRODUCTION_STATUS.VERIFIED) {
-    return { label: '수령완료', className: 'text-slate-900 font-medium' };
-  }
-  if (status === PRODUCTION_STATUS.REJECTED) {
-    return { label: '반려', className: 'text-red-600 font-medium' };
-  }
-  if (status === PRODUCTION_STATUS.CANCELLED) {
-    return { label: '취소됨', className: 'text-slate-400 font-medium' };
-  }
-  return { label: status || '-', className: 'text-slate-500' };
+  return {
+    label: productionStatusLabel(String(item.status || ''), opts, 'applicant', item.category),
+    className: `${productionStatusTextClass(String(item.status || ''), opts, item.category)} font-medium`,
+  };
 }
 
 type ProductionRequestRow = {
@@ -104,8 +83,6 @@ function formatQuantityUnit(item: {
 export default function DeptHistoryPanel() {
   const [requests, setRequests] = useState<ProductionRequestRow[]>([]);
   const [loading, setLoading] = useState(true);
-  const [currentUser, setCurrentUser] = useState<any>(null);
-  const [interfaceConfig, setInterfaceConfig] = useState<any>(null);
 
   const [histCategory, setHistCategory] = useState('SIGN');
   const [histYear, setHistYear] = useState(() => String(getKSTNowYearMonth().year));
@@ -115,30 +92,11 @@ export default function DeptHistoryPanel() {
   const [histUserQuery, setHistUserQuery] = useState('');
   const [detailItem, setDetailItem] = useState<ProductionRequestRow | null>(null);
 
-  const canEdit = useMemo(
-    () => resolveInterfaceEditState(currentUser, interfaceConfig).isEditor,
-    [currentUser, interfaceConfig]
-  );
-
   const fetchData = useCallback(async () => {
     setLoading(true);
     try {
       const ts = Date.now();
-      const [userRes, reqRes, ifRes] = await Promise.all([
-        fetch(`/api/auth/me?t=${ts}`, { cache: 'no-store' }),
-        fetch(`${HISTORY_API}?t=${ts}`, { cache: 'no-store' }),
-        fetch(`/api/admin/interface?t=${ts}`, { cache: 'no-store' }).catch(() => null),
-      ]);
-
-      if (userRes.ok) setCurrentUser(await userRes.json());
-
-      if (ifRes?.ok) {
-        const interfaces = await ifRes.json();
-        const menu = Array.isArray(interfaces)
-          ? interfaces.find((m: any) => m.path === MENU_PATH)
-          : null;
-        setInterfaceConfig(menu || null);
-      }
+      const reqRes = await fetch(`${HISTORY_API}?t=${ts}`, { cache: 'no-store' });
 
       if (reqRes.ok) {
         const data = await reqRes.json();
@@ -305,12 +263,12 @@ export default function DeptHistoryPanel() {
                   role="tab"
                   aria-selected={active}
                   onClick={() => setHistCategory(cat.id)}
-                  className={`relative flex items-center gap-1.5 px-4 py-2.5 text-xs font-black tracking-tight transition-colors rounded-t-lg border ${getProductionCategoryFolderTabClasses(cat.id, active)}`}
+                  className={`relative flex items-center gap-1.5 px-4 py-2.5 text-xs font-medium tracking-tight transition-colors rounded-t-lg border ${getProductionCategoryFolderTabClasses(cat.id, active)}`}
                 >
                   <span className="text-sm leading-none">{cat.icon}</span>
                   <span>{cat.label}</span>
                   {count > 0 && (
-                    <span className="ml-0.5 min-w-[1.25rem] px-1.5 py-0.5 rounded-full text-[9px] font-black bg-slate-800/10 text-slate-700">
+                    <span className="ml-0.5 min-w-[1.25rem] px-1.5 py-0.5 rounded-full text-[9px] font-medium bg-slate-800/10 text-slate-700">
                       {count}
                     </span>
                   )}
@@ -327,7 +285,7 @@ export default function DeptHistoryPanel() {
                   {getCategoryLabel(histCategory)} 이력
                 </h2>
                 <span className="text-[11px] font-bold bg-slate-300/80 text-slate-700 px-2 py-0.5 rounded-md">
-                  {histFiltered.length}건
+                  {histFiltered.length}수량
                 </span>
               </div>
               <div className="flex items-center gap-2 flex-wrap">
@@ -346,14 +304,14 @@ export default function DeptHistoryPanel() {
                   className="px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-[11px] font-medium outline-none focus:ring-2 focus:ring-indigo-300 w-32"
                 />
                 <div className="relative group/filter flex items-center gap-2 bg-white px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm">
-                  <span className="text-[10px] font-black text-slate-400 uppercase">연도</span>
+                  <span className="text-[10px] font-medium text-slate-400 uppercase">연도</span>
                   <select
                     value={histYear}
                     onChange={(e) => {
                       setHistYear(e.target.value);
                       setHistMonth('ALL');
                     }}
-                    className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent"
+                    className="text-[11px] font-medium text-slate-800 outline-none cursor-pointer bg-transparent"
                   >
                     <option value="ALL">전체</option>
                     {histAvailableYears.map((year) => (
@@ -363,11 +321,11 @@ export default function DeptHistoryPanel() {
                     ))}
                   </select>
                   <div className="w-px h-3.5 bg-slate-300 mx-0.5" />
-                  <span className="text-[10px] font-black text-slate-400 uppercase">월별</span>
+                  <span className="text-[10px] font-medium text-slate-400 uppercase">월별</span>
                   <select
                     value={histMonth}
                     onChange={(e) => setHistMonth(e.target.value)}
-                    className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent"
+                    className="text-[11px] font-medium text-slate-800 outline-none cursor-pointer bg-transparent"
                   >
                     <option value="ALL">전체</option>
                     {histAvailableMonths.map((month) => (
@@ -381,7 +339,7 @@ export default function DeptHistoryPanel() {
                   type="button"
                   onClick={handleHistExcelDownload}
                   disabled={histFiltered.length === 0}
-                  className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-[10px] font-black shadow-sm hover:bg-emerald-700 transition-all whitespace-nowrap disabled:opacity-50"
+                  className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-[10px] font-medium shadow-sm hover:bg-emerald-700 transition-all whitespace-nowrap disabled:opacity-50"
                 >
                   화면 목록 EXCEL 다운로드
                 </button>
@@ -399,8 +357,8 @@ export default function DeptHistoryPanel() {
                     <col className="w-[8%]" />
                     <col className="w-[12%]" />
                     <col className="w-[9%]" />
-                    <col className="w-[16%]" />
-                    <col className="w-[7%]" />
+                    <col className="w-[14%]" />
+                    <col style={{ width: '9.75rem' }} />
                     <col className="w-[6%]" />
                     <col className="w-[10%]" />
                     <col className="w-[8%]" />
@@ -480,13 +438,13 @@ export default function DeptHistoryPanel() {
                               <button
                                 type="button"
                                 onClick={() => setDetailItem(item)}
-                                className={`px-2.5 py-1 text-[10px] font-medium rounded-lg shadow-sm transition-colors ${
+                                className={`px-2.5 py-1 text-[10px] font-medium rounded-lg shadow-sm transition-colors whitespace-nowrap ${
                                   isPending
                                     ? 'bg-rose-600 text-white hover:bg-rose-700'
                                     : 'bg-slate-200 text-slate-600 hover:bg-slate-300 border border-slate-300'
                                 }`}
                               >
-                                {isPending ? '원문검수' : '원문확인'}
+                                {isPending ? '원문검토 · 수정가능' : '원문확인'}
                               </button>
                             </td>
                             <td className="px-2 text-center tabular-nums text-slate-900">
@@ -570,18 +528,7 @@ export default function DeptHistoryPanel() {
         <ProductionRequestDetailModal
           item={detailItem}
           onClose={() => setDetailItem(null)}
-          allowEdit={canEdit}
-          editPermissionTag="Edit"
-          editableStatuses={['PENDING']}
-          editApiPath={ORDER_EDIT_API}
-          onSaved={(updated) => {
-            setRequests((prev) =>
-              prev.map((r) => (r.id === updated.id ? { ...r, ...updated } : r))
-            );
-            setDetailItem((prev) =>
-              prev && prev.id === updated.id ? { ...prev, ...updated } : prev
-            );
-          }}
+          allowEdit={false}
         />
       )}
     </>

@@ -1,10 +1,19 @@
 'use client';
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import * as XLSX from 'xlsx';
 import { getKSTDateString } from '@/utils/dateUtils';
 import { displaySignValidPeriod, formatPrintItemInfoSpec } from '@/lib/production-sign-excel';
 import { isHqReceiveShip, resolveDeliveryMode } from '@/lib/production-shipping';
+import { canEditProductionApplicantSource } from '@/lib/production-status';
 import { formatKrPhoneInput } from '@/lib/format-kr-phone';
+import {
+  formatSuppliesQuoteFileSize,
+  getSuppliesQuoteAttachment,
+  parseOfficeQuoteFromWorkbook,
+  serializeOfficeQuoteLinesToRawText,
+  type OfficeQuoteLine,
+} from '@/lib/production-office-statement-match';
 
 const HISTORY_CATEGORIES = [
   { id: 'ALL', label: '전체 내역', icon: '📋' },
@@ -80,12 +89,13 @@ function getJebonFormSteps() {
   return {
     certType: 1,
     certPhase: 2,
-    size: 3,
-    cover: 4,
-    inner: 5,
-    building: 6,
-    coverDate: 7,
+    building: 3,
+    coverDate: 4,
+    size: 5,
+    cover: 6,
+    inner: 7,
     customRequest: 8,
+    formTitle: 9,
   };
 }
 
@@ -149,6 +159,54 @@ export default function ProductionRequestDetailModal({
   const [detailEditing, setDetailEditing] = useState(false);
   const [detailDraft, setDetailDraft] = useState<any>(null);
   const [detailSaving, setDetailSaving] = useState(false);
+  const [quoteReplaceFile, setQuoteReplaceFile] = useState<File | null>(null);
+  const [quoteReplaceParseError, setQuoteReplaceParseError] = useState('');
+  const [quoteReplaceParsing, setQuoteReplaceParsing] = useState(false);
+  const quoteReplaceInputRef = useRef<HTMLInputElement>(null);
+
+  const isExcelQuoteFile = (file: File) => /\.(xls|xlsx)$/i.test(file.name);
+  const isPdfQuoteFile = (file: File) => /\.pdf$/i.test(file.name);
+
+  const parseExcelQuoteIntoDraft = async (file: File) => {
+    setQuoteReplaceParsing(true);
+    setQuoteReplaceParseError('');
+    try {
+      const buf = await file.arrayBuffer();
+      const wb = XLSX.read(buf, { type: 'array', cellDates: true });
+      const lines = parseOfficeQuoteFromWorkbook(wb, (sheet) =>
+        XLSX.utils.sheet_to_json(sheet as XLSX.WorkSheet, {
+          header: 1,
+          raw: true,
+          defval: '',
+        }) as unknown[][]
+      );
+      if (lines.length === 0) {
+        patchDraftOptions({
+          suppliesQuoteKind: 'excel',
+          suppliesQuoteLines: [],
+          suppliesQuoteRawText: '',
+        });
+        setQuoteReplaceParseError(
+          '견적 품목(번호·제품명·수량)을 읽지 못했습니다. 드림디포 엑셀 견적서인지 확인해 주세요.'
+        );
+        return;
+      }
+      patchDraftOptions({
+        suppliesQuoteKind: 'excel',
+        suppliesQuoteLines: lines,
+        suppliesQuoteRawText: serializeOfficeQuoteLinesToRawText(lines),
+      });
+    } catch {
+      patchDraftOptions({
+        suppliesQuoteKind: 'excel',
+        suppliesQuoteLines: [],
+        suppliesQuoteRawText: '',
+      });
+      setQuoteReplaceParseError('엑셀 견적서를 열지 못했습니다.');
+    } finally {
+      setQuoteReplaceParsing(false);
+    }
+  };
   const [companyAddresses, setCompanyAddresses] = useState<
     { id: string; label: string; zipCode: string; addressKo: string; addressDetailKo?: string; isActive?: boolean }[]
   >([]);
@@ -211,7 +269,11 @@ export default function ProductionRequestDetailModal({
   };
 
   const canShowEdit =
-    allowEdit && Boolean(detailItem?.status) && editableStatuses.includes(detailItem.status);
+    allowEdit &&
+    Boolean(detailItem?.status) &&
+    editableStatuses.includes(detailItem.status) &&
+    (detailItem.status !== 'ORDERED' ||
+      canEditProductionApplicantSource(detailItem.status, detailItem.options));
 
   const jebonDetailCertType =
     detailItem?.category === 'JEBON'
@@ -319,6 +381,10 @@ export default function ProductionRequestDetailModal({
       category: detailItem.category,
       options: detailItem.options,
     });
+    setQuoteReplaceFile(null);
+    setQuoteReplaceParseError('');
+    setQuoteReplaceParsing(false);
+    if (quoteReplaceInputRef.current) quoteReplaceInputRef.current.value = '';
     setDetailDraft({
       title: detailItem.title || '',
       quantity: detailItem.quantity || 1,
@@ -404,6 +470,10 @@ export default function ProductionRequestDetailModal({
   const cancelDetailEdit = () => {
     setDetailEditing(false);
     setDetailDraft(null);
+    setQuoteReplaceFile(null);
+    setQuoteReplaceParseError('');
+    setQuoteReplaceParsing(false);
+    if (quoteReplaceInputRef.current) quoteReplaceInputRef.current.value = '';
   };
 
   const applyCompanyAddressToDraft = (addressId: string) => {
@@ -477,6 +547,29 @@ export default function ProductionRequestDetailModal({
         return alert('기타소모품 명칭/규격을 입력해 주세요.');
       }
     }
+    if (detailItem.category === 'OFFICE_SUPPLIES') {
+      if (quoteReplaceParsing) {
+        return alert('엑셀 견적서 품목을 읽는 중입니다. 잠시 후 다시 저장해 주세요.');
+      }
+      const kind = String(opts.suppliesQuoteKind || '').toLowerCase();
+      const lines = Array.isArray(opts.suppliesQuoteLines)
+        ? (opts.suppliesQuoteLines as OfficeQuoteLine[])
+        : [];
+      if (kind === 'excel' || (quoteReplaceFile && isExcelQuoteFile(quoteReplaceFile))) {
+        if (lines.length === 0) {
+          return alert(
+            quoteReplaceParseError ||
+              '엑셀 견적서에서 품목을 읽지 못했습니다. 드림디포 엑셀 파일을 다시 첨부해 주세요.'
+          );
+        }
+      }
+      if (
+        (kind === 'pdf' || (quoteReplaceFile && isPdfQuoteFile(quoteReplaceFile))) &&
+        !String(opts.suppliesQuoteRawText || '').trim()
+      ) {
+        return alert('PDF 견적서 텍스트 내용을 붙여넣어 주세요.');
+      }
+    }
     if (!String(opts.vendor || '').trim()) {
       return alert('외주업체를 선택해 주세요.');
     }
@@ -521,6 +614,36 @@ export default function ProductionRequestDetailModal({
 
     setDetailSaving(true);
     try {
+      let optionsToSave = { ...nextOptions };
+      if (quoteReplaceFile) {
+        const fd = new FormData();
+        fd.append('requestId', String(detailItem.id));
+        fd.append('file', quoteReplaceFile);
+        const up = await fetch('/api/production/custom/my-orders/quote-attachment', {
+          method: 'POST',
+          body: fd,
+        });
+        const upData = await up.json().catch(() => ({}));
+        if (!up.ok) {
+          alert(upData.message || '견적서 파일 저장에 실패했습니다.');
+          return;
+        }
+        if (upData.attachment) {
+          optionsToSave.suppliesQuoteAttachment = upData.attachment;
+        }
+        if (upData.options && typeof upData.options === 'object') {
+          const uploaded = upData.options as Record<string, unknown>;
+          if (uploaded.suppliesQuoteLines) {
+            optionsToSave.suppliesQuoteLines = uploaded.suppliesQuoteLines;
+          }
+          if (uploaded.suppliesQuoteRawText) {
+            optionsToSave.suppliesQuoteRawText = uploaded.suppliesQuoteRawText;
+          }
+          if (uploaded.suppliesQuoteKind) {
+            optionsToSave.suppliesQuoteKind = uploaded.suppliesQuoteKind;
+          }
+        }
+      }
       const res = await fetch(editApiPath, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -529,7 +652,7 @@ export default function ProductionRequestDetailModal({
           action: 'update',
           title,
           quantity: Math.max(1, Number(detailDraft.quantity) || 1),
-          options: nextOptions,
+          options: optionsToSave,
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -541,12 +664,14 @@ export default function ProductionRequestDetailModal({
         ...detailItem,
         title,
         quantity: Math.max(1, Number(detailDraft.quantity) || 1),
-        options: nextOptions,
+        options: optionsToSave,
       };
       const merged = { ...detailItem, ...updated };
       setDetailItem(merged);
       setDetailEditing(false);
       setDetailDraft(null);
+      setQuoteReplaceFile(null);
+      setQuoteReplaceParseError('');
       onSaved?.(merged);
       alert('수정이 저장되었습니다.');
     } catch {
@@ -1305,10 +1430,126 @@ export default function ProductionRequestDetailModal({
                 {/* CASE D: 사무문구류 정산 (OFFICE_SUPPLIES) 전용 화면 */}
                 {detailItem.category === 'OFFICE_SUPPLIES' && (
                   <div className="animate-fade-in space-y-4">
-                    <DetailSectionTitle title="📎 외부 문구사 견적 파일 텍스트 캡처 본문" />
-                    <div className="bg-slate-900 text-emerald-400 p-4 rounded-xl font-mono text-[11px] leading-relaxed whitespace-pre-wrap max-h-60 overflow-y-auto shadow-inner border border-slate-800">
-                      {detailItem.options?.suppliesQuoteRawText || '저장된 텍스트 데이터가 비어 있습니다.'}
-                    </div>
+                    <DetailSectionTitle title="📎 드림디포 견적서 첨부" />
+                    {(() => {
+                      const quoteAtt = getSuppliesQuoteAttachment(
+                        detailEditing ? detailDraft?.options : detailItem.options
+                      );
+                      const sizeLabel = formatSuppliesQuoteFileSize(quoteAtt?.fileSize);
+                      const displayName = quoteReplaceFile?.name || quoteAtt?.fileName || '';
+                      const displaySize = quoteReplaceFile
+                        ? `${Math.max(1, Math.round(quoteReplaceFile.size / 1024))}KB`
+                        : sizeLabel;
+                      const quoteKind = String(
+                        (detailEditing ? detailDraft?.options?.suppliesQuoteKind : detailItem.options?.suppliesQuoteKind) ||
+                          ''
+                      ).toLowerCase();
+                      const parsedLines = Array.isArray(
+                        detailEditing
+                          ? detailDraft?.options?.suppliesQuoteLines
+                          : detailItem.options?.suppliesQuoteLines
+                      )
+                        ? (detailEditing
+                            ? detailDraft?.options?.suppliesQuoteLines
+                            : detailItem.options?.suppliesQuoteLines)
+                        : [];
+                      const parsedText = String(
+                        (detailEditing
+                          ? detailDraft?.options?.suppliesQuoteRawText
+                          : detailItem.options?.suppliesQuoteRawText) || ''
+                      );
+
+                      return (
+                        <>
+                          <div className="flex flex-wrap items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                            <span
+                              className="min-w-0 flex-1 text-xs font-medium text-slate-800 truncate"
+                              title={displayName}
+                            >
+                              {displayName
+                                ? `${displayName}${displaySize ? ` (${displaySize})` : ''}`
+                                : '첨부된 견적서 파일이 없습니다.'}
+                            </span>
+                            {quoteAtt?.url && !quoteReplaceFile ? (
+                              <a
+                                href={quoteAtt.url}
+                                download={quoteAtt.fileName}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="shrink-0 px-2.5 py-1 text-[10px] font-medium rounded-lg bg-blue-600 text-white hover:bg-blue-700"
+                              >
+                                파일 열기
+                              </a>
+                            ) : null}
+                            {detailEditing ? (
+                              <>
+                                <input
+                                  ref={quoteReplaceInputRef}
+                                  type="file"
+                                  accept=".xls,.xlsx,.pdf,application/pdf,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                                  className="hidden"
+                                  onChange={(e) => {
+                                    const f = e.target.files?.[0] || null;
+                                    if (!f) return;
+                                    if (!isExcelQuoteFile(f) && !isPdfQuoteFile(f)) {
+                                      alert('엑셀(.xls, .xlsx) 또는 PDF 파일만 첨부할 수 있습니다.');
+                                      e.target.value = '';
+                                      return;
+                                    }
+                                    setQuoteReplaceFile(f);
+                                    if (isExcelQuoteFile(f)) {
+                                      void parseExcelQuoteIntoDraft(f);
+                                    } else {
+                                      setQuoteReplaceParseError('');
+                                      patchDraftOptions({
+                                        suppliesQuoteKind: 'pdf',
+                                        suppliesQuoteLines: [],
+                                      });
+                                    }
+                                  }}
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => quoteReplaceInputRef.current?.click()}
+                                  className="shrink-0 px-2.5 py-1 text-[10px] font-medium rounded-lg bg-white border border-slate-200 text-slate-700 hover:border-blue-400 hover:bg-blue-50"
+                                >
+                                  파일 변경
+                                </button>
+                              </>
+                            ) : null}
+                          </div>
+                          {detailEditing && quoteReplaceParsing ? (
+                            <p className="text-[10px] font-medium text-slate-500">품목 인식 중…</p>
+                          ) : null}
+                          {detailEditing && quoteReplaceParseError ? (
+                            <p className="text-[10px] font-medium text-rose-600">{quoteReplaceParseError}</p>
+                          ) : null}
+                          {detailEditing &&
+                          !quoteReplaceParsing &&
+                          !quoteReplaceParseError &&
+                          parsedLines.length > 0 ? (
+                            <p className="text-[10px] font-medium text-emerald-700">
+                              품목 {parsedLines.length}건 인식 · 아래 파싱 내용이 함께 갱신됩니다
+                            </p>
+                          ) : null}
+                          <DetailSectionTitle title="견적 내용 붙여넣기" />
+                          {detailEditing && quoteKind === 'pdf' ? (
+                            <textarea
+                              value={parsedText}
+                              onChange={(e) =>
+                                patchDraftOptions({ suppliesQuoteRawText: e.target.value })
+                              }
+                              placeholder="PDF 견적서 텍스트 전체를 복사하여 붙여넣어 주세요."
+                              className="w-full bg-slate-900 text-emerald-400 p-4 rounded-xl text-[11px] font-medium leading-relaxed whitespace-pre-wrap min-h-[180px] outline-none border border-slate-800"
+                            />
+                          ) : (
+                            <div className="bg-slate-900 text-emerald-400 p-4 rounded-xl text-[11px] font-medium leading-relaxed whitespace-pre-wrap max-h-60 overflow-y-auto shadow-inner border border-slate-800">
+                              {parsedText || '저장된 텍스트 데이터가 비어 있습니다.'}
+                            </div>
+                          )}
+                        </>
+                      );
+                    })()}
                   </div>
                 )}
 

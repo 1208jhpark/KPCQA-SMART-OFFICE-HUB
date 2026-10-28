@@ -1,6 +1,7 @@
 'use client';
      
 import React, { useState, useMemo, useEffect, useRef, Suspense } from 'react';
+import { createPortal } from 'react-dom';
 import * as XLSX from 'xlsx';
 import { getKSTDateString, addMonthsToKSTDateOnly, getKSTDaysUntil, parseExcelCellToKSTDateString, toSortableTime, formatKSTDateTime, formatKSTDisplayDate } from '@/utils/dateUtils';
 import { resolveTopOrgName } from '@/utils/orgUnits';
@@ -26,6 +27,7 @@ import {
 } from '@/utils/itAssetSchedule';
 import { assetInAuditTarget as assetMatchesAuditTarget } from '@/utils/itAuditTarget';
 import { rowMatchesOrgUnit } from '@/lib/org-unit-match';
+import DeptAssigneeLine, { useDeptAssignees } from '@/components/common/DeptAssigneeLine';
 
 const MENU_PATH = '/equipment/it/master/dashboard';
 const DEPT_FILTER_ALL = '조직 (전체)';
@@ -34,6 +36,18 @@ const SHARED_USER_SELECT_VALUE = '__SHARED_COMMON__';
 const SHARED_USER_LABEL = '공용';
 const DISABLED_ACTION_BTN =
   'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed opacity-70 shadow-none';
+
+/** 조달유형이 구매이면 구매비, 그 외(렌탈·구독)는 월 비용 */
+function isPurchaseProcureType(type: string | null | undefined) {
+  return String(type || '').includes('구매');
+}
+
+function combinedProcureFee(asset: { is_rental?: string | null; purchase_price?: number | null; monthly_fee?: number | null }) {
+  const purchase = Number(asset.purchase_price) || 0;
+  const monthly = Number(asset.monthly_fee) || 0;
+  if (isPurchaseProcureType(asset.is_rental)) return purchase || monthly;
+  return monthly || purchase;
+}
 
 function isBoldOrgType(unitType?: string | null) {
   const t = String(unitType || '').trim().toUpperCase();
@@ -219,6 +233,44 @@ function collectThreadMessages(req: any, allRequests: any[]) {
   return pool.filter((r) => rootOf(String(r.id)) === rootId).sort((a, b) => reqTime(a) - reqTime(b));
 }
 
+type AssetThread = { root: any; latest: any; msgs: any[]; closed: boolean };
+
+function collectAssetThreads(assetKey: any, allRequests: any[]): AssetThread[] {
+  const pool = allRequests.filter((r) => sameAssetCode(r, assetKey));
+  if (!pool.length) return [];
+  const parentOf = new Map<string, string>();
+  pool.forEach((r) => {
+    const pid = getThreadParentId(r, pool);
+    if (pid) parentOf.set(String(r.id), pid);
+  });
+  const rootOf = (id: string) => {
+    let cur = String(id);
+    const seen = new Set<string>();
+    while (parentOf.has(cur) && !seen.has(cur)) {
+      seen.add(cur);
+      cur = parentOf.get(cur) as string;
+    }
+    return cur;
+  };
+  const groups = new Map<string, any[]>();
+  pool.forEach((r) => {
+    const rootId = rootOf(String(r.id));
+    const list = groups.get(rootId) || [];
+    list.push(r);
+    groups.set(rootId, list);
+  });
+  return Array.from(groups.values()).map((msgs) => {
+    const sorted = [...msgs].sort((a, b) => reqTime(a) - reqTime(b));
+    const latest = sorted[sorted.length - 1];
+    return {
+      root: sorted[0],
+      latest,
+      msgs: sorted,
+      closed: isClosedStatus(latest?.status),
+    };
+  });
+}
+
 function isIncomingReply(req: any, allRequests: any[] = []) {
   if (!req) return false;
   const status = String(req.status || '').trim();
@@ -249,6 +301,119 @@ function threadTurns(req: any) {
   }
   return turns;
 }
+
+function CommModalHeader({
+  title,
+  subtitle,
+  closedCount,
+  showClosedHistory,
+  onToggle,
+}: {
+  title: string;
+  subtitle: string;
+  closedCount: number;
+  showClosedHistory: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <>
+      <div className="flex items-start justify-between gap-3 mb-2">
+        <h4 className="text-[14px] font-medium text-slate-900 tracking-tight">{title}</h4>
+        <button
+          type="button"
+          disabled={closedCount === 0}
+          onClick={onToggle}
+          title={closedCount === 0 ? '완료된 문의 내역이 없습니다' : '같은 자산의 이전 완료 대화를 이어 봅니다'}
+          className={`shrink-0 px-2.5 py-1.5 rounded-lg border text-[10px] font-medium leading-tight text-right whitespace-nowrap transition-colors ${
+            closedCount === 0
+              ? 'border-slate-100 text-slate-300 cursor-not-allowed'
+              : showClosedHistory
+                ? 'border-indigo-200 bg-indigo-50 text-indigo-600'
+                : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+          }`}
+        >
+          {showClosedHistory ? '이전 내역 접기' : '완료된 문의 내역 보기'}
+        </button>
+      </div>
+      <p className="text-[10px] font-medium text-slate-400 mb-6 border-b-2 border-slate-900 pb-3">
+        {subtitle}
+      </p>
+    </>
+  );
+}
+
+function ClosedHistoryBlock({ threads }: { threads: AssetThread[] }) {
+  if (!threads.length) {
+    return (
+      <p className="text-[11px] font-medium text-slate-400 px-1">완료된 문의 내역이 없습니다.</p>
+    );
+  }
+  const ordered = [...threads].sort((a, b) => reqTime(a.latest) - reqTime(b.latest));
+  return (
+    <div className="space-y-5">
+      {ordered.map((thread, idx) => {
+        const turns = thread.msgs.flatMap(threadTurns);
+        if (!turns.length) return null;
+        const date =
+          formatKSTDisplayDate(thread.latest.completedAt || thread.latest.requestDate || thread.latest.createdAt) ||
+          getKSTDateString(thread.latest.completedAt || thread.latest.requestDate || thread.latest.createdAt) ||
+          '';
+        return (
+          <div key={String(thread.root?.id || idx)} className="space-y-3">
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] font-medium text-slate-500">완료된 문의 {idx + 1}</span>
+              {date && <span className="text-[10px] font-medium text-slate-400 tabular-nums">{date}</span>}
+            </div>
+            <div className="border-l-2 border-slate-200 ml-2 space-y-4">
+              {turns.map((turn, tIdx) => {
+                const isAdmin = turn.role === 'admin';
+                const roleTag = isAdmin ? '관리자' : '사용자';
+                return (
+                  <div key={`${turn.role}-${tIdx}`} className="relative pl-5">
+                    <span
+                      className={`absolute -left-[5px] top-2 w-2 h-2 rounded-full ring-2 ring-white ${
+                        isAdmin ? 'bg-blue-500' : 'bg-slate-400'
+                      }`}
+                      aria-hidden
+                    />
+                    <div className="flex items-center justify-between gap-3 mb-1.5">
+                      <span
+                        className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium whitespace-nowrap ${
+                          isAdmin ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-600'
+                        }`}
+                      >
+                        [{roleTag}] {turn.name}
+                      </span>
+                      {turn.date && (
+                        <span className="text-[10px] font-medium text-slate-400 tabular-nums shrink-0">
+                          {turn.date}
+                        </span>
+                      )}
+                    </div>
+                    <div
+                      className={`rounded-md border p-3.5 text-[11px] font-medium whitespace-pre-wrap leading-relaxed ${
+                        isAdmin
+                          ? 'bg-blue-50/40 border-blue-200 text-slate-800'
+                          : 'bg-white border-slate-200 text-slate-800'
+                      }`}
+                    >
+                      {turn.text}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })}
+      <div className="flex items-center gap-2 py-1">
+        <div className="flex-1 h-px bg-slate-200" />
+        <span className="text-[10px] font-medium text-slate-400">현재 대화</span>
+        <div className="flex-1 h-px bg-slate-200" />
+      </div>
+    </div>
+  );
+}
      
 interface DashboardProps {
   moduleTitle?: string;
@@ -256,6 +421,7 @@ interface DashboardProps {
 }
      
 function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardProps) {
+  const { editorNames } = useDeptAssignees(MENU_PATH);
   const [assets, setAssets] = useState<any[]>([]);
   const [orgs, setOrgs] = useState<any[]>([]);
   const [users, setUsers] = useState<any[]>([]);
@@ -300,6 +466,8 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
   const [bulkQrReady, setBulkQrReady] = useState(false);
      
   const [showQrModal, setShowQrModal] = useState<any | null>(null);
+  const [actionMenu, setActionMenu] = useState<{ id: string; top: number; left: number } | null>(null);
+  const actionMenuRef = useRef<HTMLDivElement | null>(null);
      
   const [terminateModal, setTerminateModal] = useState<{
     id: string;
@@ -315,6 +483,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
   const [editingReq, setEditingReq] = useState<any>(null);
   const [editOpinion, setEditOpinion] = useState('');
   const [commEditMode, setCommEditMode] = useState(false);
+  const [showClosedHistory, setShowClosedHistory] = useState(false);
   /** 관리자 → 사용자 의견요청 작성 모달 (자산) */
   const [adminComposeAsset, setAdminComposeAsset] = useState<any | null>(null);
   const [infoCorrectionModal, setInfoCorrectionModal] = useState<any | null>(null);
@@ -404,6 +573,18 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
     () => resolveInterfaceEditState(currentUser, interfaceConfig).isEditor,
     [currentUser, interfaceConfig]
   );
+  const closedHistoryThreads = useMemo(() => {
+    const current = editingReq;
+    const composeKey = adminComposeAsset
+      ? { assetCode: adminComposeAsset.code, assetType: adminComposeAsset.it_type }
+      : null;
+    const assetKey = current || composeKey;
+    if (!assetKey) return [];
+    const threads = collectAssetThreads(assetKey, requests);
+    if (!current) return threads.filter((t) => t.closed);
+    const currentIds = new Set(collectThreadMessages(current, requests).map((m) => String(m.id)));
+    return threads.filter((t) => t.closed && !t.msgs.some((m) => currentIds.has(String(m.id))));
+  }, [editingReq, adminComposeAsset, requests]);
   const isLV1 = useMemo(
     () =>
       !!currentUser?.roles?.some((r: any) => String(r).includes('LV_1')) ||
@@ -539,7 +720,6 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
   };
 
   const handleAdd = async () => {
-    if (!canEdit) return alertNoEditPermission();
     const today = getKSTDateString();
     const newId = `AST_TEMP_${Date.now()}`; 
     const newObj = { 
@@ -557,6 +737,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
   
   const startEdit = (asset: any) => {
     if (!canEdit) return alertNoEditPermission();
+    setActionMenu(null);
     setEditSnapshot(JSON.parse(JSON.stringify(asset)));
     setEditingId(asset.id);
   };
@@ -575,11 +756,11 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
   };
 
   const handleSaveEdit = async (id: string) => {
-    if (!canEdit) return alertNoEditPermission();
     const targetAsset = assets.find(a => a.id === id);
     if (!targetAsset) return;
     
     const isNew = id.includes('AST_TEMP') || id.includes('AST-');
+    if (!isNew && !canEdit) return alertNoEditPermission();
     const method = isNew ? 'POST' : 'PATCH';
     
     const { id: _id, createdAt, updatedAt, ...submitData } = targetAsset;
@@ -608,6 +789,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
   };
      
   const handleSingleDelete = async (id: string) => {
+    setActionMenu(null);
     if (!canEdit) return alertNoEditPermission();
     const targetAsset = assets.find(a => a.id === id);
     if (!targetAsset) return;
@@ -801,16 +983,25 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
             brand: dashIfBlank(row['제조사']),
             spec: dashIfBlank(row['기본 사양']),
             is_rental: String(row['조달유형'] ?? '').trim() || masterFilters.rentals[0] || '-',
-            rental_months: parseInt(row['렌탈/구독(M)'] ?? row['렌탈/구독기간(M)']) || 0,
-            purchase_price: parseInt(row['구매비'] ?? row['초기구매비(원)']) || 0,
-            // 월렌탈·구독비는 monthly_fee에 통합 저장
-            monthly_fee:
-              parseInt(row['월렌탈/구독비'] ?? row['월렌탈료(원)'] ?? row['월구독료(원)']) || 0,
+            rental_months: parseInt(row['렌탈/구독기간(M)'] ?? row['렌탈/구독(M)']) || 0,
+            ...(() => {
+              const procureType = String(row['조달유형'] ?? '').trim() || masterFilters.rentals[0] || '-';
+              const combined = parseInt(row['구매/월렌탈/구독(원)']) || 0;
+              const purchase = parseInt(row['구매비'] ?? row['초기구매비(원)']) || 0;
+              const monthly =
+                parseInt(row['월렌탈/구독비'] ?? row['월렌탈료(원)'] ?? row['월구독료(원)']) || 0;
+              if (combined) {
+                return isPurchaseProcureType(procureType)
+                  ? { purchase_price: combined, monthly_fee: 0 }
+                  : { purchase_price: 0, monthly_fee: combined };
+              }
+              return { purchase_price: purchase, monthly_fee: monthly };
+            })(),
             in_date: parseExcelDate(row['입고일'] ?? row['입고일자']),
             end_date: parseExcelDate(row['계약종료'] ?? row['계약종료일']),
             first_bill: parseExcelDate(row['첫회청구'] ?? row['첫회청구일']),
-            cycle: parseInt(row['교체주기(M)']) || 48,
-            memo: dashIfBlank(row['메모'] ?? row['비고메모']),
+            cycle: 48,
+            memo: dashIfBlank(row['관리메모'] ?? row['메모'] ?? row['비고메모']),
             reg_date: today,
             entry_source: 'excel',
           };
@@ -893,6 +1084,28 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
       document.removeEventListener('keydown', onKey);
     };
   }, [orgMenuOpen]);
+
+  useEffect(() => {
+    if (!actionMenu) return;
+    const onDoc = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (actionMenuRef.current?.contains(t)) return;
+      setActionMenu(null);
+    };
+    const onWin = () => setActionMenu(null);
+    document.addEventListener('mousedown', onDoc);
+    window.addEventListener('scroll', onWin, true);
+    window.addEventListener('resize', onWin);
+    return () => {
+      document.removeEventListener('mousedown', onDoc);
+      window.removeEventListener('scroll', onWin, true);
+      window.removeEventListener('resize', onWin);
+    };
+  }, [actionMenu]);
+
+  useEffect(() => {
+    setActionMenu(null);
+  }, [currentPage]);
 
   const runningAudits = useMemo(
     () =>
@@ -1064,11 +1277,6 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
         auditStatusColor = a.last_audit_by === 'admin'
           ? 'bg-violet-50 border-violet-200 text-violet-800 shadow-sm cursor-pointer'
           : 'bg-slate-100 border-slate-300 text-slate-600 shadow-sm cursor-pointer';
-      } else if (hasInfoCorrectionPending(a)) {
-        isChecked = false;
-        auditStatusLabel = '정보수정 승인대기';
-        auditStatusDate = parseInfoCorrectionPending(a.info_correction_pending)?.requestedAt || null;
-        auditStatusColor = 'bg-amber-50 border-amber-300 text-amber-800 animate-pulse shadow-sm cursor-pointer';
       } else if (a.audit_request_date) {
         isChecked = false;
         auditStatusLabel = '마감임박 독촉 전송';
@@ -1080,26 +1288,29 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
         auditStatusLabel = '미실사 장비';
         auditStatusColor = 'bg-slate-900 text-white border-slate-900 shadow-sm cursor-pointer';
       }
+    } else if (a.last_audit_date) {
+      isChecked = true;
+      auditStatusLabel = getCompletedAuditLabel(a.last_audit_by);
+      auditStatusDate = a.last_audit_date;
+      // 실사 대기 중: 관리자확인 보라 강조 없이 이력만 회색 (버튼은 비활성)
+      auditStatusColor = 'bg-slate-100 text-slate-600 border-slate-300 shadow-sm';
     } else {
-      if (hasInfoCorrectionPending(a)) {
-        isChecked = false;
-        auditStatusLabel = '정보수정 승인대기';
-        auditStatusDate = parseInfoCorrectionPending(a.info_correction_pending)?.requestedAt || null;
-        auditStatusColor = 'bg-amber-50 border-amber-300 text-amber-800 cursor-pointer';
-      } else if (a.last_audit_date) {
-        isChecked = true;
-        auditStatusLabel = getCompletedAuditLabel(a.last_audit_by);
-        auditStatusDate = a.last_audit_date;
-        // 실사 대기 중: 관리자확인 보라 강조 없이 이력만 회색 (버튼은 비활성)
-        auditStatusColor = 'bg-slate-100 text-slate-600 border-slate-300 shadow-sm';
-      } else {
-        isChecked = false;
-        auditStatusLabel = '미실사 장비';
-        // 실사 대기(대상 실사 없음): 회색·클릭 불가 톤
-        auditStatusColor = 'bg-slate-100 text-slate-500 border-slate-200 border-dashed shadow-sm cursor-not-allowed';
-      }
+      isChecked = false;
+      auditStatusLabel = '미실사 장비';
+      // 실사 대기(대상 실사 없음): 회색·클릭 불가 톤
+      auditStatusColor = 'bg-slate-100 text-slate-500 border-slate-200 border-dashed shadow-sm cursor-not-allowed';
     }
     const auditStatusText = auditStatusDate ? `${auditStatusLabel} (${auditStatusDate})` : auditStatusLabel;
+
+    const hasInfoCorrection = hasInfoCorrectionPending(a);
+    const infoEditDate = hasInfoCorrection
+      ? (parseInfoCorrectionPending(a.info_correction_pending)?.requestedAt || null)
+      : null;
+    const infoEditLabel = hasInfoCorrection ? '수정 요청 확인' : '-';
+    const infoEditColor = hasInfoCorrection
+      ? 'bg-amber-50 border-amber-300 text-amber-800 hover:bg-amber-100 animate-pulse shadow-sm cursor-pointer'
+      : '';
+    const infoEditText = infoEditDate ? `${infoEditLabel} (${infoEditDate})` : infoEditLabel;
          
     const assetRequests = requests
       .filter((r) => String(r.assetCode || '').trim() === String(a.code || '').trim())
@@ -1115,14 +1326,14 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
     if (latestReq) {
       const reqDate = getKSTDateString(latestReq.requestDate || latestReq.createdAt) || latestReq.requestDate || null;
       if (isIncomingReply(latestReq, requests)) {
-        commStatusLabel = '사용자 답변';
+        commStatusLabel = '사용자 회신 확인';
         commStatusDate = reqDate;
         commStatusColor = 'bg-amber-50 border-amber-300 text-amber-800 animate-pulse shadow-sm cursor-pointer';
         hasUserIncomingRequest = true;
       } else if (isUserPendingStatus(latestReq.status)) {
-        commStatusLabel = '사용자 신규접수';
+        commStatusLabel = '신규 문의 확인';
         commStatusDate = reqDate;
-        commStatusColor = 'bg-amber-50 border-amber-300 text-amber-800 animate-pulse shadow-sm cursor-pointer';
+        commStatusColor = 'bg-amber-50 border-amber-300 text-rose-600 animate-pulse shadow-sm cursor-pointer';
         hasUserIncomingRequest = true;
       } else if (latestReq.status === '관리자 의견발송') {
         commStatusLabel = '관리자 신규접수';
@@ -1130,7 +1341,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
         commStatusColor = 'bg-blue-50 border-blue-200 text-blue-700 hover:bg-blue-100 cursor-pointer';
         hasAdminOutboundRequest = true;
       } else if (latestReq.status === '관리자 답변') {
-        commStatusLabel = '관리자 답변';
+        commStatusLabel = '답변 완료';
         commStatusDate = getKSTDateString(latestReq.completedAt || latestReq.updatedAt || latestReq.createdAt) || reqDate;
         commStatusColor = 'bg-blue-50 border-blue-200 text-blue-700 hover:bg-blue-100 cursor-pointer';
         hasAdminOutboundRequest = true;
@@ -1148,7 +1359,8 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
       replaceDeferred: deferred,
       isTargetCount: !deferred && dday !== null && dday <= 90, 
       auditStatusColor, auditStatusLabel, auditStatusDate, auditStatusText,
-      isChecked, hasUserIncomingRequest, hasAdminOutboundRequest, commStatusLabel, commStatusDate, commStatusText, commStatusColor 
+      isChecked, hasInfoCorrection, infoEditLabel, infoEditDate, infoEditText, infoEditColor,
+      hasUserIncomingRequest, hasAdminOutboundRequest, commStatusLabel, commStatusDate, commStatusText, commStatusColor 
     };
   };
      
@@ -1231,7 +1443,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
       if (a.last_audit_date && String(a.last_audit_date) >= String(focusedAudit.startDate || '')) {
         auditDoneCount++;
       } else if (hasInfoCorrectionPending(a)) {
-        infoCorrectionCount++;
+        return;
       } else if (a.audit_request_date) {
         auditNudgeCount++;
       } else {
@@ -1239,12 +1451,10 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
       }
     });
 
-    // 정보수정 승인은 실사 기간 밖에서도 처리 가능 → 대기 중에도 전체에서 집계
-    if (!focusedAudit) {
-      assets.forEach((a) => {
-        if (hasInfoCorrectionPending(a)) infoCorrectionCount++;
-      });
-    }
+    // 정보수정 승인은 실사 기간과 무관하게 항시 확인
+    assets.forEach((a) => {
+      if (hasInfoCorrectionPending(a)) infoCorrectionCount++;
+    });
 
     const replaceableCount = assets.filter(a => getAssetLogic(a).isTargetCount).length;
     return {
@@ -1326,7 +1536,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
             !!a.audit_request_date &&
             !hasInfoCorrectionPending(a);
       } else if (showStatusFilter === 'info_correction') {
-        matchStatus = inFocusedAuditScope && hasInfoCorrectionPending(a);
+        matchStatus = hasInfoCorrectionPending(a);
       }
      
       const matchIncomingFeedback = !showFeedbackFilter || logic.hasUserIncomingRequest;
@@ -1400,19 +1610,14 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
         '제조사': a.brand || '-',
         '기본 사양': a.spec || '-',
         '조달유형': a.is_rental || '-',
-        '구매비': (a.purchase_price ?? 0) || '-',
-        '월렌탈/구독비': (a.monthly_fee ?? 0) || '-',
+        '구매/월렌탈/구독(원)': combinedProcureFee(a) || '-',
         '입고일': a.in_date || '-',
-        '계약종료': a.end_date || '-',
-        '첫회청구': a.first_bill || '-',
-        '렌탈/구독(M)': a.rental_months || '-',
-        '납입차': logic.turnDisplay || '-',
-        '교체주기(M)': a.cycle || '-',
+        '렌탈/구독기간(M)': a.rental_months || '-',
         '교체예정일': logic.repDate || '-',
-        '사용 연장(유예)': a.replace_deferred ? 'Y' : '',
-        '메모': a.memo || '-',
+        '관리메모': a.memo || '-',
         '실사': logic.auditStatusText || '-',
         '의견/요청': logic.commStatusText || '-',
+        '정보수정': logic.infoEditText || '-',
       };
     });
     const ws = XLSX.utils.json_to_sheet(excelData); const wb = XLSX.utils.book_new();
@@ -1491,9 +1696,9 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
     font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
   }
   .cell.empty { visibility: hidden; }
-  .cap { font-size: 6px; font-weight: 900; color: #94a3b8; line-height: 1; text-transform: uppercase; }
-  .title { font-size: 8px; font-weight: 900; color: #0f172a; line-height: 1.1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .code { font-size: 8px; font-weight: 900; font-family: ui-monospace, monospace; color: #4338ca; line-height: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .cap { font-size: 6px; font-weight: 500; color: #94a3b8; line-height: 1; }
+  .title { font-size: 8px; font-weight: 500; color: #0f172a; line-height: 1.1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .code { font-size: 8px; font-weight: 500; color: #4338ca; line-height: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .qr { display: flex; justify-content: center; align-items: center; }
   .qr img { width: 20mm; height: 20mm; object-fit: contain; }
 </style></head><body>${pagesHtml}</body></html>`);
@@ -1602,17 +1807,21 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
             ? 'recall'
             : 'mixed';
   const nudgeButtonLabel =
-    !isAuditActive
-      ? '🔔 실사 진행 중에만 독촉 가능'
-      : selectedAssetsForNudge.length === 0
-        ? '🔔 선택 후 독촉 전송/회수'
-        : nudgeButtonMode === 'all_done'
-          ? `🔔 독촉 대상 없음 (완료 ${selectedNudgeCompletedCount}건 제외)`
-          : nudgeButtonMode === 'send'
-            ? `🔔 선택 마감임박 독촉 전송${nudgeExcludeNote}`
-            : nudgeButtonMode === 'recall'
-              ? `🔔 선택 독촉 회수${nudgeExcludeNote}`
-              : `🔔 독촉 전송 ${selectedUnnudgedCount} · 회수 ${selectedNudgedCount}${nudgeExcludeNote}`;
+    nudgeButtonMode === 'recall' ? '선택 회수' : nudgeButtonMode === 'mixed' ? '선택 독촉·회수' : '선택 독촉';
+  const nudgeButtonTitle =
+    !canEdit
+      ? '편집 권한 필요'
+      : !isAuditActive
+        ? '실사 진행 중에만 독촉 전송/회수가 가능합니다.'
+        : selectedAssetsForNudge.length === 0
+          ? '자산을 선택한 뒤 독촉을 전송하거나 회수할 수 있습니다.'
+          : nudgeButtonMode === 'all_done'
+            ? `독촉 대상 없음 (완료 ${selectedNudgeCompletedCount}건 제외)`
+            : nudgeButtonMode === 'send'
+              ? `선택 자산에 마감임박 독촉 전송${nudgeExcludeNote}`
+              : nudgeButtonMode === 'recall'
+                ? `선택 자산 독촉 회수${nudgeExcludeNote}`
+                : `독촉 전송 ${selectedUnnudgedCount}건 · 회수 ${selectedNudgedCount}건${nudgeExcludeNote}`;
 
   const sendAuditRequest = async () => {
     if (!canEdit) return alertNoEditPermission();
@@ -1749,13 +1958,9 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
     setInfoCorrectionModal(asset);
   };
 
-  /** 관리자 강제 실사 확인 / 취소 — 실사 진행 중 + 대상범위 자산만 (정보수정 승인은 예외) */
+  /** 관리자 강제 실사 확인 / 취소 — 실사 진행 중 + 대상범위 자산만 */
   const handleAdminAuditForce = async (asset: any, logic: { isChecked: boolean }) => {
     if (!canEdit) return alertNoEditPermission();
-    if (hasInfoCorrectionPending(asset)) {
-      openInfoCorrectionReview(asset);
-      return;
-    }
     if (!isAuditActive) {
       return alert('실사 진행 중에만 관리자 확인·취소가 가능합니다.');
     }
@@ -1903,11 +2108,13 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
     setEditingReq(null);
     setAdminComposeAsset(asset);
     setEditOpinion('');
+    setShowClosedHistory(false);
   };
 
   const closeAdminCompose = () => {
     setAdminComposeAsset(null);
     setEditOpinion('');
+    setShowClosedHistory(false);
   };
 
   const submitAdminOpinionRequest = async () => {
@@ -2048,6 +2255,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
         setEditingReq(null);
         setEditOpinion('');
         setCommEditMode(false);
+        setShowClosedHistory(false);
         fetchAllDataFromServer();
       } else {
         alert('❌ 취소에 실패했습니다.');
@@ -2107,19 +2315,19 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
         <div className="bg-white p-5 rounded-[1.5rem] border border-slate-200 shadow-sm flex flex-col min-h-[168px]">
           <div className="flex items-start justify-between gap-2 shrink-0">
             <div className="min-w-0">
-              <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest">전사 보유자산</p>
-              <p className="text-[9px] font-bold text-slate-400 mt-0.5">범주별 요약 · 클릭 시 실시간 솔트</p>
+              <p className="text-[10px] font-medium text-slate-500">전사 보유자산</p>
+              <p className="text-[9px] font-medium text-slate-400 mt-0.5">범주별 요약 · 클릭 시 실시간 솔트</p>
             </div>
             <div className="text-right shrink-0">
-              <p className="text-2xl font-black text-slate-900 tracking-tighter leading-none tabular-nums">{stats.total}</p>
-              <p className="text-[9px] font-bold text-slate-400 mt-1">총 보유</p>
+              <p className="text-2xl font-medium text-slate-900 tracking-tighter leading-none tabular-nums">{stats.total}</p>
+              <p className="text-[9px] font-medium text-slate-400 mt-1">총 보유</p>
             </div>
           </div>
           <div className="flex-1 min-h-0 mt-3 flex flex-wrap content-start gap-1.5">
             <button
               type="button"
               onClick={() => setColFilters({ ...colFilters, category: colFilters.category === 'HW' ? '범주 (전체)' : 'HW' })}
-              className={`px-2.5 py-1.5 rounded-lg border text-[10px] font-black transition-all ${
+              className={`px-2.5 py-1.5 rounded-lg border text-[10px] font-medium transition-all ${
                 colFilters.category === 'HW'
                   ? 'bg-blue-600 border-blue-600 text-white shadow-sm'
                   : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100'
@@ -2130,7 +2338,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
             <button
               type="button"
               onClick={() => setColFilters({ ...colFilters, category: colFilters.category === 'SW' ? '범주 (전체)' : 'SW' })}
-              className={`px-2.5 py-1.5 rounded-lg border text-[10px] font-black transition-all ${
+              className={`px-2.5 py-1.5 rounded-lg border text-[10px] font-medium transition-all ${
                 colFilters.category === 'SW'
                   ? 'bg-indigo-600 border-indigo-600 text-white shadow-sm'
                   : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100'
@@ -2141,7 +2349,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
             <button
               type="button"
               onClick={() => setColFilters({ ...colFilters, category: colFilters.category === '비품' ? '범주 (전체)' : '비품' })}
-              className={`px-2.5 py-1.5 rounded-lg border text-[10px] font-black transition-all ${
+              className={`px-2.5 py-1.5 rounded-lg border text-[10px] font-medium transition-all ${
                 colFilters.category === '비품'
                   ? 'bg-amber-500 border-amber-500 text-white shadow-sm'
                   : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100'
@@ -2165,21 +2373,21 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                   : 'bg-violet-50/80 border-violet-200 text-violet-800 hover:bg-violet-100'
               }`}
             >
-              <span className="text-[9px] font-black tracking-tight">공용자산</span>
-              <span className="text-sm font-black tabular-nums leading-none">{stats.sharedCount}</span>
+              <span className="text-[9px] font-medium tracking-tight">공용자산</span>
+              <span className="text-sm font-medium tabular-nums leading-none">{stats.sharedCount}</span>
             </button>
             <div className="grid grid-cols-4 gap-1.5">
             <button type="button" onClick={() => setDdayFilter(p => p === 'd-30' ? 'all' : 'd-30')} className={`w-full py-2 px-1 rounded-xl border flex flex-col items-center transition-all ${ddayFilter === 'd-30' ? 'bg-blue-500 border-blue-400 text-white shadow-sm' : 'bg-white border-slate-200 text-blue-600 hover:bg-blue-50'}`}>
-              <span className="text-[8px] font-black mb-0.5 leading-tight text-center">교체(D-30)</span>
-              <span className="text-sm font-black tabular-nums">{stats.d30Count}</span>
+              <span className="text-[8px] font-medium mb-0.5 leading-tight text-center">교체(D-30)</span>
+              <span className="text-sm font-medium tabular-nums">{stats.d30Count}</span>
             </button>
             <button type="button" onClick={() => setDdayFilter(p => p === 'd-day' ? 'all' : 'd-day')} className={`w-full py-2 px-1 rounded-xl border flex flex-col items-center transition-all ${ddayFilter === 'd-day' ? 'bg-amber-500 border-amber-400 text-amber-900 shadow-sm' : 'bg-white border-slate-200 text-amber-600 hover:bg-amber-50'}`}>
-              <span className="text-[8px] font-black mb-0.5 leading-tight text-center">교체(D-Day)</span>
-              <span className="text-sm font-black tabular-nums">{stats.dDayCount}</span>
+              <span className="text-[8px] font-medium mb-0.5 leading-tight text-center">교체(D-Day)</span>
+              <span className="text-sm font-medium tabular-nums">{stats.dDayCount}</span>
             </button>
             <button type="button" onClick={() => setDdayFilter(p => p === 'd-plus' ? 'all' : 'd-plus')} className={`w-full py-2 px-1 rounded-xl border flex flex-col items-center transition-all ${ddayFilter === 'd-plus' ? 'bg-rose-500 border-rose-400 text-white shadow-sm' : 'bg-white border-slate-200 text-rose-600 hover:bg-rose-50'}`}>
-              <span className="text-[8px] font-black mb-0.5 leading-tight text-center">교체(D+)</span>
-              <span className="text-sm font-black tabular-nums">{stats.dPlusCount}</span>
+              <span className="text-[8px] font-medium mb-0.5 leading-tight text-center">교체(D+)</span>
+              <span className="text-sm font-medium tabular-nums">{stats.dPlusCount}</span>
             </button>
             <button
               type="button"
@@ -2191,9 +2399,9 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
               title="자산번호 · S/N 기준으로 중복을 집계합니다. 다시 누르면 해제됩니다."
               className={`relative group/dup w-full py-2 px-1 rounded-xl border flex flex-col items-center transition-all ${showDuplicatesOnly ? 'bg-red-600 border-red-500 text-white shadow-sm' : 'bg-white border-slate-200 text-red-600 hover:bg-red-50'}`}
             >
-              <span className="text-[8px] font-black mb-0.5 leading-tight text-center">데이터 중복 점검</span>
-              <span className="text-sm font-black tabular-nums">{stats.duplicateCount}</span>
-              <span className="pointer-events-none absolute left-1/2 bottom-full z-40 mb-1.5 -translate-x-1/2 w-max max-w-[220px] rounded-lg bg-slate-900 px-2.5 py-1.5 text-[10px] font-bold text-white opacity-0 shadow-lg transition-opacity group-hover/dup:opacity-100 text-left leading-relaxed">
+              <span className="text-[8px] font-medium mb-0.5 leading-tight text-center">데이터 중복 점검</span>
+              <span className="text-sm font-medium tabular-nums">{stats.duplicateCount}</span>
+              <span className="pointer-events-none absolute left-1/2 bottom-full z-40 mb-1.5 -translate-x-1/2 w-max max-w-[220px] rounded-lg bg-slate-900 px-2.5 py-1.5 text-[10px] font-medium text-white opacity-0 shadow-lg transition-opacity group-hover/dup:opacity-100 text-left leading-relaxed">
                 자산번호 · S/N
                 <span className="absolute -bottom-1 left-1/2 h-2 w-2 -translate-x-1/2 rotate-45 bg-slate-900" />
               </span>
@@ -2206,8 +2414,8 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
         <div className="bg-white p-5 rounded-[1.5rem] border border-slate-200 shadow-sm flex flex-col min-h-[168px]">
           <div className="shrink-0 flex items-start justify-between gap-2">
             <div className="min-w-0">
-              <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest">실사 운영 상태</p>
-              <p className="text-[9px] font-bold text-slate-400 mt-0.5">Audit Status</p>
+              <p className="text-[10px] font-medium text-slate-500">실사 운영 상태</p>
+              <p className="text-[9px] font-medium text-slate-400 mt-0.5">Audit Status</p>
             </div>
             {runningAudits.length > 0 && (
               <div className="flex flex-wrap gap-1 justify-end max-w-[58%]">
@@ -2221,7 +2429,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                       type="button"
                       title={`${a.title || '실사'}\n${a.startDate} ~ ${a.endDate} ${endTime}\n클릭: 해당 소속 자산 필터`}
                       onClick={() => handleAuditBadgeClick(a)}
-                      className={`px-2 py-0.5 rounded-md text-[9px] font-black border transition-all whitespace-nowrap ${
+                      className={`px-2 py-0.5 rounded-md text-[9px] font-medium border transition-all whitespace-nowrap ${
                         selected
                           ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm'
                           : 'bg-white text-indigo-700 border-indigo-200 hover:bg-indigo-50'
@@ -2237,44 +2445,46 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
           <div className="flex-1 mt-3 flex flex-col justify-center gap-3">
             <div className="flex items-center justify-between gap-2">
               {isAuditActive ? (
-                <span className="px-3 py-1.5 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-lg font-black text-[11px] animate-pulse">
+                <span className="px-3 py-1.5 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-lg font-medium text-[11px] animate-pulse">
                   🟢 실사 진행 중{runningAudits.length > 1 ? ` · ${runningAudits.length}건` : ''}
                 </span>
               ) : (
-                <span className="px-3 py-1.5 bg-slate-100 text-slate-600 border border-slate-200 rounded-lg font-black text-[11px]">
-                  ⚪ 실사 대기 중
+                <span className="px-3 py-1.5 bg-slate-100 text-slate-600 border border-slate-200 rounded-lg font-medium text-[11px]">
+                  ⚪ 실사 미진행
                 </span>
               )}
               {isAuditActive && auditDaysLeft !== null && (
                 <div className="text-right">
-                  <p className="text-xl font-black text-indigo-600 tracking-tighter leading-none tabular-nums">
+                  <p className="text-xl font-medium text-indigo-600 tracking-tighter leading-none tabular-nums">
                     {auditDaysLeft >= 0 ? `D-${auditDaysLeft}` : `D+${Math.abs(auditDaysLeft)}`}
                   </p>
-                  <p className="text-[9px] font-bold text-slate-400 mt-0.5">남은 기간</p>
+                  <p className="text-[9px] font-medium text-slate-400 mt-0.5">남은 기간</p>
                 </div>
               )}
             </div>
             {isAuditActive && focusedAudit && (
               <div className="rounded-xl bg-slate-50 border border-slate-100 px-3.5 py-2.5">
-                <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">
+                <p className="text-[9px] font-medium text-slate-400">
                   현재 실사 운영 기간
                 </p>
-                <p className="mt-1 text-[13px] font-black tracking-tight text-indigo-700">
+                <p className="mt-1 text-[13px] font-medium tracking-tight text-indigo-700">
                   {focusedAudit.startDate} ~ {focusedAudit.endDate}
                 </p>
-                <p className="mt-1 text-[10px] font-bold text-slate-400 font-mono">
+                <p className="mt-1 text-[10px] font-medium text-slate-400 tabular-nums">
                   마감 {(focusedAudit.endTime || '23:59').trim() || '23:59'}
                 </p>
               </div>
             )}
           </div>
-          <div className="pt-3 mt-auto border-t border-slate-100 grid grid-cols-4 gap-1.5">
+          <div className="pt-3 mt-auto border-t border-slate-100 grid grid-cols-3 gap-1.5">
             <button
               type="button"
               disabled={!isAuditActive}
               title={!isAuditActive ? '실사 진행 중에만 집계·필터됩니다.' : undefined}
               onClick={() => {
                 if (!isAuditActive) return;
+                setShowFeedbackFilter(false);
+                setShowAdminOutboundFilter(false);
                 setShowStatusFilter((prev) => (prev === 'done' ? 'all' : 'done'));
               }}
               className={`w-full py-2 px-1 rounded-xl border flex flex-col items-center transition-all ${
@@ -2285,8 +2495,8 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                     : 'bg-white border-slate-200 text-emerald-600 hover:bg-emerald-50'
               }`}
             >
-              <span className="text-[8px] font-black mb-0.5 leading-tight text-center">실사 완료장비</span>
-              <span className="text-sm font-black tabular-nums">{isAuditActive ? stats.auditDoneCount : 0}</span>
+              <span className="text-[8px] font-medium mb-0.5 leading-tight text-center">실사 완료장비</span>
+              <span className="text-sm font-medium tabular-nums">{isAuditActive ? stats.auditDoneCount : 0}</span>
             </button>
             <button
               type="button"
@@ -2294,6 +2504,8 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
               title={!isAuditActive ? '실사 진행 중에만 집계·필터됩니다.' : undefined}
               onClick={() => {
                 if (!isAuditActive) return;
+                setShowFeedbackFilter(false);
+                setShowAdminOutboundFilter(false);
                 setShowStatusFilter((prev) => (prev === 'pending' ? 'all' : 'pending'));
               }}
               className={`w-full py-2 px-1 rounded-xl border flex flex-col items-center transition-all ${
@@ -2304,8 +2516,8 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                     : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
               }`}
             >
-              <span className="text-[8px] font-black mb-0.5 leading-tight text-center">미실사 장비</span>
-              <span className="text-sm font-black tabular-nums">{isAuditActive ? stats.auditPendingCount : 0}</span>
+              <span className="text-[8px] font-medium mb-0.5 leading-tight text-center">미실사 장비</span>
+              <span className="text-sm font-medium tabular-nums">{isAuditActive ? stats.auditPendingCount : 0}</span>
             </button>
             <button
               type="button"
@@ -2313,6 +2525,8 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
               title={!isAuditActive ? '실사 진행 중에만 집계·필터됩니다.' : undefined}
               onClick={() => {
                 if (!isAuditActive) return;
+                setShowFeedbackFilter(false);
+                setShowAdminOutboundFilter(false);
                 setShowStatusFilter((prev) => (prev === 'nudge' ? 'all' : 'nudge'));
               }}
               className={`w-full py-2 px-1 rounded-xl border flex flex-col items-center transition-all ${
@@ -2323,20 +2537,8 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                     : 'bg-white border-slate-200 text-rose-600 hover:bg-rose-50'
               }`}
             >
-              <span className="text-[8px] font-black mb-0.5 leading-tight text-center">마감 임박 독촉 장비</span>
-              <span className="text-sm font-black tabular-nums">{isAuditActive ? stats.auditNudgeCount : 0}</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setShowStatusFilter((prev) => (prev === 'info_correction' ? 'all' : 'info_correction'))}
-              className={`w-full py-2 px-1 rounded-xl border flex flex-col items-center transition-all ${
-                showStatusFilter === 'info_correction'
-                  ? 'bg-amber-500 border-amber-400 text-amber-900 shadow-sm'
-                  : 'bg-white border-slate-200 text-amber-600 hover:bg-amber-50'
-              }`}
-            >
-              <span className="text-[8px] font-black mb-0.5 leading-tight text-center">정보수정 승인대기</span>
-              <span className="text-sm font-black tabular-nums">{stats.infoCorrectionCount}</span>
+              <span className="text-[8px] font-medium mb-0.5 leading-tight text-center">마감 임박 독촉 장비</span>
+              <span className="text-sm font-medium tabular-nums">{isAuditActive ? stats.auditNudgeCount : 0}</span>
             </button>
           </div>
         </div>
@@ -2344,24 +2546,25 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
         {/* 카드 3: 의견/요청 대시보드 */}
         <div className="bg-white p-5 rounded-[1.5rem] border border-slate-200 shadow-sm flex flex-col min-h-[168px]">
           <div className="shrink-0">
-            <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest">기타 의견/요청 대시보드</p>
-            <p className="text-[9px] font-bold text-slate-400 mt-0.5">클릭 시 목록 필터</p>
+            <p className="text-[10px] font-medium text-slate-500">기타 의견/요청 대시보드</p>
+            <p className="text-[9px] font-medium text-slate-400 mt-0.5">클릭 시 목록 필터</p>
           </div>
-          <div className="flex-1 mt-3 flex flex-col gap-2 justify-end">
+          <div className="flex-1 mt-3 flex flex-col gap-1.5 justify-end">
             <button
               type="button"
               onClick={() => {
                 setShowFeedbackFilter(false);
+                setShowStatusFilter('all');
                 setShowAdminOutboundFilter((prev) => !prev);
               }}
-              className={`w-full px-3 py-2.5 rounded-xl text-[11px] font-bold border transition-all flex items-center justify-between ${
+              className={`w-full px-3 py-2.5 rounded-xl text-[11px] font-medium border transition-all flex items-center justify-between ${
                 showAdminOutboundFilter
                   ? 'bg-blue-600 border-blue-600 text-white shadow-sm'
                   : 'bg-white text-slate-700 border-slate-200 hover:bg-blue-50 hover:border-blue-200'
               }`}
             >
-              <span className="text-left leading-snug">관리자 전송 내역<br /><span className="text-[10px] font-bold opacity-90">(관리자 → 사용자)</span></span>
-              <span className={`text-sm font-black tabular-nums shrink-0 ml-2 ${showAdminOutboundFilter ? 'text-white' : 'text-blue-600'}`}>
+              <span className="text-left leading-snug">관리자 전송 내역<br /><span className="text-[10px] font-medium opacity-90">(관리자 → 사용자)</span></span>
+              <span className={`text-sm font-medium tabular-nums shrink-0 ml-2 ${showAdminOutboundFilter ? 'text-white' : 'text-blue-600'}`}>
                 {stats.adminOutboundCount}
               </span>
             </button>
@@ -2369,17 +2572,36 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
               type="button"
               onClick={() => {
                 setShowAdminOutboundFilter(false);
+                setShowStatusFilter('all');
                 setShowFeedbackFilter((prev) => !prev);
               }}
-              className={`w-full px-3 py-2.5 rounded-xl text-[11px] font-bold border transition-all flex items-center justify-between ${
+              className={`w-full px-3 py-2.5 rounded-xl text-[11px] font-medium border transition-all flex items-center justify-between ${
                 showFeedbackFilter
                   ? 'bg-amber-500 border-amber-500 text-white shadow-sm'
                   : 'bg-white text-slate-700 border-slate-200 hover:bg-amber-50 hover:border-amber-200'
               }`}
             >
-              <span className="text-left leading-snug">관리자 수신 내역<br /><span className="text-[10px] font-bold opacity-90">(사용자 → 관리자)</span></span>
-              <span className={`text-sm font-black tabular-nums shrink-0 ml-2 ${showFeedbackFilter ? 'text-white' : 'text-amber-600'}`}>
+              <span className="text-left leading-snug">관리자 수신 내역<br /><span className="text-[10px] font-medium opacity-90">(사용자 → 관리자)</span></span>
+              <span className={`text-sm font-medium tabular-nums shrink-0 ml-2 ${showFeedbackFilter ? 'text-white' : 'text-amber-600'}`}>
                 {stats.feedbackIncomingCount}
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setShowFeedbackFilter(false);
+                setShowAdminOutboundFilter(false);
+                setShowStatusFilter((prev) => (prev === 'info_correction' ? 'all' : 'info_correction'));
+              }}
+              className={`w-full px-3 py-2.5 rounded-xl text-[11px] font-medium border transition-all flex items-center justify-between ${
+                showStatusFilter === 'info_correction'
+                  ? 'bg-amber-500 border-amber-500 text-white shadow-sm'
+                  : 'bg-white text-slate-700 border-slate-200 hover:bg-amber-50 hover:border-amber-200'
+              }`}
+            >
+              <span className="text-left leading-snug">정보수정 승인대기<br /><span className="text-[10px] font-medium opacity-90">(관리자 승인 대기)</span></span>
+              <span className={`text-sm font-medium tabular-nums shrink-0 ml-2 ${showStatusFilter === 'info_correction' ? 'text-white' : 'text-amber-600'}`}>
+                {stats.infoCorrectionCount}
               </span>
             </button>
           </div>
@@ -2391,33 +2613,34 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
         <div className="p-4 px-6 bg-slate-200/70 border-b border-slate-300 flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-2 flex-wrap min-w-0">
             <div className="w-2.5 h-2.5 rounded-full bg-blue-600 shrink-0" />
-            <h2 className="text-sm font-black text-slate-800 tracking-tight">전사 IT·업무자산 목록</h2>
-            <span className="text-[11px] font-bold bg-slate-300/80 text-slate-700 px-2 py-0.5 rounded-md">{filteredAssets.length}건</span>
+            <h2 className="text-sm font-medium text-slate-800 tracking-tight">전사 IT·업무자산 목록</h2>
+            <span className="text-[11px] font-medium bg-slate-300/80 text-slate-700 px-2 py-0.5 rounded-md">{filteredAssets.length}건</span>
+            <DeptAssigneeLine editorNames={editorNames} />
             {showStatusFilter === 'done' && (
-              <span className="text-[10px] font-black text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-md">실사 완료만</span>
+              <span className="text-[10px] font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-md">실사 완료만</span>
             )}
             {showStatusFilter === 'pending' && (
-              <span className="text-[10px] font-black text-slate-600 bg-slate-100 border border-slate-200 px-2 py-0.5 rounded-md">미실사만</span>
+              <span className="text-[10px] font-medium text-slate-600 bg-slate-100 border border-slate-200 px-2 py-0.5 rounded-md">미실사만</span>
             )}
             {showStatusFilter === 'nudge' && (
-              <span className="text-[10px] font-black text-rose-600 bg-rose-50 border border-rose-200 px-2 py-0.5 rounded-md">독촉만</span>
+              <span className="text-[10px] font-medium text-rose-600 bg-rose-50 border border-rose-200 px-2 py-0.5 rounded-md">독촉만</span>
             )}
             {showStatusFilter === 'info_correction' && (
-              <span className="text-[10px] font-black text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-md">정보수정 승인대기만</span>
+              <span className="text-[10px] font-medium text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-md">정보수정 승인대기만</span>
             )}
             {showAdminOutboundFilter && (
-              <span className="text-[10px] font-black text-blue-700 bg-blue-50 border border-blue-200 px-2 py-0.5 rounded-md">관리자 요청만</span>
+              <span className="text-[10px] font-medium text-blue-700 bg-blue-50 border border-blue-200 px-2 py-0.5 rounded-md">관리자 요청만</span>
             )}
             {showFeedbackFilter && (
-              <span className="text-[10px] font-black text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-md">의견수신만</span>
+              <span className="text-[10px] font-medium text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-md">의견수신만</span>
             )}
             {ddayFilter !== 'all' && (
-              <span className="text-[10px] font-black text-blue-600 bg-blue-50 border border-blue-200 px-2 py-0.5 rounded-md">
+              <span className="text-[10px] font-medium text-blue-600 bg-blue-50 border border-blue-200 px-2 py-0.5 rounded-md">
                 {ddayFilter === 'd-30' ? '교체(D-30)' : ddayFilter === 'd-day' ? '교체(D-Day)' : '교체(D+)'}만
               </span>
             )}
             {sharedOnlyFilter && (
-              <span className="text-[10px] font-black text-violet-700 bg-violet-50 border border-violet-200 px-2 py-0.5 rounded-md">
+              <span className="text-[10px] font-medium text-violet-700 bg-violet-50 border border-violet-200 px-2 py-0.5 rounded-md">
                 공용자산만
               </span>
             )}
@@ -2429,7 +2652,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                   setSearchQuery('');
                 }}
                 title="클릭 시 중복 필터 해제"
-                className="text-[10px] font-black text-red-600 bg-red-50 border border-red-200 px-2 py-0.5 rounded-md hover:bg-red-100"
+                className="text-[10px] font-medium text-red-600 bg-red-50 border border-red-200 px-2 py-0.5 rounded-md hover:bg-red-100"
               >
                 중복만 ×
               </button>
@@ -2439,7 +2662,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                 type="button"
                 onClick={() => setSearchQuery('')}
                 title="클릭 시 검색 해제"
-                className="text-[10px] font-black text-indigo-600 bg-indigo-50 border border-indigo-200 px-2 py-0.5 rounded-md hover:bg-indigo-100"
+                className="text-[10px] font-medium text-indigo-600 bg-indigo-50 border border-indigo-200 px-2 py-0.5 rounded-md hover:bg-indigo-100"
               >
                 자산검색: {searchQuery.trim()} ×
               </button>
@@ -2449,7 +2672,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                 type="button"
                 onClick={() => setNameSearchQuery('')}
                 title="클릭 시 이름 검색 해제"
-                className="text-[10px] font-black text-violet-600 bg-violet-50 border border-violet-200 px-2 py-0.5 rounded-md hover:bg-violet-100"
+                className="text-[10px] font-medium text-violet-600 bg-violet-50 border border-violet-200 px-2 py-0.5 rounded-md hover:bg-violet-100"
               >
                 이름: {nameSearchQuery.trim()} ×
               </button>
@@ -2460,7 +2683,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
               <button
                 type="button"
                 onClick={handleDeleteSelected}
-                className="px-3 py-2 bg-white text-rose-600 border border-rose-200 text-[11px] font-black rounded-lg hover:bg-rose-50 transition-all shadow-sm whitespace-nowrap"
+                className="px-3 py-2 bg-white text-rose-600 border border-rose-200 text-[11px] font-medium rounded-lg hover:bg-rose-50 transition-all shadow-sm whitespace-nowrap"
                 title="체크한 자산 일괄 삭제 (LV_1)"
               >
                 {selectedIds.size > 0
@@ -2471,7 +2694,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
             <button
               type="button"
               onClick={handleExcelDownload}
-              className="px-3 py-2 bg-emerald-50 text-emerald-700 border border-emerald-200 text-[11px] font-black rounded-lg hover:bg-emerald-600 hover:text-white transition-all shadow-sm whitespace-nowrap"
+              className="px-3 py-2 bg-emerald-50 text-emerald-700 border border-emerald-200 text-[11px] font-medium rounded-lg hover:bg-emerald-600 hover:text-white transition-all shadow-sm whitespace-nowrap"
             >
               {selectedIds.size > 0
                 ? `⬇️ 선택 엑셀(${selectedIds.size})`
@@ -2483,22 +2706,22 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                 disabled={!canEdit}
                 title={!canEdit ? '편집 권한 필요' : undefined}
                 onClick={() => { if (!canEdit) return; fileInputRef.current?.click(); }}
-                className={`px-3 py-2 rounded-lg text-[11px] font-black transition-all flex items-center gap-1.5 border whitespace-nowrap ${
+                className={`px-3 py-2 rounded-lg text-[11px] font-medium transition-all flex items-center gap-1.5 border whitespace-nowrap ${
                   canEdit
                     ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-600 hover:text-white shadow-sm'
                     : DISABLED_ACTION_BTN
                 }`}
               >
-                + 엑셀 업로드 추가
+                + 엑셀 업로드(Edit)
               </button>
               {canEdit && (
                 <div
                   role="tooltip"
                   className="pointer-events-none absolute right-0 top-full mt-2 z-50 hidden group-hover/excel-upload:block w-[320px] rounded-xl bg-slate-900 px-3.5 py-3 text-left shadow-xl"
                 >
-                  <p className="text-[11px] font-black text-emerald-300 mb-2">엑셀 업로드 안내</p>
-                  <ul className="space-y-1.5 text-[10px] font-bold text-white/95 leading-relaxed list-disc pl-3.5">
-                    <li>엑셀 다운 후 해당 양식의 ~메모까지 데이터를 작성하세요.</li>
+                  <p className="text-[11px] font-medium text-emerald-300 mb-2">엑셀 업로드 안내</p>
+                  <ul className="space-y-1.5 text-[10px] font-medium text-white/95 leading-relaxed list-disc pl-3.5">
+                    <li>엑셀 다운 후 해당 양식의 ~관리메모까지 데이터를 작성하세요.</li>
                     <li>사용자 옆 이메일은 @ 앞자리만 넣어도 됩니다. (전체 주소도 가능)</li>
                     <li>NO는 작성과 상관없이 자동으로 재정렬됩니다.</li>
                     <li>정보가 없는 것은 공란 또는 - 처리 바랍니다.</li>
@@ -2511,31 +2734,25 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
             <input type="file" ref={fileInputRef} onChange={handleExcelUpload} accept=".xlsx, .xls" className="hidden" />
             <button
               type="button"
-              disabled={!canEdit}
-              title={!canEdit ? '편집 권한 필요' : undefined}
               onClick={handleAdd}
-              className={`px-4 py-2 rounded-lg text-[11px] font-black transition-all flex items-center gap-1.5 border whitespace-nowrap ${
-                canEdit
-                  ? 'bg-blue-600 text-white hover:bg-blue-700 shadow-sm border-blue-600'
-                  : DISABLED_ACTION_BTN
-              }`}
+              className="px-4 py-2 rounded-lg text-[11px] font-medium transition-all flex items-center gap-1.5 border whitespace-nowrap bg-blue-600 text-white hover:bg-blue-700 shadow-sm border-blue-600"
             >
-              + 신규 자산 추가(Edit)
+              + 자산 추가
             </button>
           </div>
         </div>
 
         <div className={`px-5 py-3 border-b border-slate-200 flex flex-nowrap items-center gap-2 bg-white relative ${orgMenuOpen ? 'z-[80] overflow-visible' : 'overflow-x-auto'}`}>
-            <div className={`flex items-center gap-1.5 bg-white px-2.5 py-1.5 rounded-lg border border-slate-200 shadow-sm shrink-0 ${orgMenuOpen ? 'relative z-[90]' : ''}`}>
-              <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">조직</span>
+            <div className={`flex items-center gap-1.5 bg-white h-9 px-2.5 rounded-lg border border-slate-200 shadow-sm shrink-0 ${orgMenuOpen ? 'relative z-[90]' : ''}`}>
+              <span className="text-[10px] font-medium text-slate-400">조직</span>
               <div className="relative" ref={orgMenuRef}>
                 <button
                   type="button"
                   onClick={() => setOrgMenuOpen((open) => !open)}
-                  className={`max-w-[160px] truncate text-left text-[11px] leading-none p-0 m-0 outline-none cursor-pointer bg-transparent ${
+                  className={`max-w-[160px] truncate text-left text-[11px] leading-5 h-5 p-0 m-0 outline-none cursor-pointer bg-transparent ${
                     selectedOrgUnit && isBoldOrgType(selectedOrgUnit.unit_type)
-                      ? 'font-black text-slate-900'
-                      : 'font-bold text-slate-800'
+                      ? 'font-medium text-slate-900'
+                      : 'font-medium text-slate-800'
                   }`}
                 >
                   {selectedOrgUnit ? selectedOrgUnit.unit_name : '전체'}
@@ -2549,7 +2766,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                         setUserFilter('');
                         setOrgMenuOpen(false);
                       }}
-                      className={`w-full text-left px-3 py-1.5 text-[11px] font-bold ${
+                      className={`w-full text-left px-3 py-1.5 text-[11px] font-medium ${
                         colFilters.dept === DEPT_FILTER_ALL
                           ? 'bg-slate-100 text-slate-900'
                           : 'text-slate-700 hover:bg-slate-50'
@@ -2569,7 +2786,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                             setOrgMenuOpen(false);
                           }}
                           className={`w-full text-left pr-3 py-1.5 text-[11px] ${
-                            bold ? 'font-black text-slate-900' : 'font-medium text-slate-600'
+                            bold ? 'font-medium text-slate-900' : 'font-medium text-slate-600'
                           } ${colFilters.dept === o.unit_name ? 'bg-slate-100' : 'hover:bg-slate-50'}`}
                           style={{ paddingLeft: `${12 + o.depth * 12}px` }}
                         >
@@ -2581,12 +2798,12 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                 )}
               </div>
               <div className="w-px h-3.5 bg-slate-300 mx-0.5" />
-              <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest whitespace-nowrap">사용자</span>
+              <span className="text-[10px] font-medium text-slate-400 whitespace-nowrap">사용자</span>
               <select
                 value={userFilter}
                 onChange={(e) => setUserFilter(e.target.value)}
                 disabled={colFilters.dept === DEPT_FILTER_ALL}
-                className={`bg-transparent text-[11px] font-black text-slate-800 outline-none cursor-pointer max-w-[110px] ${
+                className={`bg-transparent text-[11px] font-medium text-slate-800 outline-none cursor-pointer max-w-[110px] ${
                   colFilters.dept === DEPT_FILTER_ALL ? 'opacity-50 cursor-not-allowed' : ''
                 }`}
               >
@@ -2601,21 +2818,21 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
               </select>
             </div>
 
-            <div className="relative group/filter flex items-center gap-1.5 bg-white px-2.5 py-1.5 rounded-lg border border-slate-200 shadow-sm shrink-0">
-              <span className="text-[10px] font-black text-slate-400 uppercase">범주</span>
-              <select className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent max-w-[90px]" value={colFilters.category} onChange={(e) => setColFilters({ ...colFilters, category: e.target.value })}>
+            <div className="relative group/filter flex items-center gap-1.5 bg-white h-9 px-2.5 rounded-lg border border-slate-200 shadow-sm shrink-0">
+              <span className="text-[10px] font-medium text-slate-400">범주</span>
+              <select className="text-[11px] font-medium text-slate-800 outline-none cursor-pointer bg-transparent max-w-[90px]" value={colFilters.category} onChange={(e) => setColFilters({ ...colFilters, category: e.target.value })}>
                 <option value="범주 (전체)">전체</option>
                 {masterFilters.categories.map(cat => <option key={cat} value={cat}>{cat}</option>)}
               </select>
               <div className="w-px h-3.5 bg-slate-300 mx-0.5" />
-              <span className="text-[10px] font-black text-slate-400 uppercase whitespace-nowrap">{itMasterLabel}</span>
-              <select className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent max-w-[110px]" value={colFilters.it_type} onChange={(e) => setColFilters({ ...colFilters, it_type: e.target.value })}>
+              <span className="text-[10px] font-medium text-slate-400 whitespace-nowrap">{itMasterLabel}</span>
+              <select className="text-[11px] font-medium text-slate-800 outline-none cursor-pointer bg-transparent max-w-[110px]" value={colFilters.it_type} onChange={(e) => setColFilters({ ...colFilters, it_type: e.target.value })}>
                 <option value="자산 분류 (전체)">전체</option>
                 {masterFilters.types.map(type => <option key={type} value={type}>{type}</option>)}
               </select>
               <div className="w-px h-3.5 bg-slate-300 mx-0.5" />
-              <span className="text-[10px] font-black text-slate-400 uppercase whitespace-nowrap">조달유형</span>
-              <select className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent" value={colFilters.is_rental} onChange={(e) => setColFilters({ ...colFilters, is_rental: e.target.value })}>
+              <span className="text-[10px] font-medium text-slate-400 whitespace-nowrap">조달유형</span>
+              <select className="text-[11px] font-medium text-slate-800 outline-none cursor-pointer bg-transparent" value={colFilters.is_rental} onChange={(e) => setColFilters({ ...colFilters, is_rental: e.target.value })}>
                 <option value="조달유형 (전체)">전체</option>
                 {masterFilters.rentals.map(r => <option key={r} value={r}>{r}</option>)}
               </select>
@@ -2623,7 +2840,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
 
             <div className="relative w-[160px] shrink-0">
               <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-[10px]">🔍</span>
-              <input type="text" placeholder="자산번호 · 모델 · S/N" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} className="w-full pl-7 pr-3 py-1.5 bg-white border border-slate-200 rounded-lg text-[11px] font-bold outline-none focus:border-indigo-500 shadow-sm" />
+              <input type="text" placeholder="자산번호 · 모델 · S/N" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} className="w-full h-9 pl-7 pr-3 bg-white border border-slate-200 rounded-lg text-[11px] font-medium outline-none focus:border-indigo-500 shadow-sm" />
             </div>
             <div className="relative w-[120px] shrink-0">
               <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-[10px]">👤</span>
@@ -2632,89 +2849,27 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                 placeholder="담당자 이름"
                 value={nameSearchQuery}
                 onChange={(e) => setNameSearchQuery(e.target.value)}
-                className="w-full pl-7 pr-3 py-1.5 bg-white border border-slate-200 rounded-lg text-[11px] font-bold outline-none focus:border-violet-500 shadow-sm"
+                className="w-full h-9 pl-7 pr-3 bg-white border border-slate-200 rounded-lg text-[11px] font-medium outline-none focus:border-violet-500 shadow-sm"
               />
-            </div>
-
-            <div className="flex items-center gap-1.5 ml-auto shrink-0">
-              <button
-                type="button"
-                onClick={syncOwnerDeptFromUnits}
-                disabled={!canEdit}
-                title={
-                  !canEdit
-                    ? '편집 권한 필요'
-                    : '담당자 User의 현재 소속(admin/units)으로 자산 부서를 맞춥니다.'
-                }
-                className={`px-3 py-1.5 rounded-lg text-[10px] font-black transition-all shadow-sm border whitespace-nowrap ${
-                  !canEdit
-                    ? DISABLED_ACTION_BTN
-                    : 'bg-sky-50 text-sky-800 border-sky-200 hover:bg-sky-600 hover:text-white'
-                }`}
-              >
-                🔄 담당자 소속→부서 동기화
-              </button>
-              <button
-                type="button"
-                onClick={sendAuditRequest}
-                disabled={!canEdit || nudgeButtonMode === 'disabled'}
-                title={
-                  !canEdit
-                    ? '편집 권한 필요'
-                    : !isAuditActive
-                      ? '실사 진행 중에만 독촉 전송/회수가 가능합니다.'
-                      : undefined
-                }
-                className={`px-3 py-1.5 rounded-lg text-[10px] font-black transition-all shadow-sm border whitespace-nowrap ${
-                  !canEdit || nudgeButtonMode === 'disabled'
-                    ? DISABLED_ACTION_BTN
-                    : nudgeButtonMode === 'recall'
-                      ? 'bg-rose-50 text-rose-700 border-rose-200 hover:bg-rose-600 hover:text-white'
-                      : 'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-500 hover:text-white'
-                }`}
-              >
-                {nudgeButtonLabel}
-              </button>
-              <button
-                type="button"
-                onClick={resetSelectedAuditConfirm}
-                disabled={!canEdit || selectedIds.size === 0}
-                title={
-                  !canEdit
-                    ? '편집 권한 필요'
-                    : selectedIds.size === 0
-                      ? '자산을 선택한 뒤 실사 확인을 초기화할 수 있습니다.'
-                      : '선택 자산의 실사 완료/관리자 확인을 해제합니다.'
-                }
-                className={`px-3 py-1.5 rounded-lg text-[10px] font-black transition-all shadow-sm border whitespace-nowrap ${
-                  !canEdit || selectedIds.size === 0
-                    ? DISABLED_ACTION_BTN
-                    : 'bg-slate-50 text-slate-700 border-slate-300 hover:bg-slate-800 hover:text-white'
-                }`}
-              >
-                ↩️ 선택 실사 확인 초기화
-              </button>
-              <button type="button" onClick={openBulkQRPrint} className="px-3 py-1.5 bg-purple-50 text-purple-700 border border-purple-200 rounded-lg text-[10px] font-black hover:bg-purple-600 hover:text-white transition-all shadow-sm whitespace-nowrap">🖨️ QR 라벨 인쇄</button>
             </div>
         </div>
 
         <div className="overflow-x-auto scrollbar-thin scrollbar-thumb-slate-300 scrollbar-track-slate-50">
-          <table className="w-full text-left border-collapse min-w-[2400px] table-fixed">
+          <table className="w-full text-left border-collapse min-w-[2300px] table-fixed">
             <colgroup>
               <col className="w-[36px]" /><col className="w-[40px]" />
               <col className="w-[88px]" /><col className="w-[72px]" /><col className="w-[72px]" />
               <col className="w-[52px]" /><col className="w-[112px]" />
               <col className="w-[120px]" /><col className="w-[132px]" /><col className="w-[108px]" /><col className="w-[80px]" /><col className="w-[156px]" />
-              <col className="w-[60px]" /><col className="w-[92px]" /><col className="w-[118px]" />
-              <col className="w-[96px]" /><col className="w-[96px]" /><col className="w-[96px]" /><col className="w-[88px]" /><col className="w-[68px]" /><col className="w-[60px]" /><col className="w-[108px]" /><col className="w-[72px]" /><col className="w-[108px]" />
-              <col className="w-[120px]" /><col className="w-[128px]" /><col className="w-[64px]" /><col className="w-[148px]" />
+              <col className="w-[60px]" /><col className="w-[128px]" />
+              <col className="w-[96px]" /><col className="w-[96px]" /><col className="w-[96px]" /><col className="w-[108px]" />
+              <col className="w-[136px]" /><col className="w-[128px]" /><col className="w-[108px]" /><col className="w-[64px]" /><col className="w-[56px]" />
             </colgroup>
-            <thead className="bg-slate-100 text-slate-700 text-[11px] font-black tracking-wide border-b border-slate-200">
+            <thead className="bg-slate-100 text-slate-700 text-[11px] font-medium tracking-wide border-b border-slate-200">
               <tr className="text-center text-[10px] tracking-wider">
                 <th
-                  colSpan={7}
-                  className="h-9 sticky left-0 z-40 bg-slate-50 border-r-2 border-slate-200 text-slate-500"
-                  style={{ minWidth: 472, maxWidth: 472, width: 472 }}
+                  colSpan={6}
+                  className="h-9 sticky left-0 z-40 bg-slate-50 text-slate-500"
                 >
                   <div className="relative flex items-center justify-center px-2">
                     {currentPage === 1 && (
@@ -2728,16 +2883,17 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                           onChange={toggleSelectAllFiltered}
                           className="accent-indigo-600 cursor-pointer w-3.5 h-3.5"
                         />
-                        <span className="text-[8px] font-black text-indigo-600 whitespace-nowrap">전체</span>
+                        <span className="text-[8px] font-medium text-indigo-600 whitespace-nowrap">전체</span>
                       </label>
                     )}
                     <span>기본 자산 정보</span>
                   </div>
                 </th>
+                <th className="h-9 sticky left-[360px] z-40 bg-slate-50 shadow-[inset_-2px_0_0_0_#cbd5e1]" />
                 <th colSpan={5} className="h-9 bg-slate-50 border-r border-slate-200 text-slate-500/40" />
-                <th colSpan={3} className="h-9 bg-emerald-50/50 border-r border-slate-200 text-emerald-700">조달·비용</th>
-                <th colSpan={9} className="h-9 bg-blue-50/50 border-r border-slate-200 text-blue-700">일정·생애주기</th>
-                <th colSpan={4} className="h-9 bg-slate-100 text-slate-600">제어·상태</th>
+                <th colSpan={2} className="h-9 bg-emerald-50/50 border-r border-slate-200 text-emerald-700">조달·비용</th>
+                <th colSpan={4} className="h-9 bg-blue-50/50 border-r border-slate-200 text-blue-700">일정·생애주기</th>
+                <th colSpan={5} className="h-9 bg-slate-100 text-slate-600">제어·상태</th>
               </tr>
               <tr>
                 <th className="h-11 sticky left-0 bg-slate-100 z-30 text-center">
@@ -2749,60 +2905,131 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                     className="accent-slate-800 cursor-pointer w-3.5 h-3.5"
                   />
                 </th>
-                <th className="h-11 sticky left-[36px] bg-slate-100 z-30 text-center text-slate-700 uppercase tracking-widest text-[10px]">NO</th>
-                <th className="h-11 sticky left-[76px] bg-slate-100 z-30 text-left text-slate-700 uppercase tracking-widest text-[10px] px-0.5 whitespace-nowrap">부서</th>
-                <th className="h-11 sticky left-[164px] bg-slate-100 z-30 text-left text-slate-700 uppercase tracking-widest text-[10px] px-0.5 whitespace-nowrap">사용자</th>
-                <th className="h-11 sticky left-[236px] bg-slate-100 z-30 text-left text-slate-700 uppercase tracking-widest text-[10px] px-0.5 whitespace-nowrap">이메일</th>
-                <th className="h-11 sticky left-[308px] bg-slate-100 z-30 text-left text-slate-700 uppercase tracking-widest text-[10px] whitespace-nowrap">범주</th>
-                <th className="h-11 sticky left-[360px] bg-indigo-50 z-30 border-r-2 border-slate-200 text-left text-indigo-600 uppercase tracking-widest text-[10px] px-0.5 whitespace-nowrap">{itMasterLabel}</th>
+                <th className="h-11 sticky left-[36px] bg-slate-100 z-30 text-center text-slate-700 text-[10px]">NO</th>
+                <th className="sticky left-[76px] bg-slate-100 z-30 text-left text-slate-700 text-[10px] px-0.5">
+                  <div className="flex flex-col items-start gap-0.5 py-1">
+                    <span className="whitespace-nowrap">부서</span>
+                    <button
+                      type="button"
+                      onClick={syncOwnerDeptFromUnits}
+                      disabled={!canEdit}
+                      title={
+                        !canEdit
+                          ? '편집 권한 필요'
+                          : '담당자 User의 현재 소속(admin/units)으로 자산 부서를 맞춥니다.'
+                      }
+                      className={`px-1 py-0.5 rounded text-[8px] font-medium leading-tight border whitespace-nowrap transition-all ${
+                        !canEdit
+                          ? DISABLED_ACTION_BTN
+                          : 'bg-sky-50 text-sky-800 border-sky-200 hover:bg-sky-600 hover:text-white'
+                      }`}
+                    >
+                      소속 동기화(Edit)
+                    </button>
+                  </div>
+                </th>
+                <th className="h-11 sticky left-[164px] bg-slate-100 z-30 text-left text-slate-700 text-[10px] px-0.5 whitespace-nowrap">사용자</th>
+                <th className="h-11 sticky left-[236px] bg-slate-100 z-30 text-left text-slate-700 text-[10px] px-0.5 whitespace-nowrap">이메일</th>
+                <th className="h-11 sticky left-[308px] bg-slate-100 z-30 text-left text-slate-700 text-[10px] whitespace-nowrap">범주</th>
+                <th className="h-11 sticky left-[360px] bg-indigo-50 z-30 shadow-[inset_-2px_0_0_0_#cbd5e1] text-left text-indigo-600 text-[10px] px-0.5 whitespace-nowrap">{itMasterLabel}</th>
                 <th className="h-11 px-1.5">자산번호</th>
                 <th className="h-11 px-1.5">모델명</th>
                 <th className="h-11 px-1.5">S/N</th>
                 <th className="h-11 px-1.5">제조사</th>
                 <th className="h-11 px-1.5 text-slate-500 border-r border-slate-200">기본 사양</th>
                 <th className="h-11 text-center bg-emerald-50/50 px-0.5 whitespace-nowrap">조달유형</th>
-                <th className="h-11 text-center text-emerald-600 bg-emerald-50/50 px-0.5 whitespace-nowrap tabular-nums">구매비(원)</th>
-                <th className="h-11 text-center text-emerald-700 bg-emerald-50/50 px-0.5 whitespace-nowrap border-r border-slate-200 tabular-nums">월렌탈/구독비(원)</th>
-                <th className="h-11 text-center text-black bg-blue-50/50 px-0.5">입고일</th>
-                <th className="h-11 text-center text-black bg-blue-50/50 px-0.5">계약종료</th>
-                <th className="h-11 text-center text-black bg-blue-50/50 px-0.5">첫회청구</th>
-                <th className="h-11 text-center text-black bg-blue-50/50 px-0.5 whitespace-nowrap">렌탈/구독(M)</th>
-                <th className="h-11 text-center text-black bg-blue-50/50 px-0.5 relative group cursor-help">
-                  <span>납입차</span>
-                  <span className="pointer-events-none absolute left-1/2 top-full z-40 mt-1.5 -translate-x-1/2 whitespace-nowrap rounded-lg bg-slate-900 px-2.5 py-1.5 text-[10px] font-bold text-white opacity-0 shadow-lg transition-opacity group-hover:opacity-100">
-                    첫회청구 · 렌탈/구독(M) 연동 자동산정
+                <th className="h-11 text-center text-emerald-700 bg-emerald-50/50 px-0.5 whitespace-nowrap border-r border-slate-200 tabular-nums relative group cursor-help">
+                  <span>구매/월렌탈/구독(원)</span>
+                  <span className="pointer-events-none absolute left-1/2 top-full z-40 mt-1.5 -translate-x-1/2 whitespace-nowrap rounded-lg bg-slate-900 px-2.5 py-1.5 text-[10px] font-medium text-white opacity-0 shadow-lg transition-opacity group-hover:opacity-100">
+                    구매 → 구매비 · 렌탈·구독 → 월 비용
                     <span className="absolute -top-1 left-1/2 h-2 w-2 -translate-x-1/2 rotate-45 bg-slate-900" />
                   </span>
                 </th>
-                <th className="h-11 text-center text-black bg-blue-50/50 px-0.5 whitespace-nowrap">교체주기(M)</th>
+                <th className="h-11 text-center text-black bg-blue-50/50 px-0.5">입고일</th>
+                <th className="h-11 text-center text-black bg-blue-50/50 px-0.5 whitespace-nowrap">렌탈/구독기간(M)</th>
                 <th className="h-11 text-center text-black bg-blue-50/50 px-0.5 relative group cursor-help">
                   <span>교체예정일</span>
-                  <span className="pointer-events-none absolute left-1/2 top-full z-40 mt-1.5 -translate-x-1/2 whitespace-nowrap rounded-lg bg-slate-900 px-2.5 py-1.5 text-[10px] font-bold text-white opacity-0 shadow-lg transition-opacity group-hover:opacity-100">
-                    입고일 · 교체주기(M) 연동 자동산정
+                  <span className="pointer-events-none absolute left-1/2 top-full z-40 mt-1.5 -translate-x-1/2 whitespace-nowrap rounded-lg bg-slate-900 px-2.5 py-1.5 text-[10px] font-medium text-white opacity-0 shadow-lg transition-opacity group-hover:opacity-100">
+                    입고일 기준 4년 후 자동산정
                     <span className="absolute -top-1 left-1/2 h-2 w-2 -translate-x-1/2 rotate-45 bg-slate-900" />
                   </span>
                 </th>
-                <th className="h-11 text-center text-black bg-blue-50/50 px-0.5 whitespace-nowrap relative group cursor-help">
-                  <span>사용 연장(유예)</span>
-                  <span className="pointer-events-none absolute left-1/2 top-full z-40 mt-1.5 -translate-x-1/2 whitespace-nowrap rounded-lg bg-slate-900 px-2.5 py-1.5 text-[10px] font-bold text-white opacity-0 shadow-lg transition-opacity group-hover:opacity-100">
-                    체크 시 교체 D-30·D-Day·D+ 필터·알람 제외
-                    <span className="absolute -top-1 left-1/2 h-2 w-2 -translate-x-1/2 rotate-45 bg-slate-900" />
-                  </span>
+                <th className="h-11 px-1.5 text-left text-black border-r border-slate-200 bg-blue-50/50">관리메모</th>
+                <th className="text-center border-l border-slate-200 px-0.5">
+                  <div className="flex flex-col items-center gap-0.5 py-1">
+                    <span className="inline-flex items-center justify-center gap-0.5 whitespace-nowrap">
+                      실사 확인
+                      <span className="text-[8px] font-medium text-slate-500">(Edit)</span>
+                    </span>
+                    <div className="flex items-center justify-center gap-0.5">
+                      <button
+                        type="button"
+                        onClick={sendAuditRequest}
+                        disabled={!canEdit || nudgeButtonMode === 'disabled'}
+                        title={nudgeButtonTitle}
+                        className={`px-1 py-0.5 rounded text-[8px] font-medium leading-tight border whitespace-nowrap transition-all ${
+                          !canEdit || nudgeButtonMode === 'disabled'
+                            ? DISABLED_ACTION_BTN
+                            : nudgeButtonMode === 'recall'
+                              ? 'bg-rose-50 text-rose-700 border-rose-200 hover:bg-rose-600 hover:text-white'
+                              : 'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-500 hover:text-white'
+                        }`}
+                      >
+                        {nudgeButtonLabel}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={resetSelectedAuditConfirm}
+                        disabled={!canEdit || selectedIds.size === 0}
+                        title={
+                          !canEdit
+                            ? '편집 권한 필요'
+                            : selectedIds.size === 0
+                              ? '자산을 선택한 뒤 실사 확인을 초기화할 수 있습니다.'
+                              : '선택 자산의 실사 완료/관리자 확인을 해제합니다.'
+                        }
+                        className={`px-1 py-0.5 rounded text-[8px] font-medium leading-tight border whitespace-nowrap transition-all ${
+                          !canEdit || selectedIds.size === 0
+                            ? DISABLED_ACTION_BTN
+                            : 'bg-slate-50 text-slate-700 border-slate-300 hover:bg-slate-800 hover:text-white'
+                        }`}
+                      >
+                        선택 초기화
+                      </button>
+                    </div>
+                  </div>
                 </th>
-                <th className="h-11 px-1.5 text-left text-black border-r border-slate-200 bg-blue-50/50">메모</th>
-                <th className="h-11 text-center border-l border-slate-200 px-0.5">실사/정보수정</th>
-                <th className="h-11 text-center text-blue-700 px-0.5 whitespace-nowrap">의견/요청</th>
-                <th className="h-11 text-center text-purple-700 pl-0.5 pr-2 whitespace-nowrap">QR</th>
-                <th className="h-11 text-center border-l border-slate-200 whitespace-nowrap pl-3 pr-2">관리액션(Edit)</th>
+                <th className="h-11 text-center text-blue-700 px-0.5 leading-tight">
+                  의견/요청<br /><span className="text-[8px] font-medium text-slate-500">(Edit)</span>
+                </th>
+                <th className="h-11 text-center text-amber-700 px-0.5 leading-tight">
+                  정보수정<br /><span className="text-[8px] font-medium text-slate-500">(Edit)</span>
+                </th>
+                <th className="text-center text-purple-700 pl-0.5 pr-2">
+                  <div className="flex flex-col items-center gap-0.5 py-1">
+                    <span className="whitespace-nowrap">QR</span>
+                    <button
+                      type="button"
+                      onClick={openBulkQRPrint}
+                      title="체크한 자산 QR 라벨 일괄 인쇄"
+                      className="px-1 py-0.5 rounded text-[8px] font-medium leading-tight border whitespace-nowrap bg-purple-50 text-purple-700 border-purple-200 hover:bg-purple-600 hover:text-white transition-all"
+                    >
+                      선택 인쇄
+                    </button>
+                  </div>
+                </th>
+                <th className="h-11 text-center border-l border-slate-200 px-1 leading-tight">
+                  관리<br /><span className="text-[8px] font-medium text-slate-500">(Edit)</span>
+                </th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-100 text-[11px] font-bold text-slate-800 bg-white">
+            <tbody className="divide-y divide-slate-100 text-[11px] font-medium text-slate-800 bg-white">
               {paginatedAssets.map((a, idx) => {
                 const isEditing = editingId === a.id;
                 const logic = getAssetLogic(a);
                 const entryHighlight = getTodayEntryHighlight(a);
-                // 조달유형 라벨과 무관하게 비용·일정 칸은 모두 편집 가능 (미해당 값은 0 또는 '-')
-                const monthlyFeeValue = Number(a.monthly_fee) || 0;
+                const usePurchaseFee = isPurchaseProcureType(a.is_rental);
+                const combinedFeeValue = combinedProcureFee(a);
                 
                 const baseBg = isEditing
                   ? 'bg-blue-50'
@@ -2818,12 +3045,12 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                     : entryHighlight === 'manual'
                       ? 'hover:bg-blue-50'
                       : 'hover:bg-slate-50';
-                const inputClass = "w-full px-1.5 py-1 bg-white border border-blue-400 rounded text-blue-700 font-bold outline-none shadow-sm text-[11px]";
+                const inputClass = "w-full px-1.5 py-1 bg-white border border-blue-400 rounded text-blue-700 font-medium outline-none shadow-sm text-[11px]";
   
                 return (
                   <tr key={a.id} className={`transition-colors h-12 ${baseBg} ${hoverBg}`}>
                     <td className={`px-0.5 sticky left-0 z-20 ${baseBg} text-center`}><input type="checkbox" checked={selectedIds.has(a.id)} onChange={() => { const next = new Set(selectedIds); next.has(a.id) ? next.delete(a.id) : next.add(a.id); setSelectedIds(next); }} className="accent-slate-800 cursor-pointer w-3 h-3" /></td>
-                    <td className={`px-0.5 sticky left-[36px] z-20 ${baseBg} text-center text-slate-500 font-mono tabular-nums`}>{(currentPage-1)*itemsPerPage + idx + 1}</td>
+                    <td className={`px-0.5 sticky left-[36px] z-20 ${baseBg} text-center text-slate-500 tabular-nums`}>{(currentPage-1)*itemsPerPage + idx + 1}</td>
                     <td className={`px-0.5 sticky left-[76px] z-20 ${baseBg} text-left truncate`} title={a.dept || '-'}>
                       {isEditing ? (
                         <select
@@ -2892,9 +3119,9 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                       {emailLocalPart(a.user_email) || '-'}
                     </td>
                     <td className={`px-0.5 sticky left-[308px] z-20 ${baseBg} text-left text-slate-700 truncate`} title={a.category}>{isEditing ? <select value={a.category} onChange={e => handleFieldChange(a.id, 'category', e.target.value)} className={inputClass}>{masterFilters.categories.map(c=><option key={c} value={c}>{c}</option>)}</select> : a.category}</td>
-                    <td className={`px-0.5 sticky left-[360px] z-20 ${baseBg} border-r-2 border-slate-200 text-left text-indigo-700 font-black truncate`} title={a.it_type}>{isEditing ? <select value={a.it_type} onChange={e => handleFieldChange(a.id, 'it_type', e.target.value)} className={inputClass}>{masterFilters.types.map(c=><option key={c} value={c}>{c}</option>)}</select> : a.it_type}</td>
+                    <td className={`px-0.5 sticky left-[360px] z-20 ${baseBg} shadow-[inset_-2px_0_0_0_#cbd5e1] text-left text-indigo-700 font-medium truncate`} title={a.it_type}>{isEditing ? <select value={a.it_type} onChange={e => handleFieldChange(a.id, 'it_type', e.target.value)} className={inputClass}>{masterFilters.types.map(c=><option key={c} value={c}>{c}</option>)}</select> : a.it_type}</td>
                     
-                    <td className="px-1 font-mono font-black text-slate-900 truncate">
+                    <td className="px-1 font-medium text-slate-900 truncate">
                       {isEditing ? <input type="text" value={a.code} onChange={e => handleFieldChange(a.id, 'code', e.target.value)} className={inputClass} /> : 
                       <div className="flex items-center gap-0.5 min-w-0">
                         {(() => {
@@ -2928,14 +3155,14 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                       </div>}
                     </td>
                     
-                    <td className="px-1 font-mono text-slate-500 truncate">
+                    <td className="px-1 text-slate-500 truncate">
                       {isEditing ? (
                         <input type="text" value={a.sn} onChange={e => handleFieldChange(a.id, 'sn', e.target.value)} className={inputClass} />
                       ) : (
                         <div className="flex items-center gap-0.5 min-w-0">
                           {(() => {
                             const d = getDisplayFieldValue(a, 'sn');
-                            return <span className={`truncate ${d.isPending ? 'text-red-600 font-black' : ''}`} title={d.value}>{d.value || '-'}</span>;
+                            return <span className={`truncate ${d.isPending ? 'text-red-600 font-medium' : ''}`} title={d.value}>{d.value || '-'}</span>;
                           })()}
                           {duplicateSns.has(String(a.sn || '').trim()) && String(a.sn || '').trim() !== '' && (
                             <button
@@ -2956,60 +3183,33 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                     </td>
                     <td className="px-1 truncate" title={getDisplayFieldValue(a, 'brand').value}>{isEditing ? <input type="text" value={a.brand} onChange={e => handleFieldChange(a.id, 'brand', e.target.value)} className={inputClass} /> : (() => {
                       const d = getDisplayFieldValue(a, 'brand');
-                      return <span className={d.isPending ? 'text-red-600 font-black' : ''}>{d.value || '-'}</span>;
+                      return <span className={d.isPending ? 'text-red-600 font-medium' : ''}>{d.value || '-'}</span>;
                     })()}</td>
                     <td className="px-1 text-slate-500 truncate border-r border-slate-100" title={a.spec || ''}>{isEditing ? <input type="text" value={a.spec} onChange={e => handleFieldChange(a.id, 'spec', e.target.value)} className={inputClass} /> : (() => {
                       const d = getDisplayFieldValue(a, 'spec');
-                      return <span className={d.isPending ? 'text-red-600 font-black' : ''}>{d.value || '-'}</span>;
+                      return <span className={d.isPending ? 'text-red-600 font-medium' : ''}>{d.value || '-'}</span>;
                     })()}</td>
                     
                     <td className="px-0.5 text-center bg-emerald-50/10 truncate">{isEditing ? <select value={a.is_rental} onChange={e => handleFieldChange(a.id, 'is_rental', e.target.value)} className={inputClass}>{masterFilters.rentals.map(r=><option key={r} value={r}>{r}</option>)}</select> : a.is_rental}</td>
-                    <td className="px-0.5 text-center text-emerald-600 bg-emerald-50/10 tabular-nums">
-                      {isEditing ? (
-                        <input
-                          type="number"
-                          min={0}
-                          value={!a.purchase_price ? '' : a.purchase_price}
-                          onChange={e => handleFieldChange(a.id, 'purchase_price', e.target.value === '' ? 0 : parseInt(e.target.value))}
-                          className={inputClass}
-                          placeholder="-"
-                        />
-                      ) : (a.purchase_price ? formatNumber(a.purchase_price) : '-')}
-                    </td>
                     <td className="px-0.5 text-center text-emerald-700 bg-emerald-50/10 tabular-nums border-r border-slate-100">
                       {isEditing ? (
                         <input
                           type="number"
                           min={0}
-                          value={!monthlyFeeValue ? '' : monthlyFeeValue}
-                          onChange={e => handleFieldChange(a.id, 'monthly_fee', e.target.value === '' ? 0 : parseInt(e.target.value))}
+                          value={!combinedFeeValue ? '' : (usePurchaseFee ? (a.purchase_price || '') : (Number(a.monthly_fee) || ''))}
+                          onChange={(e) => handleFieldChange(
+                            a.id,
+                            usePurchaseFee ? 'purchase_price' : 'monthly_fee',
+                            e.target.value === '' ? 0 : parseInt(e.target.value)
+                          )}
                           className={inputClass}
                           placeholder="-"
+                          title={usePurchaseFee ? '구매비' : '월렌탈/구독비'}
                         />
-                      ) : (monthlyFeeValue ? formatNumber(monthlyFeeValue) : '-')}
+                      ) : (combinedFeeValue ? formatNumber(combinedFeeValue) : '-')}
                     </td>
                     
-                    <td className="px-0.5 text-center font-mono text-black bg-blue-50/10 truncate">{isEditing ? <input type="date" value={a.in_date || ''} onChange={e => handleFieldChange(a.id, 'in_date', e.target.value)} className={inputClass} /> : (a.in_date || '-')}</td>
-                    <td className="px-0.5 text-center font-mono text-black bg-blue-50/10 truncate">
-                      {isEditing ? (
-                        <input
-                          type="date"
-                          value={a.end_date || ''}
-                          onChange={e => handleFieldChange(a.id, 'end_date', e.target.value)}
-                          className={inputClass}
-                        />
-                      ) : (a.end_date || '-')}
-                    </td>
-                    <td className="px-0.5 text-center font-mono text-black bg-blue-50/10 truncate">
-                      {isEditing ? (
-                        <input
-                          type="date"
-                          value={a.first_bill || ''}
-                          onChange={e => handleFieldChange(a.id, 'first_bill', e.target.value)}
-                          className={inputClass}
-                        />
-                      ) : (a.first_bill || '-')}
-                    </td>
+                    <td className="px-0.5 text-center text-black bg-blue-50/10 truncate">{isEditing ? <input type="date" value={a.in_date || ''} onChange={e => handleFieldChange(a.id, 'in_date', e.target.value)} className={inputClass} /> : (a.in_date || '-')}</td>
                     <td className="px-0.5 text-center text-black bg-blue-50/10 tabular-nums">
                       {isEditing ? (
                         <input
@@ -3022,32 +3222,15 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                         />
                       ) : (a.rental_months || '-')}
                     </td>
-                    <td className="px-0.5 text-center font-bold text-black bg-blue-50/10 truncate">{logic.turnDisplay || '-'}</td>
-                    <td className="px-0.5 text-center text-black bg-blue-50/10 tabular-nums">{isEditing ? <input type="number" value={a.cycle === 0 ? '' : a.cycle} onChange={e => handleFieldChange(a.id, 'cycle', e.target.value === '' ? 0 : parseInt(e.target.value))} className={inputClass} placeholder="-" /> : (a.cycle || '-')}</td>
-                    
                     <td className="px-0.5 text-center bg-blue-50/10">
                       <div className="flex flex-col items-center justify-center gap-0.5 min-w-0">
-                        <span className="font-mono text-black truncate w-full text-center">{logic.repDate}</span>
+                        <span className="text-black truncate w-full text-center">{logic.repDate}</span>
                         {logic.showDdayBadge && (
-                          <span className={`px-1 py-0.5 rounded text-[9px] font-black animate-pulse ${logic.ddayColor}`}>
+                          <span className={`px-1 py-0.5 rounded text-[9px] font-medium animate-pulse ${logic.ddayColor}`}>
                             {logic.ddayText}
                           </span>
                         )}
                       </div>
-                    </td>
-                    <td className="px-0.5 text-center bg-blue-50/10" onClick={(e) => e.stopPropagation()}>
-                      <input
-                        type="checkbox"
-                        checked={!!a.replace_deferred}
-                        disabled={!isEditing}
-                        title={
-                          isEditing
-                            ? '사용 연장(유예) — 저장 시 반영. 체크 시 교체 D-30/D+/알람 제외'
-                            : '관리액션의 수정 후에만 변경할 수 있습니다'
-                        }
-                        onChange={(e) => handleFieldChange(a.id, 'replace_deferred', e.target.checked)}
-                        className="w-3.5 h-3.5 accent-slate-700 cursor-pointer disabled:cursor-not-allowed disabled:opacity-40"
-                      />
                     </td>
                     <td className="px-1 text-left text-black truncate bg-blue-50/10 border-r border-slate-100" title={a.memo || ''}>{isEditing ? <input type="text" value={a.memo} onChange={e => handleFieldChange(a.id, 'memo', e.target.value)} className={inputClass} /> : (a.memo || '-')}</td>
                     
@@ -3057,40 +3240,34 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                           type="date" 
                           value={a.last_audit_date || ''} 
                           onChange={e => handleFieldChange(a.id, 'last_audit_date', e.target.value)} 
-                          className="w-full px-1 py-0.5 bg-white border border-blue-400 rounded text-blue-700 font-bold outline-none text-[10px]" 
+                          className="w-full px-1 py-0.5 bg-white border border-blue-400 rounded text-blue-700 font-medium outline-none text-[10px]" 
                         />
                       ) : (
                         <button
                           type="button"
                           disabled={
                             !canEdit ||
-                            !(
-                              hasInfoCorrectionPending(a) ||
-                              (isAuditActive && !!getCoveringAudit(a))
-                            )
+                            !(isAuditActive && !!getCoveringAudit(a))
                           }
                           onClick={() => handleAdminAuditForce(a, logic)}
                           title={
                             !canEdit
                               ? '편집 권한 필요'
-                              : hasInfoCorrectionPending(a)
-                                ? logic.auditStatusText
-                                : !isAuditActive
-                                  ? '실사 진행 중에만 관리자 확인 가능'
-                                  : !getCoveringAudit(a)
-                                    ? '현재 실사 대상 범위 아님'
-                                    : logic.auditStatusText
+                              : !isAuditActive
+                                ? '실사 진행 중에만 관리자 확인 가능'
+                                : !getCoveringAudit(a)
+                                  ? '현재 실사 대상 범위 아님'
+                                  : logic.auditStatusText
                           }
-                          className={`w-full h-[2.25rem] px-0.5 rounded text-[10px] font-black tracking-tight transition-all border leading-tight flex flex-col items-center justify-center ${
-                            canEdit &&
-                            (hasInfoCorrectionPending(a) || (isAuditActive && !!getCoveringAudit(a)))
+                          className={`w-full h-[2.25rem] px-0.5 rounded text-[10px] font-medium tracking-tight transition-all border leading-tight flex flex-col items-center justify-center ${
+                            canEdit && isAuditActive && !!getCoveringAudit(a)
                               ? `shadow-sm ${logic.auditStatusColor}`
                               : DISABLED_ACTION_BTN
                           }`}
                         >
                           <span className="truncate max-w-full">{logic.auditStatusLabel}</span>
                           {logic.auditStatusDate && (
-                            <span className="text-[9px] font-bold tabular-nums mt-0.5 opacity-90">({logic.auditStatusDate})</span>
+                            <span className="text-[9px] font-medium tabular-nums mt-0.5 opacity-90">({logic.auditStatusDate})</span>
                           )}
                         </button>
                       )}
@@ -3111,6 +3288,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                           }
                           setAdminComposeAsset(null);
                           setCommEditMode(false);
+                          setShowClosedHistory(false);
                           setEditingReq(targetReq);
                           setEditOpinion(
                             isWaitingForUser(targetReq.status)
@@ -3118,68 +3296,92 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                               : ''
                           );
                         }}
-                        className={`w-full h-[2.25rem] px-1 rounded text-[10px] font-black tracking-tight transition-all border leading-tight flex flex-col items-center justify-center ${
+                        className={`w-full h-[2.25rem] px-1 rounded text-[10px] font-medium tracking-tight transition-all border leading-tight flex flex-col items-center justify-center ${
                           canEdit ? `shadow-sm cursor-pointer ${logic.commStatusColor}` : DISABLED_ACTION_BTN
                         }`}
                         title={!canEdit ? '편집 권한 필요' : logic.commStatusText}
                       >
                         <span className="truncate max-w-full">{logic.commStatusLabel}</span>
                         {logic.commStatusDate && (
-                          <span className="text-[9px] font-bold tabular-nums mt-0.5 opacity-90">({logic.commStatusDate})</span>
+                          <span className="text-[9px] font-medium tabular-nums mt-0.5 opacity-90">({logic.commStatusDate})</span>
                         )}
                       </button>
                     </td>
-                    <td className="pl-0.5 pr-2 text-center">
-                      <button type="button" onClick={() => setShowQrModal(a)} className="w-full h-[2.25rem] px-0.5 bg-purple-50 text-purple-600 border border-purple-200 rounded text-[10px] font-black hover:bg-purple-600 hover:text-white transition-all shadow-sm flex items-center justify-center">QR</button>
+                    <td className="px-0.5 text-center">
+                      {logic.hasInfoCorrection ? (
+                        <button
+                          type="button"
+                          disabled={!canEdit}
+                          onClick={() => {
+                            if (!canEdit) return;
+                            openInfoCorrectionReview(a);
+                          }}
+                          title={!canEdit ? '편집 권한 필요' : logic.infoEditText}
+                          className={`w-full h-[2.25rem] px-0.5 rounded text-[10px] font-medium tracking-tight transition-all border leading-tight flex flex-col items-center justify-center ${
+                            canEdit ? logic.infoEditColor : DISABLED_ACTION_BTN
+                          }`}
+                        >
+                          <span className="truncate max-w-full">{logic.infoEditLabel}</span>
+                          {logic.infoEditDate && (
+                            <span className="text-[9px] font-medium tabular-nums mt-0.5 opacity-90">({logic.infoEditDate})</span>
+                          )}
+                        </button>
+                      ) : (
+                        <span className="text-slate-400">-</span>
+                      )}
                     </td>
-                    <td className="pl-3 pr-2 text-center border-l border-slate-200">
+                    <td className="pl-0.5 pr-2 text-center">
+                      <button
+                        type="button"
+                        onClick={() => setShowQrModal(a)}
+                        title="QR 라벨 보기"
+                        className="inline-flex items-center justify-center text-slate-500 hover:text-slate-800 transition-colors"
+                      >
+                        <svg viewBox="0 0 20 20" className="w-4 h-4" fill="currentColor" aria-hidden>
+                          <path d="M2 2h6v6H2V2zm1.5 1.5v3h3v-3h-3zM12 2h6v6h-6V2zm1.5 1.5v3h3v-3h-3zM2 12h6v6H2v-6zm1.5 1.5v3h3v-3h-3z" />
+                          <path d="M12 12h2.5v2.5H12V12zm3.5 0H18v2.5h-2.5V12zM12 15.5h2.5V18H12v-2.5zm3.5 0H18V18h-2.5v-2.5z" />
+                        </svg>
+                      </button>
+                    </td>
+                    <td className="px-1 text-center border-l border-slate-200">
                       {isEditing ? (
-                        <div className="inline-flex items-center justify-center gap-1 flex-nowrap">
-                          <button type="button" onClick={() => handleSaveEdit(a.id)} className="px-2 py-1 bg-blue-600 text-white rounded text-[10px] font-black hover:bg-blue-700 transition-all shadow-sm whitespace-nowrap">저장</button>
-                          <button type="button" onClick={() => handleCancelEdit(a.id)} className="px-2 py-1 bg-white border border-slate-300 text-slate-600 rounded text-[10px] font-black hover:bg-slate-100 transition-all whitespace-nowrap">취소</button>
+                        <div className="inline-flex flex-col items-center justify-center gap-0.5">
+                          <button type="button" onClick={() => handleSaveEdit(a.id)} className="px-1.5 py-0.5 bg-blue-600 text-white rounded text-[9px] font-medium hover:bg-blue-700 transition-all whitespace-nowrap">저장</button>
+                          <button type="button" onClick={() => handleCancelEdit(a.id)} className="px-1.5 py-0.5 bg-white border border-slate-300 text-slate-600 rounded text-[9px] font-medium hover:bg-slate-100 transition-all whitespace-nowrap">취소</button>
                         </div>
                       ) : (
-                        <div className="inline-flex items-center justify-center gap-1 flex-nowrap">
-                          <button
-                            type="button"
-                            disabled={!canEdit}
-                            title={!canEdit ? '편집 권한 필요' : '수정'}
-                            onClick={() => startEdit(a)}
-                            className={`px-2 py-1 rounded text-[10px] font-black transition-all whitespace-nowrap border ${
-                              canEdit
-                                ? 'bg-white border-slate-300 text-slate-600 hover:bg-slate-100'
-                                : DISABLED_ACTION_BTN
-                            }`}
-                          >
-                            수정
-                          </button>
-                          <button
-                            type="button"
-                            disabled={!canEdit}
-                            title={!canEdit ? '편집 권한 필요' : '종료'}
-                            onClick={() => { if (!canEdit) return; setTerminateModal({ id: a.id, reason: '', actionType: null }); }}
-                            className={`px-2 py-1 rounded text-[10px] font-black transition-all whitespace-nowrap border ${
-                              canEdit
-                                ? 'bg-rose-600 hover:bg-rose-700 text-white border-rose-600'
-                                : DISABLED_ACTION_BTN
-                            }`}
-                          >
-                            종료
-                          </button>
-                          <button
-                            type="button"
-                            disabled={!canEdit}
-                            title={!canEdit ? '편집 권한 필요' : '삭제'}
-                            onClick={() => handleSingleDelete(a.id)}
-                            className={`px-2 py-1 rounded text-[10px] font-black transition-all whitespace-nowrap border ${
-                              canEdit
-                                ? 'bg-white border-red-200 text-red-600 hover:bg-red-50'
-                                : DISABLED_ACTION_BTN
-                            }`}
-                          >
-                            삭제
-                          </button>
-                        </div>
+                        <button
+                          type="button"
+                          disabled={!canEdit}
+                          title={!canEdit ? '편집 권한 필요' : '관리 메뉴'}
+                          onClick={(e) => {
+                            if (!canEdit) return;
+                            const r = (e.currentTarget as HTMLButtonElement).getBoundingClientRect();
+                            const width = 148;
+                            setActionMenu((prev) =>
+                              prev?.id === a.id
+                                ? null
+                                : {
+                                    id: a.id,
+                                    top: r.bottom + 4,
+                                    left: Math.min(Math.max(12, r.right - width), window.innerWidth - width - 12),
+                                  }
+                            );
+                          }}
+                          className={`inline-flex items-center justify-center w-7 h-7 rounded-lg transition-colors ${
+                            canEdit
+                              ? actionMenu?.id === a.id
+                                ? 'bg-slate-200 text-slate-800'
+                                : 'text-slate-500 hover:bg-slate-100 hover:text-slate-800'
+                              : 'text-slate-300 cursor-not-allowed'
+                          }`}
+                        >
+                          <svg viewBox="0 0 20 20" className="w-4 h-4" fill="currentColor" aria-hidden>
+                            <circle cx="10" cy="4.5" r="1.6" />
+                            <circle cx="10" cy="10" r="1.6" />
+                            <circle cx="10" cy="15.5" r="1.6" />
+                          </svg>
+                        </button>
                       )}
                     </td>
                   </tr>
@@ -3198,14 +3400,52 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
         )}
       </div>
   
+      {actionMenu &&
+        createPortal(
+          <div
+            ref={actionMenuRef}
+            style={{ top: actionMenu.top, left: actionMenu.left }}
+            className="fixed z-[500] w-[148px] rounded-xl border border-slate-200 bg-white shadow-lg py-1 text-left"
+          >
+            <button
+              type="button"
+              className="w-full px-3 py-2 text-left text-[11px] font-medium text-slate-700 hover:bg-slate-50"
+              onClick={() => {
+                const asset = assets.find((x) => x.id === actionMenu.id);
+                if (asset) startEdit(asset);
+              }}
+            >
+              수정(Edit)
+            </button>
+            <button
+              type="button"
+              className="w-full px-3 py-2 text-left text-[11px] font-medium text-rose-600 hover:bg-rose-50"
+              onClick={() => {
+                setActionMenu(null);
+                setTerminateModal({ id: actionMenu.id, reason: '', actionType: null });
+              }}
+            >
+              종료(Edit)
+            </button>
+            <button
+              type="button"
+              className="w-full px-3 py-2 text-left text-[11px] font-medium text-red-600 hover:bg-red-50"
+              onClick={() => handleSingleDelete(actionMenu.id)}
+            >
+              삭제(Edit)
+            </button>
+          </div>,
+          document.body
+        )}
+
       {/* 🚀 모달 1: 자산 종료 관리 모달 */}
       {terminateModal && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[400] flex items-center justify-center p-4">
-          <div className="bg-white w-[500px] border border-slate-200 shadow-2xl p-8 rounded-[2rem] font-bold animate-in zoom-in-95 duration-150">
-            <h4 className="text-sm font-black uppercase border-b-2 border-slate-900 pb-3 mb-5 text-slate-900 tracking-wide">💼 자산 마이그레이션 종료 처리</h4>
+          <div className="bg-white w-[500px] border border-slate-200 shadow-2xl p-8 rounded-[2rem] font-medium animate-in zoom-in-95 duration-150">
+            <h4 className="text-sm font-medium border-b-2 border-slate-900 pb-3 mb-5 text-slate-900">💼 자산 마이그레이션 종료 처리</h4>
             
             <div className="mb-5">
-              <label className="text-[11px] font-black text-slate-500 mb-2 block">조치 유형 설정</label>
+              <label className="text-[11px] font-medium text-slate-500 mb-2 block">조치 유형 설정</label>
               <div className="flex gap-2">
                 {(['반납', '폐기', '재판매'] as const).map((type) => (
                   <button 
@@ -3216,7 +3456,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                       reseller: type === '폐기' ? '' : (terminateModal.reseller || ''),
                       resellPrice: type === '재판매' ? (terminateModal.resellPrice || 0) : 0,
                     })}
-                    className={`flex-1 py-3 rounded-xl border font-black text-[11px] transition-all ${
+                    className={`flex-1 py-3 rounded-xl border font-medium text-[11px] transition-all ${
                       terminateModal.actionType === type 
                         ? (type === '폐기' ? 'bg-rose-600 text-white border-rose-600 shadow-md' : type === '재판매' ? 'bg-emerald-600 text-white border-emerald-600 shadow-md' : 'bg-amber-500 text-white border-amber-500 shadow-md')
                         : 'bg-slate-50 text-slate-500 border-slate-200 hover:bg-slate-100'
@@ -3229,19 +3469,19 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
             </div>
   
             <div className="mb-5">
-               <label className="text-[11px] font-black text-slate-500 mb-2 block">종료 및 조치 사유 기술</label>
+               <label className="text-[11px] font-medium text-slate-500 mb-2 block">종료 및 조치 사유 기술</label>
                <textarea 
                  value={terminateModal.reason} 
                  onChange={e => setTerminateModal({...terminateModal, reason: e.target.value})} 
                  placeholder="감사 증빙용 사유를 상세히 기록하세요." 
-                 className="w-full h-24 bg-slate-50 border border-slate-200 p-3 text-[11px] font-bold rounded-xl outline-none resize-none focus:bg-white focus:border-slate-400 shadow-inner" 
+                 className="w-full h-24 bg-slate-50 border border-slate-200 p-3 text-[11px] font-medium rounded-xl outline-none resize-none focus:bg-white focus:border-slate-400 shadow-inner" 
                />
             </div>
   
             {terminateModal.actionType === '반납' && (
               <div className="mb-5 p-4 bg-amber-50/60 border border-amber-200 rounded-2xl space-y-3 animate-in fade-in slide-in-from-top-2 duration-200">
                 <div>
-                  <label className="text-[10px] font-black text-amber-800 mb-1 block">반납처 (반납 기관·벤더명)</label>
+                  <label className="text-[10px] font-medium text-amber-800 mb-1 block">반납처 (반납 기관·벤더명)</label>
                   <input
                     type="text"
                     value={terminateModal.reseller || ''}
@@ -3256,19 +3496,19 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
             {terminateModal.actionType === '재판매' && (
               <div className="mb-5 p-4 bg-emerald-50/60 border border-emerald-200 rounded-2xl space-y-3 animate-in fade-in slide-in-from-top-2 duration-200">
                 <div>
-                  <label className="text-[10px] font-black text-emerald-800 mb-1 block">지정 매입처 (재판매처 기관명)</label>
+                  <label className="text-[10px] font-medium text-emerald-800 mb-1 block">지정 매입처 (재판매처 기관명)</label>
                   <input type="text" value={terminateModal.reseller || ''} onChange={e => setTerminateModal({...terminateModal, reseller: e.target.value})} className="w-full bg-white border border-emerald-200 p-2.5 text-[11px] rounded-xl outline-none focus:border-emerald-500" />
                 </div>
                 <div>
-                  <label className="text-[10px] font-black text-emerald-800 mb-1 block">최종 매각 확정 금액 / 비용 (원)</label>
-                  <input type="number" value={terminateModal.resellPrice || ''} onChange={e => setTerminateModal({...terminateModal, resellPrice: parseInt(e.target.value) || 0})} className="w-full bg-white border border-emerald-200 p-2.5 text-[11px] rounded-xl outline-none focus:border-emerald-500 font-mono" />
+                  <label className="text-[10px] font-medium text-emerald-800 mb-1 block">최종 매각 확정 금액 / 비용 (원)</label>
+                  <input type="number" value={terminateModal.resellPrice || ''} onChange={e => setTerminateModal({...terminateModal, resellPrice: parseInt(e.target.value) || 0})} className="w-full bg-white border border-emerald-200 p-2.5 text-[11px] rounded-xl outline-none focus:border-emerald-500 tabular-nums" />
                 </div>
               </div>
             )}
   
             <div className="flex gap-2 border-t border-slate-100 pt-5">
-              <button onClick={() => setTerminateModal(null)} className="flex-1 py-3.5 bg-slate-100 text-slate-600 hover:bg-slate-200 rounded-xl text-[11px] font-bold">취소</button>
-              <button onClick={() => confirmTerminate(terminateModal!.id)} className="flex-[2] py-3.5 bg-slate-900 text-white rounded-xl shadow-md hover:bg-black text-[11px] font-black tracking-wider">✓ 안전하게 아카이브 대장으로 이관</button>
+              <button onClick={() => setTerminateModal(null)} className="flex-1 py-3.5 bg-slate-100 text-slate-600 hover:bg-slate-200 rounded-xl text-[11px] font-medium">취소</button>
+              <button onClick={() => confirmTerminate(terminateModal!.id)} className="flex-[2] py-3.5 bg-slate-900 text-white rounded-xl shadow-md hover:bg-black text-[11px] font-medium tracking-wider">✓ 안전하게 아카이브 대장으로 이관(Edit)</button>
             </div>
           </div>
         </div>
@@ -3279,8 +3519,8 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
         <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-sm z-[500] flex items-center justify-center p-4" onClick={() => setShowQrModal(null)}>
           <div className="bg-white p-8 rounded-[2rem] flex flex-col items-center shadow-2xl animate-in zoom-in-95 duration-200" onClick={e => e.stopPropagation()}>
             <div className="w-full flex justify-between items-center mb-4">
-              <h3 className="font-black text-lg text-slate-800 tracking-tight">IT·업무자산 QR 라벨</h3>
-              <span className="bg-indigo-100 text-indigo-700 px-2 py-1 rounded text-[10px] font-black">실제 출력 미리보기</span>
+              <h3 className="font-medium text-lg text-slate-800 tracking-tight">IT·업무자산 QR 라벨</h3>
+              <span className="bg-indigo-100 text-indigo-700 px-2 py-1 rounded text-[10px] font-medium">실제 출력 미리보기</span>
             </div>
 
             {/* 실제 인쇄되는 40mm 정사각 라벨과 동일한 형태 (화면용 확대) */}
@@ -3289,8 +3529,8 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
               style={{ width: '260px', height: '260px', padding: '14px 12px 12px 12px', boxSizing: 'border-box' }}
             >
               <div className="w-full space-y-1">
-                <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider">자산 분류</p>
-                <p className="text-[13px] font-black text-slate-900 truncate tracking-tight">
+                <p className="text-[10px] font-medium text-slate-400">자산 분류</p>
+                <p className="text-[13px] font-medium text-slate-900 truncate tracking-tight">
                   {showQrModal.it_type || showQrModal.category || '-'}
                 </p>
               </div>
@@ -3303,25 +3543,25 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                 />
               </div>
               <div className="w-full">
-                <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider mb-0.5">자산번호</p>
-                <p className="text-[14px] font-black font-mono tracking-tighter text-indigo-700 leading-none">
+                <p className="text-[10px] font-medium text-slate-400 mb-0.5">자산번호</p>
+                <p className="text-[14px] font-medium tracking-tighter text-indigo-700 leading-none">
                   {showQrModal.code}
                 </p>
-                <p className="text-[10px] font-bold text-slate-400 truncate mt-1">
+                <p className="text-[10px] font-medium text-slate-400 truncate mt-1">
                   {showQrModal.dept || '-'}
                 </p>
               </div>
             </div>
 
             <div className="w-full bg-amber-50 border border-amber-200 rounded-xl p-3 mb-4 text-center">
-              <p className="text-[11px] font-black text-amber-800">📡 QR 스캔 안내</p>
-              <p className="text-[10px] font-bold text-amber-700 mt-0.5 leading-relaxed">
+              <p className="text-[11px] font-medium text-amber-800">📡 QR 스캔 안내</p>
+              <p className="text-[10px] font-medium text-amber-700 mt-0.5 leading-relaxed">
                 스캔 시 <span className="underline decoration-2">등록 정보(분류·번호·모델·S/N·제조사·사양)</span>를 확인합니다.
               </p>
             </div>
 
             <div className="flex gap-2 w-full">
-              <button type="button" onClick={() => setShowQrModal(null)} className="flex-1 py-3 bg-slate-100 text-slate-600 font-bold rounded-xl hover:bg-slate-200 transition-colors">닫기</button>
+              <button type="button" onClick={() => setShowQrModal(null)} className="flex-1 py-3 bg-slate-100 text-slate-600 font-medium rounded-xl hover:bg-slate-200 transition-colors">닫기</button>
             </div>
           </div>
         </div>
@@ -3340,15 +3580,15 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
           >
             <div className="flex justify-between items-center mb-6 border-b border-slate-200 pb-4 print:hidden">
               <div>
-                <h2 className="text-xl font-black text-slate-800">🖨️ 한국폼텍 28칸 정사각 QR 라벨 발행 센터</h2>
-                <p className="text-slate-500 text-xs font-bold mt-1">드림디포 구매 규격 [QR-3990] 적용 (40mm × 40mm 정사각형) | 총 {bulkPrintAssets.length}개의 라벨</p>
+                <h2 className="text-xl font-medium text-slate-800">🖨️ 한국폼텍 28칸 정사각 QR 라벨 발행 센터</h2>
+                <p className="text-slate-500 text-xs font-medium mt-1">드림디포 구매 규격 [QR-3990] 적용 (40mm × 40mm 정사각형) | 총 {bulkPrintAssets.length}개의 라벨</p>
               </div>
               <div className="flex gap-2">
                 <button
                   type="button"
                   disabled={!bulkQrReady}
                   onClick={runFormtecLabelPrint}
-                  className={`px-6 py-2 font-black rounded-xl shadow-md flex items-center gap-2 text-xs transition-colors ${
+                  className={`px-6 py-2 font-medium rounded-xl shadow-md flex items-center gap-2 text-xs transition-colors ${
                     bulkQrReady
                       ? 'bg-purple-600 text-white hover:bg-purple-700'
                       : 'bg-slate-300 text-slate-500 cursor-not-allowed'
@@ -3356,7 +3596,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                 >
                   <span>🖨️</span> {bulkQrReady ? '라벨 인쇄 실행' : 'QR 생성 중…'}
                 </button>
-                <button type="button" onClick={() => setBulkPrintAssets([])} className="px-6 py-2 bg-slate-100 text-slate-600 font-black rounded-xl hover:bg-slate-200 text-xs">닫기</button>
+                <button type="button" onClick={() => setBulkPrintAssets([])} className="px-6 py-2 bg-slate-100 text-slate-600 font-medium rounded-xl hover:bg-slate-200 text-xs">닫기</button>
               </div>
             </div>
 
@@ -3374,7 +3614,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
               };
               return (
                 <div className="formtec-print-root">
-                  <div className="text-center font-black text-slate-800 text-xs mb-4 print:hidden bg-indigo-50 border border-indigo-100 py-2.5 rounded-xl max-w-[190mm] mx-auto">
+                  <div className="text-center font-medium text-slate-800 text-xs mb-4 print:hidden bg-indigo-50 border border-indigo-100 py-2.5 rounded-xl max-w-[190mm] mx-auto">
                     📍 한국폼텍 28칸 기본 (드림디포 QR-3990 전용 4열 × 7행 정사각 매핑 완료) <br />
                     <span className="text-[10px] text-indigo-500 font-medium font-sans mt-0.5 block">
                       ※ 회색 점선·장 구분선은 인쇄되지 않는 안전 가이드입니다. 28칸마다 새 A4 장으로 나뉩니다. (총 {pageCount}장)
@@ -3382,11 +3622,11 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                   </div>
 
                   <div className="max-w-[190mm] mx-auto mb-4 print:hidden bg-blue-50 border-2 border-blue-200 p-4 rounded-2xl text-left">
-                    <p className="text-center font-black text-slate-800 text-[13px] mb-2">📍 한국폼텍 28칸 정사각 [QR-3990] 전용 출력 가이드</p>
-                    <div className="grid grid-cols-3 gap-2 text-[10px] font-black text-blue-900 border-t border-blue-200 pt-2 bg-white/60 p-2 rounded-xl">
-                      <div className="border-r border-blue-100 pr-2">무조건 <span className="text-red-600 font-bold">&quot;실제 크기 (100%)&quot;</span></div>
-                      <div className="border-r border-blue-100 px-2">무조건 <span className="text-red-600 font-bold">&quot;여백 없음 (None)&quot;</span></div>
-                      <div className="pl-2"><span className="text-red-600 font-bold">&quot;배경 그래픽&quot;</span> 반드시 체크</div>
+                    <p className="text-center font-medium text-slate-800 text-[13px] mb-2">📍 한국폼텍 28칸 정사각 [QR-3990] 전용 출력 가이드</p>
+                    <div className="grid grid-cols-3 gap-2 text-[10px] font-medium text-blue-900 border-t border-blue-200 pt-2 bg-white/60 p-2 rounded-xl">
+                      <div className="border-r border-blue-100 pr-2">무조건 <span className="text-red-600 font-medium">&quot;실제 크기 (100%)&quot;</span></div>
+                      <div className="border-r border-blue-100 px-2">무조건 <span className="text-red-600 font-medium">&quot;여백 없음 (None)&quot;</span></div>
+                      <div className="pl-2"><span className="text-red-600 font-medium">&quot;배경 그래픽&quot;</span> 반드시 체크</div>
                     </div>
                   </div>
 
@@ -3398,12 +3638,12 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                           <div className="formtec-page-guide print:hidden my-8 max-w-[190mm] mx-auto px-2">
                             <div className="flex items-center gap-3">
                               <div className="flex-1 border-t-2 border-dashed border-slate-300" />
-                              <span className="text-[11px] font-black text-slate-500 tracking-wider whitespace-nowrap">
+                              <span className="text-[11px] font-medium text-slate-500 tracking-wider whitespace-nowrap">
                                 {pageIndex}장 --- {pageIndex + 1}장
                               </span>
                               <div className="flex-1 border-t-2 border-dashed border-slate-300" />
                             </div>
-                            <p className="text-center text-[10px] font-bold text-slate-400 mt-2">
+                            <p className="text-center text-[10px] font-medium text-slate-400 mt-2">
                               인쇄 시 이 구분선은 출력되지 않으며, 여기서부터 새 A4(28칸)로 넘어갑니다.
                             </p>
                           </div>
@@ -3412,7 +3652,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                           className="formtec-page bg-white p-0 relative border border-slate-200 shadow-sm mb-6 mx-auto overflow-hidden"
                           style={{ width: '210mm', height: '297mm', boxSizing: 'border-box' }}
                         >
-                          <div className="absolute top-2 right-3 z-10 text-[10px] font-black text-indigo-600 bg-indigo-50 border border-indigo-100 px-2.5 py-1 rounded-lg">
+                          <div className="absolute top-2 right-3 z-10 text-[10px] font-medium text-indigo-600 bg-indigo-50 border border-indigo-100 px-2.5 py-1 rounded-lg">
                             {pageIndex + 1} / {pageCount}장
                           </div>
                           <div className="grid grid-cols-4" style={pageGridStyle}>
@@ -3435,8 +3675,8 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                                   style={{ width: '40mm', height: '40mm', padding: '2.5mm 2mm 2mm 2mm', boxSizing: 'border-box' }}
                                 >
                                   <div className="w-full space-y-0.5">
-                                    <p className="text-[6px] font-black text-slate-400 uppercase leading-none">자산 분류</p>
-                                    <p className="text-[8px] font-black text-slate-900 truncate tracking-tight leading-tight">
+                                    <p className="text-[6px] font-medium text-slate-400 leading-none">자산 분류</p>
+                                    <p className="text-[8px] font-medium text-slate-900 truncate tracking-tight leading-tight">
                                       {a.it_type || a.category || '-'}
                                     </p>
                                   </div>
@@ -3444,14 +3684,14 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                                     {bulkQrMap[a.code] ? (
                                       <img src={bulkQrMap[a.code]} alt="QR" className="w-[20mm] h-[20mm] object-contain" />
                                     ) : (
-                                      <div className="w-[20mm] h-[20mm] flex items-center justify-center bg-slate-50 text-[6px] font-bold text-slate-400 animate-pulse">
+                                      <div className="w-[20mm] h-[20mm] flex items-center justify-center bg-slate-50 text-[6px] font-medium text-slate-400 animate-pulse">
                                         생성 중…
                                       </div>
                                     )}
                                   </div>
                                   <div className="w-full">
-                                    <p className="text-[6px] font-black text-slate-400 uppercase leading-none">자산번호</p>
-                                    <p className="text-[8px] font-black font-mono tracking-tighter text-indigo-700 leading-none truncate">
+                                    <p className="text-[6px] font-medium text-slate-400 leading-none">자산번호</p>
+                                    <p className="text-[8px] font-medium tracking-tighter text-indigo-700 leading-none truncate">
                                       {a.code}
                                     </p>
                                   </div>
@@ -3551,21 +3791,21 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[400] flex items-center justify-center p-4">
           <div className="bg-white w-[520px] border border-slate-200 shadow-2xl rounded-3xl overflow-hidden animate-in zoom-in-95 duration-200">
             <div className="bg-rose-600 p-5 flex items-center justify-between">
-              <h3 className="font-black text-white text-lg">정보수정 요청 검토</h3>
-              <button type="button" onClick={() => setInfoCorrectionModal(null)} className="text-rose-100 hover:text-white font-black">✕</button>
+              <h3 className="font-medium text-white text-lg">정보수정 요청 검토</h3>
+              <button type="button" onClick={() => setInfoCorrectionModal(null)} className="text-rose-100 hover:text-white font-medium">✕</button>
             </div>
             <div className="p-6 space-y-4">
-              <p className="text-[11px] font-bold text-slate-500 leading-relaxed">
+              <p className="text-[11px] font-medium text-slate-500 leading-relaxed">
                 원본은 유지된 상태입니다. 제안값을 확인·수정한 뒤 승인하면 대장에 반영되고 빨간색 표시가 해제됩니다.
               </p>
               <div className="rounded-xl bg-indigo-50/70 border border-indigo-100 px-4 py-3 space-y-2">
-                <div className="flex justify-between gap-3 text-[11px] font-bold">
+                <div className="flex justify-between gap-3 text-[11px] font-medium">
                   <span className="text-slate-400 shrink-0">{itMasterLabel}</span>
-                  <span className="text-indigo-700 font-black text-right">{infoCorrectionModal.it_type || '-'}</span>
+                  <span className="text-indigo-700 font-medium text-right">{infoCorrectionModal.it_type || '-'}</span>
                 </div>
-                <div className="flex justify-between gap-3 text-[11px] font-bold">
+                <div className="flex justify-between gap-3 text-[11px] font-medium">
                   <span className="text-slate-400 shrink-0">자산번호</span>
-                  <span className="text-slate-900 font-black text-right font-mono">{infoCorrectionModal.code || '-'}</span>
+                  <span className="text-slate-900 font-medium text-right tabular-nums">{infoCorrectionModal.code || '-'}</span>
                 </div>
               </div>
               <div className="space-y-3">
@@ -3576,7 +3816,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                   const original = String(infoCorrectionModal[key] ?? '') || '-';
                   return (
                     <label key={key} className="block">
-                      <span className="flex items-center justify-between gap-2 text-[10px] font-black text-slate-500 uppercase tracking-wider">
+                      <span className="flex items-center justify-between gap-2 text-[10px] font-medium text-slate-500">
                         <span>{label}</span>
                         {isChanged && <span className="text-rose-600 normal-case">원본: {original}</span>}
                       </span>
@@ -3584,7 +3824,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                         type="text"
                         value={infoApproveDraft[key]}
                         onChange={(e) => setInfoApproveDraft((prev) => ({ ...prev, [key]: e.target.value }))}
-                        className={`mt-1 w-full px-3 py-2.5 rounded-xl border text-[12px] font-bold outline-none ${
+                        className={`mt-1 w-full px-3 py-2.5 rounded-xl border text-[12px] font-medium outline-none ${
                           isChanged
                             ? 'border-red-300 bg-red-50 text-red-700 focus:border-red-500'
                             : 'border-slate-200 bg-slate-50 text-slate-800'
@@ -3595,9 +3835,9 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                 })}
               </div>
               <div className="flex gap-2 pt-2">
-                <button type="button" onClick={() => setInfoCorrectionModal(null)} className="flex-1 py-3.5 bg-slate-100 text-slate-600 rounded-xl font-black text-xs hover:bg-slate-200">닫기</button>
-                <button type="button" onClick={rejectInfoCorrection} className="flex-1 py-3.5 bg-white border border-slate-300 text-slate-600 rounded-xl font-black text-xs hover:bg-slate-50">거절</button>
-                <button type="button" onClick={approveInfoCorrection} className="flex-[1.4] py-3.5 bg-emerald-600 text-white rounded-xl font-black text-xs shadow-md hover:bg-emerald-700">승인 반영</button>
+                <button type="button" onClick={() => setInfoCorrectionModal(null)} className="flex-1 py-3.5 bg-slate-100 text-slate-600 rounded-xl font-medium text-xs hover:bg-slate-200">닫기</button>
+                <button type="button" onClick={rejectInfoCorrection} className="flex-1 py-3.5 bg-white border border-slate-300 text-slate-600 rounded-xl font-medium text-xs hover:bg-slate-50">거절(Edit)</button>
+                <button type="button" onClick={approveInfoCorrection} className="flex-[1.4] py-3.5 bg-emerald-600 text-white rounded-xl font-medium text-xs shadow-md hover:bg-emerald-700">승인 반영(Edit)</button>
               </div>
             </div>
           </div>
@@ -3623,36 +3863,41 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
               className="bg-white w-[500px] border border-slate-200 shadow-2xl p-8 rounded-3xl animate-in zoom-in-95 duration-200 flex flex-col max-h-[90vh]"
               onClick={(e) => e.stopPropagation()}
             >
-              <h4 className="text-[14px] font-black text-slate-900 tracking-tight mb-2">
-                {threadClosed
-                  ? '처리 완료(종료)'
-                  : waitingForUser
-                    ? (latest.status === '관리자 답변' ? '관리자 답변' : '관리자 신규접수')
-                    : isIncomingReply(latest, requests)
-                      ? '사용자 답변'
-                      : '사용자 신규접수'}
-              </h4>
-              <p className="text-[10px] font-bold text-slate-400 mb-6 border-b-2 border-slate-900 pb-3">
-                {threadClosed
-                  ? '주고받은 전체 이력을 확인할 수 있습니다'
-                  : waitingForUser
-                    ? '사용자 답변 전 · 전송 취소 또는 내용 수정 가능'
-                    : '답변을 작성하거나 처리 완료(종료)할 수 있습니다'}
-              </p>
+              <CommModalHeader
+                title={
+                  threadClosed
+                    ? '처리 완료(종료)'
+                    : waitingForUser
+                      ? (latest.status === '관리자 답변' ? '답변 완료' : '관리자 신규접수')
+                      : isIncomingReply(latest, requests)
+                        ? '사용자 회신 확인'
+                        : '신규 문의 확인'
+                }
+                subtitle={
+                  threadClosed
+                    ? '주고받은 전체 이력을 확인할 수 있습니다'
+                    : waitingForUser
+                      ? '사용자 답변 전 · 전송 취소 또는 내용 수정 가능'
+                      : '답변을 작성하거나 처리 완료(종료)할 수 있습니다'
+                }
+                closedCount={closedHistoryThreads.length}
+                showClosedHistory={showClosedHistory}
+                onToggle={() => setShowClosedHistory((v) => !v)}
+              />
 
               <div className="overflow-y-auto flex-1 pr-2 space-y-4 min-h-0">
                 <div className="rounded-xl bg-slate-50 border border-slate-100 px-4 py-3 space-y-2">
-                  <div className="flex justify-between gap-3 text-[11px] font-bold">
+                  <div className="flex justify-between gap-3 text-[11px] font-medium">
                     <span className="text-slate-400 shrink-0">대상자산</span>
                     <span className="text-slate-800 text-right">
                       {editingReq.assetType || '-'} | {editingReq.assetCode || '-'} / {assetModel}
                     </span>
                   </div>
-                  <div className="flex justify-between gap-3 text-[11px] font-bold">
+                  <div className="flex justify-between gap-3 text-[11px] font-medium">
                     <span className="text-slate-400 shrink-0">대상 사용자</span>
                     <span className="text-slate-800 text-right">{editingReq.requester || '-'} ({editingReq.dept || '-'})</span>
                   </div>
-                  <div className="flex justify-between gap-3 text-[11px] font-bold">
+                  <div className="flex justify-between gap-3 text-[11px] font-medium">
                     <span className="text-slate-400 shrink-0">상태</span>
                     <span className={threadClosed ? 'text-slate-500' : waitingForUser ? 'text-blue-600' : 'text-amber-600'}>
                       {threadClosed
@@ -3663,6 +3908,8 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                     </span>
                   </div>
                 </div>
+
+                {showClosedHistory && <ClosedHistoryBlock threads={closedHistoryThreads} />}
 
                 <div className="border-l-2 border-slate-200 ml-2 space-y-4">
                   {turns.map((turn, idx) => {
@@ -3678,20 +3925,20 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                         />
                         <div className="flex items-center justify-between gap-3 mb-1.5">
                           <span
-                            className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-black whitespace-nowrap ${
+                            className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium whitespace-nowrap ${
                               isAdmin ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-600'
                             }`}
                           >
                             [{roleTag}] {turn.name}
                           </span>
                           {turn.date && (
-                            <span className="text-[10px] font-bold text-slate-400 tabular-nums shrink-0">
+                            <span className="text-[10px] font-medium text-slate-400 tabular-nums shrink-0">
                               {turn.date}
                             </span>
                           )}
                         </div>
                         <div
-                          className={`rounded-md border p-3.5 text-[11px] font-semibold whitespace-pre-wrap leading-relaxed ${
+                          className={`rounded-md border p-3.5 text-[11px] font-medium whitespace-pre-wrap leading-relaxed ${
                             isAdmin
                               ? 'bg-blue-50/40 border-blue-200 text-slate-800'
                               : 'bg-white border-slate-200 text-slate-800'
@@ -3712,17 +3959,17 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                         aria-hidden
                       />
                       <div className="flex items-center justify-between gap-3 mb-1.5">
-                        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-black whitespace-nowrap bg-blue-100 text-blue-700">
+                        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium whitespace-nowrap bg-blue-100 text-blue-700">
                           [관리자] 관리자
                         </span>
-                        <span className="text-[10px] font-bold text-slate-400 tabular-nums shrink-0">작성 중</span>
+                        <span className="text-[10px] font-medium text-slate-400 tabular-nums shrink-0">작성 중</span>
                       </div>
                       <div className="rounded-md border border-blue-200 bg-blue-50/40 p-3.5">
                         <textarea
                           value={editOpinion}
                           onChange={(e) => setEditOpinion(e.target.value)}
                           placeholder="사용자에게 전달할 답변·조치 내용을 작성하세요."
-                          className="w-full min-h-[8rem] bg-transparent text-[11px] font-semibold text-slate-800 outline-none resize-none placeholder:text-slate-400 leading-relaxed"
+                          className="w-full min-h-[8rem] bg-transparent text-[11px] font-medium text-slate-800 outline-none resize-none placeholder:text-slate-400 leading-relaxed"
                         />
                       </div>
                     </div>
@@ -3736,17 +3983,17 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                         aria-hidden
                       />
                       <div className="flex items-center justify-between gap-3 mb-1.5">
-                        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-black whitespace-nowrap bg-blue-100 text-blue-700">
+                        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium whitespace-nowrap bg-blue-100 text-blue-700">
                           [관리자] 관리자
                         </span>
-                        <span className="text-[10px] font-bold text-slate-400 tabular-nums shrink-0">수정 중</span>
+                        <span className="text-[10px] font-medium text-slate-400 tabular-nums shrink-0">수정 중</span>
                       </div>
                       <div className="rounded-md border border-blue-200 bg-blue-50/40 p-3.5">
                         <textarea
                           value={editOpinion}
                           onChange={(e) => setEditOpinion(e.target.value)}
                           placeholder="사용자에게 전달할 내용을 수정하세요."
-                          className="w-full min-h-[8rem] bg-transparent text-[11px] font-semibold text-slate-800 outline-none resize-none placeholder:text-slate-400 leading-relaxed"
+                          className="w-full min-h-[8rem] bg-transparent text-[11px] font-medium text-slate-800 outline-none resize-none placeholder:text-slate-400 leading-relaxed"
                         />
                       </div>
                     </div>
@@ -3763,16 +4010,16 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                         setCommEditMode(false);
                         setEditOpinion(opinionDisplay(latest.adminOpinion));
                       }}
-                      className="flex-1 py-3.5 bg-slate-100 text-slate-500 rounded-xl font-bold text-[11px] hover:bg-slate-200 transition-colors"
+                      className="flex-1 py-3.5 bg-slate-100 text-slate-500 rounded-xl font-medium text-[11px] hover:bg-slate-200 transition-colors"
                     >
                       편집 취소
                     </button>
                     <button
                       type="button"
                       onClick={handleUpdateAdminOutbound}
-                      className="flex-[2] py-3.5 bg-blue-600 text-white rounded-xl font-black text-[12px] shadow-md hover:bg-blue-700 active:scale-95 transition-all"
+                      className="flex-[2] py-3.5 bg-blue-600 text-white rounded-xl font-medium text-[12px] shadow-md hover:bg-blue-700 active:scale-95 transition-all"
                     >
-                      내용 저장
+                      내용 저장(Edit)
                     </button>
                   </>
                 ) : (
@@ -3783,8 +4030,9 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                         setEditingReq(null);
                         setEditOpinion('');
                         setCommEditMode(false);
+                        setShowClosedHistory(false);
                       }}
-                      className="flex-1 py-3.5 bg-slate-100 text-slate-600 rounded-xl font-black text-[11px] hover:bg-slate-200 transition-colors"
+                      className="flex-1 py-3.5 bg-slate-100 text-slate-600 rounded-xl font-medium text-[11px] hover:bg-slate-200 transition-colors"
                     >
                       닫기
                     </button>
@@ -3792,9 +4040,9 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                       <button
                         type="button"
                         onClick={() => handleCancelAdminSend(String(latest.id))}
-                        className="flex-1 py-3.5 bg-rose-50 text-rose-600 border border-rose-200 rounded-xl font-black text-[11px] hover:bg-rose-100 transition-colors"
+                        className="flex-1 py-3.5 bg-rose-50 text-rose-600 border border-rose-200 rounded-xl font-medium text-[11px] hover:bg-rose-100 transition-colors"
                       >
-                        전송 취소
+                        전송 취소(Edit)
                       </button>
                     )}
                     {waitingForUser && (
@@ -3804,27 +4052,27 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                           setEditOpinion(opinionDisplay(latest.adminOpinion));
                           setCommEditMode(true);
                         }}
-                        className="flex-1 py-3.5 bg-white text-slate-700 border border-slate-300 rounded-xl font-black text-[11px] hover:bg-slate-50 transition-colors"
+                        className="flex-1 py-3.5 bg-white text-slate-700 border border-slate-300 rounded-xl font-medium text-[11px] hover:bg-slate-50 transition-colors"
                       >
-                        내용 수정
+                        내용 수정(Edit)
                       </button>
                     )}
                     {waitingForUser && (
                       <button
                         type="button"
                         onClick={() => submitPendingRequestAction('close')}
-                        className="flex-1 py-3.5 bg-white text-slate-600 border border-slate-300 rounded-xl font-black text-[11px] hover:bg-slate-50 transition-colors"
+                        className="flex-1 py-3.5 bg-white text-slate-600 border border-slate-300 rounded-xl font-medium text-[11px] hover:bg-slate-50 transition-colors"
                       >
-                        처리 완료(종료)
+                        처리 완료(종료)(Edit)
                       </button>
                     )}
                     {threadClosed && linkedAsset && (
                       <button
                         type="button"
                         onClick={() => openAdminCompose(linkedAsset)}
-                        className="flex-[1.4] py-3.5 bg-slate-900 text-white rounded-xl font-black text-[12px] shadow-md hover:bg-black active:scale-95 transition-all"
+                        className="flex-[1.4] py-3.5 bg-slate-900 text-white rounded-xl font-medium text-[12px] shadow-md hover:bg-black active:scale-95 transition-all"
                       >
-                        신규 요청하기
+                        신규 요청하기(Edit)
                       </button>
                     )}
                     {canAdminReply && (
@@ -3832,16 +4080,16 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                         <button
                           type="button"
                           onClick={() => submitPendingRequestAction('reply')}
-                          className="flex-[1.4] py-3.5 bg-slate-900 text-white rounded-xl font-black text-[12px] shadow-md hover:bg-black active:scale-95 transition-all"
+                          className="flex-[1.4] py-3.5 bg-slate-900 text-white rounded-xl font-medium text-[12px] shadow-md hover:bg-black active:scale-95 transition-all"
                         >
-                          사용자에게 답변 전송
+                          사용자에게 답변 전송(Edit)
                         </button>
                         <button
                           type="button"
                           onClick={() => submitPendingRequestAction('close')}
-                          className="flex-1 py-3.5 bg-white text-slate-600 border border-slate-300 rounded-xl font-black text-[11px] hover:bg-slate-50 transition-colors"
+                          className="flex-1 py-3.5 bg-white text-slate-600 border border-slate-300 rounded-xl font-medium text-[11px] hover:bg-slate-50 transition-colors"
                         >
-                          처리 완료(종료)
+                          처리 완료(종료)(Edit)
                         </button>
                       </>
                     )}
@@ -3859,26 +4107,31 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
             className="bg-white w-[500px] border border-slate-200 shadow-2xl p-8 rounded-3xl animate-in zoom-in-95 duration-200 flex flex-col max-h-[90vh]"
             onClick={(e) => e.stopPropagation()}
           >
-            <h4 className="text-[14px] font-black text-slate-900 tracking-tight mb-2">신규 요청하기</h4>
-            <p className="text-[10px] font-bold text-slate-400 mb-6 border-b-2 border-slate-900 pb-3">
-              자산 사용자에게 전달할 요청·의견을 작성해 주세요
-            </p>
+            <CommModalHeader
+              title="신규 요청하기"
+              subtitle="자산 사용자에게 전달할 요청·의견을 작성해 주세요"
+              closedCount={closedHistoryThreads.length}
+              showClosedHistory={showClosedHistory}
+              onToggle={() => setShowClosedHistory((v) => !v)}
+            />
 
             <div className="overflow-y-auto flex-1 pr-2 space-y-4 scrollbar-hide">
               <div className="rounded-md bg-slate-50 border border-slate-200 px-4 py-3 space-y-2">
-                <div className="flex justify-between gap-3 text-[11px] font-bold">
+                <div className="flex justify-between gap-3 text-[11px] font-medium">
                   <span className="text-slate-400 shrink-0">대상자산</span>
                   <span className="text-slate-800 text-right">
                     {adminComposeAsset.it_type} | {adminComposeAsset.code} / {adminComposeAsset.model || '-'}
                   </span>
                 </div>
-                <div className="flex justify-between gap-3 text-[11px] font-bold">
+                <div className="flex justify-between gap-3 text-[11px] font-medium">
                   <span className="text-slate-400 shrink-0">대상 사용자</span>
                   <span className="text-slate-800 text-right">
                     {adminComposeAsset.user || '-'} ({adminComposeAsset.dept || '-'})
                   </span>
                 </div>
               </div>
+
+              {showClosedHistory && <ClosedHistoryBlock threads={closedHistoryThreads} />}
 
               <div className="border-l-2 border-slate-200 ml-2">
                 <div className="relative pl-5">
@@ -3887,10 +4140,10 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                     aria-hidden
                   />
                   <div className="flex items-center justify-between gap-3 mb-1.5">
-                    <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-black whitespace-nowrap bg-blue-100 text-blue-700">
+                    <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium whitespace-nowrap bg-blue-100 text-blue-700">
                       [관리자] 관리자
                     </span>
-                    <span className="text-[10px] font-bold text-slate-400 tabular-nums shrink-0">
+                    <span className="text-[10px] font-medium text-slate-400 tabular-nums shrink-0">
                       {formatKSTDateTime(new Date()) !== '-'
                         ? formatKSTDateTime(new Date())
                         : getKSTDateString()}
@@ -3901,7 +4154,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                       value={editOpinion}
                       onChange={(e) => setEditOpinion(e.target.value)}
                       placeholder="실사 안내, 자산 확인 요청, 교체 일정 협의 등 사용자에게 전달할 내용을 작성하세요."
-                      className="w-full min-h-[8rem] bg-transparent text-[11px] font-semibold text-slate-800 outline-none resize-none placeholder:text-slate-400 leading-relaxed"
+                      className="w-full min-h-[8rem] bg-transparent text-[11px] font-medium text-slate-800 outline-none resize-none placeholder:text-slate-400 leading-relaxed"
                     />
                   </div>
                 </div>
@@ -3912,16 +4165,16 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
               <button
                 type="button"
                 onClick={closeAdminCompose}
-                className="flex-1 py-3.5 bg-slate-100 text-slate-600 rounded-xl font-black text-[11px] hover:bg-slate-200 transition-colors"
+                className="flex-1 py-3.5 bg-slate-100 text-slate-600 rounded-xl font-medium text-[11px] hover:bg-slate-200 transition-colors"
               >
                 닫기
               </button>
               <button
                 type="button"
                 onClick={submitAdminOpinionRequest}
-                className="flex-[2] py-3.5 bg-slate-900 text-white rounded-xl font-black text-[12px] shadow-md hover:bg-black active:scale-95 transition-all"
+                className="flex-[2] py-3.5 bg-slate-900 text-white rounded-xl font-medium text-[12px] shadow-md hover:bg-black active:scale-95 transition-all"
               >
-                사용자에게 의견/요청 전송
+                사용자에게 의견/요청 전송(Edit)
               </button>
             </div>
           </div>

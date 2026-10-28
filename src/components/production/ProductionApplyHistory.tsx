@@ -18,13 +18,17 @@ import {
   getProductionCategoryTextClass,
   getProductionCategoryFolderTabClasses,
 } from '@/lib/production-category-theme';
-import { isVendorDispatched } from '@/lib/production-shipping';
+import {
+  canEditProductionApplicantSource,
+  productionStatusLabel,
+  productionStatusTextClass,
+} from '@/lib/production-status';
 import {
   PRODUCTION_MY_ORDERS_TABS,
   useInterfaceStepTabs,
 } from '@/lib/interface-step-tabs';
 
-// 서류철: 진행 전체 / 분류별은 수령완료만
+// 서류철: 진행 중(반려 포함) / 분류별은 수령완료만
 const HISTORY_CATEGORIES = [
   { id: 'ALL', label: '진행 중 내역', icon: '📋' },
   { id: 'SIGN', label: '현판/명판/상패', icon: '📛' },
@@ -175,15 +179,12 @@ export default function ProductionApplyHistory() {
       const matchMonth = selectedMonth === 'ALL' || ym?.month === selectedMonth;
       if (!matchYear || !matchMonth) return false;
 
-      // 진행 중: 수령완료·반려 제외(+분류 솔트) / 분류 서류철: 수령완료·반려만
+      // 진행 중: 수령완료만 제외(반려는 진행 중에 유지) / 분류 서류철: 수령완료만
       if (activeCategory === 'ALL') {
-        if (item.status === 'VERIFIED' || item.status === 'REJECTED') return false;
+        if (item.status === 'VERIFIED') return false;
         return progressCategoryFilter === 'ALL' || item.category === progressCategoryFilter;
       }
-      return (
-        (item.status === 'VERIFIED' || item.status === 'REJECTED') &&
-        item.category === activeCategory
-      );
+      return item.status === 'VERIFIED' && item.category === activeCategory;
     });
   }, [histories, activeCategory, progressCategoryFilter, selectedYear, selectedMonth]);
 
@@ -209,10 +210,13 @@ export default function ProductionApplyHistory() {
   };
 
   const handleCancel = async (item: any) => {
-    if (item.status !== 'PENDING') return;
+    if (item.status !== 'PENDING' && item.status !== 'REJECTED') return;
+    const isRejected = item.status === 'REJECTED';
     if (
       !confirm(
-        `[${item.postNumber}] 신청을 취소하시겠습니까?\n접수대기(미접수) 건은 목록에서 삭제되며, 복구할 수 없습니다.`
+        isRejected
+          ? `[${item.postNumber}] 반려된 신청을 취소하고 목록에서 삭제할까요?\n복구할 수 없습니다.`
+          : `[${item.postNumber}] 신청을 취소하시겠습니까?\n접수대기(미접수) 건은 목록에서 삭제되며, 복구할 수 없습니다.`
       )
     ) {
       return;
@@ -237,6 +241,40 @@ export default function ProductionApplyHistory() {
       alert('신청이 취소되어 목록에서 삭제되었습니다.');
     } catch {
       alert('취소 처리 중 오류가 발생했습니다.');
+    } finally {
+      setActionBusyId(null);
+    }
+  };
+
+  const handleReapply = async (item: any) => {
+    if (item.status !== 'REJECTED') return;
+    if (
+      !confirm(
+        `[${item.postNumber}] 반려된 신청을 다시 접수대기로 올릴까요?\n원문을 수정한 뒤 부서 검수로 다시 들어갑니다.`
+      )
+    ) {
+      return;
+    }
+    setActionBusyId(item.id);
+    try {
+      const res = await fetch('/api/production/custom/my-orders/history', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: item.id, action: 'reapply' }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(data.message || '재신청에 실패했습니다.');
+        return;
+      }
+      setHistories((prev) =>
+        prev.map((h) =>
+          h.id === item.id ? { ...h, ...(data.data || {}), status: 'PENDING' } : h
+        )
+      );
+      alert('재신청되어 접수대기로 올렸습니다.');
+    } catch {
+      alert('재신청 처리 중 오류가 발생했습니다.');
     } finally {
       setActionBusyId(null);
     }
@@ -483,7 +521,7 @@ export default function ProductionApplyHistory() {
                 type="button"
                 role="tab"
                 aria-selected={active}
-                title={`${cat.label} 수령완료·반려 이력`}
+                title={`${cat.label} 수령완료 이력`}
                 onClick={() => setActiveCategory(cat.id)}
                 className={`relative flex items-center gap-1.5 px-3.5 py-2.5 text-xs font-medium tracking-tight transition-colors rounded-t-lg border ${getProductionCategoryFolderTabClasses(cat.id, active)}`}
               >
@@ -596,7 +634,22 @@ export default function ProductionApplyHistory() {
           {loading ? (
             <LoadingState />
           ) : (
-            <table className="w-full text-left border-collapse">
+            <table className="w-full text-left border-collapse table-fixed">
+              <colgroup>
+                <col style={{ width: '2.5rem' }} />
+                <col style={{ width: '2.5rem' }} />
+                <col style={{ width: '10%' }} />
+                <col style={{ width: '6.5%' }} />
+                <col style={{ width: '9%' }} />
+                <col style={{ width: '7%' }} />
+                <col />
+                <col style={{ width: '9.75rem' }} />
+                <col style={{ width: '5.5rem' }} />
+                <col style={{ width: '9%' }} />
+                <col style={{ width: '6.5%' }} />
+                <col style={{ width: '5.5rem' }} />
+                <col style={{ width: '6rem' }} />
+              </colgroup>
               <thead className="bg-slate-100 text-slate-700 text-[10px] font-medium uppercase tracking-widest border-b border-slate-200">
                 <tr>
                   <th className="h-12 pl-4 text-center">
@@ -645,31 +698,18 @@ export default function ProductionApplyHistory() {
                     const isCancelled = item.status === 'CANCELLED';
 
                     const opts = (item.options || {}) as Record<string, unknown>;
-                    const isDispatched = opts.vendorDispatched === true;
-
-                    // 1) 공정상태 판정 — 신청대기 → 묶음발주대기 → 발주완료 → 수령완료
-                    let statusLabel = item.status;
-                    let statusClass = 'text-slate-500';
-
-                    if (isPending) {
-                      statusLabel = '신청대기';
-                      statusClass = 'text-orange-600 font-medium';
-                    } else if (isAccepted || (isOrdered && !isDispatched)) {
-                      statusLabel = '묶음발주대기';
-                      statusClass = 'text-blue-600 font-medium';
-                    } else if (isOrdered && isDispatched) {
-                      statusLabel = '발주완료';
-                      statusClass = 'text-emerald-700 font-medium';
-                    } else if (isVerified) {
-                      statusLabel = '수령완료';
-                      statusClass = 'text-slate-900 font-medium';
-                    } else if (isRejected) {
-                      statusLabel = '반려';
-                      statusClass = 'text-red-600 font-medium';
-                    } else if (isCancelled) {
-                      statusLabel = '취소됨';
-                      statusClass = 'text-slate-400 font-medium';
-                    }
+                    const canReviewEdit = canEditProductionApplicantSource(item.status, opts);
+                    const statusLabel = productionStatusLabel(
+                      item.status,
+                      opts,
+                      'applicant',
+                      item.category
+                    );
+                    const statusClass = `${productionStatusTextClass(
+                      item.status,
+                      opts,
+                      item.category
+                    )} font-medium`;
                     return (
                     <tr
                       key={item.id}
@@ -716,13 +756,13 @@ export default function ProductionApplyHistory() {
                         {item.title || '-'}
                       </td>
                       <td className="px-2 text-center">
-                        {isPending ? (
+                        {canReviewEdit ? (
                           <button
                             type="button"
                             onClick={() => openDetail(item)}
-                            className="px-2.5 py-1 text-[10px] font-medium rounded-lg shadow-sm transition-colors bg-rose-600 text-white hover:bg-rose-700"
+                            className="px-2.5 py-1 text-[10px] font-medium rounded-lg shadow-sm transition-colors bg-rose-600 text-white hover:bg-rose-700 whitespace-nowrap"
                           >
-                            원문검수
+                            원문검토 · 수정가능
                           </button>
                         ) : (
                           <button
@@ -789,7 +829,26 @@ export default function ProductionApplyHistory() {
                         )}
                       </td>
                       <td className="px-2 text-center">
-                        {isPending ? (
+                        {isRejected ? (
+                          <div className="inline-flex items-center justify-center gap-1">
+                            <button
+                              type="button"
+                              disabled={actionBusyId === item.id}
+                              onClick={() => handleReapply(item)}
+                              className="px-2 py-1 text-[10px] font-medium rounded-lg transition-colors bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50 whitespace-nowrap"
+                            >
+                              {actionBusyId === item.id ? '처리중…' : '재신청'}
+                            </button>
+                            <button
+                              type="button"
+                              disabled={actionBusyId === item.id}
+                              onClick={() => handleCancel(item)}
+                              className="px-2 py-1 text-[10px] font-medium rounded-lg transition-colors bg-rose-50 border border-rose-200 hover:bg-rose-100 text-rose-600 disabled:opacity-50 whitespace-nowrap"
+                            >
+                              {actionBusyId === item.id ? '처리중…' : '신청취소'}
+                            </button>
+                          </div>
+                        ) : isPending ? (
                           <button
                             type="button"
                             disabled={actionBusyId === item.id}
@@ -837,6 +896,7 @@ export default function ProductionApplyHistory() {
           item={detailItem}
           onClose={() => setDetailItem(null)}
           allowEdit
+          editableStatuses={['PENDING', 'ACCEPTED', 'REJECTED', 'ORDERED']}
           onSaved={(updated) => {
             setHistories((prev) =>
               prev.map((h) => (h.id === updated.id ? { ...h, ...updated } : h))

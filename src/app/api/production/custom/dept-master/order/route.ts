@@ -257,7 +257,7 @@ export async function GET() {
 /** [POST] 선택 건 묶음 발주 — ACCEPTED(발주대기) → ORDERED + batchId → inspection */
 export async function POST(req: Request) {
   try {
-    const auth = await authorizeApi(MENU_PATH, { requireEditor: true });
+    const auth = await authorizeApi(MENU_PATH);
     const body = await req.json();
     const requestIds = Array.isArray(body.requestIds)
       ? body.requestIds.map((id: unknown) => String(id || '').trim()).filter(Boolean)
@@ -365,7 +365,7 @@ export async function POST(req: Request) {
 /** [PATCH] 접수 / 반려 / 원문 수정(대기중·발주대기) */
 export async function PATCH(req: Request) {
   try {
-    const auth = await authorizeApi(MENU_PATH, { requireEditor: true });
+    const auth = await authorizeApi(MENU_PATH);
     const body = await req.json().catch(() => ({}));
     const id = String(body.id || '').trim();
     const action = String(body.action || '').trim().toLowerCase();
@@ -422,7 +422,7 @@ export async function PATCH(req: Request) {
     if (action === 'revert' || action === 'unaccept') {
       if (row.status !== 'ACCEPTED') {
         return NextResponse.json(
-          { message: '묶음발주대기 상태인 건만 신청검수로 되돌릴 수 있습니다.' },
+          { message: '묶음발주대기 상태인 건만 신청검토로 되돌릴 수 있습니다.' },
           { status: 400 }
         );
       }
@@ -431,7 +431,7 @@ export async function PATCH(req: Request) {
         data: { status: 'PENDING', ...productionStatusChangedStamp() },
       });
       return NextResponse.json({
-        message: '신청검수 서류철로 되돌렸습니다.',
+        message: '신청검토 서류철로 되돌렸습니다.',
         data: updated,
       });
     }

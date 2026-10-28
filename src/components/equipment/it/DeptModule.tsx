@@ -8,10 +8,12 @@ import WindowedPagination from '@/components/common/WindowedPagination';
 import { resolveTopOrgName, isGlobalMgmtOrgMember } from '@/utils/orgUnits';
 import { resolveInterfaceEditState, isSystemLv1User } from '@/lib/permission-utils';
 import {
+  buildInfoCorrectionPending,
   getCompletedAuditLabel,
   getDisplayFieldValue,
   hasInfoCorrectionPending,
   parseInfoCorrectionPending,
+  type InfoCorrectionField,
 } from '@/utils/itInfoCorrection';
 import { rowMatchesOrgUnit } from '@/lib/org-unit-match';
 import { userMatchesAuditTarget, assetInAuditTarget as assetMatchesAuditTarget } from '@/utils/itAuditTarget';
@@ -67,6 +69,10 @@ function assetInDeptScope(
   return scope.scopeNames.includes(String(asset.dept || '').trim());
 }
 
+function isSharedAsset(asset: { user?: string | null } | null | undefined) {
+  return String(asset?.user || '').trim() === '공용';
+}
+
 export default function DeptModule() {
   const [currentUser, setCurrentUser] = useState<any>(null);
   const [assets, setAssets] = useState<any[]>([]);
@@ -98,11 +104,12 @@ export default function DeptModule() {
   const [rentalMasterLabels, setRentalMasterLabels] = useState<string[]>([]);
   const [colFilters, setColFilters] = useState({ category: '', it_type: '', is_rental: '', dept: '', user: '' });
   
-  const [showReplaceableOnly, setShowReplaceableOnly] = useState(false);
-  const [ddayFilter, setDdayFilter] = useState<'all' | 'd-30' | 'd-day' | 'd-plus'>('all');
   /** 공용자산만 보기 (담당자 user === '공용') */
   const [sharedOnlyFilter, setSharedOnlyFilter] = useState(false);
-  const [showStatusFilter, setShowStatusFilter] = useState<'all' | 'done' | 'pending' | 'nudge' | 'info_correction'>('all');
+  const [assetListOpen, setAssetListOpen] = useState(false);
+  const [showStatusFilter, setShowStatusFilter] = useState<'all' | 'done' | 'pending' | 'nudge'>('all');
+  const [confirmAuditModal, setConfirmAuditModal] = useState<any | null>(null);
+  const [infoEditDraft, setInfoEditDraft] = useState({ code: '', model: '', sn: '', spec: '' });
   
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 10;
@@ -112,7 +119,7 @@ export default function DeptModule() {
   useEffect(() => {
     setCurrentPage(1);
     setSelectedIds(new Set());
-  }, [searchQuery, colFilters, showReplaceableOnly, showStatusFilter, ddayFilter, sharedOnlyFilter, focusedAuditId]);
+  }, [searchQuery, colFilters, showStatusFilter, sharedOnlyFilter, focusedAuditId]);
 
   const fetchAllData = async () => {
     setLoading(true);
@@ -292,6 +299,13 @@ export default function DeptModule() {
   const isAuditActive = myRunningAudits.length > 0;
   const activeAudit = focusedAudit;
 
+  useEffect(() => {
+    if (isAuditActive) return;
+    if (showStatusFilter === 'done' || showStatusFilter === 'pending' || showStatusFilter === 'nudge') {
+      setShowStatusFilter('all');
+    }
+  }, [isAuditActive, showStatusFilter]);
+
   const getCoveringAudit = (asset: any) => {
     const covered = myRunningAudits.filter((a) =>
       assetMatchesAuditTarget(
@@ -327,102 +341,87 @@ export default function DeptModule() {
     let isNudged = !!coveringAudit && !!a.audit_request_date;
     const hasInfoCorrection = hasInfoCorrectionPending(a);
 
+    const isShared = isSharedAsset(a);
+
     if (coveringAudit) {
       if (lastAudit && lastAudit >= coveringAudit.startDate) {
         isVerified = true;
         auditStatusLabel = getCompletedAuditLabel(a.last_audit_by);
         auditStatusDate = lastAudit;
         auditStatusColor = a.last_audit_by === 'admin'
-          ? 'bg-violet-50 border-violet-200 text-violet-800'
-          : 'bg-slate-100 border-slate-300 text-slate-600';
-      } else if (hasInfoCorrection) {
-        auditStatusLabel = '수정 대기중';
-        auditStatusDate = parseInfoCorrectionPending(a.info_correction_pending)?.requestedAt || null;
-        auditStatusColor = 'bg-amber-50 border-amber-300 text-amber-800';
+          ? 'bg-violet-50 border-violet-200 text-violet-800 hover:bg-violet-100 shadow-sm cursor-pointer'
+          : 'bg-slate-100 border-slate-300 text-slate-600 hover:bg-slate-200 shadow-sm cursor-pointer';
       } else if (isNudged) {
         auditStatusLabel = '마감 임박';
         auditStatusDate = a.audit_request_date || null;
-        auditStatusColor = 'bg-rose-100 text-rose-800 border-rose-300';
+        auditStatusColor = 'bg-rose-100 text-rose-800 border-rose-300 shadow-sm cursor-pointer';
       } else {
-        auditStatusLabel = '미실사';
-        auditStatusColor = 'bg-indigo-50 text-indigo-700 border-indigo-200 border-dashed';
+        auditStatusLabel = '실사 진행하기';
+        auditStatusColor = 'bg-indigo-600 text-white shadow-sm hover:bg-indigo-700 border-indigo-700 cursor-pointer';
       }
     } else if (isAuditActive) {
-      // 본인 소속 실사는 있으나 이 자산 부서가 해당 범위 밖
       if (lastAudit) {
         isVerified = true;
         auditStatusLabel = getCompletedAuditLabel(a.last_audit_by);
         auditStatusDate = lastAudit;
-        auditStatusColor = 'bg-slate-100 text-slate-700 border-slate-300';
+        auditStatusColor = 'bg-slate-100 text-slate-700 border-slate-300 cursor-not-allowed';
       } else {
         auditStatusLabel = '대상 외';
-        auditStatusColor = 'bg-slate-100 text-slate-500 border-slate-200 border-dashed';
+        auditStatusColor = 'bg-slate-100 text-slate-500 border-slate-200 border-dashed cursor-not-allowed';
       }
+    } else if (lastAudit) {
+      auditStatusLabel = getCompletedAuditLabel(a.last_audit_by);
+      auditStatusDate = lastAudit;
+      auditStatusColor = 'bg-slate-100 text-slate-600 border-slate-300';
+      isVerified = true;
     } else {
-      if (hasInfoCorrection) {
-        auditStatusLabel = '수정 대기중';
-        auditStatusDate = parseInfoCorrectionPending(a.info_correction_pending)?.requestedAt || null;
-        auditStatusColor = 'bg-amber-50 border-amber-300 text-amber-800';
-      } else if (lastAudit) {
-        auditStatusLabel = getCompletedAuditLabel(a.last_audit_by);
-        auditStatusDate = lastAudit;
-        // 실사 대기 중: 관리자확인 보라 강조 없이 이력만 회색 표시
-        auditStatusColor = 'bg-slate-100 text-slate-600 border-slate-300';
-        isVerified = true;
-      } else {
-        // dept는 조회 전용 — 대기 중 미실사는 '-' (개인 화면에서 정보수정/실사)
-        auditStatusLabel = '-';
-        auditStatusColor = 'bg-slate-100 text-slate-500 border-slate-200 border-dashed';
-      }
+      auditStatusLabel = '미실사 장비';
+      auditStatusColor = 'bg-slate-100 text-slate-600 border-slate-300 border-dashed';
     }
     const auditStatusText = auditStatusDate ? `${auditStatusLabel} (${auditStatusDate})` : auditStatusLabel;
+    const infoEditDate = hasInfoCorrection
+      ? (parseInfoCorrectionPending(a.info_correction_pending)?.requestedAt || null)
+      : null;
+    const infoEditLabel = hasInfoCorrection ? '수정 대기중' : '정보수정하기';
+    const infoEditColor = hasInfoCorrection
+      ? 'bg-amber-50 border-amber-300 text-amber-800 hover:bg-amber-100'
+      : 'bg-white border-slate-300 text-slate-600 hover:bg-slate-50 shadow-sm';
+    const infoEditText = infoEditDate ? `${infoEditLabel} (${infoEditDate})` : infoEditLabel;
      
     return {
+      isShared,
       repDate, dday, isTargetCount, isVerified, isNudged, hasInfoCorrection,
       replaceDeferred: deferred,
       auditStatusLabel, auditStatusDate, auditStatusText, auditStatusColor,
+      infoEditLabel, infoEditDate, infoEditText, infoEditColor,
     };
   };
 
   const stats = useMemo(() => {
     const typeCounts: Record<string, number> = {};
     let verified = 0;
-    let auditDoneCount = 0, auditPendingCount = 0, auditNudgeCount = 0, infoCorrectionCount = 0;
-    let d30Count = 0, dDayCount = 0, dPlusCount = 0;
+    let auditDoneCount = 0, auditPendingCount = 0, auditNudgeCount = 0;
     assets.forEach(a => {
       typeCounts[a.it_type] = (typeCounts[a.it_type] || 0) + 1;
+      if (!isSharedAsset(a)) return;
       const logic = getAssetLogic(a);
       if (logic.isVerified) verified++;
 
-      if (logic.hasInfoCorrection) infoCorrectionCount++;
       if (isAuditActive) {
         if (logic.isVerified) auditDoneCount++;
-        else if (logic.hasInfoCorrection) {
-          /* already counted */
-        } else if (logic.isNudged) auditNudgeCount++;
+        else if (logic.isNudged) auditNudgeCount++;
         else auditPendingCount++;
-      }
-
-      if (logic.dday !== null) {
-        if (logic.dday > 0 && logic.dday <= 30) d30Count++;
-        else if (logic.dday === 0) dDayCount++;
-        else if (logic.dday < 0) dPlusCount++;
       }
     });
     return {
       verified,
       typeCounts,
       total: assets.length,
-      replaceable: assets.filter(a => getAssetLogic(a).isTargetCount).length,
-      d30Count,
-      dDayCount,
-      dPlusCount,
       sharedCount: assets.filter((a) => String(a.user || '').trim() === '공용').length,
       unverified: assets.length - verified,
       auditDoneCount,
       auditPendingCount,
       auditNudgeCount,
-      infoCorrectionCount,
     };
   }, [assets, activeAudit, isAuditActive, myRunningAudits, focusedAuditId]);
 
@@ -503,24 +502,14 @@ export default function DeptModule() {
         const matchShared =
           !sharedOnlyFilter || String(a.user || '').trim() === '공용';
 
-        const matchReplace = !showReplaceableOnly || logic.isTargetCount;
-        let matchDday = true;
-        if (ddayFilter !== 'all') {
-          if (logic.replaceDeferred || logic.dday === null) matchDday = false;
-          else if (ddayFilter === 'd-30') matchDday = logic.dday > 0 && logic.dday <= 30;
-          else if (ddayFilter === 'd-day') matchDday = logic.dday === 0;
-          else if (ddayFilter === 'd-plus') matchDday = logic.dday < 0;
-        }
         let matchStatus = true;
-        if (showStatusFilter === 'done') matchStatus = logic.isVerified;
+        if (showStatusFilter === 'done') matchStatus = logic.isShared && logic.isVerified;
         else if (showStatusFilter === 'pending') {
-          matchStatus = !logic.isVerified && !logic.hasInfoCorrection && !logic.isNudged;
+          matchStatus = logic.isShared && !logic.isVerified && !logic.isNudged;
         } else if (showStatusFilter === 'nudge') {
-          matchStatus = !logic.isVerified && logic.isNudged && !logic.hasInfoCorrection;
-        } else if (showStatusFilter === 'info_correction') {
-          matchStatus = logic.hasInfoCorrection;
+          matchStatus = logic.isShared && !logic.isVerified && logic.isNudged;
         }
-        return matchSearch && matchCategory && matchItType && matchRental && matchDept && matchUser && matchShared && matchReplace && matchDday && matchStatus;
+        return matchSearch && matchCategory && matchItType && matchRental && matchDept && matchUser && matchShared && matchStatus;
       })
       // 최신 등록이 위 · NO는 큰 수가 위
       .sort((a, b) => {
@@ -529,7 +518,7 @@ export default function DeptModule() {
         if (tb !== ta) return tb - ta;
         return String(b.id || '').localeCompare(String(a.id || ''));
       });
-  }, [assets, searchQuery, colFilters, showReplaceableOnly, ddayFilter, sharedOnlyFilter, showStatusFilter, activeAudit, myRunningAudits, focusedAuditId, units]);
+  }, [assets, searchQuery, colFilters, sharedOnlyFilter, showStatusFilter, activeAudit, myRunningAudits, focusedAuditId, units]);
   
   const paginatedAssets = filteredAssets.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
   const totalPages = Math.max(1, Math.ceil(filteredAssets.length / itemsPerPage));
@@ -547,9 +536,7 @@ export default function DeptModule() {
   const handleExcelDownload = () => {
     const targetAssets = selectedIds.size > 0 ? filteredAssets.filter(a => selectedIds.has(a.id)) : filteredAssets;
     if (targetAssets.length === 0) return alert('다운로드할 데이터가 없습니다.');
-    const excelData = targetAssets.map((a, index) => {
-      const logic = getAssetLogic(a);
-      return {
+    const excelData = targetAssets.map((a, index) => ({
         'NO': targetAssets.length - index,
         '조직': a.dept || '-',
         '사용자': a.user || '-',
@@ -562,16 +549,131 @@ export default function DeptModule() {
         'S/N': a.sn,
         '제조사': a.brand || '-',
         '기본 사양': a.spec,
-        '입고일': a.in_date || '-',
-        '교체주기(M)': a.cycle,
-        '교체예정일': logic.repDate,
-        '사용 연장(유예)': a.replace_deferred ? 'Y' : '',
         '최근실사일': a.last_audit_date || '-',
-        '기타(메모)': a.memo,
-      };
-    });
+    }));
     const ws = XLSX.utils.json_to_sheet(excelData); const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Dept_Assets"); XLSX.writeFile(wb, `부서업무자산현황_${currentUser?.dept || 'dept'}.xlsx`);
+  };
+
+  const openInfoCorrectionModal = (asset: any) => {
+    if (!isSharedAsset(asset)) return;
+    setInfoEditDraft({
+      code: getDisplayFieldValue(asset, 'code').value,
+      model: getDisplayFieldValue(asset, 'model').value,
+      sn: getDisplayFieldValue(asset, 'sn').value,
+      spec: getDisplayFieldValue(asset, 'spec').value,
+    });
+    setConfirmAuditModal({
+      ...asset,
+      action: hasInfoCorrectionPending(asset) ? 'EDIT_INFO_PENDING' : 'EDIT_INFO',
+    });
+  };
+
+  const cancelInfoCorrection = async () => {
+    if (!confirmAuditModal) return;
+    if (!confirm('정보수정 요청을 취소하고 실사 대기 상태(미실사/실사 진행)로 되돌릴까요?')) return;
+    try {
+      const res = await fetch('/api/equipment/it', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: confirmAuditModal.id,
+          info_correction_pending: null,
+        }),
+      });
+      if (res.ok) {
+        alert('정보수정 요청이 취소되었습니다.');
+        setConfirmAuditModal(null);
+        fetchAllData();
+      } else {
+        alert('요청 취소에 실패했습니다.');
+      }
+    } catch {
+      alert('서버 통신 오류가 발생했습니다.');
+    }
+  };
+
+  const submitInfoCorrection = async () => {
+    if (!confirmAuditModal || !currentUser) return;
+    const pending = buildInfoCorrectionPending({
+      original: confirmAuditModal,
+      draft: infoEditDraft,
+      requestedAt: todayStr,
+      requestedBy: currentUser.email,
+    });
+    if (!pending) {
+      alert('변경된 항목이 없습니다. 수정이 필요한 칸만 고쳐 주세요.');
+      return;
+    }
+    try {
+      const res = await fetch('/api/equipment/it', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: confirmAuditModal.id,
+          info_correction_pending: pending,
+        }),
+      });
+      if (res.ok) {
+        alert('정보수정 요청이 접수되었습니다. 관리자 승인 후 반영됩니다.');
+        setConfirmAuditModal(null);
+        fetchAllData();
+      } else {
+        alert('정보수정 요청 저장에 실패했습니다.');
+      }
+    } catch {
+      alert('서버 통신 오류가 발생했습니다.');
+    }
+  };
+
+  const executeAuditVerify = async () => {
+    if (!confirmAuditModal || !currentUser) return;
+    const assetId = confirmAuditModal.id;
+    const isCancel = confirmAuditModal.action === 'CANCEL';
+    const dateToSave = isCancel ? null : todayStr;
+    const isDoneValue = !isCancel;
+
+    try {
+      const assetUpdate = await fetch('/api/equipment/it', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: assetId,
+          last_audit_date: dateToSave,
+          last_audit_by: isCancel ? null : 'user',
+          audit_request_date: '',
+        }),
+      });
+
+      const responseAudit = getCoveringAudit(confirmAuditModal) || activeAudit;
+      if (responseAudit) {
+        await fetch('/api/equipment/it/audit', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            id: responseAudit.id,
+            responses: {
+              upsert: {
+                where: { auditId_userEmail: { auditId: responseAudit.id, userEmail: currentUser.email } },
+                update: { isDone: isDoneValue, date: dateToSave },
+                create: { userEmail: currentUser.email, isDone: isDoneValue, date: dateToSave },
+              },
+            },
+          }),
+        }).catch(() => null);
+      }
+
+      if (assetUpdate.ok) {
+        alert(isCancel ? `❌ [${confirmAuditModal.code}] 실사 인증이 취소되었습니다.` : `✅ [${confirmAuditModal.code}] 실사 내역이 기록되었습니다.`);
+        setConfirmAuditModal(null);
+        fetchAllData();
+      } else {
+        const err = await assetUpdate.json().catch(() => ({}));
+        alert(`실사 처리에 실패했습니다.${err.message ? `\n${err.message}` : ''}`);
+      }
+    } catch {
+      alert('서버 통신 오류가 발생했습니다.');
+    }
   };
   
   const editState = useMemo(
@@ -624,7 +726,7 @@ export default function DeptModule() {
   };
 
   if (loading) return <LoadingState />;
-  if (!currentUser) return <div className="p-20 text-center font-black text-red-500">인증 정보가 없습니다. 다시 로그인해주세요.</div>;
+  if (!currentUser) return <div className="p-20 text-center font-medium text-red-500">인증 정보가 없습니다. 다시 로그인해주세요.</div>;
   
   return (
     <div className="w-full max-w-[1600px] mx-auto space-y-6 p-8 font-sans text-slate-900 pb-24 animate-fade-in">
@@ -633,24 +735,24 @@ export default function DeptModule() {
         <div className="absolute right-0 top-0 w-64 h-64 bg-indigo-500/12 rounded-full blur-3xl -translate-y-1/3 translate-x-1/4 pointer-events-none" />
         <div className="absolute left-1/4 bottom-0 w-48 h-48 bg-slate-500/10 rounded-full blur-3xl translate-y-1/2 pointer-events-none" />
         <div className="relative z-10">
-          <h3 className="text-[10px] font-black uppercase tracking-widest text-indigo-400 mb-2.5">
+          <h3 className="text-[10px] font-medium text-indigo-400 mb-2.5">
             IT ASSET DEPARTMENT DESK
           </h3>
-          <h1 className="text-2xl tracking-tight leading-none">
-            <span className="text-indigo-400 font-normal">{currentUser?.dept || '-'}</span>
-            <span className="text-white/30 font-normal mx-2.5">|</span>
-            <span className="text-white font-extrabold">부서 IT·업무자산 현황</span>
+          <h1 className="text-2xl font-medium tracking-tight leading-none">
+            <span className="text-indigo-400">{currentUser?.dept || '-'}</span>
+            <span className="text-white/30 mx-2.5">|</span>
+            <span className="text-white">부서 IT·업무자산 현황</span>
           </h1>
           <p className="text-slate-400 text-xs mt-3 leading-relaxed">
             본인 소속 자산과 실사 현황을 조회합니다. (설정 시 최상위 조직 자산 포함)
           </p>
           {permissionSummary && isSystemLv1User(currentUser) && (
             <div className="flex flex-wrap items-center gap-2 mt-4 pt-3 border-t border-white/15">
-              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-white/10 border-white/25 text-slate-50 shadow-sm">
+              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-medium border tracking-tight bg-white/10 border-white/25 text-slate-50 shadow-sm">
                 <span>👑 Master 책임자:</span>
                 <span>{permissionSummary.masterName}</span>
               </div>
-              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-purple-500/20 border-purple-300/40 text-purple-100 shadow-sm">
+              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-medium border tracking-tight bg-purple-500/20 border-purple-300/40 text-purple-100 shadow-sm">
                 <span>👁️ Access:</span>
                 <span>{permissionSummary.accessDesignate}</span>
                 <span className="opacity-50">|</span>
@@ -658,7 +760,7 @@ export default function DeptModule() {
                 <span className="opacity-50">|</span>
                 <span>Level: {permissionSummary.accessLevel}</span>
               </div>
-              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-emerald-400/20 border-emerald-300/40 text-emerald-100 shadow-sm">
+              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-medium border tracking-tight bg-emerald-400/20 border-emerald-300/40 text-emerald-100 shadow-sm">
                 <span>✍️ Edit:</span>
                 <span>{permissionSummary.editDesignate}</span>
                 <span className="opacity-50">|</span>
@@ -671,21 +773,21 @@ export default function DeptModule() {
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-stretch">
         {/* 카드 1: 부서 보유 자산 요약 */}
-        <div className="bg-white p-5 rounded-[1.5rem] border border-slate-200 shadow-sm flex flex-col min-h-[168px]">
+        <div className="bg-white p-5 rounded-[1.5rem] border border-slate-200 shadow-sm flex flex-col min-h-[14.5rem]">
           <div className="flex items-start justify-between gap-2 shrink-0">
             <div className="min-w-0">
-              <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest">부서 보유 자산</p>
-              <p className="text-[9px] font-bold text-slate-400 mt-0.5">유형별 요약</p>
+              <p className="text-[10px] font-medium text-slate-500">부서 보유 자산</p>
+              <p className="text-[9px] font-medium text-slate-400 mt-0.5">유형별 요약</p>
             </div>
             <div className="text-right shrink-0">
-              <p className="text-2xl font-black text-slate-900 tracking-tighter leading-none tabular-nums">{stats.total}</p>
-              <p className="text-[9px] font-bold text-slate-400 mt-1">총 보유</p>
+              <p className="text-2xl font-medium text-slate-900 tracking-tighter leading-none tabular-nums">{stats.total}</p>
+              <p className="text-[9px] font-medium text-slate-400 mt-1">총 보유</p>
             </div>
           </div>
           <div className="flex-1 min-h-0 mt-3 flex flex-wrap content-start gap-1.5">
             {Object.keys(stats.typeCounts).length === 0 ? (
               <div className="w-full h-full min-h-[64px] flex items-center justify-center rounded-xl border border-dashed border-slate-200 bg-slate-50/60">
-                <p className="text-[10px] font-bold text-slate-400">등록된 자산 없음</p>
+                <p className="text-[10px] font-medium text-slate-400">등록된 자산 없음</p>
               </div>
             ) : (
               Object.entries(stats.typeCounts).map(([type, count]) => {
@@ -696,8 +798,9 @@ export default function DeptModule() {
                     type="button"
                     onClick={() => {
                       setColFilters({ ...colFilters, it_type: isSelected ? '' : type });
+                      setAssetListOpen(true);
                     }}
-                    className={`px-2.5 py-1.5 rounded-lg border text-[10px] font-black transition-all ${
+                    className={`px-2.5 py-1.5 rounded-lg border text-[10px] font-medium transition-all ${
                       isSelected
                         ? 'bg-indigo-600 border-indigo-600 text-white shadow-sm'
                         : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100'
@@ -717,72 +820,28 @@ export default function DeptModule() {
                   ? '클릭하면 공용자산 필터를 해제합니다'
                   : '클릭하면 담당자가 「공용」인 자산만 표시합니다'
               }
-              onClick={() => setSharedOnlyFilter((p) => !p)}
+              onClick={() => {
+                setSharedOnlyFilter((p) => !p);
+                setAssetListOpen(true);
+              }}
               className={`w-full py-1.5 px-2.5 rounded-lg border flex items-center justify-between transition-all ${
                 sharedOnlyFilter
                   ? 'bg-violet-600 border-violet-500 text-white shadow-sm'
                   : 'bg-violet-50/80 border-violet-200 text-violet-800 hover:bg-violet-100'
               }`}
             >
-              <span className="text-[9px] font-black tracking-tight">공용자산</span>
-              <span className="text-sm font-black tabular-nums leading-none">{stats.sharedCount}</span>
+              <span className="text-[9px] font-medium tracking-tight">공용자산</span>
+              <span className="text-sm font-medium tabular-nums leading-none">{stats.sharedCount}</span>
             </button>
-            <div className="grid grid-cols-3 gap-1.5">
-            <button
-              type="button"
-              onClick={() => {
-                setShowReplaceableOnly(false);
-                setDdayFilter((p) => (p === 'd-30' ? 'all' : 'd-30'));
-              }}
-              className={`w-full py-2 px-1 rounded-xl border flex flex-col items-center transition-all ${
-                ddayFilter === 'd-30'
-                  ? 'bg-blue-500 border-blue-400 text-white shadow-sm'
-                  : 'bg-white border-slate-200 text-blue-600 hover:bg-blue-50'
-              }`}
-            >
-              <span className="text-[8px] font-black mb-0.5 leading-tight text-center">교체(D-30)</span>
-              <span className="text-sm font-black tabular-nums">{stats.d30Count}</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setShowReplaceableOnly(false);
-                setDdayFilter((p) => (p === 'd-day' ? 'all' : 'd-day'));
-              }}
-              className={`w-full py-2 px-1 rounded-xl border flex flex-col items-center transition-all ${
-                ddayFilter === 'd-day'
-                  ? 'bg-amber-500 border-amber-400 text-amber-900 shadow-sm'
-                  : 'bg-white border-slate-200 text-amber-600 hover:bg-amber-50'
-              }`}
-            >
-              <span className="text-[8px] font-black mb-0.5 leading-tight text-center">교체(D-Day)</span>
-              <span className="text-sm font-black tabular-nums">{stats.dDayCount}</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setShowReplaceableOnly(false);
-                setDdayFilter((p) => (p === 'd-plus' ? 'all' : 'd-plus'));
-              }}
-              className={`w-full py-2 px-1 rounded-xl border flex flex-col items-center transition-all ${
-                ddayFilter === 'd-plus'
-                  ? 'bg-rose-500 border-rose-400 text-white shadow-sm'
-                  : 'bg-white border-slate-200 text-rose-600 hover:bg-rose-50'
-              }`}
-            >
-              <span className="text-[8px] font-black mb-0.5 leading-tight text-center">교체(D+)</span>
-              <span className="text-sm font-black tabular-nums">{stats.dPlusCount}</span>
-            </button>
-            </div>
           </div>
         </div>
 
         {/* 카드 2: 실사 운영 상태 */}
-        <div className="bg-white p-5 rounded-[1.5rem] border border-slate-200 shadow-sm flex flex-col min-h-[168px]">
+        <div className="bg-white p-5 rounded-[1.5rem] border border-slate-200 shadow-sm flex flex-col min-h-[14.5rem]">
           <div className="shrink-0 flex items-start justify-between gap-2">
             <div className="min-w-0">
-              <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest">실사 운영 상태</p>
-              <p className="text-[9px] font-bold text-slate-400 mt-0.5">Audit Status</p>
+              <p className="text-[10px] font-medium text-slate-500">실사 운영 상태</p>
+              <p className="text-[9px] font-medium text-slate-400 mt-0.5">Audit Status</p>
             </div>
             {myRunningAudits.length > 0 && (
               <div className="flex flex-wrap gap-1 justify-end max-w-[58%]">
@@ -796,7 +855,7 @@ export default function DeptModule() {
                       type="button"
                       title={`${a.title || '실사'}\n${a.startDate} ~ ${a.endDate} ${endTime}\n내 소속: ${currentUser?.dept || '-'}`}
                       onClick={() => setFocusedAuditId(a.id)}
-                      className={`px-2 py-0.5 rounded-md text-[9px] font-black border transition-all whitespace-nowrap ${
+                      className={`px-2 py-0.5 rounded-md text-[9px] font-medium border transition-all whitespace-nowrap ${
                         selected
                           ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm'
                           : 'bg-white text-indigo-700 border-indigo-200 hover:bg-indigo-50'
@@ -812,121 +871,97 @@ export default function DeptModule() {
           <div className="flex-1 mt-3 flex flex-col justify-center gap-3">
             <div className="flex items-center justify-between gap-2">
               {isAuditActive ? (
-                <span className="px-3 py-1.5 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-lg font-black text-[11px] animate-pulse">
+                <span className="px-3 py-1.5 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-lg font-medium text-[11px] animate-pulse">
                   🟢 실사 진행 중{myRunningAudits.length > 1 ? ` · ${myRunningAudits.length}건` : ''}
                 </span>
               ) : (
-                <span className="px-3 py-1.5 bg-slate-100 text-slate-600 border border-slate-200 rounded-lg font-black text-[11px]">
-                  ⚪ 실사 대기 중
+                <span className="px-3 py-1.5 bg-slate-100 text-slate-600 border border-slate-200 rounded-lg font-medium text-[11px]">
+                  ⚪ 실사 미진행
                 </span>
               )}
               {isAuditActive && auditDaysLeft !== null && (
                 <div className="text-right">
-                  <p className="text-xl font-black text-indigo-600 tracking-tighter leading-none tabular-nums">
+                  <p className="text-xl font-medium text-indigo-600 tracking-tighter leading-none tabular-nums">
                     {auditDaysLeft >= 0 ? `D-${auditDaysLeft}` : `D+${Math.abs(auditDaysLeft)}`}
                   </p>
-                  <p className="text-[9px] font-bold text-slate-400 mt-0.5">남은 기간</p>
+                  <p className="text-[9px] font-medium text-slate-400 mt-0.5">남은 기간</p>
                 </div>
               )}
             </div>
             {isAuditActive && focusedAudit && (
               <div className="rounded-xl bg-slate-50 border border-slate-100 px-3.5 py-2.5">
-                <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">
+                <p className="text-[9px] font-medium text-slate-400">
                   현재 실사 운영 기간
                 </p>
-                <p className="mt-1 text-[13px] font-black tracking-tight text-indigo-700">
+                <p className="mt-1 text-[13px] font-medium tracking-tight text-indigo-700">
                   {focusedAudit.startDate} ~ {focusedAudit.endDate}
                 </p>
-                <p className="mt-1 text-[10px] font-bold text-slate-400 font-mono">
+                <p className="mt-1 text-[10px] font-medium text-slate-400 tabular-nums">
                   마감 {(focusedAudit.endTime || '23:59').trim() || '23:59'}
                 </p>
               </div>
             )}
           </div>
-          <div className="pt-3 mt-auto border-t border-slate-100 grid grid-cols-4 gap-1.5">
+          {isAuditActive && (
+          <div className="pt-3 mt-auto border-t border-slate-100 grid grid-cols-3 gap-1.5">
             <button
               type="button"
-              disabled={!isAuditActive}
-              title={!isAuditActive ? '실사 진행 중에만 집계·필터됩니다.' : undefined}
               onClick={() => {
-                if (!isAuditActive) return;
                 setShowStatusFilter((prev) => (prev === 'done' ? 'all' : 'done'));
+                setAssetListOpen(true);
               }}
               className={`w-full py-2 px-1 rounded-xl border flex flex-col items-center transition-all ${
-                !isAuditActive
-                  ? 'bg-slate-50 border-slate-100 text-slate-300 cursor-not-allowed'
-                  : showStatusFilter === 'done'
-                    ? 'bg-emerald-600 border-emerald-500 text-white shadow-sm'
-                    : 'bg-white border-slate-200 text-emerald-600 hover:bg-emerald-50'
+                showStatusFilter === 'done'
+                  ? 'bg-emerald-600 border-emerald-500 text-white shadow-sm'
+                  : 'bg-white border-slate-200 text-emerald-600 hover:bg-emerald-50'
               }`}
             >
-              <span className="text-[8px] font-black mb-0.5 leading-tight text-center">실사 완료장비</span>
-              <span className="text-sm font-black tabular-nums">{isAuditActive ? stats.auditDoneCount : 0}</span>
+              <span className="text-[8px] font-medium mb-0.5 leading-tight text-center">실사 완료장비</span>
+              <span className="text-sm font-medium tabular-nums">{stats.auditDoneCount}</span>
             </button>
             <button
               type="button"
-              disabled={!isAuditActive}
-              title={!isAuditActive ? '실사 진행 중에만 집계·필터됩니다.' : undefined}
               onClick={() => {
-                if (!isAuditActive) return;
                 setShowStatusFilter((prev) => (prev === 'pending' ? 'all' : 'pending'));
+                setAssetListOpen(true);
               }}
               className={`w-full py-2 px-1 rounded-xl border flex flex-col items-center transition-all ${
-                !isAuditActive
-                  ? 'bg-slate-50 border-slate-100 text-slate-300 cursor-not-allowed'
-                  : showStatusFilter === 'pending'
-                    ? 'bg-slate-700 border-slate-600 text-white shadow-sm'
-                    : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+                showStatusFilter === 'pending'
+                  ? 'bg-slate-700 border-slate-600 text-white shadow-sm'
+                  : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
               }`}
             >
-              <span className="text-[8px] font-black mb-0.5 leading-tight text-center">미실사 장비</span>
-              <span className="text-sm font-black tabular-nums">{isAuditActive ? stats.auditPendingCount : 0}</span>
+              <span className="text-[8px] font-medium mb-0.5 leading-tight text-center">미실사 장비</span>
+              <span className="text-sm font-medium tabular-nums">{stats.auditPendingCount}</span>
             </button>
             <button
               type="button"
-              disabled={!isAuditActive}
-              title={!isAuditActive ? '실사 진행 중에만 집계·필터됩니다.' : undefined}
               onClick={() => {
-                if (!isAuditActive) return;
                 setShowStatusFilter((prev) => (prev === 'nudge' ? 'all' : 'nudge'));
+                setAssetListOpen(true);
               }}
               className={`w-full py-2 px-1 rounded-xl border flex flex-col items-center transition-all ${
-                !isAuditActive
-                  ? 'bg-slate-50 border-slate-100 text-slate-300 cursor-not-allowed'
-                  : showStatusFilter === 'nudge'
-                    ? 'bg-rose-600 border-rose-500 text-white shadow-sm'
-                    : 'bg-white border-slate-200 text-rose-600 hover:bg-rose-50'
+                showStatusFilter === 'nudge'
+                  ? 'bg-rose-600 border-rose-500 text-white shadow-sm'
+                  : 'bg-white border-slate-200 text-rose-600 hover:bg-rose-50'
               }`}
             >
-              <span className="text-[8px] font-black mb-0.5 leading-tight text-center">미실사/마감 임박 장비</span>
-              <span className="text-sm font-black tabular-nums">{isAuditActive ? stats.auditNudgeCount : 0}</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setShowStatusFilter((prev) => (prev === 'info_correction' ? 'all' : 'info_correction'));
-              }}
-              className={`w-full py-2 px-1 rounded-xl border flex flex-col items-center transition-all ${
-                showStatusFilter === 'info_correction'
-                  ? 'bg-amber-500 border-amber-400 text-amber-900 shadow-sm'
-                  : 'bg-white border-slate-200 text-amber-600 hover:bg-amber-50'
-              }`}
-            >
-              <span className="text-[8px] font-black mb-0.5 leading-tight text-center">정보수정 승인대기</span>
-              <span className="text-sm font-black tabular-nums">{stats.infoCorrectionCount}</span>
+              <span className="text-[8px] font-medium mb-0.5 leading-tight text-center">미실사/마감 임박 장비</span>
+              <span className="text-sm font-medium tabular-nums">{stats.auditNudgeCount}</span>
             </button>
           </div>
+          )}
         </div>
 
         {/* 카드 3: 공유 메모판 (소모품 부서와 동일 DB 필드) */}
-        <div className="bg-white p-5 rounded-[1.5rem] border border-slate-200 shadow-sm flex flex-col min-h-[168px]">
+        <div className="bg-white p-5 rounded-[1.5rem] border border-slate-200 shadow-sm flex flex-col min-h-[14.5rem]">
           <div className="shrink-0 flex items-start justify-between gap-2">
             <div className="min-w-0">
-              <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest flex items-center gap-1.5">
+              <p className="text-[10px] font-medium text-slate-500 flex items-center gap-1.5">
                 <span>📌</span>
                 <span>공유 메모판</span>
               </p>
-              <p className="text-[9px] font-bold text-slate-400 mt-0.5 truncate">
+              <p className="text-[9px] font-medium text-slate-400 mt-0.5 truncate">
                 {memoDeptName || currentUser?.dept || '-'}
               </p>
             </div>
@@ -936,7 +971,7 @@ export default function DeptModule() {
                 onClick={startMemoEdit}
                 disabled={!canEditMemo}
                 title={canEditMemo ? '공유 메모 수정' : '열람 권한 범위 밖'}
-                className={`text-[9px] font-bold shrink-0 transition-colors ${
+                className={`text-[9px] font-medium shrink-0 transition-colors ${
                   canEditMemo
                     ? 'text-slate-400 hover:text-indigo-600'
                     : 'text-slate-300 bg-slate-100 border border-slate-200 px-2 py-0.5 rounded-md cursor-not-allowed opacity-70'
@@ -950,7 +985,7 @@ export default function DeptModule() {
                   type="button"
                   disabled={memoSaving}
                   onClick={cancelMemoEdit}
-                  className="text-[9px] font-bold text-slate-400 hover:text-slate-600 disabled:opacity-50"
+                  className="text-[9px] font-medium text-slate-400 hover:text-slate-600 disabled:opacity-50"
                 >
                   취소
                 </button>
@@ -958,7 +993,7 @@ export default function DeptModule() {
                   type="button"
                   disabled={memoSaving}
                   onClick={saveMemo}
-                  className="text-[9px] font-black text-indigo-600 hover:text-indigo-800 disabled:opacity-50"
+                  className="text-[9px] font-medium text-indigo-600 hover:text-indigo-800 disabled:opacity-50"
                 >
                   {memoSaving ? '저장 중…' : '저장'}
                 </button>
@@ -973,10 +1008,10 @@ export default function DeptModule() {
                 rows={5}
                 maxLength={4000}
                 placeholder={'예)\n• 공용 노트북: 부서 입구 우측 캐비닛\n• 충전기/어댑터: 서랍장 2단'}
-                className="w-full flex-1 p-2.5 rounded-xl border border-slate-200 bg-slate-50 text-[10px] font-bold text-slate-700 leading-relaxed outline-none focus:border-indigo-400 resize-none min-h-[88px]"
+                className="w-full flex-1 p-2.5 rounded-xl border border-slate-200 bg-slate-50 text-[10px] font-medium text-slate-700 leading-relaxed outline-none focus:border-indigo-400 resize-none min-h-[88px]"
               />
             ) : (
-              <div className="flex-1 rounded-xl bg-slate-50 border border-slate-100 px-3.5 py-2.5 text-[10px] font-bold text-slate-600 leading-relaxed whitespace-pre-wrap overflow-y-auto min-h-[88px]">
+              <div className="flex-1 rounded-xl bg-slate-50 border border-slate-100 px-3.5 py-2.5 text-[10px] font-medium text-slate-600 leading-relaxed whitespace-pre-wrap overflow-y-auto min-h-[88px]">
                 {currentMemo.trim()
                   ? currentMemo
                   : canEditMemo
@@ -989,45 +1024,59 @@ export default function DeptModule() {
       </div>
 
       <div className="bg-white border border-slate-200 rounded-[2.5rem] shadow-sm overflow-hidden animate-in fade-in duration-300 slide-in-from-top-4">
-        <div className="p-4 px-6 bg-slate-200/70 border-b border-slate-300 flex flex-wrap items-center justify-between gap-4">
-          <div className="flex items-center gap-2 flex-wrap min-w-0">
-            <div className="w-2.5 h-2.5 rounded-full bg-blue-600 shrink-0" />
-            <h2 className="text-sm font-black text-slate-800 tracking-tight">부서 업무자산 목록</h2>
-            <span className="text-[11px] font-bold bg-slate-300/80 text-slate-700 px-2 py-0.5 rounded-md">{filteredAssets.length}건</span>
-            {showReplaceableOnly && (
-              <span className="text-[10px] font-black text-blue-600 bg-blue-50 border border-blue-200 px-2 py-0.5 rounded-md">교체대상만</span>
-            )}
-            {ddayFilter !== 'all' && (
-              <span className="text-[10px] font-black text-blue-600 bg-blue-50 border border-blue-200 px-2 py-0.5 rounded-md">
-                {ddayFilter === 'd-30' ? '교체(D-30)' : ddayFilter === 'd-day' ? '교체(D-Day)' : '교체(D+)'}만
+        <div className={`p-4 px-6 bg-slate-200/70 flex flex-wrap items-center justify-between gap-4 ${assetListOpen ? 'border-b border-slate-300' : ''}`}>
+          <div className="flex items-center gap-2 flex-wrap min-w-0 flex-1">
+            <button
+              type="button"
+              onClick={() => setAssetListOpen((v) => !v)}
+              className="inline-flex items-center gap-2 min-w-0 rounded-lg hover:bg-white/50 px-1.5 py-1 -ml-1.5 transition-colors"
+              aria-expanded={assetListOpen}
+              title={assetListOpen ? '목록 접기' : '목록 펼치기'}
+            >
+              <span
+                className={`text-slate-500 text-[10px] font-medium transition-transform ${assetListOpen ? 'rotate-90' : ''}`}
+                aria-hidden
+              >
+                ▶
               </span>
-            )}
+              <span className="w-2.5 h-2.5 rounded-full bg-blue-600 shrink-0" />
+              <h2 className="text-sm font-medium text-slate-800 tracking-tight">부서 업무자산 목록</h2>
+            </button>
+            <span className="text-[11px] font-medium bg-slate-300/80 text-slate-700 px-2 py-0.5 rounded-md">{filteredAssets.length}건</span>
             {sharedOnlyFilter && (
-              <span className="text-[10px] font-black text-violet-700 bg-violet-50 border border-violet-200 px-2 py-0.5 rounded-md">
+              <span className="text-[10px] font-medium text-violet-700 bg-violet-50 border border-violet-200 px-2 py-0.5 rounded-md">
                 공용자산만
               </span>
             )}
             {showStatusFilter === 'done' && (
-              <span className="text-[10px] font-black text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-md">실사 완료만</span>
+              <span className="text-[10px] font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-md">실사 완료만</span>
             )}
             {showStatusFilter === 'pending' && (
-              <span className="text-[10px] font-black text-slate-600 bg-slate-100 border border-slate-200 px-2 py-0.5 rounded-md">미실사만</span>
+              <span className="text-[10px] font-medium text-slate-600 bg-slate-100 border border-slate-200 px-2 py-0.5 rounded-md">미실사만</span>
             )}
             {showStatusFilter === 'nudge' && (
-              <span className="text-[10px] font-black text-rose-600 bg-rose-50 border border-rose-200 px-2 py-0.5 rounded-md">마감 임박만</span>
-            )}
-            {showStatusFilter === 'info_correction' && (
-              <span className="text-[10px] font-black text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-md">정보수정 승인대기만</span>
+              <span className="text-[10px] font-medium text-rose-600 bg-rose-50 border border-rose-200 px-2 py-0.5 rounded-md">마감 임박만</span>
             )}
           </div>
 
+          {!assetListOpen && (
+            <button
+              type="button"
+              onClick={() => setAssetListOpen(true)}
+              className="text-[10px] font-medium text-indigo-600 hover:underline shrink-0"
+            >
+              펼치기
+            </button>
+          )}
+
+          {assetListOpen && (
           <div className="flex items-center gap-2 flex-wrap">
             <div className="relative group/filter flex items-center gap-2 bg-white px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm">
-              <span className="text-[10px] font-black text-slate-400 uppercase">부서</span>
+              <span className="text-[10px] font-medium text-slate-400">부서</span>
               <select
                 value={colFilters.dept}
                 onChange={(e) => setColFilters({ ...colFilters, dept: e.target.value })}
-                className="text-[11px] font-black text-indigo-700 outline-none cursor-pointer bg-transparent max-w-[120px]"
+                className="text-[11px] font-medium text-indigo-700 outline-none cursor-pointer bg-transparent max-w-[120px]"
               >
                 <option value="">전체</option>
                 {uniqueDepts.map((d) => (
@@ -1037,11 +1086,11 @@ export default function DeptModule() {
 
               <div className="w-px h-3.5 bg-slate-300 mx-0.5" />
 
-              <span className="text-[10px] font-black text-slate-400 uppercase">사용자</span>
+              <span className="text-[10px] font-medium text-slate-400">사용자</span>
               <select
                 value={colFilters.user}
                 onChange={(e) => setColFilters({ ...colFilters, user: e.target.value })}
-                className="text-[11px] font-black text-blue-700 outline-none cursor-pointer bg-transparent max-w-[120px]"
+                className="text-[11px] font-medium text-blue-700 outline-none cursor-pointer bg-transparent max-w-[120px]"
               >
                 <option value="">전체</option>
                 {uniqueUsers.map((u) => (
@@ -1051,11 +1100,11 @@ export default function DeptModule() {
 
               <div className="w-px h-3.5 bg-slate-300 mx-0.5" />
 
-              <span className="text-[10px] font-black text-slate-400 uppercase">범주</span>
+              <span className="text-[10px] font-medium text-slate-400">범주</span>
               <select
                 value={colFilters.category}
                 onChange={(e) => setColFilters({ ...colFilters, category: e.target.value })}
-                className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent max-w-[120px]"
+                className="text-[11px] font-medium text-slate-800 outline-none cursor-pointer bg-transparent max-w-[120px]"
               >
                 <option value="">전체</option>
                 {uniqueCategories.map((cat) => (
@@ -1065,11 +1114,11 @@ export default function DeptModule() {
 
               <div className="w-px h-3.5 bg-slate-300 mx-0.5" />
 
-              <span className="text-[10px] font-black text-slate-400 uppercase">{typeLabel}</span>
+              <span className="text-[10px] font-medium text-slate-400">{typeLabel}</span>
               <select
                 value={colFilters.it_type}
                 onChange={(e) => setColFilters({ ...colFilters, it_type: e.target.value })}
-                className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent max-w-[120px]"
+                className="text-[11px] font-medium text-slate-800 outline-none cursor-pointer bg-transparent max-w-[120px]"
               >
                 <option value="">전체</option>
                 {uniqueItTypes.map((t) => (
@@ -1079,11 +1128,11 @@ export default function DeptModule() {
 
               <div className="w-px h-3.5 bg-slate-300 mx-0.5" />
 
-              <span className="text-[10px] font-black text-slate-400 uppercase whitespace-nowrap">조달유형</span>
+              <span className="text-[10px] font-medium text-slate-400 whitespace-nowrap">조달유형</span>
               <select
                 value={colFilters.is_rental}
                 onChange={(e) => setColFilters({ ...colFilters, is_rental: e.target.value })}
-                className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent"
+                className="text-[11px] font-medium text-slate-800 outline-none cursor-pointer bg-transparent"
               >
                 <option value="">전체</option>
                 {uniqueProcurementTypes.map((t) => (
@@ -1099,44 +1148,43 @@ export default function DeptModule() {
                 placeholder="모델명, S/N, 사양 검색..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full pl-7 pr-3 py-1.5 bg-white border border-slate-200 rounded-lg text-[11px] font-bold outline-none focus:border-indigo-500 shadow-sm transition-colors"
+                className="w-full pl-7 pr-3 py-1.5 bg-white border border-slate-200 rounded-lg text-[11px] font-medium outline-none focus:border-indigo-500 shadow-sm transition-colors"
               />
             </div>
 
             <button
               type="button"
               onClick={handleExcelDownload}
-              className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-[10px] font-black shadow-sm hover:bg-emerald-700 transition-all whitespace-nowrap"
+              className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-[10px] font-medium shadow-sm hover:bg-emerald-700 transition-all whitespace-nowrap"
             >
               {selectedIds.size > 0
                 ? `선택 EXCEL 다운로드(${selectedIds.size})`
                 : '화면 목록 EXCEL 다운로드'}
             </button>
           </div>
+          )}
         </div>
 
+        {assetListOpen && (
+        <>
         <div className="overflow-x-hidden">
           <table className="w-full text-left border-collapse table-fixed">
             <colgroup>
               <col style={{ width: '2.5%' }} />
               <col style={{ width: '3%' }} />
-              <col style={{ width: '5.5%' }} />
-              <col style={{ width: '5.5%' }} />
-              <col style={{ width: '4.5%' }} />
-              <col style={{ width: '8%' }} />
-              <col style={{ width: '4.5%' }} />
-              <col style={{ width: '8%' }} />
-              <col style={{ width: '8%' }} />
-              <col style={{ width: '6.5%' }} />
+              <col style={{ width: '8.5%' }} />
               <col style={{ width: '5%' }} />
-              <col style={{ width: '8%' }} />
-              <col style={{ width: '5.5%' }} />
-              <col style={{ width: '4%' }} />
-              <col style={{ width: '8%' }} />
+              <col style={{ width: '7.5%' }} />
               <col style={{ width: '5%' }} />
-              <col style={{ width: '12%' }} />
+              <col style={{ width: '8.5%' }} />
+              <col style={{ width: '9%' }} />
+              <col style={{ width: '7.5%' }} />
+              <col style={{ width: '7.5%' }} />
+              <col style={{ width: '18.5%' }} />
+              <col style={{ width: '9%' }} />
+              <col style={{ width: '8.5%' }} />
             </colgroup>
-            <thead className="bg-slate-100 text-slate-700 text-[10px] font-black uppercase tracking-widest border-b border-slate-200">
+            <thead className="bg-slate-100 text-slate-700 text-[10px] font-medium border-b border-slate-200">
               <tr>
                 <th className="h-12 pl-2 text-center">
                   <input
@@ -1152,7 +1200,6 @@ export default function DeptModule() {
                 </th>
                 <th className="h-12 px-1 text-center">NO</th>
                 <th className="h-12 px-1 text-center whitespace-nowrap">사용자</th>
-                <th className="h-12 px-1 text-center whitespace-nowrap">이메일</th>
                 <th className="h-12 px-1 text-center whitespace-nowrap">범주</th>
                 <th className="h-12 px-1 text-center bg-indigo-50 text-indigo-600 border-r border-slate-200 whitespace-nowrap">{typeLabel}</th>
                 <th className="h-12 px-1 text-center whitespace-nowrap">조달유형</th>
@@ -1161,122 +1208,118 @@ export default function DeptModule() {
                 <th className="h-12 px-2 text-slate-900">S/N</th>
                 <th className="h-12 px-2 text-slate-900 whitespace-nowrap">제조사</th>
                 <th className="h-12 px-2 text-slate-900">기본 사양</th>
-                <th className="h-12 px-1 text-center text-slate-900 whitespace-nowrap">입고일</th>
-                <th className="h-12 px-1 text-center text-slate-900 whitespace-nowrap">교체주기(M)</th>
-                <th className="h-12 px-1 text-center whitespace-nowrap">교체예정일</th>
-                <th
-                  className="h-12 px-1 text-center whitespace-nowrap"
-                  title="마스터 대시보드에서 설정한 사용 연장(유예) 상태"
-                >
-                  사용 연장(유예)
-                </th>
-                <th className="h-12 px-1 text-center border-l border-slate-200 whitespace-nowrap min-w-[7rem]">실사/정보수정</th>
+                <th className="h-12 px-1 text-center border-l border-slate-200 whitespace-nowrap min-w-[7.5rem]">공용장비 실사 확인</th>
+                <th className="h-12 px-1 text-center text-amber-700 whitespace-nowrap min-w-[7.5rem]">공용장비 정보수정</th>
               </tr>
             </thead>
-            <tbody className="bg-white divide-y divide-slate-100 text-[11px] font-bold text-slate-700">
+            <tbody className="bg-white divide-y divide-slate-100 text-[11px] font-medium text-slate-700">
               {paginatedAssets.length === 0 ? (
-                <tr><td colSpan={17} className="p-16 text-center text-slate-400 text-xs">조건에 맞는 자산이 없습니다.</td></tr>
+                <tr><td colSpan={13} className="p-16 text-center text-slate-400 text-xs">조건에 맞는 자산이 없습니다.</td></tr>
               ) : (
                 paginatedAssets.map((a, idx) => {
                   const logic = getAssetLogic(a);
                   const isSelected = selectedIds.has(a.id);
                   const rowNo = filteredAssets.length - ((currentPage - 1) * itemsPerPage + idx);
+                  const fieldOf = (field: string) =>
+                    logic.isShared ? getDisplayFieldValue(a, field) : { value: String(a?.[field] ?? ''), isPending: false };
 
                   return (
                     <tr key={a.id} className={`h-12 hover:bg-slate-50/50 transition-colors ${isSelected ? 'bg-indigo-50/50' : ''}`}>
                       <td className="pl-2 text-center" onClick={(e) => e.stopPropagation()}>
                         <input type="checkbox" checked={isSelected} onChange={() => { const next = new Set(selectedIds); next.has(a.id) ? next.delete(a.id) : next.add(a.id); setSelectedIds(next); }} className="w-3 h-3 accent-indigo-600 cursor-pointer" />
                       </td>
-                      <td className="px-1 text-center font-mono text-slate-500 tabular-nums">
+                      <td className="px-1 text-center text-slate-500 tabular-nums">
                         {rowNo}
                       </td>
-                      <td className="px-1 text-center truncate" title={a.user || ''}>
+                      <td
+                        className="px-1 text-center truncate cursor-help"
+                        title={emailLocalPart(a.user_email) || a.user || ''}
+                      >
                         {a.user || '-'}
-                      </td>
-                      <td className="px-1 text-center truncate text-slate-600" title={a.user_email || ''}>
-                        {emailLocalPart(a.user_email) || '-'}
                       </td>
                       <td className="px-1 text-center truncate" title={a.category || ''}>
                         {a.category || '-'}
                       </td>
-                      <td className="px-1 text-center text-indigo-700 font-black truncate border-r border-slate-200" title={a.it_type || ''}>
+                      <td className="px-1 text-center text-indigo-700 font-medium truncate border-r border-slate-200" title={a.it_type || ''}>
                         {a.it_type || '-'}
                       </td>
                       <td className="px-1 text-center whitespace-nowrap text-slate-800" title={a.is_rental || ''}>
                         {a.is_rental || '-'}
                       </td>
-                      <td className="px-2 truncate" title={getDisplayFieldValue(a, 'code').value}>
+                      <td className="px-2 truncate" title={fieldOf('code').value}>
                         {(() => {
-                          const d = getDisplayFieldValue(a, 'code');
-                          return <span className={d.isPending ? 'text-red-600 font-black' : 'text-slate-900'}>{d.value || '-'}</span>;
+                          const d = fieldOf('code');
+                          return <span className={d.isPending ? 'text-red-600 font-medium' : 'text-slate-900'}>{d.value || '-'}</span>;
                         })()}
                       </td>
-                      <td className="px-2 truncate" title={getDisplayFieldValue(a, 'model').value}>
+                      <td className="px-2 truncate" title={fieldOf('model').value}>
                         {(() => {
-                          const d = getDisplayFieldValue(a, 'model');
-                          return <span className={d.isPending ? 'text-red-600 font-black' : 'text-slate-800'}>{d.value || '-'}</span>;
+                          const d = fieldOf('model');
+                          return <span className={d.isPending ? 'text-red-600 font-medium' : 'text-slate-800'}>{d.value || '-'}</span>;
                         })()}
                       </td>
-                      <td className="px-2 font-mono truncate" title={getDisplayFieldValue(a, 'sn').value}>
+                      <td className="px-2 truncate tabular-nums" title={fieldOf('sn').value}>
                         {(() => {
-                          const d = getDisplayFieldValue(a, 'sn');
-                          return <span className={d.isPending ? 'text-red-600 font-black' : 'text-slate-900'}>{d.value || '-'}</span>;
+                          const d = fieldOf('sn');
+                          return <span className={d.isPending ? 'text-red-600 font-medium' : 'text-slate-900'}>{d.value || '-'}</span>;
                         })()}
                       </td>
-                      <td className="px-2 truncate" title={getDisplayFieldValue(a, 'brand').value}>
+                      <td className="px-2 truncate" title={fieldOf('brand').value}>
                         {(() => {
-                          const d = getDisplayFieldValue(a, 'brand');
-                          return <span className={d.isPending ? 'text-red-600 font-black' : 'text-slate-900'}>{d.value || '-'}</span>;
+                          const d = fieldOf('brand');
+                          return <span className={d.isPending ? 'text-red-600 font-medium' : 'text-slate-900'}>{d.value || '-'}</span>;
                         })()}
                       </td>
-                      <td className="px-2 truncate" title={getDisplayFieldValue(a, 'spec').value}>
+                      <td className="px-2 truncate" title={fieldOf('spec').value}>
                         {(() => {
-                          const d = getDisplayFieldValue(a, 'spec');
-                          return <span className={d.isPending ? 'text-red-600 font-black' : 'text-slate-900'}>{d.value || '-'}</span>;
+                          const d = fieldOf('spec');
+                          return <span className={d.isPending ? 'text-red-600 font-medium' : 'text-slate-900'}>{d.value || '-'}</span>;
                         })()}
                       </td>
-                      <td className="px-1 text-center text-slate-900 font-mono tabular-nums whitespace-nowrap" title={a.in_date || ''}>
-                        {a.in_date || '-'}
-                      </td>
-                      <td className="px-1 text-center text-slate-900 tabular-nums">{a.cycle ?? '-'}</td>
-                      <td className="px-1 text-center whitespace-nowrap" title={logic.repDate}>
-                        <span className="text-slate-800 tabular-nums">{logic.repDate}</span>
-                        {logic.dday !== null && logic.dday <= 30 && (
-                          <span
-                            className={`ml-1 px-2 py-0.5 rounded-md text-[9px] font-black animate-pulse shadow-sm ${
-                              logic.dday > 0
-                                ? 'bg-blue-500 text-white'
-                                : logic.dday === 0
-                                  ? 'bg-amber-400 text-amber-900'
-                                  : 'bg-rose-500 text-white'
-                            }`}
-                          >
-                            {logic.dday > 0 ? `D-${logic.dday}` : logic.dday === 0 ? 'D-Day' : `D+${Math.abs(logic.dday)}`}
-                          </span>
+                      <td className="px-1 text-center border-l border-slate-200 min-w-[6.5rem]">
+                        {logic.isShared ? (
+                          isAuditActive ? (
+                            <button
+                              type="button"
+                              title={logic.auditStatusText}
+                              onClick={() => {
+                                setConfirmAuditModal({ ...a, action: logic.isVerified ? 'CANCEL' : 'VERIFY' });
+                              }}
+                              className={`w-full h-[2.25rem] px-0.5 rounded text-[10px] font-medium tracking-tight transition-all shadow-sm border leading-tight flex flex-col items-center justify-center ${logic.auditStatusColor}`}
+                            >
+                              <span className="truncate max-w-full">{logic.auditStatusLabel}</span>
+                              {logic.auditStatusDate && (
+                                <span className="text-[9px] font-medium tabular-nums mt-0.5 opacity-90">({logic.auditStatusDate})</span>
+                              )}
+                            </button>
+                          ) : (
+                            <div title={logic.auditStatusText} className={`w-full h-[2.25rem] px-0.5 rounded text-[10px] font-medium tracking-tight border leading-tight flex flex-col items-center justify-center ${logic.auditStatusColor}`}>
+                              <span className="truncate max-w-full">{logic.auditStatusLabel}</span>
+                              {logic.auditStatusDate && (
+                                <span className="text-[9px] font-medium tabular-nums mt-0.5 opacity-90">({logic.auditStatusDate})</span>
+                              )}
+                            </div>
+                          )
+                        ) : (
+                          <span className="text-slate-400">-</span>
                         )}
                       </td>
-                      <td
-                        className="px-1 text-center whitespace-nowrap"
-                        title="마스터 대시보드에서 설정한 사용 연장(유예) 상태"
-                      >
-                        <input
-                          type="checkbox"
-                          checked={!!a.replace_deferred}
-                          disabled
-                          readOnly
-                          className="w-3.5 h-3.5 accent-slate-700 opacity-70 cursor-not-allowed"
-                        />
-                      </td>
-                      <td className="px-1.5 text-center border-l border-slate-200 min-w-[7rem]">
-                        <div
-                          title={logic.auditStatusText}
-                          className={`w-full min-w-[6.5rem] h-[2.25rem] px-1 rounded text-[10px] font-black tracking-tight border leading-tight flex flex-col items-center justify-center cursor-default ${logic.auditStatusColor}`}
-                        >
-                          <span className="truncate max-w-full">{logic.auditStatusLabel}</span>
-                          {logic.auditStatusDate && (
-                            <span className="text-[9px] font-bold tabular-nums mt-0.5 opacity-90">({logic.auditStatusDate})</span>
-                          )}
-                        </div>
+                      <td className="px-1 text-center min-w-[6.5rem]">
+                        {logic.isShared ? (
+                          <button
+                            type="button"
+                            title={logic.infoEditText}
+                            onClick={() => openInfoCorrectionModal(a)}
+                            className={`w-full h-[2.25rem] px-0.5 rounded text-[10px] font-medium border transition-all cursor-pointer leading-tight flex flex-col items-center justify-center ${logic.infoEditColor}`}
+                          >
+                            <span className="truncate max-w-full">{logic.infoEditLabel}</span>
+                            {logic.infoEditDate && (
+                              <span className="text-[9px] font-medium tabular-nums mt-0.5 opacity-90">({logic.infoEditDate})</span>
+                            )}
+                          </button>
+                        ) : (
+                          <span className="text-slate-400">-</span>
+                        )}
                       </td>
                     </tr>
                   );
@@ -1293,7 +1336,179 @@ export default function DeptModule() {
             onPageChange={setCurrentPage}
           />
         )}
+        </>
+        )}
       </div>
+
+      {confirmAuditModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[400] flex items-center justify-center p-4">
+          <div className={`bg-white border border-slate-200 shadow-2xl p-8 rounded-3xl animate-in zoom-in-95 duration-200 flex flex-col max-h-[90vh] ${
+            confirmAuditModal.action === 'CANCEL'
+              ? 'w-[400px] text-center'
+              : 'w-[500px] text-left'
+          }`}>
+            {confirmAuditModal.action === 'CANCEL' ? (
+              <>
+                <div className="text-5xl mb-4 text-center">↩️</div>
+                <h4 className="text-lg font-medium text-rose-600 tracking-tight mb-2 text-center">실사 인증 내역 취소</h4>
+                <p className="text-[11px] font-medium text-slate-500 mb-6 leading-relaxed bg-rose-50 p-4 rounded-xl border border-rose-100 text-center">
+                  공용 장비 <span className="text-slate-900 font-medium">[{confirmAuditModal.code}]</span>에 대한<br/>
+                  실사 인증 내역을 <span className="text-rose-600">미확인 상태</span>로 되돌리시겠습니까?
+                </p>
+                <div className="flex gap-2">
+                  <button type="button" onClick={() => setConfirmAuditModal(null)} className="flex-1 py-3.5 bg-slate-100 text-slate-500 rounded-xl font-medium text-[11px] hover:bg-slate-200 transition-colors">닫기</button>
+                  <button type="button" onClick={executeAuditVerify} className="flex-[2] py-3.5 bg-rose-600 text-white rounded-xl font-medium text-[12px] shadow-md hover:bg-rose-700 active:scale-95 transition-all">실사 취소하기</button>
+                </div>
+              </>
+            ) : confirmAuditModal.action === 'EDIT_INFO_PENDING' ? (
+              <>
+                <h4 className="text-[14px] font-medium text-slate-900 tracking-tight mb-2">정보수정 요청 내역</h4>
+                <p className="text-[10px] font-medium text-slate-400 mb-6 border-b-2 border-slate-900 pb-3">
+                  관리자 승인 전 · 취소 또는 내용 수정 가능
+                </p>
+                <div className="overflow-y-auto flex-1 pr-2 space-y-4 scrollbar-hide">
+                  <div className="rounded-xl bg-slate-50 border border-slate-100 px-4 py-3 space-y-2">
+                    <div className="flex justify-between gap-3 text-[11px] font-medium">
+                      <span className="text-slate-400 shrink-0">대상자산</span>
+                      <span className="text-slate-800 text-right">{confirmAuditModal.it_type} | {confirmAuditModal.code} / {confirmAuditModal.model || '-'}</span>
+                    </div>
+                    <div className="flex justify-between gap-3 text-[11px] font-medium">
+                      <span className="text-slate-400 shrink-0">요청일</span>
+                      <span className="text-slate-800 tabular-nums">
+                        {parseInfoCorrectionPending(confirmAuditModal.info_correction_pending)?.requestedAt || '-'}
+                      </span>
+                    </div>
+                    <div className="flex justify-between gap-3 text-[11px] font-medium">
+                      <span className="text-slate-400 shrink-0">상태</span>
+                      <span className="text-amber-600">정보수정 승인 대기중</span>
+                    </div>
+                  </div>
+                  <div className="space-y-3">
+                    <p className="text-[10px] font-medium text-slate-400">수정 요청 내용</p>
+                    {([
+                      ['code', '자산번호'],
+                      ['model', '모델명'],
+                      ['sn', 'S/N'],
+                      ['spec', '기본 사양'],
+                    ] as [InfoCorrectionField, string][]).map(([key, label]) => {
+                      const original = String(confirmAuditModal[key] ?? '') || '-';
+                      const dirty = String(infoEditDraft[key] ?? '').trim() !== String(confirmAuditModal[key] ?? '').trim();
+                      return (
+                        <label key={key} className="block">
+                          <span className="flex items-center justify-between gap-2 text-[10px] font-medium text-slate-500">
+                            <span>{label}</span>
+                            {dirty && <span className="text-rose-600 normal-case truncate max-w-[60%]" title={original}>원본: {original}</span>}
+                          </span>
+                          <input
+                            type="text"
+                            value={infoEditDraft[key]}
+                            onChange={(e) => setInfoEditDraft((prev) => ({ ...prev, [key]: e.target.value }))}
+                            className={`mt-1 w-full px-3 py-2.5 rounded-xl border text-[12px] font-medium outline-none transition-colors ${
+                              dirty
+                                ? 'border-red-300 bg-red-50 text-red-700 focus:border-red-500'
+                                : 'border-slate-200 bg-slate-50 text-slate-800 focus:border-indigo-500 focus:bg-white'
+                            }`}
+                          />
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+                <div className="flex gap-2 mt-6 pt-4 border-t border-slate-100">
+                  <button type="button" onClick={cancelInfoCorrection} className="flex-1 py-3.5 bg-rose-50 text-rose-600 border border-rose-200 rounded-xl font-medium text-[11px] hover:bg-rose-100 transition-colors">요청취소</button>
+                  <button type="button" onClick={submitInfoCorrection} className="flex-[1.4] py-3.5 bg-amber-500 text-white rounded-xl font-medium text-[11px] shadow-md hover:bg-amber-600 active:scale-95 transition-all leading-tight px-2">수정완료<br /><span className="text-[9px] font-medium opacity-90">(관리자 확인요청)</span></button>
+                  <button type="button" onClick={() => setConfirmAuditModal(null)} className="flex-1 py-3.5 bg-slate-900 text-white rounded-xl font-medium text-[11px] hover:bg-black transition-colors">확인-닫기</button>
+                </div>
+              </>
+            ) : confirmAuditModal.action === 'EDIT_INFO' ? (
+              <>
+                <h4 className="text-[14px] font-medium text-slate-900 tracking-tight mb-2">정보수정 요청</h4>
+                <p className="text-[10px] font-medium text-slate-400 mb-6 border-b-2 border-slate-900 pb-3">
+                  등록값 기준으로 표시됩니다. 틀린 칸만 수정한 뒤 관리자 확인을 요청하세요.
+                </p>
+                <div className="overflow-y-auto flex-1 pr-2 space-y-3 scrollbar-hide mb-2">
+                  {([
+                    ['code', '자산번호'],
+                    ['model', '모델명'],
+                    ['sn', 'S/N'],
+                    ['spec', '기본 사양'],
+                  ] as [InfoCorrectionField, string][]).map(([key, label]) => {
+                    const original = String(confirmAuditModal[key] ?? '') || '-';
+                    const dirty = String(infoEditDraft[key] ?? '').trim() !== String(confirmAuditModal[key] ?? '').trim();
+                    return (
+                      <label key={key} className="block">
+                        <span className="flex items-center justify-between gap-2 text-[10px] font-medium text-slate-500">
+                          <span>{label}</span>
+                          {dirty && (
+                            <span className="text-rose-600 normal-case truncate max-w-[60%]" title={original}>
+                              원본: {original}
+                            </span>
+                          )}
+                        </span>
+                        <input
+                          type="text"
+                          value={infoEditDraft[key]}
+                          onChange={(e) => setInfoEditDraft((prev) => ({ ...prev, [key]: e.target.value }))}
+                          className={`mt-1 w-full px-3 py-2.5 rounded-xl border text-[12px] font-medium outline-none transition-colors ${
+                            dirty
+                              ? 'border-red-300 bg-red-50 text-red-700 focus:border-red-500'
+                              : 'border-slate-200 bg-slate-50 text-slate-800 focus:border-indigo-500 focus:bg-white'
+                          }`}
+                        />
+                      </label>
+                    );
+                  })}
+                </div>
+                <div className="flex gap-2 mt-4 pt-4 border-t border-slate-100">
+                  <button type="button" onClick={() => setConfirmAuditModal(null)} className="flex-1 py-3.5 bg-slate-100 text-slate-500 rounded-xl font-medium text-[11px] hover:bg-slate-200 transition-colors">취소</button>
+                  <button type="button" onClick={submitInfoCorrection} className="flex-[2] py-3.5 bg-amber-500 text-white rounded-xl font-medium text-[12px] shadow-md hover:bg-amber-600 active:scale-95 transition-all">수정완료 (관리자 확인요청)</button>
+                </div>
+              </>
+            ) : (
+              <>
+                <h4 className="text-[14px] font-medium text-slate-900 tracking-tight mb-2">자산 실사 내역 확인</h4>
+                <p className="text-[10px] font-medium text-slate-400 mb-4 border-b-2 border-slate-900 pb-3">
+                  등록된 정보를 확인한 뒤 이상이 없으면 실사 확인 완료를 눌러 주세요.
+                </p>
+                <div className="overflow-y-auto flex-1 rounded-xl bg-slate-50 border border-slate-100 px-4 py-3 space-y-2 mb-4">
+                  {([
+                    ['사용자', confirmAuditModal.user],
+                    ['범주', confirmAuditModal.category],
+                    ['자산 분류', confirmAuditModal.it_type],
+                    ['조달유형', confirmAuditModal.is_rental],
+                    ['자산번호', confirmAuditModal.code],
+                    ['모델명', confirmAuditModal.model],
+                    ['S/N', confirmAuditModal.sn],
+                    ['제조사', confirmAuditModal.brand],
+                    ['기본 사양', confirmAuditModal.spec],
+                  ] as [string, unknown][]).map(([label, value]) => (
+                    <div key={label} className="flex justify-between gap-3 text-[11px] font-medium">
+                      <span className="text-slate-400 shrink-0">{label}</span>
+                      <span className="text-slate-800 text-right break-all">{String(value ?? '').trim() || '-'}</span>
+                    </div>
+                  ))}
+                </div>
+                <p className="text-[10px] font-medium text-slate-400 mb-4">
+                  정보가 틀리면 <span className="text-amber-600">정보수정 요청</span>을 눌러 주세요.
+                </p>
+                <div className="flex flex-col gap-2">
+                  <div className="flex gap-2">
+                    <button type="button" onClick={() => setConfirmAuditModal(null)} className="flex-1 py-3.5 bg-slate-100 text-slate-500 rounded-xl font-medium text-[11px] hover:bg-slate-200 transition-colors">취소</button>
+                    <button type="button" onClick={executeAuditVerify} className="flex-[2] py-3.5 bg-emerald-600 text-white rounded-xl font-medium text-[12px] shadow-md hover:bg-emerald-700 active:scale-95 transition-all">✅ 실사 확인 완료</button>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => openInfoCorrectionModal(confirmAuditModal)}
+                    className="w-full py-3.5 bg-white text-amber-700 border border-amber-300 rounded-xl font-medium text-[12px] hover:bg-amber-50 transition-all"
+                  >
+                    정보수정 요청하기
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
 
       <DeptProgramAccountsPanel
         isEditor={!!editState.isEditor}

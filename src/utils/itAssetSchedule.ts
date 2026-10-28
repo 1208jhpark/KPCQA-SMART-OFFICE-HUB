@@ -13,17 +13,19 @@ export type ItAssetSchedule = {
   replace_dday: number | null;
 };
 
-/** 마스터 규칙: 교체예정 = 입고일(in_date) + 교체주기(M) */
+/** 전사 공통 교체주기: 입고일 기준 4년(48개월) */
+export const IT_REPLACE_CYCLE_MONTHS = 48;
+
+/** 마스터 규칙: 교체예정 = 입고일(in_date) + 4년 */
 export function computeItAssetReplaceSchedule(asset: {
   in_date?: string | null;
   cycle?: number | string | null;
 }): ItAssetSchedule {
   const inDate = String(asset.in_date || '').trim();
-  const cycleNum = parseInt(String(asset.cycle ?? ''), 10) || 0;
-  if (!inDate || cycleNum <= 0) {
-    return { scheduleBaseDate: inDate || null, replace_due_date: '-', replace_dday: null };
+  if (!inDate) {
+    return { scheduleBaseDate: null, replace_due_date: '-', replace_dday: null };
   }
-  const computed = addMonthsToKSTDateOnly(inDate, cycleNum);
+  const computed = addMonthsToKSTDateOnly(inDate, IT_REPLACE_CYCLE_MONTHS);
   if (!computed) {
     return { scheduleBaseDate: inDate, replace_due_date: '-', replace_dday: null };
   }
