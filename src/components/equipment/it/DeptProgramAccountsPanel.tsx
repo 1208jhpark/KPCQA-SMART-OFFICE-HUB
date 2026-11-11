@@ -1,9 +1,10 @@
 'use client';
 
-import React, { useCallback, useEffect, useState } from 'react';
-import * as XLSX from 'xlsx';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import DeptAssigneeLine, { useDeptAssignees } from '@/components/common/DeptAssigneeLine';
 import { getKSTDateString } from '@/utils/dateUtils';
+import { writeItProgramAccountsExcelBuffer } from '@/lib/it-program-accounts-excel';
 
 type ProgramRow = {
   id: string;
@@ -56,7 +57,32 @@ export default function DeptProgramAccountsPanel({
   const [modalMode, setModalMode] = useState<'add' | 'edit' | null>(null);
   const [form, setForm] = useState(emptyForm());
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [actionKebab, setActionKebab] = useState<{
+    id: string;
+    top: number;
+    left: number;
+  } | null>(null);
+  const actionKebabRef = useRef<HTMLDivElement | null>(null);
   const { editorNames: deptEditorNames } = useDeptAssignees('/equipment/it/dept');
+
+  useEffect(() => {
+    if (!actionKebab) return;
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node | null;
+      if (actionKebabRef.current?.contains(t)) return;
+      if ((e.target as HTMLElement | null)?.closest?.('[data-action-kebab]')) return;
+      setActionKebab(null);
+    };
+    const onWin = () => setActionKebab(null);
+    document.addEventListener('mousedown', onDown);
+    window.addEventListener('scroll', onWin, true);
+    window.addEventListener('resize', onWin);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      window.removeEventListener('scroll', onWin, true);
+      window.removeEventListener('resize', onWin);
+    };
+  }, [actionKebab]);
 
   const loadRows = useCallback(async () => {
     setLoading(true);
@@ -195,31 +221,22 @@ export default function DeptProgramAccountsPanel({
       /* 목록 값으로 폴백 */
     }
 
-    const excelData = exportRows.map((r, i) => {
-      const pw = String(r.program_password || '').trim();
-      const passwordCell = pw && pw !== '****' ? pw : pw ? '****' : '-';
-      return {
-        NO: exportRows.length - i,
-        이름: r.person_name,
-        등록일: r.registered_date || '-',
-        프로그램종류: r.program_type || '-',
-        '프로그램 사용': r.program_used ? '사용' : '-',
-        '프로그램 아이디': r.program_id || '-',
-        '프로그램 비밀번호': passwordCell,
-        'IP 주소': r.ip_address || '-',
-        'MAC 주소': r.mac_address || '-',
-        'S/N': r.note1 || '-',
-        비고1: r.note2 || '-',
-        비고2: r.note3 || '-',
-      };
-    });
-    const ws = XLSX.utils.json_to_sheet(excelData);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'ProgramAccounts');
-    XLSX.writeFile(
-      wb,
-      `부서인력_프로그램사용_${defaultDeptName || 'dept'}_${getKSTDateString()}.xlsx`
-    );
+    try {
+      const buffer = await writeItProgramAccountsExcelBuffer(exportRows, {
+        sheetName: '프로그램사용',
+      });
+      const blob = new Blob([buffer], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `부서인력_프로그램사용_${defaultDeptName || 'dept'}_${getKSTDateString()}.xlsx`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      alert('엑셀 다운로드에 실패했습니다.');
+    }
   };
 
   const displayPassword = (row: ProgramRow) => {
@@ -229,7 +246,7 @@ export default function DeptProgramAccountsPanel({
   };
 
   return (
-    <div className="bg-white border border-slate-200 rounded-[2.5rem] shadow-sm overflow-hidden">
+    <div className="bg-white border border-slate-200 rounded-lg shadow-sm overflow-hidden">
       <div
         className={`p-4 px-6 bg-slate-200/70 flex flex-wrap items-center justify-between gap-3 ${
           open ? 'border-b border-slate-300' : ''
@@ -319,9 +336,9 @@ export default function DeptProgramAccountsPanel({
                   <th className="h-11 px-2 text-center whitespace-nowrap">프로그램 사용</th>
                   <th className="h-11 px-2">프로그램 아이디</th>
                   <th className="h-11 px-2">프로그램 비밀번호</th>
-                  <th className="h-11 px-2">IP 주소</th>
-                  <th className="h-11 px-2">MAC 주소</th>
                   <th className="h-11 px-2 whitespace-nowrap">S/N</th>
+                  <th className="h-11 px-2">IP</th>
+                  <th className="h-11 px-2">MAC</th>
                   <th className="h-11 px-2">비고1</th>
                   <th className="h-11 px-2">비고2</th>
                   <th className="h-11 px-2 text-center whitespace-nowrap">관리액션</th>
@@ -366,11 +383,11 @@ export default function DeptProgramAccountsPanel({
                       <td className="px-2 tabular-nums text-[10px]">
                         {displayPassword(row)}
                       </td>
-                      <td className="px-2 tabular-nums text-[10px]">{row.ip_address || '-'}</td>
-                      <td className="px-2 tabular-nums text-[10px]">{row.mac_address || '-'}</td>
                       <td className="px-2 max-w-[140px] truncate tabular-nums text-[10px]" title={row.note1 || ''}>
                         {row.note1 || '-'}
                       </td>
+                      <td className="px-2 tabular-nums text-[10px]">{row.ip_address || '-'}</td>
+                      <td className="px-2 tabular-nums text-[10px]">{row.mac_address || '-'}</td>
                       <td className="px-2 max-w-[120px] truncate" title={row.note2 || ''}>
                         {row.note2 || '-'}
                       </td>
@@ -378,34 +395,41 @@ export default function DeptProgramAccountsPanel({
                         {row.note3 || '-'}
                       </td>
                       <td className="px-2 text-center">
-                        <div className="flex items-center justify-center gap-1">
-                          <button
-                            type="button"
-                            disabled={!isEditor}
-                            onClick={() => openEdit(row)}
-                            title={isEditor ? '수정' : '수정은 Edit 권한이 필요합니다.'}
-                            className={`px-2 py-1 rounded-lg text-[9px] font-medium border transition-colors ${
-                              isEditor
-                                ? 'bg-white border-slate-300 text-slate-700 hover:bg-slate-50 cursor-pointer'
-                                : 'bg-slate-100 border-slate-200 text-slate-300 cursor-not-allowed'
-                            }`}
+                        <button
+                          type="button"
+                          data-action-kebab
+                          title="더보기"
+                          onClick={(e) => {
+                            const rect = (
+                              e.currentTarget as HTMLButtonElement
+                            ).getBoundingClientRect();
+                            setActionKebab((prev) =>
+                              prev?.id === row.id
+                                ? null
+                                : {
+                                    id: row.id,
+                                    top: rect.bottom + 4,
+                                    left: Math.max(8, rect.right - 148),
+                                  }
+                            );
+                          }}
+                          className={`inline-flex items-center justify-center w-7 h-7 rounded-lg transition-colors ${
+                            actionKebab?.id === row.id
+                              ? 'bg-slate-200 text-slate-800'
+                              : 'text-slate-500 hover:bg-slate-100 hover:text-slate-800'
+                          }`}
+                        >
+                          <svg
+                            viewBox="0 0 20 20"
+                            className="w-4 h-4"
+                            fill="currentColor"
+                            aria-hidden
                           >
-                            수정(Edit)
-                          </button>
-                          <button
-                            type="button"
-                            disabled={!isEditor}
-                            onClick={() => handleDelete(row)}
-                            title={isEditor ? '삭제' : '삭제는 Edit 권한이 필요합니다.'}
-                            className={`px-2 py-1 rounded-lg text-[9px] font-medium border transition-colors ${
-                              isEditor
-                                ? 'bg-white border-red-200 text-red-500 hover:bg-red-50 cursor-pointer'
-                                : 'bg-slate-100 border-slate-200 text-slate-300 cursor-not-allowed'
-                            }`}
-                          >
-                            삭제(Edit)
-                          </button>
-                        </div>
+                            <circle cx="10" cy="4.5" r="1.6" />
+                            <circle cx="10" cy="10" r="1.6" />
+                            <circle cx="10" cy="15.5" r="1.6" />
+                          </svg>
+                        </button>
                       </td>
                     </tr>
                   ))
@@ -415,6 +439,54 @@ export default function DeptProgramAccountsPanel({
           </div>
         </>
       )}
+
+      {actionKebab
+        ? createPortal(
+            <div
+              ref={actionKebabRef}
+              style={{ top: actionKebab.top, left: actionKebab.left }}
+              className="fixed z-[500] w-[148px] rounded-xl border border-slate-200 bg-white shadow-lg py-1 text-left"
+            >
+              <button
+                type="button"
+                disabled={!isEditor}
+                title={isEditor ? '수정' : '수정은 Edit 권한이 필요합니다.'}
+                className={`w-full px-3 py-2 text-left text-[11px] font-medium disabled:opacity-40 ${
+                  isEditor
+                    ? 'text-slate-700 hover:bg-slate-50'
+                    : 'text-slate-300 cursor-not-allowed'
+                }`}
+                onClick={() => {
+                  const row = rows.find((r) => r.id === actionKebab.id);
+                  setActionKebab(null);
+                  if (!row) return;
+                  void openEdit(row);
+                }}
+              >
+                수정(Edit)
+              </button>
+              <button
+                type="button"
+                disabled={!isEditor}
+                title={isEditor ? '삭제' : '삭제는 Edit 권한이 필요합니다.'}
+                className={`w-full px-3 py-2 text-left text-[11px] font-medium disabled:opacity-40 ${
+                  isEditor
+                    ? 'text-rose-600 hover:bg-rose-50'
+                    : 'text-slate-300 cursor-not-allowed'
+                }`}
+                onClick={() => {
+                  const row = rows.find((r) => r.id === actionKebab.id);
+                  setActionKebab(null);
+                  if (!row) return;
+                  void handleDelete(row);
+                }}
+              >
+                삭제(Edit)
+              </button>
+            </div>,
+            document.body
+          )
+        : null}
 
       {modalMode && (
         <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-900/40 p-4">
@@ -439,9 +511,9 @@ export default function DeptProgramAccountsPanel({
                   ['program_type', '프로그램종류', 'text'],
                   ['program_id', '프로그램 아이디', 'text'],
                   ['program_password', '프로그램 비밀번호', 'text'],
-                  ['ip_address', 'IP 주소', 'text'],
-                  ['mac_address', 'MAC 주소', 'text'],
                   ['note1', 'S/N', 'text'],
+                  ['ip_address', 'IP', 'text'],
+                  ['mac_address', 'MAC', 'text'],
                   ['note2', '비고1', 'text'],
                   ['note3', '비고2', 'text'],
                 ] as const

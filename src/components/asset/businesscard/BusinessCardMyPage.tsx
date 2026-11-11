@@ -1,7 +1,6 @@
 'use client';
 
 import { useState, useEffect, useMemo } from 'react';
-import * as XLSX from 'xlsx';
 import LoadingState from '@/components/common/LoadingState';
 import WindowedPagination from '@/components/common/WindowedPagination';
 import { resolveInterfaceEditState } from '@/lib/permission-utils';
@@ -9,6 +8,7 @@ import { formatBusinessCardEnNumber, stripBusinessCardEnPlus } from '@/lib/busin
 import { formatKrPhoneInput } from '@/lib/format-kr-phone';
 import { formatBusinessCardUserStatusLabel } from '@/lib/businesscard-status';
 import { formatCompanyAddressKo } from '@/lib/businesscard-seed-addresses';
+import { writeBusinessCardOrderExcelBuffer } from '@/lib/businesscard-order-excel';
 import { getKSTDateString, getKSTNowYearMonth, formatKSTDateTime } from '@/utils/dateUtils';
 import type { UserJobOption } from '@/lib/user-job-options';
 
@@ -90,10 +90,14 @@ interface RequestHistory {
   adminModifiedAt?: string | null;
   quantity?: number;
   hasProof?: boolean;
+  hasMailReview?: boolean;
   proofFileName?: string | null;
+  proofMailReviewedAt?: string | null;
   proofConfirmed?: boolean;
   proofConfirmedAt?: string | null;
   proofConfirmedBy?: string | null;
+  /** 묶음 발주확정(dispatchedDate) 여부 — 시안확정 후·발주확정 전은 발주대기 */
+  orderDispatched?: boolean;
 }
 
 const MANUAL_QUAL_PREFIX = '__MANUAL__:';
@@ -828,17 +832,34 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
     a.remove();
   };
 
+  const isProofReadyForUser = (row: RequestHistory) =>
+    Boolean(
+      row.hasProof ||
+        row.proofFileName ||
+        row.hasMailReview ||
+        row.proofMailReviewedAt
+    );
+
   const handleProofConfirm = async (row: RequestHistory) => {
     if (!canEdit) return alertNoEditPermission();
-    if (!row.hasProof && !row.proofFileName) {
-      alert('업로드된 시안이 없습니다.');
+    if (!isProofReadyForUser(row)) {
+      alert('시안 파일 또는 메일확인요청이 도착한 뒤 확정해 주세요.');
       return;
     }
     if (row.proofConfirmed || row.proofConfirmedAt) {
       alert('이미 시안이 확정되었습니다.');
       return;
     }
-    if (!confirm(`[${row.postNumber || row.id}] 시안을 확정할까요?\n확정 후에는 인쇄·제작이 진행됩니다.`)) return;
+    const viaMail = !row.hasProof && !row.proofFileName;
+    if (
+      !confirm(
+        viaMail
+          ? `[${row.postNumber || row.id}] 메일로 받은 시안을 확인하셨나요?\n확정 후에는 인쇄·제작이 진행됩니다.`
+          : `[${row.postNumber || row.id}] 시안을 확정할까요?\n확정 후에는 인쇄·제작이 진행됩니다.`
+      )
+    ) {
+      return;
+    }
     try {
       const res = await fetch('/api/asset/businesscard/proof', {
         method: 'PATCH',
@@ -855,7 +876,8 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
           h.id === row.id
             ? {
                 ...h,
-                hasProof: true,
+                hasProof: Boolean(data.hasProof ?? h.hasProof),
+                hasMailReview: Boolean(data.hasMailReview ?? h.hasMailReview),
                 proofConfirmed: true,
                 proofConfirmedAt: data.proofConfirmedAt || new Date().toISOString(),
                 proofConfirmedBy: data.proofConfirmedBy || null,
@@ -894,38 +916,26 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
     return matchYear && matchMonth;
   });
 
-  const handleExportExcel = () => {
+  const handleExportExcel = async () => {
     if (filteredHistory.length === 0) return alert('다운로드할 데이터가 없습니다.');
 
-    const excelData = filteredHistory.map((r) => ({
-      성명: r.userName,
-      신청일자: r.applyDate,
-      본부: r.deptHead,
-      소속: r.deptName || '',
-      '직책/직급': r.title,
-      추가사항: r.additionalKo || '',
-      우편번호: r.zipCode,
-      주소: r.addressKo,
-      휴대전화: r.mobile,
-      전화번호: r.phone || '',
-      팩스: r.fax || '',
-      이메일: r.email,
-      영문이름: r.userNameEn || '',
-      영문본부: r.deptHeadEn || '',
-      영문소속: r.deptNameEn || '',
-      영문직책: r.titleEn || '',
-      영문추가: r.additionalEn || '',
-      영문주소: r.addressEn || '',
-      '영문 휴대전화': stripBusinessCardEnPlus(r.mobileEn || ''),
-      영문전화: stripBusinessCardEnPlus(r.phoneEn || ''),
-      영문팩스: stripBusinessCardEnPlus(r.faxEn || ''),
-      '이메일(영문)': r.emailEn || r.email,
-    }));
-
-    const ws = XLSX.utils.json_to_sheet(excelData);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, '명함신청데이터');
-    XLSX.writeFile(wb, `명함발주데이터_${getKSTDateString()}.xlsx`);
+    try {
+      const buffer = await writeBusinessCardOrderExcelBuffer(filteredHistory, {
+        sheetName: '명함신청데이터',
+      });
+      const blob = new Blob([buffer], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `명함발주데이터_${getKSTDateString()}.xlsx`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error(err);
+      alert('엑셀 다운로드에 실패했습니다.');
+    }
   };
 
   // 🚀 필터 변경 시 페이지 리셋
@@ -971,9 +981,9 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
   /** 직접 입력 칸(로즈 바탕 — 연동 회색과 구분) */
   const manualFieldCls =
     'w-full p-2 border border-rose-300 rounded-md text-xs font-medium bg-rose-50 text-slate-800 disabled:bg-slate-50 disabled:text-slate-400 disabled:border-slate-200 outline-rose-400';
-  const manualLabelCls = 'block text-[10px] font-black text-rose-700 mb-1';
+  const manualLabelCls = 'block text-[10px] font-medium text-rose-700 mb-1';
   /** 연동·수정 불가 (영문 잠금칸과 동일) */
-  const lockedLabelCls = 'block text-[10px] font-black text-slate-400 mb-1';
+  const lockedLabelCls = 'block text-[10px] font-medium text-slate-400 mb-1';
   const lockedFieldCls =
     'w-full p-2 bg-slate-50 text-slate-500 border border-slate-100 rounded-md text-xs font-medium cursor-not-allowed';
 
@@ -988,13 +998,13 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
         <div className="absolute left-1/4 bottom-0 w-48 h-48 bg-indigo-900/20 rounded-full blur-3xl translate-y-1/2 pointer-events-none" />
         <div className="relative z-10 flex flex-col md:flex-row md:items-end md:justify-between gap-4">
           <div className="min-w-0">
-            <h3 className="text-[10px] font-black uppercase tracking-widest text-blue-200 mb-2.5">
+            <h3 className="text-[10px] font-medium uppercase tracking-widest text-blue-200 mb-2.5">
               BUSINESS CARD PROCESS CENTER
             </h3>
             <h1 className="text-2xl tracking-tight leading-none">
               <span className="text-blue-200 font-normal">{activeUser?.name || '임직원'} 님</span>
               <span className="text-white/30 font-normal mx-2.5">|</span>
-              <span className="text-white font-extrabold">명함 발급 신청 허브</span>
+              <span className="text-white font-medium">명함 발급 신청 허브</span>
             </h1>
             <p className="text-white/70 text-xs mt-3 leading-relaxed max-w-xl">
               Hub 계정정보(성명·소속·직책·직급·이메일)를 불러와 명함 신청에 맞춥니다.
@@ -1007,7 +1017,7 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
                 disabled={!canEdit}
                 title={!canEdit ? '편집 권한 필요' : undefined}
                 onClick={() => openNewApplication()}
-                className={`group inline-flex items-center justify-center gap-1.5 px-5 py-2.5 rounded-xl font-black text-[12px] transition-all duration-200 ${
+                className={`group inline-flex items-center justify-center gap-1.5 px-5 py-2.5 rounded-xl font-medium text-[12px] transition-all duration-200 ${
                   canEdit
                     ? 'bg-amber-200 text-indigo-950 shadow-lg shadow-indigo-950/30 ring-1 ring-amber-100/80 hover:bg-amber-300 hover:text-indigo-950 hover:shadow-xl hover:-translate-y-0.5 active:translate-y-0'
                     : DISABLED_ACTION_BTN
@@ -1022,7 +1032,7 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
                 disabled={!canEdit}
                 title={!canEdit ? '편집 권한 필요' : undefined}
                 onClick={handleResetToNew}
-                className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-[10px] font-black tracking-tight border shadow-sm transition-colors ${
+                className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-[10px] font-medium tracking-tight border shadow-sm transition-colors ${
                   canEdit
                     ? 'bg-white/15 border-white/25 text-white hover:bg-white/25 hover:border-white/40'
                     : DISABLED_ACTION_BTN
@@ -1037,9 +1047,9 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
       </div>
 
       {isFormOpen && (
-      <form onSubmit={handleFormSubmit} className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm space-y-5">
+      <form onSubmit={handleFormSubmit} className="bg-white border border-slate-200 rounded-lg p-6 shadow-sm space-y-5">
         <div className="flex flex-wrap items-center justify-between gap-2 pb-1 border-b border-slate-100">
-          <p className="text-[11px] font-black text-slate-600">
+          <p className="text-[11px] font-medium text-slate-600">
             현재 모드:{' '}
             <span
               className={
@@ -1063,14 +1073,14 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
                   disabled={history.length === 0}
                   onClick={loadLatestApplicationInfo}
                   title={history.length === 0 ? '신청 내역이 없습니다' : '최근 신청의 연락처·주소·추가자격 불러오기'}
-                  className="text-[10px] font-black px-3 py-1.5 rounded-md bg-rose-50 text-rose-800 border border-rose-200 hover:bg-rose-600 hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-rose-50 disabled:hover:text-rose-800"
+                  className="text-[10px] font-medium px-3 py-1.5 rounded-md bg-rose-50 text-rose-800 border border-rose-200 hover:bg-rose-600 hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-rose-50 disabled:hover:text-rose-800"
                 >
                   최근 신청정보 불러오기
                 </button>
                 <button
                   type="button"
                   onClick={() => openNewApplication()}
-                  className="text-[10px] font-black px-3 py-1.5 rounded-md bg-sky-50 text-sky-800 border border-sky-200 hover:bg-sky-600 hover:text-white transition-colors"
+                  className="text-[10px] font-medium px-3 py-1.5 rounded-md bg-sky-50 text-sky-800 border border-sky-200 hover:bg-sky-600 hover:text-white transition-colors"
                 >
                   🔄 계정정보 다시 동기화
                 </button>
@@ -1083,7 +1093,7 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
                 setFormMode('NEW');
                 setBackupForm(null);
               }}
-              className="text-[10px] font-black px-3 py-1.5 rounded-md bg-slate-100 text-slate-600 border border-slate-200 hover:bg-slate-200 transition-colors"
+              className="text-[10px] font-medium px-3 py-1.5 rounded-md bg-slate-100 text-slate-600 border border-slate-200 hover:bg-slate-200 transition-colors"
             >
               작성창 접기 ▲
             </button>
@@ -1094,8 +1104,8 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
           <div className="p-4 bg-rose-50 border border-rose-200 rounded-lg flex items-start gap-3">
             <span className="text-lg leading-none mt-0.5">⛔</span>
             <div>
-              <p className="text-rose-900 text-xs font-black mb-1">신청이 반려되었습니다. 사유를 확인한 뒤 수정하여 다시 신청해 주세요.</p>
-              <p className="text-[11px] font-bold text-rose-700/90">반려 사유: {form.adminMemo || '-'}</p>
+              <p className="text-rose-900 text-xs font-medium mb-1">신청이 반려되었습니다. 사유를 확인한 뒤 수정하여 다시 신청해 주세요.</p>
+              <p className="text-[11px] font-medium text-rose-700/90">반려 사유: {form.adminMemo || '-'}</p>
             </div>
           </div>
         )}
@@ -1105,8 +1115,8 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
           <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg flex items-start gap-3">
             <span className="text-lg leading-none mt-0.5">⚠️</span>
             <div>
-              <p className="text-amber-900 text-xs font-black mb-1">관리자 검수 과정에서 정보가 일부 수정되었습니다.</p>
-              <p className="text-[11px] font-bold text-amber-700/90">변경 사유: {form.adminMemo}</p>
+              <p className="text-amber-900 text-xs font-medium mb-1">관리자 검수 과정에서 정보가 일부 수정되었습니다.</p>
+              <p className="text-[11px] font-medium text-amber-700/90">변경 사유: {form.adminMemo}</p>
             </div>
           </div>
         )}
@@ -1114,8 +1124,8 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
         {/* ── 1. 국문 정보 섹션 ── */}
         <div className="space-y-3">
           <div className="flex flex-wrap items-end justify-between gap-2 border-b-[3px] border-slate-600 pb-1.5">
-            <h4 className="text-xs font-black text-slate-800 uppercase tracking-widest">1. 국문 정보 (Korean Info)</h4>
-            <p className="text-[9px] font-bold text-slate-400">
+            <h4 className="text-xs font-medium text-slate-800 uppercase tracking-widest">1. 국문 정보 (Korean Info)</h4>
+            <p className="text-[9px] font-medium text-slate-400">
               <span className="inline-block w-2.5 h-2.5 rounded-sm bg-slate-200 border border-slate-300 align-middle mr-1" />
               회색 = 계정 연동
               <span className="mx-1.5 text-slate-300">·</span>
@@ -1127,25 +1137,25 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
             {/* 1행: 이름 > 본부 > 소속(센터) > 직책/직급 */}
             <div className="grid grid-cols-1 md:grid-cols-4 gap-x-4 gap-y-3">
               <div>
-                <label className="block text-[10px] font-black text-blue-600 mb-1">성명 *</label>
+                <label className="block text-[10px] font-medium text-blue-600 mb-1">성명 *</label>
                 <input type="text" required disabled={isReadOnly} value={form.userName} onChange={(e) => handleTextChange('userName', e.target.value)} className={syncedFieldCls} />
               </div>
               <div>
-                <label className="block text-[10px] font-black text-blue-600 mb-1">본부 (상위 조직) *</label>
+                <label className="block text-[10px] font-medium text-blue-600 mb-1">본부 (상위 조직) *</label>
                 <select required disabled={isReadOnly} value={form.deptHead} onChange={(e) => handleHeadChange(e.target.value)} className={syncedFieldCls}>
                   <option value="">선택</option>
                   {hqUnits.map(u => <option key={`h-${u.id}`} value={u.unit_name}>{u.unit_name}</option>)}
                 </select>
               </div>
               <div>
-                <label className="block text-[10px] font-black text-blue-600 mb-1">센터 (하위 조직)</label>
+                <label className="block text-[10px] font-medium text-blue-600 mb-1">센터 (하위 조직)</label>
                 <select disabled={isReadOnly || !form.deptHead} value={form.deptName} onChange={(e) => handleSubChange(e.target.value)} className={syncedFieldCls}>
                   <option value="">(본부의 하위 센터만 선택)</option>
                   {childCenterUnits.map(u => <option key={`s-${u.id}`} value={u.unit_name}>{u.unit_name}</option>)}
                 </select>
               </div>
               <div>
-                <label className="block text-[10px] font-black text-blue-600 mb-1">직책 / 직급 *</label>
+                <label className="block text-[10px] font-medium text-blue-600 mb-1">직책 / 직급 *</label>
                 <select
                   required
                   disabled={isReadOnly}
@@ -1169,14 +1179,14 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
                     </optgroup>
                   )}
                 </select>
-                <p className="text-[9px] text-slate-400 font-bold mt-1">Hub 사용자 직책·직급 기준 (직책 우선)</p>
+                <p className="text-[9px] text-slate-400 font-medium mt-1">Hub 사용자 직책·직급 기준 (직책 우선)</p>
               </div>
             </div>
 
             {/* 2행: 추가사항(자격증) — 직접 입력 */}
             <div className="space-y-2 border border-rose-200 rounded-lg p-3 bg-rose-50/50">
               <div className="flex items-center justify-between">
-                <label className="block text-[10px] font-black text-rose-700">추가사항 (자격증 선택)</label>
+                <label className="block text-[10px] font-medium text-rose-700">추가사항 (자격증 선택)</label>
                 {!isReadOnly && (
                   <button
                     type="button"
@@ -1187,7 +1197,7 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
                         additionalQualsEn: [...(p.additionalQualsEn || []), ''],
                       }))
                     }
-                    className="px-2.5 py-1 bg-white hover:bg-rose-100 text-rose-800 text-[10px] font-black rounded-md border border-rose-300 transition-colors"
+                    className="px-2.5 py-1 bg-white hover:bg-rose-100 text-rose-800 text-[10px] font-medium rounded-md border border-rose-300 transition-colors"
                   >
                     + 자격증 추가
                   </button>
@@ -1264,7 +1274,7 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
                             newEns[idx] = '';
                             setForm(p => ({ ...p, additionalQuals: newQuals, additionalQualsEn: newEns }));
                           }}
-                          className="px-2.5 py-2 bg-slate-100 text-slate-600 rounded-md font-black text-[10px] hover:bg-slate-200 border border-slate-200 shrink-0 whitespace-nowrap"
+                          className="px-2.5 py-2 bg-slate-100 text-slate-600 rounded-md font-medium text-[10px] hover:bg-slate-200 border border-slate-200 shrink-0 whitespace-nowrap"
                         >
                           목록
                         </button>
@@ -1278,7 +1288,7 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
                             additionalQualsEn: (p.additionalQualsEn || []).filter((_, i) => i !== idx),
                           }));
                         }}
-                        className="px-3 py-2 bg-rose-50 text-rose-600 rounded-md font-black text-xs hover:bg-rose-100 border border-rose-200 shrink-0"
+                        className="px-3 py-2 bg-rose-50 text-rose-600 rounded-md font-medium text-xs hover:bg-rose-100 border border-rose-200 shrink-0"
                       >
                         삭제
                       </button>
@@ -1316,7 +1326,7 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
                 <input type="text" required disabled={isReadOnly} value={form.mobile} onChange={(e) => handleTextChange('mobile', e.target.value)} className={manualFieldCls} />
               </div>
               <div className="min-w-0">
-                <label className="block text-[10px] font-black text-blue-600 mb-1">내선번호 *</label>
+                <label className="block text-[10px] font-medium text-blue-600 mb-1">내선번호 *</label>
                 <input type="text" required disabled={isReadOnly} value={form.phone} onChange={(e) => handleTextChange('phone', e.target.value)} placeholder="ex. 02-6973-0000" className={syncedFieldCls} />
               </div>
               <div className="min-w-0">
@@ -1326,7 +1336,7 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
                 <input type="text" readOnly value={form.fax} className={`${lockedFieldCls} font-mono`} />
               </div>
               <div className="min-w-0">
-                <label className="block text-[10px] font-black text-blue-600 mb-1">이메일 *</label>
+                <label className="block text-[10px] font-medium text-blue-600 mb-1">이메일 *</label>
                 <input type="email" required disabled={isReadOnly} value={form.email} onChange={(e) => handleTextChange('email', e.target.value)} className={syncedFieldCls} />
               </div>
             </div>
@@ -1335,14 +1345,14 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
 
         {/* ── 2. 영문 정보 섹션 ── */}
         <div className="space-y-3 pt-2">
-          <h4 className="text-xs font-black text-slate-800 uppercase tracking-widest border-b-[3px] border-slate-600 pb-1.5 flex items-center justify-between">
+          <h4 className="text-xs font-medium text-slate-800 uppercase tracking-widest border-b-[3px] border-slate-600 pb-1.5 flex items-center justify-between">
             <span>2. 영문 정보 (English Info)</span>
-            <span className="text-[9px] text-slate-500 bg-slate-100 px-2 py-0.5 rounded-md font-bold">국문 연동 · 국제번호 변환 ⚡</span>
+            <span className="text-[9px] text-slate-500 bg-slate-100 px-2 py-0.5 rounded-md font-medium">국문 연동 · 국제번호 변환 ⚡</span>
           </h4>
           <div className="space-y-3">
             <div className="grid grid-cols-1 md:grid-cols-4 gap-x-4 gap-y-3">
               <div>
-                <label className="block text-[10px] font-black text-blue-600 mb-1">영문 성명</label>
+                <label className="block text-[10px] font-medium text-blue-600 mb-1">영문 성명</label>
                 <input type="text" disabled={isReadOnly} value={form.userNameEn} onChange={(e) => setForm({ ...form, userNameEn: e.target.value })} className={syncedFieldCls} />
               </div>
               <div>
@@ -1356,14 +1366,14 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
               <div>
                 <label className={lockedLabelCls}>영문 직책/직급🔒</label>
                 <input type="text" readOnly value={form.titleEn || form.dutyEn || form.gradeEn} className={lockedFieldCls} />
-                <p className="text-[9px] text-slate-400 font-bold mt-1">사용자 계정정보 영문값</p>
+                <p className="text-[9px] text-slate-400 font-medium mt-1">사용자 계정정보 영문값</p>
               </div>
             </div>
 
             <div className="space-y-2 border border-slate-200 rounded-lg p-3 bg-slate-50/60">
-              <label className="block text-[10px] font-black text-slate-500">
+              <label className="block text-[10px] font-medium text-slate-500">
                 영문 추가사항{' '}
-                <span className="font-bold text-slate-400">(마스터 자동 연동 · 국문 수동 기재 시에만 입력)</span>
+                <span className="font-medium text-slate-400">(마스터 자동 연동 · 국문 수동 기재 시에만 입력)</span>
               </label>
               {form.additionalQuals.length === 0 && (
                 <p className="text-[11px] text-slate-400 italic py-1">추가된 영문 자격사항이 없습니다.</p>
@@ -1449,31 +1459,31 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
                 isReadOnly ? 'opacity-70' : ''
               }`}
             >
-              <p className="text-[10px] font-black text-indigo-900 whitespace-nowrap">
+              <p className="text-[10px] font-medium text-indigo-900 whitespace-nowrap">
                 발주 수량
-                <span className="ml-1.5 font-bold text-indigo-400">1통={sheetsPerPack}장</span>
+                <span className="ml-1.5 font-medium text-indigo-400">1통={sheetsPerPack}장</span>
               </p>
               <div className="flex items-center gap-1 bg-white px-1 py-0.5 rounded-md border border-indigo-200">
                 <button
                   type="button"
                   disabled={isReadOnly}
                   onClick={() => setForm({ ...form, quantity: Math.max(1, (form.quantity || 1) - 1) })}
-                  className="w-7 h-7 flex items-center justify-center bg-slate-50 border border-slate-200 text-slate-700 text-sm font-black rounded-md hover:bg-indigo-100 hover:border-indigo-300 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                  className="w-7 h-7 flex items-center justify-center bg-slate-50 border border-slate-200 text-slate-700 text-sm font-medium rounded-md hover:bg-indigo-100 hover:border-indigo-300 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   −
                 </button>
-                <span className="w-7 text-center font-black text-indigo-700 text-sm tabular-nums">
+                <span className="w-7 text-center font-medium text-indigo-700 text-sm tabular-nums">
                   {form.quantity || 1}
                 </span>
                 <button
                   type="button"
                   disabled={isReadOnly}
                   onClick={() => setForm({ ...form, quantity: (form.quantity || 1) + 1 })}
-                  className="w-7 h-7 flex items-center justify-center bg-slate-50 border border-slate-200 text-slate-700 text-sm font-black rounded-md hover:bg-indigo-100 hover:border-indigo-300 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                  className="w-7 h-7 flex items-center justify-center bg-slate-50 border border-slate-200 text-slate-700 text-sm font-medium rounded-md hover:bg-indigo-100 hover:border-indigo-300 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   +
                 </button>
-                <span className="text-[10px] font-black text-indigo-700 pl-0.5 pr-1">통</span>
+                <span className="text-[10px] font-medium text-indigo-700 pl-0.5 pr-1">통</span>
               </div>
             </div>
 
@@ -1483,7 +1493,7 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
                   type="submit"
                   disabled={!canEdit}
                   title={!canEdit ? '편집 권한 필요' : undefined}
-                  className={`w-full py-2.5 font-black text-[11px] rounded-md shadow-sm transition-all tracking-widest uppercase ${
+                  className={`w-full py-2.5 font-medium text-[11px] rounded-md shadow-sm transition-all tracking-widest uppercase ${
                     canEdit
                       ? 'bg-gradient-to-r from-blue-500 to-indigo-600 text-white hover:from-blue-600 hover:to-indigo-700'
                       : DISABLED_ACTION_BTN
@@ -1499,7 +1509,7 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
                   disabled={!canEdit}
                   title={!canEdit ? '편집 권한 필요' : undefined}
                   onClick={handleEnableEdit}
-                  className={`w-full py-2.5 font-black text-[11px] rounded-md shadow-sm transition-colors tracking-widest uppercase ${
+                  className={`w-full py-2.5 font-medium text-[11px] rounded-md shadow-sm transition-colors tracking-widest uppercase ${
                     canEdit
                       ? 'bg-indigo-600 text-white hover:bg-indigo-700'
                       : DISABLED_ACTION_BTN
@@ -1513,7 +1523,7 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
                 <button
                   type="button"
                   disabled
-                  className="w-full py-2.5 bg-slate-200 text-slate-500 font-black text-[11px] rounded-md shadow-inner cursor-not-allowed tracking-widest uppercase"
+                  className="w-full py-2.5 bg-slate-200 text-slate-500 font-medium text-[11px] rounded-md shadow-inner cursor-not-allowed tracking-widest uppercase"
                 >
                   정보 확인
                 </button>
@@ -1524,7 +1534,7 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
                   <button
                     type="button"
                     onClick={handleCancelEdit}
-                    className="py-2.5 bg-slate-200 text-slate-700 font-black text-[11px] rounded-md shadow-sm hover:bg-slate-300 transition-colors tracking-widest uppercase"
+                    className="py-2.5 bg-slate-200 text-slate-700 font-medium text-[11px] rounded-md shadow-sm hover:bg-slate-300 transition-colors tracking-widest uppercase"
                   >
                     ❌ 변경 취소하기
                   </button>
@@ -1532,7 +1542,7 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
                     type="submit"
                     disabled={!canEdit}
                     title={!canEdit ? '편집 권한 필요' : undefined}
-                    className={`py-2.5 font-black text-[11px] rounded-md shadow-sm transition-colors tracking-widest uppercase ${
+                    className={`py-2.5 font-medium text-[11px] rounded-md shadow-sm transition-colors tracking-widest uppercase ${
                       canEdit
                         ? 'bg-emerald-600 text-white hover:bg-emerald-700'
                         : DISABLED_ACTION_BTN
@@ -1548,16 +1558,17 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
       </form>
       )}
 
-      <div className="bg-amber-50 border border-amber-200 rounded-xl p-3.5 text-[10px] text-amber-800 font-medium leading-relaxed">
+      <div className="bg-amber-50 border border-amber-200 rounded-lg p-3.5 text-[10px] text-amber-800 font-medium leading-relaxed">
         💡 안내: 시안이 올라오면 공정상태가{' '}
         <span className="font-black">‘시안 검수요청’</span>으로 바뀝니다. 보관함{' '}
         <span className="font-black">시안확인</span>에서 파일을 다운로드한 뒤{' '}
         <span className="font-black">시안확정</span>을 눌러 주세요. 확정 후{' '}
-        <span className="font-black">‘발주중’</span>으로 진행됩니다.
+        <span className="font-black">‘발주대기’</span>로 바뀌고, 외주 발주확정 후{' '}
+        <span className="font-black">‘발주전송’</span>이 됩니다.
       </div>
 
       {/* 내역 보관함 테이블 — supplies/dept 동일 접기·펼치기 헤더 */}
-      <div className="bg-white border border-slate-200 rounded-[2.5rem] shadow-sm overflow-hidden animate-in fade-in duration-300 slide-in-from-top-4">
+      <div className="bg-white border border-slate-200 rounded-lg shadow-sm overflow-hidden animate-in fade-in duration-300 slide-in-from-top-4">
         <div
           className={`p-4 px-6 bg-slate-200/70 flex flex-wrap items-center justify-between gap-4 ${
             isHistoryOpen ? 'border-b border-slate-300' : ''
@@ -1635,8 +1646,8 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
             </div>
             <button
               type="button"
-              onClick={handleExportExcel}
-              className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-[10px] font-medium shadow-sm hover:bg-emerald-700 transition-all whitespace-nowrap"
+              onClick={() => void handleExportExcel()}
+              className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-[11px] font-medium shadow-sm hover:bg-emerald-700 transition-all whitespace-nowrap"
             >
               EXCEL 다운로드
             </button>
@@ -1646,22 +1657,15 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
         {isHistoryOpen && (
           <>
             <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse table-fixed min-w-[1080px]">
+              <table className="w-full text-left border-collapse table-fixed">
                 <colgroup>
-                  <col className="w-[56px]" />
-                  <col className="w-[110px]" />
-                  <col className="w-[160px]" />
-                  <col className="w-[120px]" />
-                  <col className="w-[72px]" />
-                  <col className="w-[100px]" />
-                  <col className="w-[140px]" />
-                  <col className="w-[100px]" />
-                  <col className="w-[110px]" />
-                  <col className="w-[110px]" />
+                  <col className="w-12" />
+                  <col /><col /><col /><col /><col /><col /><col /><col /><col /><col />
                 </colgroup>
-                <thead className="bg-slate-100 text-slate-700 text-[10px] font-black uppercase tracking-widest border-b border-slate-200">
+                <thead className="bg-slate-100 text-slate-700 text-[11px] font-medium border-b border-slate-200">
                   <tr>
                     <th className="h-12 px-2 text-center">NO</th>
+                    <th className="h-12 px-2 text-center whitespace-nowrap">관리번호</th>
                     <th className="h-12 px-2 text-center whitespace-nowrap">신청일자</th>
                     <th className="h-12 px-2 text-left">부서 / 이름</th>
                     <th className="h-12 px-2 text-center whitespace-nowrap">신청내역</th>
@@ -1673,10 +1677,10 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
                     <th className="h-12 px-2 text-center whitespace-nowrap">상태변경</th>
                   </tr>
                 </thead>
-                <tbody className="bg-white divide-y divide-slate-100 text-[11px] font-bold text-slate-700">
+                <tbody className="bg-white divide-y divide-slate-100 text-[11px] font-medium text-slate-700">
                   {paginatedHistory.length === 0 ? (
                     <tr>
-                      <td colSpan={10} className="p-16 text-center text-slate-400 text-xs">
+                      <td colSpan={11} className="p-16 text-center text-slate-400 text-[11px]">
                         조건에 일치하는 신청 내역이 없습니다.
                       </td>
                     </tr>
@@ -1689,21 +1693,26 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
                         String(row.deptHead || '').trim() ||
                         '-';
                       const hasProof = Boolean(row.hasProof || row.proofFileName);
+                      const hasMailReview = Boolean(
+                        row.hasMailReview || row.proofMailReviewedAt
+                      );
                       const proofConfirmed = Boolean(row.proofConfirmed || row.proofConfirmedAt);
                       const userStatusLabel = formatBusinessCardUserStatusLabel(row.adminStatus, {
                         hasProof,
+                        hasMailReview,
                         proofConfirmed,
+                        dispatched: Boolean(row.orderDispatched),
                       });
                       const statusClass =
                         row.adminStatus === '지급완료'
-                          ? 'text-slate-900'
+                          ? 'text-slate-800'
                           : row.adminStatus === '수령완료'
                             ? 'text-emerald-600'
                             : userStatusLabel === '시안 검수요청'
                               ? 'text-amber-600'
-                              : row.adminStatus === '발주완료'
+                              : userStatusLabel === '발주전송'
                                 ? 'text-indigo-600'
-                                : row.adminStatus === '접수완료'
+                                : userStatusLabel === '발주대기'
                                   ? 'text-blue-600'
                                   : row.adminStatus === '반려'
                                     ? 'text-red-600'
@@ -1712,16 +1721,22 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
                       return (
                         <tr key={row.id} className="hover:bg-slate-50/50 h-12 transition-colors">
                           <td className="px-2 text-center font-mono text-slate-500 tabular-nums">{rowNo}</td>
+                          <td
+                            className="px-2 text-center font-mono text-[11px] text-slate-700 tabular-nums whitespace-nowrap"
+                            title={row.postNumber || undefined}
+                          >
+                            {row.postNumber || '-'}
+                          </td>
                           <td className="px-2 text-center whitespace-nowrap tabular-nums text-slate-800">{row.applyDate}</td>
                           <td className="px-2 text-left min-w-0" title={[row.deptHead, row.deptName].filter(Boolean).join(' · ')}>
-                            <span className="text-[10px] text-slate-500 block truncate">{deptLabel}</span>
+                            <span className="text-[11px] text-slate-500 block truncate">{deptLabel}</span>
                             <span className="text-slate-800 block truncate">{row.userName || '-'}</span>
                           </td>
                           <td className="px-2 text-center">
                             <button
                               type="button"
                               onClick={() => handleDetailView(row)}
-                              className={`px-2.5 py-1 text-[10px] font-medium rounded-lg shadow-sm transition-colors ${
+                              className={`px-2.5 py-1 text-[11px] font-medium rounded-lg shadow-sm transition-colors ${
                                 isModifiable
                                   ? 'bg-blue-600 text-white hover:bg-blue-700'
                                   : 'bg-slate-200 text-slate-600 hover:bg-slate-300 border border-slate-300'
@@ -1747,7 +1762,7 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
                           <td className="px-2 text-center">
                             {row.proofConfirmed || row.proofConfirmedAt ? (
                               <span
-                                className="text-[10px] font-medium text-emerald-600 whitespace-nowrap"
+                                className="text-[11px] font-medium text-slate-700 whitespace-nowrap"
                                 title={
                                   row.proofConfirmedBy
                                     ? `확정: ${row.proofConfirmedBy}`
@@ -1760,12 +1775,12 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
                                   ? '관리자'
                                   : '본인'}
                               </span>
-                            ) : row.hasProof || row.proofFileName ? (
+                            ) : hasProof ? (
                               <div className="inline-flex flex-col items-center gap-1">
                                 <button
                                   type="button"
                                   onClick={() => handleProofDownload(row)}
-                                  className="px-2 py-1 text-[10px] font-medium rounded-lg bg-slate-100 text-slate-700 border border-slate-200 hover:bg-slate-200 transition-colors"
+                                  className="px-2 py-1 text-[11px] font-medium rounded-lg bg-slate-100 text-slate-700 border border-slate-200 hover:bg-slate-200 transition-colors"
                                   title={row.proofFileName || '시안 다운로드'}
                                 >
                                   다운로드
@@ -1775,9 +1790,31 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
                                   disabled={!canEdit}
                                   title={!canEdit ? '편집 권한 필요' : '시안 확정'}
                                   onClick={() => handleProofConfirm(row)}
-                                  className={`px-2 py-1 text-[10px] font-medium rounded-lg transition-colors ${
+                                  className={`px-2 py-1 text-[11px] font-medium rounded-lg transition-colors ${
                                     canEdit
-                                      ? 'bg-blue-600 text-white hover:bg-blue-700'
+                                      ? 'bg-amber-500 text-white hover:bg-amber-600'
+                                      : DISABLED_ACTION_BTN
+                                  }`}
+                                >
+                                  시안확정
+                                </button>
+                              </div>
+                            ) : hasMailReview ? (
+                              <div className="inline-flex flex-col items-center gap-1">
+                                <span
+                                  className="text-[11px] font-medium text-amber-700 whitespace-nowrap"
+                                  title="관리자가 외주사 시안 메일을 전송했습니다. 메일 확인 후 확정해 주세요."
+                                >
+                                  메일확인요청
+                                </span>
+                                <button
+                                  type="button"
+                                  disabled={!canEdit}
+                                  title={!canEdit ? '편집 권한 필요' : '메일 시안 확인 후 확정'}
+                                  onClick={() => handleProofConfirm(row)}
+                                  className={`px-2 py-1 text-[11px] font-medium rounded-lg transition-colors ${
+                                    canEdit
+                                      ? 'bg-amber-500 text-white hover:bg-amber-600'
                                       : DISABLED_ACTION_BTN
                                   }`}
                                 >
@@ -1785,15 +1822,15 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
                                 </button>
                               </div>
                             ) : (
-                              <span className="text-[10px] text-slate-300 font-medium">-</span>
+                              <span className="text-[11px] text-slate-300 font-medium">-</span>
                             )}
                           </td>
                           <td className="px-2 text-center">
-                            <span className={`text-[10px] font-bold whitespace-nowrap ${statusClass}`}>
+                            <span className={`text-[11px] font-medium whitespace-nowrap ${statusClass}`}>
                               {userStatusLabel}
                             </span>
                             {row.applicantType === '관리자대행' && (
-                              <span className="ml-1 text-[10px] font-bold whitespace-nowrap text-slate-900">
+                              <span className="ml-1 text-[11px] font-medium whitespace-nowrap text-slate-900">
                                 관리자대행
                               </span>
                             )}
@@ -1808,7 +1845,7 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
                                 disabled={!canEdit}
                                 title={!canEdit ? '편집 권한 필요' : undefined}
                                 onClick={() => handleCancelRequest(row.id, row.postNumber)}
-                                className={`px-2 py-1 text-[10px] font-medium rounded-lg transition-colors ${
+                                className={`px-2 py-1 text-[11px] font-medium rounded-lg transition-colors ${
                                   canEdit
                                     ? 'bg-rose-50 border border-rose-200 hover:bg-rose-100 text-rose-600'
                                     : DISABLED_ACTION_BTN
@@ -1817,7 +1854,7 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
                                 신청취소
                               </button>
                             ) : (
-                              <span className="text-[10px] text-slate-400 font-medium">변경 불가</span>
+                              <span className="text-[11px] text-slate-400 font-medium">변경 불가</span>
                             )}
                           </td>
                         </tr>
@@ -1842,7 +1879,7 @@ export default function BusinessCardMyPage({ currentUser }: CurrentUserProps) {
       {/* 관리자 의견(메모) 확인 심플 팝업 컴포넌트 */}
       {memoPopupTarget && (
         <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-50 p-4 animate-fade-in">
-          <div className="bg-white border border-slate-200 rounded-2xl shadow-xl w-full max-w-sm overflow-hidden">
+          <div className="bg-white border border-slate-200 rounded-lg shadow-xl w-full max-w-sm overflow-hidden">
             <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50">
               <h3 className="text-sm font-black text-slate-800 tracking-tight">📝 관리자 의견</h3>
               <button onClick={() => setMemoPopupTarget(null)} className="text-slate-400 hover:text-slate-600 font-black text-sm">✕</button>

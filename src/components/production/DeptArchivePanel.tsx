@@ -13,6 +13,7 @@ import ProductionRequestDetailModal from '@/components/production/ProductionRequ
 import ProductionStatementCompareModal from '@/components/production/ProductionStatementCompareModal';
 import DeptAssigneeLine, { useDeptAssignees } from '@/components/common/DeptAssigneeLine';
 import {
+  getProductionCategoryBadgeClass,
   getProductionCategoryBoardBarClass,
   getProductionCategoryFolderTabClasses,
 } from '@/lib/production-category-theme';
@@ -22,19 +23,20 @@ import {
   productionStatusTextClass,
 } from '@/lib/production-status';
 import {
-  buildJebonOrderExcelRows,
   buildOfficeSuppliesOrderExcelRows,
-  buildPrintOrderExcelRows,
-  buildSignOrderExcelRows,
+  writeArchiveSelectedExcelBuffer,
+  type ArchiveSelectedListHeader,
+  writeJebonOrderExcelBuffer,
+  writePrintOrderExcelBuffer,
+  writeSignOrderExcelBuffer,
 } from '@/lib/production-sign-excel';
 import {
-  collectSuppliesQuoteAttachments,
-  downloadSuppliesQuoteAttachments,
   getOfficeQuoteLinesFromOptions,
   makeOfficeQuoteLineId,
   normalizeOfficeQuoteLines,
   type OfficeQuoteLine,
 } from '@/lib/production-office-statement-match';
+import { downloadOfficeOrderFileBundle } from '@/lib/production-office-order-bundle';
 
 const DEPT_SETTLEMENT_MENU_PATH = '/production/custom/dept-master/settlement';
 const DEPT_ARCHIVE_MENU_PATH = '/production/custom/dept-master/archive';
@@ -458,6 +460,24 @@ function formatBatchDisplayName(batchId: string, kind: ReturnType<typeof getBatc
   return no;
 }
 
+function sortBatchItemsByAppliedAsc<T extends { createdAt?: string | Date }>(items: T[]): T[] {
+  return [...items].sort(
+    (a, b) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime()
+  );
+}
+
+async function downloadExcelJsFile(buffer: ArrayBuffer, filename: string) {
+  const blob = new Blob([buffer], {
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 function formatBatchExcelBaseName(
   batchId: string,
   opts?: { sign?: boolean; jebon?: boolean; print?: boolean; office?: boolean }
@@ -465,7 +485,7 @@ function formatBatchExcelBaseName(
   const no = formatBatchNo(batchId);
   if (opts?.sign) return `현판_발주서_${no}`;
   if (opts?.jebon) return `제본_발주서_${no}`;
-  if (opts?.print) return `제작물_${no}`;
+  if (opts?.print) return `기타제작_발주서_${no}`;
   if (opts?.office) return `사무문구류_${no}`;
   return `제작물_${no}`;
 }
@@ -565,6 +585,9 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
   /** 구 대장 표 미사용 — 보관함은 admin archive와 동일 레이아웃 */
   const useArchiveLedgerTable = false;
   const isDeptSettlement = variant === 'dept';
+  /** 정산·마스터 대시보드·보관함: 발주번호~발주담당 칼럼을 정산과 동일하게 */
+  const likeSettlementCols =
+    isDeptSettlement || isMasterDashboard || isArchiveBoard;
   /** 정산·마스터 대시보드·보관함: 2단 그룹헤더 + 신청상세(클릭) */
   const showGroupedSettlementTable =
     isDeptSettlement || isMasterDashboard || isArchiveBoard;
@@ -581,8 +604,9 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
   /** 신청 상세 펼침 */
   const canExpandBatchDetail = true;
   const isMaster = isMasterDashboard || isMasterArchive;
-  /** 검수·정산과 같이 선택 분류 칩 색을 대장 헤더에 반영 */
-  const useCategoryBoardBar = isDeptSettlement || isMasterDashboard;
+  /** 검수·정산·보관함: 선택 분류 칩 색을 대장 헤더에 반영 */
+  const useCategoryBoardBar =
+    isDeptSettlement || isMasterDashboard || isArchiveBoard;
   const menuPath = isMasterArchive
     ? '/production/custom/admin/archive'
     : isMasterDashboard
@@ -624,6 +648,10 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
   const [searchTitleQuery, setSearchTitleQuery] = useState('');
   const [expandedBatchIds, setExpandedBatchIds] = useState<Set<string>>(new Set());
   const [selectedBatchIds, setSelectedBatchIds] = useState<Set<string>>(new Set());
+  /** 보관함 상단 합계: 필터 기준(기본) | 표 체크 선택 기준 */
+  const [archiveStatsScope, setArchiveStatsScope] = useState<'filter' | 'selected'>(
+    'filter'
+  );
   const [currentPage, setCurrentPage] = useState(1);
   const [detailItem, setDetailItem] = useState<BatchItem | null>(null);
   const [officeEditRequestId, setOfficeEditRequestId] = useState<string | null>(null);
@@ -639,6 +667,7 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
     null
   );
   const actionMenuRef = useRef<HTMLDivElement | null>(null);
+  const [fileBundleBusyId, setFileBundleBusyId] = useState<string | null>(null);
 
   const selectedBatchesForCompare = useMemo(
     () =>
@@ -706,13 +735,11 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
     }
   };
 
-  /** 부서 정산: Access. 마스터 대시보드 비용·확정 액션: Edit. 보관함: Edit */
+  /** 부서 정산: Access. 마스터 대시보드 비용·확정·명세 보드: Edit. 보관함: Edit */
   const canEdit = useMemo(() => {
     if (isDeptSettlement) return true;
     return resolveInterfaceEditState(currentUser, interfaceConfig).isEditor;
   }, [currentUser, interfaceConfig, isDeptSettlement]);
-  /** 마스터 명세표 보드(기간공지·등록·공유): Access만 (Edit 미사용) */
-  const canBoardAct = isMasterDashboard;
   /** 정산완료 아카이브 영구삭제 — 시스템 LV_1만 (메뉴 Master 제외) */
   const canPurgeLv1 = useMemo(() => isSystemLv1User(currentUser), [currentUser]);
   const [purgingBatches, setPurgingBatches] = useState(false);
@@ -745,6 +772,8 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
   const [confirmRequestedAt, setConfirmRequestedAt] = useState('');
   const [confirmMemo, setConfirmMemo] = useState('');
   const [confirmSaving, setConfirmSaving] = useState(false);
+  /** 기존 등록분 조회 잠금 → 수정(Edit) 클릭 시 해제. 신규는 처음부터 편집 */
+  const [confirmEditMode, setConfirmEditMode] = useState(false);
 
   /** 코너별 명세표 부서 게시 여부 — 미조회(undefined)는 숨김 취급(탭 전환 깜빡임 방지) */
   const [publishByCategory, setPublishByCategory] = useState<Record<string, boolean>>({});
@@ -801,7 +830,7 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
   }, []);
 
   const handleSetStatementPublish = async (published: boolean) => {
-    if (!canBoardAct && !canEdit) return alert('편집 권한(Edit)이 없습니다.');
+    if (!canEdit) return alert('편집 권한(Edit)이 없습니다.');
     if (published === statementPublished) return;
     const label = CATEGORY_LABEL[activeCategory] || activeCategory;
     if (
@@ -877,14 +906,26 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
   };
 
   const handleOpenConfirmModal = () => {
-    if (!canBoardAct && !canEdit) return alert('편집 권한(Edit)이 없습니다.');
+    if (!canEdit) return alert('편집 권한(Edit)이 없습니다.');
+    const hasExisting = Boolean(confirmRequest);
     setConfirmRequestedAt(toDatetimeLocalValue(confirmRequest?.requestedAt));
     setConfirmMemo(confirmRequest?.memo || '');
+    // 기존 등록이 있으면 조회 잠금, 없으면 바로 작성
+    setConfirmEditMode(!hasExisting);
     setIsConfirmModalOpen(true);
   };
 
+  const handleStartConfirmEdit = () => {
+    if (!canEdit) return alert('편집 권한(Edit)이 없습니다.');
+    if (!confirmRequest) return;
+    setConfirmRequestedAt(toDatetimeLocalValue(confirmRequest.requestedAt));
+    setConfirmMemo(confirmRequest.memo || '');
+    setConfirmEditMode(true);
+  };
+
   const handleSaveConfirmRequest = async () => {
-    if (!canBoardAct && !canEdit) return alert('편집 권한(Edit)이 없습니다.');
+    if (!canEdit) return alert('편집 권한(Edit)이 없습니다.');
+    if (!confirmEditMode) return alert('수정(Edit)을 누른 뒤 내용을 변경해 주세요.');
     if (!confirmRequestedAt.trim()) return alert('확인 완료 기한(날짜·시간)을 선택해 주세요.');
     setConfirmSaving(true);
     try {
@@ -903,6 +944,7 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
         return;
       }
       setConfirmRequest(data.item || null);
+      setConfirmEditMode(false);
       setIsConfirmModalOpen(false);
       alert(data.message || '확인 완료 기한이 등록되었습니다.');
     } catch {
@@ -913,9 +955,9 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
   };
 
   const handleClearConfirmRequest = async () => {
-    if (!canBoardAct && !canEdit) return alert('편집 권한(Edit)이 없습니다.');
+    if (!canEdit) return alert('편집 권한(Edit)이 없습니다.');
     if (!confirmRequest) return;
-    if (!confirm('이 코너의 확인 완료 기한을 삭제할까요?')) return;
+    if (!confirm('이 코너의 확인 완료 기한 공지를 내릴까요?')) return;
     setConfirmSaving(true);
     try {
       const res = await fetch(
@@ -924,12 +966,13 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
       );
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        alert(data.message || '삭제에 실패했습니다.');
+        alert(data.message || '공지 내리기에 실패했습니다.');
         return;
       }
       setConfirmRequest(null);
+      setConfirmEditMode(false);
       setIsConfirmModalOpen(false);
-      alert(data.message || '삭제되었습니다.');
+      alert(data.message || '공지를 내렸습니다.');
     } catch {
       alert('서버와 통신할 수 없습니다.');
     } finally {
@@ -943,7 +986,7 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
   }, [statementFiles, activeCategory]);
 
   const handleOpenUploadModal = () => {
-    if (!canBoardAct && !canEdit) return alert('편집 권한이 필요합니다.');
+    if (!canEdit) return alert('편집 권한(Edit)이 없습니다.');
     setUploadCategory(activeCategory);
     setUploadVendorName('');
     setUploadCustomVendor('');
@@ -953,7 +996,7 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
 
   const handleUploadStatementSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!canBoardAct && !canEdit) return alert('편집 권한이 필요합니다.');
+    if (!canEdit) return alert('편집 권한(Edit)이 없습니다.');
     if (!uploadFile) return alert('업로드할 명세표 파일(PDF 또는 Excel)을 선택해 주세요.');
 
     const finalVendor = (
@@ -986,7 +1029,7 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
   };
 
   const handleDeleteStatement = async (fileId: string, vendorName: string) => {
-    if (!canBoardAct && !canEdit) return alert('편집 권한이 필요합니다.');
+    if (!canEdit) return alert('편집 권한(Edit)이 없습니다.');
     if (
       !confirm(
         `[${vendorName}] 거래명세표 파일을 삭제하시겠습니까?\n삭제 시 부서 화면에서도 해당 외주사의 명세표가 노출되지 않습니다.`
@@ -1082,6 +1125,7 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
   useEffect(() => {
     setCurrentPage(1);
     setSelectedBatchIds(new Set());
+    setArchiveStatsScope('filter');
     setActionMenu(null);
   }, [
     activeCategory,
@@ -1287,8 +1331,9 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
     units,
   ]);
 
-  /** 보관함 상단 통계 — 연/월·부서·외주업체·검색 반영, 분류별 금액 합계 */
+  /** 보관함 상단 통계 — 기본은 연/월·부서·외주업체·검색, 선택 조회는 표 체크 묶음 */
   const archiveCategoryAmountStats = useMemo(() => {
+    const useSelected = archiveStatsScope === 'selected';
     const qUser = searchUserQuery.trim().toLowerCase();
     const qTitle = searchTitleQuery.trim().toLowerCase();
     const totals: Record<string, { amount: number; count: number; quantity: number }> = {
@@ -1298,28 +1343,38 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
       OFFICE_SUPPLIES: { amount: 0, count: 0, quantity: 0 },
     };
     for (const batch of batches) {
-      const ym = getKSTYearMonthParts(
-        batch.dispatchedAt || batch.archivedAt || batch.orderedAt
-      );
-      if (selectedYear !== 'ALL' && ym?.year !== selectedYear) continue;
-      if (selectedMonth !== 'ALL' && ym?.month !== selectedMonth) continue;
-      if (
-        selectedVendor !== 'ALL' &&
-        !(batch.vendors || []).includes(selectedVendor)
-      ) {
-        continue;
+      if (useSelected) {
+        if (!selectedBatchIds.has(batch.id)) continue;
+      } else {
+        const ym = getKSTYearMonthParts(
+          batch.dispatchedAt || batch.archivedAt || batch.orderedAt
+        );
+        if (selectedYear !== 'ALL' && ym?.year !== selectedYear) continue;
+        if (selectedMonth !== 'ALL' && ym?.month !== selectedMonth) continue;
+        if (
+          selectedVendor !== 'ALL' &&
+          !(batch.vendors || []).includes(selectedVendor)
+        ) {
+          continue;
+        }
       }
       for (const item of batch.items || []) {
         if (!totals[item.category]) continue;
-        if (isMaster && !itemMatchesOrg(item, selectedOrg, units)) continue;
-        if (selectedVendor !== 'ALL') {
-          const itemVendor = String(
-            (item.options as { vendor?: unknown } | null | undefined)?.vendor || ''
-          ).trim();
-          if (itemVendor && itemVendor !== selectedVendor) continue;
+        if (!useSelected) {
+          if (isMaster && !itemMatchesOrg(item, selectedOrg, units)) continue;
+          if (selectedVendor !== 'ALL') {
+            const itemVendor = String(
+              (item.options as { vendor?: unknown } | null | undefined)?.vendor || ''
+            ).trim();
+            if (itemVendor && itemVendor !== selectedVendor) continue;
+          }
+          if (qUser && !String(item.userName || '').toLowerCase().includes(qUser)) {
+            continue;
+          }
+          if (qTitle && !String(item.title || '').toLowerCase().includes(qTitle)) {
+            continue;
+          }
         }
-        if (qUser && !String(item.userName || '').toLowerCase().includes(qUser)) continue;
-        if (qTitle && !String(item.title || '').toLowerCase().includes(qTitle)) continue;
         const price = Number(item.finalPrice);
         totals[item.category].amount += Number.isFinite(price) && price > 0 ? price : 0;
         totals[item.category].count += 1;
@@ -1329,6 +1384,8 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
     return totals;
   }, [
     batches,
+    archiveStatsScope,
+    selectedBatchIds,
     selectedYear,
     selectedMonth,
     selectedOrg,
@@ -1406,20 +1463,40 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
     });
   };
 
-  const handleOfficeQuoteDownload = (batch: ArchiveBatch) => {
-    const items =
+  const handleOfficeQuoteDownload = async (batch: ArchiveBatch) => {
+    const items = sortBatchItemsByAppliedAsc(
       activeCategory === 'ALL'
         ? batch.items || []
-        : (batch.items || []).filter((i) => i.category === activeCategory);
-    const result = downloadSuppliesQuoteAttachments(collectSuppliesQuoteAttachments(items));
-    if (!result.ok) alert(result.message);
+        : (batch.items || []).filter((i) => i.category === activeCategory)
+    );
+    const baseName = formatBatchExcelBaseName(batch.id, { office: true });
+    setFileBundleBusyId(batch.id);
+    try {
+      const result = await downloadOfficeOrderFileBundle(items, `${baseName}_발주파일`);
+      const bits: string[] = [];
+      if (result.pdfCount > 0) bits.push(`PDF ${result.pdfCount}건 → 합본`);
+      if (result.excelCount > 0) {
+        bits.push(
+          result.aggregated
+            ? `엑셀 ${result.excelCount}건 → 부서 발주서 + 인원별 취합 + 이름별 탭`
+            : `엑셀 ${result.excelCount}건 → 이름별 탭 (품명/수량 제목행을 찾지 못해 취합 탭은 생략)`
+        );
+      }
+      const warn = result.warnings.length ? `\n${result.warnings.join('\n')}` : '';
+      alert(`${bits.join('\n') || '발주파일을 내려받았습니다.'}${warn}`);
+    } catch (err: any) {
+      alert(err?.message || '발주파일 다운로드에 실패했습니다.');
+    } finally {
+      setFileBundleBusyId(null);
+    }
   };
 
-  const handleBatchExcel = (batch: ArchiveBatch) => {
-    const exportItems =
+  const handleBatchExcel = async (batch: ArchiveBatch) => {
+    const exportItems = sortBatchItemsByAppliedAsc(
       activeCategory === 'ALL'
         ? batch.items
-        : batch.items.filter((i) => i.category === activeCategory);
+        : batch.items.filter((i) => i.category === activeCategory)
+    );
 
     if (exportItems.length === 0) {
       return alert('다운로드할 데이터가 없습니다.');
@@ -1428,49 +1505,61 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
     const allSign = exportItems.every((i) => i.category === 'SIGN');
     const allJebon = exportItems.every((i) => i.category === 'JEBON');
     const labelKind = getBatchLabelKind(batch, activeCategory);
+    const downloadName = (kind: 'sign' | 'jebon' | 'print' | 'office' | 'other') =>
+      `${formatBatchExcelBaseName(batch.id, batchLabelOpts(kind))}.xlsx`;
+
     if (allSign || activeCategory === 'SIGN') {
-      const signRows = buildSignOrderExcelRows(
-        exportItems.map((r) => ({
-          ...r,
-          batchId: batch.id,
-        }))
-      );
-      if (signRows.length === 0) {
+      const signItems = exportItems
+        .filter((r) => r.category === 'SIGN')
+        .map((r) => ({ ...r, batchId: batch.id }));
+      if (signItems.length === 0) {
         return alert('다운로드할 현판(SIGN) 데이터가 없습니다.');
       }
-      const ws = XLSX.utils.json_to_sheet(signRows);
-      const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, '현판상세');
-      XLSX.writeFile(wb, `${formatBatchExcelBaseName(batch.id, { sign: true })}.xlsx`);
+      try {
+        await downloadExcelJsFile(await writeSignOrderExcelBuffer(signItems), downloadName('sign'));
+      } catch (err) {
+        console.error(err);
+        alert('현판 발주서 다운로드에 실패했습니다.');
+      }
       return;
     }
 
     if (allJebon || activeCategory === 'JEBON') {
-      const jebonRows = buildJebonOrderExcelRows(
-        exportItems.map((r) => ({ ...r, batchId: batch.id }))
-      );
-      if (jebonRows.length === 0) {
+      const jebonItems = exportItems
+        .filter((r) => r.category === 'JEBON')
+        .map((r) => ({ ...r, batchId: batch.id }));
+      if (jebonItems.length === 0) {
         return alert('다운로드할 제본(JEBON) 데이터가 없습니다.');
       }
-      const ws = XLSX.utils.json_to_sheet(jebonRows);
-      const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, '제본발주');
-      XLSX.writeFile(wb, `${formatBatchExcelBaseName(batch.id, { jebon: true })}.xlsx`);
+      try {
+        await downloadExcelJsFile(
+          await writeJebonOrderExcelBuffer(jebonItems),
+          downloadName('jebon')
+        );
+      } catch (err) {
+        console.error(err);
+        alert('제본 발주서 다운로드에 실패했습니다.');
+      }
       return;
     }
 
     const allPrint = exportItems.every((i) => i.category === 'PRINT');
     if (allPrint || activeCategory === 'PRINT') {
-      const printRows = buildPrintOrderExcelRows(
-        exportItems.map((r) => ({ ...r, batchId: batch.id }))
-      );
-      if (printRows.length === 0) {
+      const printItems = exportItems
+        .filter((r) => r.category === 'PRINT')
+        .map((r) => ({ ...r, batchId: batch.id }));
+      if (printItems.length === 0) {
         return alert('다운로드할 기타 제작물(PRINT) 데이터가 없습니다.');
       }
-      const ws = XLSX.utils.json_to_sheet(printRows);
-      const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, '기타제작발주');
-      XLSX.writeFile(wb, `${formatBatchExcelBaseName(batch.id, { print: true })}.xlsx`);
+      try {
+        await downloadExcelJsFile(
+          await writePrintOrderExcelBuffer(printItems),
+          downloadName('print')
+        );
+      } catch (err) {
+        console.error(err);
+        alert('기타 제작물 발주서 다운로드에 실패했습니다.');
+      }
       return;
     }
 
@@ -1514,6 +1603,113 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
       wb,
       `${formatBatchExcelBaseName(batch.id, batchLabelOpts(labelKind))}.xlsx`
     );
+  };
+
+  const handleSelectedArchiveExcel = async () => {
+    if (!isArchiveBoard) return;
+    if (!canEdit) return alert('편집 권한(Edit)이 필요합니다.');
+    if (selectedBatchIds.size === 0) {
+      return alert('엑셀로 받을 묶음을 하단 표에서 체크해 주세요.');
+    }
+    const selected = batches.filter((b) => selectedBatchIds.has(b.id));
+    if (selected.length === 0) {
+      return alert('선택한 묶음을 찾을 수 없습니다.');
+    }
+
+    const dash = (v: unknown) => {
+      const s = String(v ?? '').trim();
+      return s || '-';
+    };
+
+    const rows: Array<Record<ArchiveSelectedListHeader, string | number>> = [];
+    let no = 1;
+    for (const batch of selected) {
+      const kind = getBatchLabelKind(batch, activeCategory);
+      const batchName = formatBatchDisplayName(batch.id, kind);
+      const dispatched = batch.dispatchedAt ? getKSTDateString(batch.dispatchedAt) : '';
+      const manager = getBatchOrderManager(batch);
+      const managerLabel = manager
+        ? [manager.deptName, manager.userName].filter(Boolean).join(' ')
+        : '';
+      const items = (batch.items || []).filter(
+        (i) => activeCategory === 'ALL' || i.category === activeCategory
+      );
+      for (const item of items) {
+        const itemVendor = String(
+          (item.options as { vendor?: unknown } | null | undefined)?.vendor || ''
+        ).trim();
+        const vendors = itemVendor || (batch.vendors || []).join(', ');
+        const itemAmount = Number(item.finalPrice);
+        const amountVal =
+          Number.isFinite(itemAmount) && itemAmount > 0 ? Math.trunc(itemAmount) : 0;
+        const officeLines =
+          item.category === 'OFFICE_SUPPLIES' ? getOfficeQuoteStats(item).lines : [];
+        const savedLines = Array.isArray(
+          (item.options as { suppliesLineSettlements?: unknown } | null | undefined)
+            ?.suppliesLineSettlements
+        )
+          ? (
+              item.options as {
+                suppliesLineSettlements: Array<{ lineNo?: number; finalPrice?: number }>;
+              }
+            ).suppliesLineSettlements
+          : [];
+        const base = {
+          발주번호: dash(batchName),
+          분류: dash(CATEGORY_LABEL[item.category] || item.category),
+          관리번호: dash(item.postNumber),
+          소속부서: dash(item.deptName),
+          신청자: dash(item.userName),
+          관리용제목: dash(item.title),
+          외주업체: dash(vendors),
+          발주확정일: dash(dispatched),
+          발주담당자: dash(managerLabel),
+        };
+        if (officeLines.length > 0) {
+          for (const line of officeLines) {
+            const saved = savedLines.find(
+              (s) => Number(s.lineNo) === Number(line.lineNo)
+            );
+            const lineAmt = Number(saved?.finalPrice);
+            const amt =
+              Number.isFinite(lineAmt) && lineAmt > 0
+                ? Math.trunc(lineAmt)
+                : Number.isFinite(line.supplyPrice) && line.supplyPrice > 0
+                  ? Math.trunc(line.supplyPrice)
+                  : 0;
+            rows.push({
+              NO: no++,
+              ...base,
+              수량: line.qty || 0,
+              명세확인금액: amt,
+            });
+          }
+        } else {
+          rows.push({
+            NO: no++,
+            ...base,
+            수량: Number(item.quantity) || 0,
+            명세확인금액: amountVal,
+          });
+        }
+      }
+    }
+
+    if (rows.length === 0) {
+      return alert('다운로드할 데이터가 없습니다.');
+    }
+
+    try {
+      const buffer = await writeArchiveSelectedExcelBuffer(rows);
+      const catLabel = CATEGORY_LABEL[activeCategory] || '보관함';
+      await downloadExcelJsFile(
+        buffer,
+        `대조완료보관함_${catLabel}_${getKSTDateString()}_선택${selected.length}묶음.xlsx`
+      );
+    } catch (err) {
+      console.error(err);
+      alert('엑셀 다운로드에 실패했습니다.');
+    }
   };
 
   const beginOfficeForceEdit = (item: BatchItem) => {
@@ -1704,6 +1900,9 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
   const handleRevertToInspection = async (batch: ArchiveBatch) => {
     if (!isDeptSettlement) return;
     if (!canEdit) return alert('편집 권한(Edit)이 필요합니다.');
+    if (isBatchStatementConfirmed(batch)) {
+      return alert('대조 확정된 묶음은 이전 단계로 되돌릴 수 없습니다.');
+    }
     if (isBatchMasterSettledArchived(batch)) {
       return alert('정산완료 보관함으로 이동된 묶음은 검수로 되돌릴 수 없습니다.');
     }
@@ -1824,6 +2023,13 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
     }
   };
 
+  const actionMenuBatch = actionMenu
+    ? batches.find((b) => b.id === actionMenu.id)
+    : undefined;
+  const revertLocked =
+    !canEdit ||
+    (actionMenuBatch ? isBatchStatementConfirmed(actionMenuBatch) : false);
+
   return (
     <>
       <div className="w-full space-y-3">
@@ -1848,19 +2054,10 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                       ? '이달의 외주 거래명세표'
                       : '경영기획센터 등록 외주사 거래명세표'}
                   </h2>
-                  <span className="px-2 py-0.5 rounded text-[11px] font-medium bg-indigo-100 text-indigo-800 border border-indigo-200">
-                    {CATEGORY_LABEL[activeCategory] || activeCategory}
-                  </span>
                   <span
-                    className={`px-2 py-0.5 rounded text-[10px] font-medium ${
-                      currentCategoryStatementFiles.length > 0
-                        ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
-                        : 'bg-slate-100 text-slate-500'
-                    }`}
+                    className={`px-2 py-0.5 rounded text-[11px] font-medium border ${getProductionCategoryBadgeClass(activeCategory)}`}
                   >
-                    {currentCategoryStatementFiles.length > 0
-                      ? `${currentCategoryStatementFiles.length}개 외주사 등록됨`
-                      : '등록 명세표 없음'}
+                    {CATEGORY_LABEL[activeCategory] || activeCategory}
                   </span>
                 </div>
                 {isMasterDashboard && (
@@ -1921,74 +2118,84 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                   <div className="flex items-center gap-2 flex-wrap justify-end">
                   <button
                     type="button"
-                    disabled={!canBoardAct}
+                    disabled={!canEdit}
                     onClick={handleOpenConfirmModal}
+                    title={!canEdit ? '편집 권한(Edit)이 필요합니다.' : undefined}
                     className={`px-3.5 py-1.5 rounded-xl text-xs font-medium shadow-sm transition-colors flex items-center gap-1.5 ${
-                      canBoardAct
+                      canEdit
                         ? 'bg-amber-500 hover:bg-amber-600 text-white'
                         : DISABLED_ACTION_BTN
                     }`}
                   >
-                    <span>기간공지 등록</span>
+                    <span className="inline-flex items-baseline gap-1">
+                      <span>기간공지 등록</span>
+                      <span className="text-[10px] font-bold opacity-80">(Edit)</span>
+                    </span>
                   </button>
                   <button
                     type="button"
-                    disabled={!canBoardAct}
+                    disabled={!canEdit}
                     onClick={handleOpenUploadModal}
+                    title={!canEdit ? '편집 권한(Edit)이 필요합니다.' : undefined}
                     className={`px-3.5 py-1.5 rounded-xl text-xs font-medium shadow-sm transition-colors flex items-center gap-1.5 ${
-                      canBoardAct
+                      canEdit
                         ? 'bg-indigo-600 hover:bg-indigo-700 text-white'
                         : DISABLED_ACTION_BTN
                     }`}
                   >
-                    <span>
-                      ➕ {CATEGORY_LABEL[activeCategory] || activeCategory} 명세표 등록
+                    <span className="inline-flex items-baseline gap-1">
+                      <span>
+                        ➕ {CATEGORY_LABEL[activeCategory] || activeCategory} 명세표 등록
+                      </span>
+                      <span className="text-[10px] font-bold opacity-80">(Edit)</span>
                     </span>
                   </button>
-                  <div className="inline-flex items-center gap-1.5 shrink-0">
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={statementPublished}
+                    disabled={!canEdit || publishBusy}
+                    onClick={() => handleSetStatementPublish(!statementPublished)}
+                    title={
+                      !canEdit
+                        ? '편집 권한(Edit)이 필요합니다.'
+                        : statementPublished
+                          ? '클릭하면 부서 화면에서 명세표 공유를 내립니다'
+                          : '클릭하면 부서 화면에 명세표를 게시합니다'
+                    }
+                    className={`inline-flex items-center gap-2 pl-2.5 pr-3 py-1.5 rounded-xl text-xs font-medium shadow-sm border transition-colors ${
+                      !canEdit || publishBusy
+                        ? DISABLED_ACTION_BTN
+                        : statementPublished
+                          ? 'bg-emerald-50 text-emerald-800 border-emerald-200 hover:bg-emerald-100'
+                          : 'bg-slate-100 text-slate-600 border-slate-200 hover:bg-slate-200/80'
+                    }`}
+                  >
                     <span
-                      className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-[11px] font-medium border shadow-sm ${
-                        statementPublished
-                          ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
-                          : 'bg-slate-100 text-slate-500 border-slate-200'
+                      className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors ${
+                        statementPublished ? 'bg-emerald-500' : 'bg-slate-300'
                       }`}
-                      title={
-                        statementPublished
-                          ? '부서 정산 화면에 명세표가 공유된 상태입니다'
-                          : '부서 정산 화면에서 명세표 공유가 내려간 상태입니다'
-                      }
+                      aria-hidden
                     >
                       <span
-                        className={`w-1.5 h-1.5 rounded-full ${
-                          statementPublished ? 'bg-emerald-500' : 'bg-slate-400'
+                        className={`inline-block h-4 w-4 rounded-full bg-white shadow transition-transform ${
+                          statementPublished ? 'translate-x-4' : 'translate-x-0.5'
                         }`}
                       />
-                      {statementPublished ? '게시중' : '숨김'}
                     </span>
-                    <button
-                      type="button"
-                      disabled={!canBoardAct || publishBusy}
-                      onClick={() => handleSetStatementPublish(!statementPublished)}
-                      className={`px-3.5 py-1.5 rounded-xl text-xs font-medium shadow-sm transition-colors ${
-                        !canBoardAct || publishBusy
-                          ? DISABLED_ACTION_BTN
+                    <span className="inline-flex items-baseline gap-1">
+                      <span>
+                        {publishBusy
+                          ? '처리 중…'
                           : statementPublished
-                            ? 'bg-white text-slate-700 border border-slate-300 hover:bg-slate-50'
-                            : 'bg-emerald-600 hover:bg-emerald-700 text-white'
-                      }`}
-                      title={
-                        statementPublished
-                          ? '부서 화면에서 명세표 공유 내리기 · 검수/대조 비활성'
-                          : '부서 화면에 명세표 공유 올리기 · 검수/대조 활성'
-                      }
-                    >
-                      {publishBusy
-                        ? '처리 중…'
-                        : statementPublished
-                          ? '명세표 공유 내리기'
-                          : '명세표 공유 올리기'}
-                    </button>
-                  </div>
+                            ? '명세표 게시중'
+                            : '명세표 숨김'}
+                      </span>
+                      {!publishBusy ? (
+                        <span className="text-[10px] font-bold opacity-70">(Edit)</span>
+                      ) : null}
+                    </span>
+                  </button>
                   </div>
                   <div
                     className="flex w-full items-center"
@@ -2004,7 +2211,7 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                 <div
                   className={`shrink-0 px-2.5 py-1 rounded-lg text-[10px] font-medium border ${
                     statementPublished
-                      ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                      ? 'bg-blue-50/80 text-blue-700 border-blue-400'
                       : 'bg-slate-100 text-slate-500 border-slate-200'
                   }`}
                 >
@@ -2066,12 +2273,16 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                     {isMasterDashboard && (
                       <button
                         type="button"
-                        disabled={!canBoardAct}
+                        disabled={!canEdit}
                         onClick={() => handleDeleteStatement(file.id, file.vendorName)}
-                        className="px-2 py-1 bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-200 rounded-lg text-[10px] font-medium transition-colors"
-                        title="명세표 삭제"
+                        className={`px-2 py-1 rounded-lg text-[10px] font-medium transition-colors border ${
+                          canEdit
+                            ? 'bg-rose-50 hover:bg-rose-100 text-rose-600 border-rose-200'
+                            : DISABLED_ACTION_BTN
+                        }`}
+                        title={!canEdit ? '편집 권한(Edit)이 필요합니다.' : '명세표 삭제(Edit)'}
                       >
-                        🗑 삭제
+                        🗑 삭제(Edit)
                       </button>
                     )}
                   </div>
@@ -2115,23 +2326,71 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                       분류별 금액 합계
                     </span>
                     <span className="px-2 py-0.5 rounded text-[11px] font-medium bg-indigo-100 text-indigo-800 border border-indigo-200">
-                      {selectedYear === 'ALL' ? '전체 연도' : `${selectedYear}년`}
-                      {selectedMonth === 'ALL'
-                        ? ' · 월 전체'
-                        : ` · ${parseInt(selectedMonth, 10)}월`}
-                      {selectedVendor !== 'ALL' ? ` · ${selectedVendor}` : ''}
+                      {archiveStatsScope === 'selected'
+                        ? `선택 ${selectedBatchIds.size}묶음`
+                        : [
+                            selectedYear === 'ALL' ? '전체 연도' : `${selectedYear}년`,
+                            selectedMonth === 'ALL'
+                              ? '월 전체'
+                              : `${parseInt(selectedMonth, 10)}월`,
+                            selectedVendor !== 'ALL' ? selectedVendor : '',
+                          ]
+                            .filter(Boolean)
+                            .join(' · ')}
                     </span>
                   </div>
                   <p className="text-[11px] font-medium text-slate-500 mt-0.5">
-                    연·월·부서·외주업체·검색 필터가 반영됩니다.
+                    {archiveStatsScope === 'selected'
+                      ? selectedBatchIds.size > 0
+                        ? '하단 표에서 체크한 묶음만 합산합니다.'
+                        : '하단 표 체크박스로 묶음을 선택해 주세요.'
+                      : '연·월·부서·외주업체·검색 필터가 반영됩니다.'}
                   </p>
                 </div>
               </div>
-              <div className="text-right shrink-0 px-3 py-1.5 rounded-xl bg-white border border-slate-200 shadow-sm">
-                <p className="text-[10px] font-medium text-slate-400">합계</p>
-                <p className="text-sm font-medium text-indigo-700 tabular-nums">
-                  ₩{archiveStatsGrandTotal.toLocaleString('ko-KR')}
-                </p>
+              <div className="flex items-center gap-2 shrink-0">
+                <div
+                  className="inline-flex items-center rounded-lg border border-slate-200 bg-slate-100 p-0.5"
+                  role="group"
+                  aria-label="금액 합계 조회 기준"
+                >
+                  <button
+                    type="button"
+                    onClick={() => setArchiveStatsScope('filter')}
+                    className={`h-7 px-2.5 rounded-md text-[11px] font-medium whitespace-nowrap transition-colors ${
+                      archiveStatsScope === 'filter'
+                        ? 'bg-white text-slate-800 shadow-sm'
+                        : 'text-slate-500 hover:text-slate-700'
+                    }`}
+                  >
+                    필터 조회
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setArchiveStatsScope('selected')}
+                    title="하단 표에서 체크한 묶음만 합산합니다"
+                    className={`h-7 px-2.5 rounded-md text-[11px] font-medium whitespace-nowrap transition-colors ${
+                      archiveStatsScope === 'selected'
+                        ? 'bg-white text-indigo-700 shadow-sm'
+                        : 'text-slate-500 hover:text-slate-700'
+                    }`}
+                  >
+                    선택 조회
+                    {selectedBatchIds.size > 0 ? ` (${selectedBatchIds.size})` : ''}
+                  </button>
+                </div>
+                <div
+                  className={`text-right px-3 py-1.5 rounded-xl border shadow-sm ${
+                    archiveStatsScope === 'selected'
+                      ? 'bg-indigo-50 border-indigo-200'
+                      : 'bg-white border-slate-200'
+                  }`}
+                >
+                  <p className="text-[10px] font-medium text-slate-400">합계</p>
+                  <p className="text-sm font-medium text-indigo-700 tabular-nums">
+                    ₩{archiveStatsGrandTotal.toLocaleString('ko-KR')}
+                  </p>
+                </div>
               </div>
             </div>
 
@@ -2170,8 +2429,9 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
         )}
 
         <div>
+          <div className="flex flex-wrap items-end justify-between gap-2 border-b border-slate-200">
           <div
-            className="flex flex-wrap items-end gap-1 border-b border-slate-200"
+            className="flex flex-wrap items-end gap-1"
             role="tablist"
             aria-label="제작 분류 필터"
           >
@@ -2204,10 +2464,34 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
               </button>
             );
           })}
+          </div>
+          {isArchiveBoard && (
+            <button
+              type="button"
+              disabled={!canEdit}
+              onClick={handleSelectedArchiveExcel}
+              title={
+                !canEdit
+                  ? '편집 권한 필요'
+                  : selectedBatchIds.size === 0
+                    ? '하단 표에서 묶음을 체크한 뒤 엑셀로 받습니다'
+                    : `선택한 ${selectedBatchIds.size}묶음을 엑셀로 받습니다`
+              }
+              className={`mb-1 mr-1 h-8 px-3 rounded-lg text-[10px] font-medium whitespace-nowrap shadow-sm transition-all ${
+                !canEdit
+                  ? DISABLED_ACTION_BTN
+                  : 'bg-emerald-600 text-white hover:bg-emerald-700 border border-emerald-600'
+              }`}
+            >
+              {selectedBatchIds.size > 0
+                ? `📥 선택 EXCEL 다운로드(${selectedBatchIds.size})(Edit)`
+                : '📥 선택 EXCEL 다운로드(Edit)'}
+            </button>
+          )}
         </div>
 
         <div
-          className={`bg-white border border-t-0 border-slate-200 rounded-b-[2.5rem] rounded-tr-2xl shadow-sm animate-in fade-in duration-300 ${
+          className={`bg-white border border-t-0 border-slate-200 rounded-b-sm rounded-tr-sm shadow-sm animate-in fade-in duration-300 ${
             orgMenuOpen ? 'overflow-visible' : 'overflow-hidden'
           }`}
         >
@@ -2251,7 +2535,7 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                     {isMasterArchive
                       ? '마스터에서 명세 대조 확정 후 보관함으로 이관된 묶음'
                       : isDeptArchive
-                        ? '우리 부서 이관 건만 조회 · 마스터 대조완료 보관함과 동일'
+                        ? '우리 부서 이관 건만 조회'
                         : '각 부서에서 수령 완료 후 이관된 외주 발주 묶음 · 명세 대조'}
                   </p>
                 )}
@@ -2478,48 +2762,41 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                     <col className="w-28" />
                   </colgroup>
                 )}
-                {(isMasterDashboard || isArchiveBoard) && (
+                {(isDeptSettlement || isMasterDashboard) && (
                   <colgroup>
-                    {showLeadingSelect && <col className="w-10" />}
-                    <col className="w-12" />
-                    <col className="w-64" />
-                    {/* 발주생성일 · 신청상세 · 발주정보(다운·확정일·담당) · (검수·대조·액션 | 금액·처리자·완료일) */}
-                    <col />
-                    <col className="w-[180px]" />
-                    <col />
-                    <col />
-                    <col />
-                    {isArchiveBoard ? (
-                      <>
-                        <col />
-                        {showArchiveMetaColumns && (
-                          <>
-                            <col />
-                            <col className="w-28" />
-                          </>
-                        )}
-                      </>
-                    ) : (
-                      <>
-                        <col />
-                        <col />
-                        <col />
-                      </>
-                    )}
+                    {/* 신청/기본정보 50% · 발주정보~관리액션 50% (신청상세|발주서 세로선 = 표 정중앙) */}
+                    <col className="w-[4%]" />
+                    <col className="w-[16%]" />
+                    <col className="w-[7%]" />
+                    <col className="w-[23%]" />
+                    <col className="w-[8%]" />
+                    <col className="w-[7%]" />
+                    <col className="w-[7%]" />
+                    <col className="w-[11%]" />
+                    <col className="w-[11%]" />
+                    <col className="w-[6%]" />
                   </colgroup>
                 )}
-                {isDeptSettlement && (
+                {isArchiveBoard && (
                   <colgroup>
-                    <col className="w-12" />
-                    <col className="w-64" />
-                    {/* 발주생성일 · 신청상세 · 발주정보(다운·확정일·담당) · 명세 · 관리액션 */}
-                    <col />
-                    <col className="w-[180px]" />
-                    <col />
-                    <col />
-                    <col />
-                    <col />
-                    <col />
+                    {/* 정산과 동일: 발주번호 16 · 생성일 7 · 신청상세 23 · 발주서 8 · 확정일 7 · 담당 7. 체크박스 3% 추가 */}
+                    {showLeadingSelect && <col className="w-[3%]" />}
+                    <col className="w-[4%]" />
+                    <col className="w-[16%]" />
+                    <col className="w-[7%]" />
+                    <col className="w-[23%]" />
+                    <col className="w-[8%]" />
+                    <col className="w-[7%]" />
+                    <col className="w-[7%]" />
+                    {showArchiveMetaColumns ? (
+                      <>
+                        <col className="w-[9%]" />
+                        <col className="w-[8%]" />
+                        <col className="w-[8%]" />
+                      </>
+                    ) : (
+                      <col className="w-[25%]" />
+                    )}
                   </colgroup>
                 )}
                 <thead className="text-indigo-900 text-[10px] font-medium border-b border-indigo-200">
@@ -2577,7 +2854,7 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                           명세 대조 완료
                         </th>
                       ) : (
-                        <th className="bg-indigo-50 text-indigo-700 border-b border-indigo-200 font-medium text-center text-xs py-1.5 normal-case tracking-normal">
+                        <th className="bg-slate-100 text-slate-700 border-b border-slate-300 font-medium text-center text-xs py-1.5 normal-case tracking-normal whitespace-nowrap">
                           관리 액션
                         </th>
                       )}
@@ -2587,9 +2864,11 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                     {showLeadingSelect && (
                     <th
                       className={`h-12 text-center ${
-                        useArchiveLedgerTable || showGroupedSettlementTable
-                          ? 'w-10 px-0'
-                          : 'w-[72px] px-2'
+                        isArchiveBoard
+                          ? 'px-0'
+                          : useArchiveLedgerTable || showGroupedSettlementTable
+                            ? 'w-10 px-0'
+                            : 'w-[72px] px-2'
                       }`}
                     >
                       <input
@@ -2603,32 +2882,38 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                     )}
                     <th
                       className={`h-12 text-center ${
-                        useArchiveLedgerTable || showGroupedSettlementTable
-                          ? 'w-12 px-0'
-                          : 'w-[48px] px-2'
+                        isArchiveBoard
+                          ? 'px-0'
+                          : useArchiveLedgerTable || showGroupedSettlementTable
+                            ? 'w-12 px-0'
+                            : 'w-[48px] px-2'
                       }`}
                     >
                       NO
                     </th>
                     <th
                       className={`h-12 whitespace-nowrap ${
-                        useArchiveLedgerTable || showGroupedSettlementTable
-                          ? 'w-64 px-3 text-left'
-                          : 'min-w-[280px] px-2 text-left'
+                        likeSettlementCols
+                          ? 'px-3 text-left'
+                          : useArchiveLedgerTable || showGroupedSettlementTable
+                            ? 'w-64 px-3 text-left'
+                            : 'min-w-[280px] px-2 text-left'
                       }`}
                     >
                       발주번호
                     </th>
                     <th
-                      className={`h-12 text-center ${
-                        useArchiveLedgerTable || showGroupedSettlementTable
-                          ? 'px-1'
-                          : 'w-[120px] px-4'
+                      className={`h-12 whitespace-nowrap ${
+                        likeSettlementCols
+                          ? 'px-2 text-left'
+                          : useArchiveLedgerTable || showGroupedSettlementTable
+                            ? 'px-1 text-center'
+                            : 'w-[120px] px-4 text-center'
                       }`}
                     >
                       {showGroupedSettlementTable
-                        ? isDeptSettlement
-                          ? ''
+                        ? likeSettlementCols
+                          ? '발주 생성일'
                           : '발주생성일'
                         : '발주확정일'}
                     </th>
@@ -2641,9 +2926,11 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                     {canExpandBatchDetail && (
                       <th
                         className={`h-12 text-left border-r border-slate-300 ${
-                          showGroupedSettlementTable
-                            ? 'px-2 w-[180px]'
-                            : 'px-4 min-w-[120px] text-center'
+                          likeSettlementCols
+                            ? 'px-2'
+                            : showGroupedSettlementTable
+                              ? 'px-2 w-[180px]'
+                              : 'px-4 min-w-[120px] text-center'
                         }`}
                       >
                         신청 상세
@@ -2695,9 +2982,7 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                       </>
                     )}
                     {showInspectStatusColumn && (
-                      <th
-                        className="h-12 px-0.5 text-center w-[148px] min-w-[148px] max-w-[148px]"
-                      >
+                      <th className="h-12 px-0.5 text-center w-[148px] min-w-[148px] max-w-[148px]">
                         <div className="flex flex-col items-center justify-center gap-1 px-0.5 py-1">
                           <span className="inline-flex items-center justify-center gap-0.5 whitespace-nowrap">
                             명세서 업로드 검수
@@ -2722,7 +3007,7 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                             }
                             className={`h-7 box-border inline-flex items-center justify-center px-2.5 text-[11px] font-medium rounded-lg whitespace-nowrap transition-colors ${
                               canEdit && settlementActionsEnabled
-                                ? 'bg-indigo-600 hover:bg-indigo-700 text-white'
+                                ? 'bg-amber-500 hover:bg-amber-600 text-white'
                                 : DISABLED_ACTION_BTN
                             }`}
                           >
@@ -2733,7 +3018,7 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                             onChange={handleSelectAllBatches}
                             checked={allPageBatchesSelected}
                             disabled={selectablePageBatches.length === 0}
-                            className={`w-3 h-3 accent-indigo-600 ${
+                            className={`w-3 h-3 accent-amber-500 ${
                               selectablePageBatches.length === 0
                                 ? 'cursor-not-allowed opacity-40'
                                 : 'cursor-pointer'
@@ -2772,16 +3057,16 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                     {showArchiveMetaColumns && (
                       <>
                         <th className="h-12 px-1 text-left">처리자</th>
-                        <th className="h-12 w-28 px-1 text-center">완료처리일자</th>
+                        <th className="h-12 px-1 text-center">완료처리일자</th>
                       </>
                     )}
                     {isDeptSettlement && (
-                      <th className="h-12 w-[44px] min-w-[44px] px-0.5 text-center" title="보조 관리 액션">
+                      <th className="h-12 w-[64px] min-w-[64px] px-0.5 text-center" title="보조 관리 액션">
                         <span className="sr-only">관리 메뉴</span>
                       </th>
                     )}
                     {isMasterDashboard && (
-                      <th className="h-12 w-[120px] min-w-[120px] px-0.5 text-center">
+                      <th className="h-12 px-0.5 text-center">
                         <div className="flex flex-col items-center justify-center gap-0.5 leading-tight">
                           <span className="whitespace-nowrap">명세대조 완료 처리</span>
                           <span className="text-[10px] font-medium text-indigo-700/80 normal-case tracking-normal whitespace-nowrap">
@@ -2820,6 +3105,10 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                         ((currentPage - 1) * BATCH_PAGE_SIZE + idx);
                       const ledgerCell =
                         useArchiveLedgerTable || showGroupedSettlementTable;
+                      const leadingSelectPad = (className: string) =>
+                        showLeadingSelect ? (
+                          <td className={className} aria-hidden />
+                        ) : null;
                       return (
                         <React.Fragment key={batch.id}>
                           <tr
@@ -2832,7 +3121,11 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                             {showLeadingSelect && (
                             <td
                               className={`text-center ${
-                                ledgerCell ? 'w-10 px-0' : 'px-4'
+                                isArchiveBoard
+                                  ? 'px-0'
+                                  : ledgerCell
+                                    ? 'w-10 px-0'
+                                    : 'px-4'
                               }`}
                             >
                               <input
@@ -2845,14 +3138,22 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                             )}
                             <td
                               className={`text-center font-mono text-slate-500 tabular-nums ${
-                                ledgerCell ? 'w-12 px-0' : 'px-2'
+                                isArchiveBoard
+                                  ? 'px-0'
+                                  : ledgerCell
+                                    ? 'w-12 px-0'
+                                    : 'px-2'
                               }`}
                             >
                               {rowNo}
                             </td>
                             <td
                               className={`text-slate-800 whitespace-nowrap truncate ${
-                                ledgerCell ? 'w-64 px-3 text-left' : 'px-2 text-left'
+                                likeSettlementCols
+                                  ? 'px-2 text-left'
+                                  : ledgerCell
+                                    ? 'w-64 px-3 text-left'
+                                    : 'px-2 text-left'
                               } ${canExpandBatchDetail ? 'cursor-pointer' : ''}`}
                               onClick={
                                 canExpandBatchDetail
@@ -2864,16 +3165,18 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                               {formatBatchDisplayName(batch.id, kind)}
                             </td>
                             <td
-                              className={`text-center text-slate-800 whitespace-nowrap ${
-                                ledgerCell ? 'px-1' : 'px-4'
+                              className={`text-slate-800 whitespace-nowrap ${
+                                likeSettlementCols
+                                  ? 'px-2 text-left'
+                                  : ledgerCell
+                                    ? 'px-1 text-center'
+                                    : 'px-4 text-center'
                               }`}
                             >
                               {showGroupedSettlementTable
-                                ? isDeptSettlement
-                                  ? null
-                                  : batch.orderedAt
-                                    ? getKSTDateString(batch.orderedAt)
-                                    : '-'
+                                ? batch.orderedAt
+                                  ? getKSTDateString(batch.orderedAt)
+                                  : '-'
                                 : batch.dispatchedAt
                                   ? getKSTDateString(batch.dispatchedAt)
                                   : '-'}
@@ -2931,25 +3234,27 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                                   (items.length > 0 &&
                                     items.every((i) => i.category === 'OFFICE_SUPPLIES'));
                                 if (isOffice) {
+                                  const busy = fileBundleBusyId === batch.id;
                                   return (
                                     <button
                                       type="button"
-                                      onClick={() => handleOfficeQuoteDownload(batch)}
-                                      title="취합 견적서 다운로드"
-                                      className="h-7 box-border inline-flex items-center justify-center px-2.5 text-[11px] font-medium rounded-lg whitespace-nowrap transition-colors bg-white hover:bg-slate-50 text-slate-700 border border-slate-200"
+                                      disabled={busy}
+                                      onClick={() => void handleOfficeQuoteDownload(batch)}
+                                      title="묶음 안 PDF는 합본, 엑셀은 이름별 탭 + 1번째 취합 시트로 받습니다."
+                                      className="h-7 box-border inline-flex items-center justify-center px-2.5 text-[11px] font-medium rounded-lg whitespace-nowrap transition-colors bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 disabled:opacity-60"
                                     >
-                                      취합 견적서↓
+                                      {busy ? '취합 중…' : '📥 견적서 다운'}
                                     </button>
                                   );
                                 }
                                 return (
                                   <button
                                     type="button"
-                                    onClick={() => handleBatchExcel(batch)}
+                                    onClick={() => void handleBatchExcel(batch)}
                                     title="발주서 엑셀 다운로드"
-                                    className="h-7 box-border inline-flex items-center justify-center px-2.5 text-[11px] font-medium rounded-lg w-[5.5rem] whitespace-nowrap transition-colors bg-white hover:bg-slate-50 text-slate-700 border border-slate-200"
+                                    className="h-7 box-border inline-flex items-center justify-center px-2.5 text-[11px] font-medium rounded-lg whitespace-nowrap transition-colors bg-white hover:bg-slate-50 text-slate-700 border border-slate-200"
                                   >
-                                    발주서↓
+                                    📥 발주서 다운
                                   </button>
                                 );
                               })()}
@@ -3024,7 +3329,7 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                                         }
                                         disabled={confirmed}
                                         onChange={() => handleSelectBatchRow(batch.id)}
-                                        className={`w-3 h-3 accent-indigo-600 ${
+                                        className={`w-3 h-3 accent-amber-500 ${
                                           confirmed
                                             ? 'cursor-not-allowed opacity-40'
                                             : 'cursor-pointer'
@@ -3103,7 +3408,7 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                                       className={`h-7 box-border inline-flex items-center justify-center px-2.5 text-[11px] font-medium rounded-lg whitespace-nowrap transition-colors ${
                                         locked || editBlocked
                                           ? DISABLED_ACTION_BTN
-                                          : 'bg-indigo-600 hover:bg-indigo-700 text-white'
+                                          : 'bg-amber-500 hover:bg-amber-600 text-white'
                                       }`}
                                     >
                                       {label}
@@ -3187,7 +3492,7 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                                 <td className="px-1 text-left">
                                   {renderPersonTwoLine(getBatchProcessor(batch))}
                                 </td>
-                                <td className="w-28 px-1 text-center text-slate-800 tabular-nums whitespace-nowrap text-[11px] font-medium">
+                                <td className="px-1 text-center text-slate-800 tabular-nums whitespace-nowrap text-[11px] font-medium">
                                   {getBatchClosingDateLabel(batch)}
                                 </td>
                               </>
@@ -3197,16 +3502,28 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                           {canExpandBatchDetail && expanded &&
                             (getBatchLabelKind(batch, activeCategory) === 'office' ? (
                               <tr className="bg-slate-200/90 text-slate-700 text-[10px] font-medium border-y border-slate-300">
+                                {leadingSelectPad('h-9 px-0 bg-slate-200/90')}
                                 <td className="h-9 px-2 text-center border-l-4 border-l-blue-500 bg-slate-200/90">
                                   NO
                                 </td>
                                 <td className="h-9 px-2 text-left whitespace-nowrap">관리번호</td>
                                 <td className="h-9 px-2 text-left whitespace-nowrap">
-                                  관리용 제목 · 원문확인
+                                  {likeSettlementCols ? '신청일' : '관리용 제목 · 원문확인'}
                                 </td>
-                                <td className="h-9 px-1 text-center whitespace-nowrap">신청일</td>
-                                <td className="h-9 px-2 text-left border-r border-slate-300 whitespace-nowrap">
-                                  부서·이름
+                                <td className="h-9 px-2 text-left border-r border-slate-300">
+                                  <div className="flex items-center justify-between gap-2 min-w-0">
+                                    {likeSettlementCols ? (
+                                      <>
+                                        <span className="whitespace-nowrap">관리용 제목</span>
+                                        <span className="whitespace-nowrap">신청자</span>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <span className="whitespace-nowrap">신청일</span>
+                                        <span className="whitespace-nowrap">부서·이름</span>
+                                      </>
+                                    )}
+                                  </div>
                                 </td>
                                 <td
                                   colSpan={3}
@@ -3245,14 +3562,28 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                               </tr>
                             ) : (
                               <tr className="bg-slate-200/90 text-slate-700 text-[10px] font-medium border-y border-slate-300">
+                                {leadingSelectPad('h-9 px-0 bg-slate-200/90')}
                                 <td className="h-9 px-2 text-center border-l-4 border-l-blue-500 bg-slate-200/90">
                                   NO
                                 </td>
                                 <td className="h-9 px-2 text-left whitespace-nowrap">관리번호</td>
-                                <td className="h-9 px-2 text-left whitespace-nowrap">관리용 제목</td>
-                                <td className="h-9 px-1 text-center whitespace-nowrap">신청일</td>
-                                <td className="h-9 px-2 text-left border-r border-slate-300 whitespace-nowrap">
-                                  부서·이름
+                                <td className="h-9 px-2 text-left whitespace-nowrap">
+                                  {likeSettlementCols ? '신청일' : '관리용 제목'}
+                                </td>
+                                <td className="h-9 px-2 text-left border-r border-slate-300">
+                                  <div className="flex items-center justify-between gap-2 min-w-0">
+                                    {likeSettlementCols ? (
+                                      <>
+                                        <span className="whitespace-nowrap">관리용 제목</span>
+                                        <span className="whitespace-nowrap">신청자</span>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <span className="whitespace-nowrap">신청일</span>
+                                        <span className="whitespace-nowrap">부서·이름</span>
+                                      </>
+                                    )}
+                                  </div>
                                 </td>
                                 <td className="h-9 px-1 text-center whitespace-nowrap">원문확인</td>
                                 {showGroupedSettlementTable && (
@@ -3358,6 +3689,7 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                                     key={`${item.id}-office-title`}
                                     className="h-12 bg-slate-50/80 hover:bg-slate-100/80 text-[11px] font-medium text-slate-700 border-y border-slate-200"
                                   >
+                                    {leadingSelectPad('px-0 bg-slate-50/80')}
                                     <td className="px-2 text-center border-l-4 border-l-blue-500 bg-slate-100/70">
                                       <span className="text-[10px] font-mono text-slate-400 tabular-nums">
                                         {itemIdx + 1}
@@ -3369,6 +3701,29 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                                     >
                                       {item.postNumber}
                                     </td>
+                                    {likeSettlementCols ? (
+                                      <>
+                                        <td className="px-2 text-left text-slate-800 whitespace-nowrap bg-slate-50/80">
+                                          {getKSTDateString(item.createdAt)}
+                                        </td>
+                                        <td
+                                          className="px-2 text-left min-w-0 border-r border-slate-200 bg-slate-50/80"
+                                          title={[item.title, item.userName]
+                                            .filter(Boolean)
+                                            .join(' / ')}
+                                        >
+                                          <div className="flex items-center justify-between gap-2 min-w-0">
+                                            <span className="truncate min-w-0 flex-1 font-medium text-slate-800">
+                                              {item.title || '-'}
+                                            </span>
+                                            <span className="min-w-0 max-w-[4.5rem] text-right truncate text-slate-800">
+                                              {item.userName || '-'}
+                                            </span>
+                                          </div>
+                                        </td>
+                                      </>
+                                    ) : (
+                                      <>
                                     <td
                                       className="px-2 text-left bg-slate-50/80"
                                       title={item.title || ''}
@@ -3386,22 +3741,32 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                                         </button>
                                       </div>
                                     </td>
-                                    <td className="px-1 text-center whitespace-nowrap tabular-nums text-slate-800 bg-slate-50/80">
-                                      {getKSTDateString(item.createdAt)}
-                                    </td>
                                     <td
                                       className="px-2 text-left min-w-0 border-r border-slate-200 bg-slate-50/80"
-                                      title={[item.deptName, item.userName]
+                                      title={[
+                                        getKSTDateString(item.createdAt),
+                                        item.deptName,
+                                        item.userName,
+                                      ]
                                         .filter(Boolean)
                                         .join(' / ')}
                                     >
-                                      <span className="text-[10px] font-medium text-slate-500 block truncate">
-                                        {item.deptName || '-'}
-                                      </span>
-                                      <span className="text-slate-800 block truncate">
-                                        {item.userName || '-'}
-                                      </span>
+                                      <div className="flex items-start justify-between gap-2 min-w-0">
+                                        <span className="whitespace-nowrap tabular-nums text-slate-800 shrink-0">
+                                          {getKSTDateString(item.createdAt)}
+                                        </span>
+                                        <div className="min-w-0 text-left">
+                                          <span className="text-[10px] font-medium text-slate-500 block truncate">
+                                            {item.deptName || '-'}
+                                          </span>
+                                          <span className="text-slate-800 block truncate">
+                                            {item.userName || '-'}
+                                          </span>
+                                        </div>
+                                      </div>
                                     </td>
+                                      </>
+                                    )}
                                     <td
                                       colSpan={officeQuoteColSpan}
                                       className="px-2 text-center text-[10px] font-medium text-slate-400 border-r border-slate-300 bg-slate-50/80"
@@ -3451,6 +3816,9 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                                       editing ? 'bg-amber-50/40' : ''
                                     }`}
                                   >
+                                    {leadingSelectPad(
+                                      `px-0 ${editing ? 'bg-amber-50/40' : 'bg-slate-50/50'}`
+                                    )}
                                     <td className="px-2 text-center border-l-4 border-l-blue-500 bg-slate-50/70">
                                       <span className="text-[10px] font-mono text-slate-400 tabular-nums">
                                         {itemIdx + 1}-
@@ -3461,9 +3829,6 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                                       —
                                     </td>
                                     <td className="px-2 text-center text-slate-300 bg-slate-50/50">
-                                      —
-                                    </td>
-                                    <td className="px-1 text-center text-slate-300 bg-slate-50/50">
                                       —
                                     </td>
                                     <td className="px-2 text-center text-slate-300 border-r border-slate-200 bg-slate-50/50">
@@ -3669,6 +4034,7 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                                   key={item.id}
                                   className="h-12 bg-slate-50/80 hover:bg-slate-100/80 text-[11px] font-medium text-slate-700 border-y border-slate-200"
                                 >
+                                  {leadingSelectPad('px-0 bg-slate-50/80')}
                                   <td className="px-2 text-center border-l-4 border-l-blue-500 bg-slate-100/70">
                                     <span className="text-[10px] font-mono text-slate-400 tabular-nums">
                                       {itemIdx + 1}
@@ -3680,30 +4046,65 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                                   >
                                     {item.postNumber}
                                   </td>
+                                  {likeSettlementCols ? (
+                                    <>
+                                      <td className="px-2 text-left text-slate-800 whitespace-nowrap bg-slate-50/80">
+                                        {getKSTDateString(item.createdAt)}
+                                      </td>
+                                      <td
+                                        className="px-2 text-left min-w-0 border-r border-slate-200 bg-slate-50/80"
+                                        title={[item.title, item.userName]
+                                          .filter(Boolean)
+                                          .join(' / ')}
+                                      >
+                                        <div className="flex items-center justify-between gap-2 min-w-0">
+                                          <span className="truncate min-w-0 flex-1 font-medium text-slate-800">
+                                            {item.title || '-'}
+                                          </span>
+                                          <span className="min-w-0 max-w-[4.5rem] text-right truncate text-slate-800">
+                                            {item.userName || '-'}
+                                          </span>
+                                        </div>
+                                      </td>
+                                    </>
+                                  ) : (
+                                    <>
                                   <td
                                     className="px-2 text-left truncate bg-slate-50/80"
                                     title={item.title || ''}
                                   >
                                     {item.title || '-'}
                                   </td>
-                                  <td className="px-1 text-center whitespace-nowrap tabular-nums text-slate-800 bg-slate-50/80">
-                                    {getKSTDateString(item.createdAt)}
-                                  </td>
                                   <td
                                     className="px-2 text-left min-w-0 border-r border-slate-200 bg-slate-50/80"
-                                    title={[item.deptName, item.userName].filter(Boolean).join(' / ')}
+                                    title={[
+                                      getKSTDateString(item.createdAt),
+                                      item.deptName,
+                                      item.userName,
+                                    ]
+                                      .filter(Boolean)
+                                      .join(' / ')}
                                   >
-                                    <span className="text-[10px] font-medium text-slate-500 block truncate">
-                                      {item.deptName || '-'}
-                                    </span>
-                                    <span className="text-slate-800 block truncate">
-                                      {item.userName || '-'}
-                                    </span>
-                                    <span className="text-[10px] text-slate-500 block mt-0.5">
-                                      <span className="font-mono tabular-nums">{item.quantity}</span>
-                                      <span className="ml-0.5">{formatQuantityUnit(item)}</span>
-                                    </span>
+                                    <div className="flex items-start justify-between gap-2 min-w-0">
+                                      <span className="whitespace-nowrap tabular-nums text-slate-800 shrink-0">
+                                        {getKSTDateString(item.createdAt)}
+                                      </span>
+                                      <div className="min-w-0 text-left">
+                                        <span className="text-[10px] font-medium text-slate-500 block truncate">
+                                          {item.deptName || '-'}
+                                        </span>
+                                        <span className="text-slate-800 block truncate">
+                                          {item.userName || '-'}
+                                        </span>
+                                        <span className="text-[10px] text-slate-500 block mt-0.5">
+                                          <span className="font-mono tabular-nums">{item.quantity}</span>
+                                          <span className="ml-0.5">{formatQuantityUnit(item)}</span>
+                                        </span>
+                                      </div>
+                                    </div>
                                   </td>
+                                    </>
+                                  )}
                                   <td className="px-1 text-center bg-slate-50/80">
                                     <button
                                       type="button"
@@ -4027,7 +4428,8 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                   type="datetime-local"
                   value={confirmRequestedAt}
                   onChange={(e) => setConfirmRequestedAt(e.target.value)}
-                  className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm font-bold text-slate-800 outline-none focus:border-amber-500 bg-white"
+                  disabled={!canEdit || !confirmEditMode}
+                  className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm font-bold text-slate-800 outline-none focus:border-amber-500 bg-white disabled:opacity-50 disabled:bg-slate-50"
                 />
               </div>
               <div className="space-y-1.5">
@@ -4038,37 +4440,68 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                   value={confirmMemo}
                   onChange={(e) => setConfirmMemo(e.target.value)}
                   rows={5}
+                  disabled={!canEdit || !confirmEditMode}
                   placeholder="예) 기한까지 명세 대조·확인 완료 부탁드립니다."
-                  className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm font-bold text-slate-800 outline-none focus:border-amber-500 bg-white resize-y min-h-[120px]"
+                  className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm font-bold text-slate-800 outline-none focus:border-amber-500 bg-white resize-y min-h-[120px] disabled:opacity-50 disabled:bg-slate-50"
                 />
               </div>
+              {confirmRequest && !confirmEditMode ? (
+                <p className="text-[11px] font-bold text-slate-400">
+                  공지된 내용입니다. 바꾸려면 <span className="text-amber-700">수정(Edit)</span>을
+                  누른 뒤 공지 올리기(Edit)로 저장하세요.
+                </p>
+              ) : null}
             </div>
 
             <div className="flex items-center justify-between gap-2 pt-1">
               <button
                 type="button"
-                disabled={confirmSaving || !confirmRequest}
+                disabled={confirmSaving || !confirmRequest || !canEdit}
                 onClick={handleClearConfirmRequest}
+                title={!canEdit ? '편집 권한(Edit)이 필요합니다.' : undefined}
                 className="px-3 py-2 rounded-xl text-xs font-black text-rose-600 bg-rose-50 hover:bg-rose-100 border border-rose-200 disabled:opacity-40"
               >
-                기한 삭제
+                공지 내리기(Edit)
               </button>
               <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  disabled={confirmSaving}
-                  onClick={() => setIsConfirmModalOpen(false)}
-                  className="px-4 py-2 rounded-xl text-xs font-black text-slate-600 bg-slate-100 hover:bg-slate-200"
+                  disabled={
+                    confirmSaving ||
+                    !canEdit ||
+                    !confirmRequest ||
+                    confirmEditMode
+                  }
+                  onClick={handleStartConfirmEdit}
+                  title={
+                    !canEdit
+                      ? '편집 권한(Edit)이 필요합니다.'
+                      : !confirmRequest
+                        ? '먼저 공지 올리기로 등록해 주세요.'
+                        : confirmEditMode
+                          ? '이미 수정 모드입니다. 변경 후 공지 올리기(Edit)로 저장하세요.'
+                          : undefined
+                  }
+                  className="px-4 py-2 rounded-xl text-xs font-black text-slate-700 bg-slate-100 hover:bg-slate-200 disabled:opacity-40"
                 >
-                  취소
+                  수정(Edit)
                 </button>
                 <button
                   type="button"
-                  disabled={confirmSaving || !confirmRequestedAt}
+                  disabled={
+                    confirmSaving || !confirmRequestedAt || !canEdit || !confirmEditMode
+                  }
                   onClick={handleSaveConfirmRequest}
+                  title={
+                    !canEdit
+                      ? '편집 권한(Edit)이 필요합니다.'
+                      : !confirmEditMode
+                        ? '수정(Edit)을 누른 뒤 공지 올리기 할 수 있습니다.'
+                        : undefined
+                  }
                   className="px-4 py-2 rounded-xl text-xs font-black text-white bg-amber-500 hover:bg-amber-600 disabled:opacity-40 shadow-sm"
                 >
-                  {confirmSaving ? '저장 중…' : '등록 완료'}
+                  {confirmSaving ? '저장 중…' : '공지 올리기(Edit)'}
                 </button>
               </div>
             </div>
@@ -4213,10 +4646,11 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
               </button>
               <button
                 type="submit"
-                disabled={statementUploading || !uploadFile}
+                disabled={statementUploading || !uploadFile || !canEdit}
+                title={!canEdit ? '편집 권한(Edit)이 필요합니다.' : undefined}
                 className="rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 px-5 py-2.5 text-xs font-black text-white shadow-sm transition-colors flex items-center gap-1.5"
               >
-                {statementUploading ? '업로드 중...' : '명세표 등록 완료'}
+                {statementUploading ? '업로드 중...' : '명세표 등록 완료(Edit)'}
               </button>
             </div>
           </form>
@@ -4233,10 +4667,17 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
           >
             <button
               type="button"
-              disabled={!canEdit}
-              className="w-full px-3 py-2 text-left text-[11px] font-medium text-rose-600 hover:bg-rose-50 disabled:opacity-50 disabled:text-slate-400 disabled:hover:bg-white whitespace-nowrap"
+              disabled={revertLocked}
+              title={
+                !canEdit
+                  ? '편집 권한 필요'
+                  : revertLocked
+                    ? '대조 확정된 묶음은 이전 단계로 되돌릴 수 없습니다'
+                    : '발주진행(검수) 화면으로 되돌립니다'
+              }
+              className="w-full px-3 py-2 text-left text-[11px] font-medium text-rose-600 hover:bg-rose-50 disabled:opacity-50 disabled:text-slate-400 disabled:cursor-not-allowed disabled:hover:bg-white whitespace-nowrap"
               onClick={() => {
-                const batch = batches.find((b) => b.id === actionMenu.id);
+                const batch = actionMenuBatch;
                 setActionMenu(null);
                 if (!batch) return;
                 void handleRevertToInspection(batch);

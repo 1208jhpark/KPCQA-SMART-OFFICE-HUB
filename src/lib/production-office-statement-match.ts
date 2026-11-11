@@ -343,9 +343,55 @@ export function sanitizeOfficeProductAliases(
     const key = String(rawKey || '').trim();
     if (!key) continue;
     if (/현판|주물현판|스텐현판|신주현판|텅스텐|명판/.test(key)) continue;
-    out[key] = (aliases || []).map((a) => String(a || '').trim()).filter(Boolean);
+    const aliasesRaw = Array.isArray(aliases)
+      ? aliases
+      : typeof aliases === 'string'
+        ? String(aliases)
+            .split(/[,，]/)
+            .map((s) => s.trim())
+        : [];
+    out[key] = aliasesRaw.map((a) => String(a || '').trim()).filter(Boolean);
   }
   return out;
+}
+
+/** 씨드·파일·DB 별칭을 키 기준으로 합침 (배포 PC는 DB 학습분 공유) */
+export function unionOfficeAliasMaps(
+  ...maps: Array<Record<string, string[]> | null | undefined>
+): Record<string, string[]> {
+  const out: Record<string, string[]> = {};
+  for (const map of maps) {
+    const clean = sanitizeOfficeProductAliases(map);
+    for (const [k, aliases] of Object.entries(clean)) {
+      const list = out[k] ? [...out[k]] : [];
+      for (const alias of aliases) {
+        if (list.some((x) => normalizeKo(x) === normalizeKo(alias))) continue;
+        list.push(alias);
+      }
+      out[k] = list;
+    }
+  }
+  return out;
+}
+
+/** 씨드 기본값에 없는 학습분(새 키·추가 별칭)만 추출 */
+export function officeAliasExtras(
+  map: Record<string, string[]> | null | undefined,
+  defaults: Record<string, string[]> = DEFAULT_OFFICE_PRODUCT_ALIASES
+): Record<string, string[]> {
+  const extra: Record<string, string[]> = {};
+  const d = sanitizeOfficeProductAliases(defaults);
+  const m = sanitizeOfficeProductAliases(map);
+  for (const [k, aliases] of Object.entries(m)) {
+    if (!d[k]) {
+      extra[k] = aliases;
+      continue;
+    }
+    const dNorm = new Set((d[k] || []).map((a) => normalizeKo(a)));
+    const added = aliases.filter((a) => !dNorm.has(normalizeKo(a)));
+    if (added.length > 0) extra[k] = added;
+  }
+  return extra;
 }
 
 /** 저장된 규칙 키를 우선. 삭제한 그룹은 씨드 기본값으로 되살리지 않음 */

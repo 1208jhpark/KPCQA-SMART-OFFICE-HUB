@@ -14,12 +14,20 @@ export async function GET(req: Request) {
     }
 
     const auth = await authorizeApi(path);
-    const unitId = String(auth.user?.unit?.id || auth.user?.unit_id || '').trim();
+    const requestedUnitId = String(searchParams.get('unitId') || '').trim();
+    const selfUnitId = String(auth.user?.unit?.id || auth.user?.unit_id || '').trim();
+    const unitId = requestedUnitId || selfUnitId;
     if (!unitId) {
       return NextResponse.json(
         { error: '부서 정보가 등록되지 않은 사용자입니다.' },
         { status: 403 }
       );
+    }
+    if (
+      requestedUnitId &&
+      !(auth.unitsList || []).some((u: any) => String(u?.id || '').trim() === requestedUnitId)
+    ) {
+      return NextResponse.json({ error: '유효하지 않은 부서입니다.' }, { status: 400 });
     }
 
     const { editorNames } = await listDeptAssignees({

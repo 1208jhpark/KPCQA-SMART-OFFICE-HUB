@@ -269,6 +269,40 @@ export const SUPPLIES_MASTER_TABS: InterfaceStepTabDef[] = [
   },
 ];
 
+export const CORP_CARD_DEPT_TABS: InterfaceStepTabDef[] = [
+  {
+    id: 'board',
+    path: '/asset/corp-card/dept/board',
+    fallbackName: '부서 법인카드 보드',
+    fallbackIcon: '💳',
+    activeColor: 'text-sky-600',
+  },
+];
+
+export const CORP_CARD_MASTER_TABS: InterfaceStepTabDef[] = [
+  {
+    id: 'monitoring',
+    path: '/asset/corp-card/master/monitoring',
+    fallbackName: '법인카드 모니터링',
+    fallbackIcon: '📊',
+    activeColor: 'text-sky-600',
+  },
+  {
+    id: 'history',
+    path: '/asset/corp-card/master/history',
+    fallbackName: '법인카드 반납 이력',
+    fallbackIcon: '📂',
+    activeColor: 'text-indigo-600',
+  },
+  {
+    id: 'registry',
+    path: '/asset/corp-card/master/registry',
+    fallbackName: '법인카드 대장',
+    fallbackIcon: '📁',
+    activeColor: 'text-slate-800',
+  },
+];
+
 export const SURVEY_GENERAL_ADMIN_TABS: InterfaceStepTabDef[] = [
   {
     id: 'active',

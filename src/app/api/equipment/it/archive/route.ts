@@ -4,6 +4,7 @@ import {
   authorizeAnyMenuPaths,
   authErrorToResponse,
 } from '@/lib/server-auth-guard';
+import { isSystemLv1User } from '@/lib/permission-utils';
 
 export const dynamic = 'force-dynamic';
 
@@ -18,8 +19,7 @@ const IT_ARCHIVE_WRITE = [
 ] as const;
 
 function isLv1(user: any) {
-  const roles = Array.isArray(user?.roles) ? user.roles : [];
-  return roles.some((r: any) => String(r).includes('LV_1')) || user?.permissionLevel === 'LV_1';
+  return isSystemLv1User(user);
 }
 
 /** 1. 대시보드 [종료 처리] → 아카이브 저장 + 운영 대장에서 제거 (Edit)

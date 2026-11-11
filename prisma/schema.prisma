@@ -89,6 +89,9 @@ model User {
   /// 마케팅 지급 대장 — 개인 그룹웨어 결재 바로가기 URL (미설정 시 SystemConfig 기본값)
   mkt_groupware_shortcut_url String @default("")
 
+  /// 법인카드 보드 — 개인 그룹웨어 사용신청서 바로가기 URL
+  corp_card_groupware_url String @default("")
+
   /// 제작물 검수 — 개인 그룹웨어 메일 바로가기 URL (미설정 시 부서 설정 폴백)
   prod_mail_shortcut_url     String @default("")
   /// 제작물 검수(사무문구) — 개인 그룹웨어 결재 기안 바로가기 URL
@@ -122,6 +125,7 @@ model OrgUnit {
   users           User[]
   supplyRequests  SupplyRequest[]
   productionRequests ProductionRequest[]
+  corpCards          CorpCard[]
   is_active       Boolean   @default(true)
   is_deleted      Boolean   @default(false)
   /// 부서 소모품 보관 위치 안내 (부서 대장 페이지에서 편집)
@@ -488,7 +492,7 @@ model MarketingDeptCalendarEvent {
   id             String   @id @default(cuid())
   unit_id        String
   unit_name      String?
-  /// 내용(제목)
+  /// 내용/프로젝트 (복수 시 줄바꿈)
   title          String
   note           String?  @default("")
   /// 위치
@@ -520,7 +524,7 @@ model ScheduleDeptColorPurpose {
   id               String   @id @default(cuid())
   unit_id          String
   unit_name        String?
-  /// 용도명 (예: 출장, 내부회의)
+  /// 용도명 (예: 현장실사/외부심사, 심의)
   label            String
   color            String   @default("#7baaf7")
   sort_order       Int      @default(0)
@@ -1010,6 +1014,9 @@ model BusinessCardRequest {
   proofFileSize       Int?
   proofUploadedAt     DateTime?
   proofUploadedBy     String?
+  /// 시안 파일 대신 개별메일로 확인 요청·검토한 시각
+  proofMailReviewedAt DateTime?
+  proofMailReviewedBy String?
   proofConfirmedAt    DateTime?
   proofConfirmedBy    String?
 
@@ -1251,4 +1258,64 @@ model PageViewVisitorDaily {
   @@unique([path, year, month, day, userId])
   @@index([year, month])
   @@index([path])
+}
+
+/// 법인카드 대장
+model CorpCard {
+  id        String   @id @default(cuid())
+  name      String
+  issuer    String   @default("")
+  last4     String
+  unitId    String
+  unit      OrgUnit  @relation(fields: [unitId], references: [id], onDelete: Restrict)
+  unitName  String
+  status    String   @default("ACTIVE")
+  memo      String   @default("")
+  createdBy String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  usages    CorpCardUsage[]
+
+  @@index([unitId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+/// 부서 법인카드 보드 — 예약·반출·반납
+model CorpCardUsage {
+  id                   String    @id @default(cuid())
+  cardId               String
+  card                 CorpCard  @relation(fields: [cardId], references: [id], onDelete: Restrict)
+  unitId               String
+  unitName             String    @default("")
+  cardName             String    @default("")
+  issuer               String    @default("")
+  last4                String    @default("")
+  userId               String?
+  userName             String    @default("")
+  userEmail            String    @default("")
+  place                String    @default("")
+  purpose              String    @default("")
+  reservedAt           DateTime?
+  checkoutAt           DateTime?
+  expectedReturnAt     DateTime?
+  amount               String    @default("")
+  returnedAt           DateTime?
+  userConfirmedBy      String    @default("")
+  userConfirmedAt      DateTime?
+  managerConfirmedBy   String    @default("")
+  managerConfirmedAt   DateTime?
+  pickupType           String    @default("")
+  pickupName           String    @default("")
+  returnType           String    @default("")
+  checkoutConfirmedBy  String    @default("")
+  checkoutConfirmedAt  DateTime?
+  status               String    @default("RESERVED")
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  @@index([cardId])
+  @@index([unitId])
+  @@index([status])
+  @@index([createdAt])
 }

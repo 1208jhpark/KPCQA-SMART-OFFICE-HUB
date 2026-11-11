@@ -1,18 +1,12 @@
 import './globals.css';
-import { Noto_Sans_KR, Roboto } from 'next/font/google';
+import { Noto_Sans_KR } from 'next/font/google';
 
 const notoSansKr = Noto_Sans_KR({
   subsets: ['latin'],
   weight: ['300', '400', '500', '600', '700'],
   variable: '--font-noto-sans-kr',
   display: 'swap',
-});
-
-const roboto = Roboto({
-  subsets: ['latin'],
-  weight: ['300', '400', '500', '700'],
-  variable: '--font-roboto',
-  display: 'swap',
+  fallback: ['Malgun Gothic', 'Apple SD Gothic Neo', 'sans-serif'],
 });
 
 export const metadata = {
@@ -35,7 +29,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="ko" className={`${notoSansKr.variable} ${roboto.variable}`} suppressHydrationWarning>
+    <html lang="ko" className={notoSansKr.variable} suppressHydrationWarning>
       <head>
         {/* Pretendard — 한글 SaaS 표준 스택의 1순위 */}
         <link

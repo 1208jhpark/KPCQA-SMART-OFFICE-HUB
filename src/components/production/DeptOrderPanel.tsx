@@ -47,6 +47,15 @@ const DEPT_HISTORY_CATEGORIES = [
 const BATCH_FOLDER_CATEGORIES = DEPT_HISTORY_CATEGORIES;
 
 const BATCH_CATEGORY_IDS = BATCH_FOLDER_CATEGORIES.map((c) => c.id);
+const INSPECTION_PATH = '/production/custom/dept-master/inspection';
+
+function inspectionPathForCategory(category: string) {
+  const cat = String(category || '').trim().toUpperCase();
+  if (BATCH_CATEGORY_IDS.includes(cat)) {
+    return `${INSPECTION_PATH}?category=${encodeURIComponent(cat)}`;
+  }
+  return INSPECTION_PATH;
+}
 
 type ProductionRequestRow = {
   id: string;
@@ -521,11 +530,21 @@ export default function DeptOrderPanel() {
       setPendingOrderIds([]);
       setShippingCancelRevertIds([]);
       setBatchShippingOpen(false);
-      const redirectTo =
-        typeof data.redirectTo === 'string'
-          ? data.redirectTo
-          : '/production/custom/dept-master/inspection';
-      router.push(redirectTo);
+      const orderedCats = Array.from(
+        new Set(
+          ids
+            .map((id) => requests.find((r) => r.id === id)?.category)
+            .map((c) => String(c || '').trim().toUpperCase())
+            .filter((c) => BATCH_CATEGORY_IDS.includes(c))
+        )
+      );
+      const category =
+        orderedCats.length === 1
+          ? orderedCats[0]
+          : activeCategory !== 'ALL' && orderedCats.includes(activeCategory)
+            ? activeCategory
+            : orderedCats[0] || (activeCategory !== 'ALL' ? activeCategory : '');
+      router.push(inspectionPathForCategory(category));
       return true;
     } catch {
       alert('서버와 통신할 수 없습니다.');
@@ -728,7 +747,7 @@ export default function DeptOrderPanel() {
           원문검토{' '}
           <b className="font-medium text-amber-600">→</b>{' '}
           <span className="font-medium">[개별발주]</span> 진행 또는{' '}
-          <span className="font-medium">[묶음발주대기]</span> 이동
+          <span className="font-medium">[묶음취합]</span> 이동
         </div>
 
         {/* 서류철 탭이 아래 표에 붙음 · 신청검수 | 묶음발주대기(분류) */}
@@ -764,12 +783,12 @@ export default function DeptOrderPanel() {
               className="shrink-0 mb-2 px-1 text-[10px] font-medium text-slate-400 whitespace-nowrap hover:text-slate-600"
               title={
                 acceptedBatchTotal > 0
-                  ? `묶음발주대기 총 ${acceptedBatchTotal}건 — 분류 탭을 선택하세요`
-                  : '묶음발주대기 분류 탭을 선택하세요'
+                  ? `묶음 취합 대기 총 ${acceptedBatchTotal}건 — 분류 탭을 선택하세요`
+                  : '묶음 취합 대기 분류 탭을 선택하세요'
               }
               onClick={openBatchStage}
             >
-              묶음발주대기
+              묶음 취합 대기
               {acceptedBatchTotal > 0 ? (
                 <span className="ml-0.5 tabular-nums text-indigo-600">({acceptedBatchTotal})</span>
               ) : null}
@@ -1064,7 +1083,15 @@ export default function DeptOrderPanel() {
                         </td>
                         <td className="px-2 text-center">
                           <span
-                            className={`font-medium whitespace-nowrap ${productionStatusTextClass(item.status, item.options as Record<string, unknown> | null, item.category)}`}
+                            className={`font-medium whitespace-nowrap ${
+                              item.status === PRODUCTION_STATUS.ACCEPTED
+                                ? 'text-orange-600'
+                                : productionStatusTextClass(
+                                    item.status,
+                                    item.options as Record<string, unknown> | null,
+                                    item.category
+                                  )
+                            }`}
                           >
                             {productionStatusLabel(
                               item.status,
@@ -1117,7 +1144,7 @@ export default function DeptOrderPanel() {
                               <button
                                 type="button"
                                 disabled={!canAct || ordering || actionBusyId === item.id}
-                                title={'묶음발주대기(취합)로 이동'}
+                                title={'묶음 취합으로 이동'}
                                 onClick={() => handleApprove(item)}
                                 className={`inline-flex items-center gap-1 px-2 py-1 text-[10px] font-medium rounded-lg transition-colors whitespace-nowrap ${
                                   canAct
@@ -1127,7 +1154,7 @@ export default function DeptOrderPanel() {
                               >
                                 <span>→</span>
                                 <span>
-                                  {actionBusyId === item.id ? '처리중' : '묶음발주대기(취합)'}
+                                  {actionBusyId === item.id ? '처리중' : '묶음 취합'}
                                 </span>
                               </button>
                             </td>

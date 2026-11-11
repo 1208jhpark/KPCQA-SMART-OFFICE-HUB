@@ -142,14 +142,14 @@ function LoginForm() {
 
         <div className="space-y-4">
           <div className="space-y-1">
-            <label className="text-[10px] font-black text-slate-400 ml-2 uppercase">Email</label>
+            <label className="text-[10px] font-medium text-slate-400 ml-2 uppercase">Email</label>
             <div className="flex items-stretch overflow-hidden rounded-2xl bg-slate-50 focus-within:ring-2 focus-within:ring-blue-500 transition-all">
               <input
                 type="text"
                 autoComplete="username"
                 inputMode="email"
                 placeholder="메일 아이디"
-                className="min-w-0 flex-1 p-5 bg-transparent outline-none font-bold text-slate-700"
+                className="min-w-0 flex-1 p-5 bg-transparent outline-none font-medium text-slate-700"
                 value={formData.emailLocal}
                 onChange={(e) =>
                   setFormData({
@@ -159,19 +159,19 @@ function LoginForm() {
                 }
                 required
               />
-              <span className="shrink-0 flex items-center px-4 bg-slate-50 text-sm font-black text-slate-500 select-none">
+              <span className="shrink-0 flex items-center px-4 bg-slate-50 text-sm font-medium text-slate-500 select-none">
                 {COMPANY_EMAIL_SUFFIX}
               </span>
             </div>
           </div>
           <div className="space-y-1">
-            <label className="text-[10px] font-black text-slate-400 ml-2 uppercase">Password</label>
+            <label className="text-[10px] font-medium text-slate-400 ml-2 uppercase">Password</label>
             <div className="relative">
               <input
                 type={showPassword ? 'text' : 'password'}
                 autoComplete="current-password"
                 placeholder=""
-                className="w-full p-5 pr-14 bg-slate-50 rounded-2xl outline-none focus:ring-2 focus:ring-blue-500 font-bold text-slate-700 transition-all"
+                className="w-full p-5 pr-14 bg-slate-50 rounded-2xl outline-none focus:ring-2 focus:ring-blue-500 font-medium text-slate-700 transition-all"
                 value={formData.password}
                 onChange={(e) => setFormData({ ...formData, password: e.target.value })}
                 required
@@ -202,7 +202,7 @@ function LoginForm() {
             <button
               type="button"
               onClick={() => setShowForgotModal(true)}
-              className="text-[11px] font-black text-slate-400 hover:text-blue-600 underline underline-offset-2 transition-colors"
+              className="text-[11px] font-medium text-slate-400 hover:text-blue-600 underline underline-offset-2 transition-colors"
             >
               비밀번호를 잊으셨나요?
             </button>

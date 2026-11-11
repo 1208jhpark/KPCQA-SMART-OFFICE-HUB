@@ -1,9 +1,9 @@
 'use client';
      
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-import * as XLSX from 'xlsx'; 
 import { getKSTDateString, getKSTDaysUntil } from '@/utils/dateUtils';
 import LoadingState from '@/components/common/LoadingState';
+import { writeItPersonalExcelBuffer } from '@/lib/it-personal-excel';
 import {
   buildInfoCorrectionPending,
   getCompletedAuditLabel,
@@ -920,26 +920,28 @@ export default function PersonalModule() {
   const paginatedAssets = filteredAssets.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
   const totalPages = Math.max(1, Math.ceil(filteredAssets.length / itemsPerPage));
   
-  const handleExcelDownload = () => {
-    const targetAssets = selectedIds.size > 0 ? filteredAssets.filter(a => selectedIds.has(a.id)) : filteredAssets;
+  const handleExcelDownload = async () => {
+    const targetAssets =
+      selectedIds.size > 0
+        ? filteredAssets.filter((a) => selectedIds.has(a.id))
+        : filteredAssets;
     if (targetAssets.length === 0) return alert('다운로드할 데이터가 없습니다.');
-    const excelData = targetAssets.map((a, index) => ({
-      'NO': targetAssets.length - index,
-      '조직': a.dept || '-',
-      '사용자': a.user || '-',
-      '범주': a.category,
-      '자산 분류': a.it_type,
-      '조달유형': a.is_rental || '-',
-      '자산번호': a.code,
-      '모델명': a.model,
-      'S/N': a.sn,
-      '제조사': a.brand || '-',
-      '기본 사양': a.spec,
-      '최근실사일': a.last_audit_date || '-',
-      '기타(메모)': a.memo,
-    }));
-    const ws = XLSX.utils.json_to_sheet(excelData); const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "My_Assets"); XLSX.writeFile(wb, `나의업무자산현황_${currentUser?.name}.xlsx`);
+    try {
+      const buffer = await writeItPersonalExcelBuffer(targetAssets, {
+        sheetName: '나의업무자산',
+      });
+      const blob = new Blob([buffer], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `나의업무자산현황_${currentUser?.name || 'user'}.xlsx`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      alert('엑셀 다운로드에 실패했습니다.');
+    }
   };
   
 // ✨ 에러 추적 기능이 강화된 전송 함수
@@ -1224,13 +1226,13 @@ const handleCancelRequest = async (id: string) => {
         <div className="absolute right-0 top-0 w-64 h-64 bg-indigo-500/12 rounded-full blur-3xl -translate-y-1/3 translate-x-1/4 pointer-events-none" />
         <div className="absolute left-1/4 bottom-0 w-48 h-48 bg-slate-500/10 rounded-full blur-3xl translate-y-1/2 pointer-events-none" />
         <div className="relative z-10 min-w-0">
-          <h3 className="text-[10px] font-medium text-indigo-400 mb-2.5">
+          <h3 className="text-[10px] font-medium uppercase tracking-widest text-indigo-400 mb-2.5">
             IT ASSET PERSONAL DESK
           </h3>
-          <h1 className="text-2xl font-medium tracking-tight leading-none">
-            <span className="text-indigo-400">{currentUser?.name || '임직원'} 님</span>
-            <span className="text-white/30 mx-2.5">|</span>
-            <span className="text-white">IT·업무자산 운영 현황</span>
+          <h1 className="text-2xl tracking-tight leading-none">
+            <span className="text-indigo-400 font-normal">{currentUser?.name || '임직원'} 님</span>
+            <span className="text-white/30 font-normal mx-2.5">|</span>
+            <span className="text-white font-medium">IT·업무자산 운영 현황</span>
           </h1>
           <p className="text-slate-400 text-xs mt-3 leading-relaxed">
             보유 자산 현황을 확인하고 정기 실사·의견 요청을 처리합니다.
@@ -1314,35 +1316,42 @@ const handleCancelRequest = async (id: string) => {
             )}
           </div>
           <div className="flex-1 mt-3 flex flex-col justify-center gap-3">
-            <div className="flex items-center justify-between gap-2">
-              {isAuditActive ? (
-                <span className="px-3 py-1.5 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-lg font-medium text-[11px] animate-pulse">
-                  🟢 실사 진행 중{myRunningAudits.length > 1 ? ` · ${myRunningAudits.length}건` : ''}
-                </span>
-              ) : (
-                <span className="px-3 py-1.5 bg-slate-100 text-slate-600 border border-slate-200 rounded-lg font-medium text-[11px]">
-                  ⚪ 실사 미진행
-                </span>
-              )}
-              {isAuditActive && auditDaysLeft !== null && (
-                <div className="text-right">
-                  <p className="text-xl font-medium text-indigo-600 tracking-tighter leading-none tabular-nums">
-                    {auditDaysLeft >= 0 ? `D-${auditDaysLeft}` : `D+${Math.abs(auditDaysLeft)}`}
-                  </p>
-                  <p className="text-[9px] font-medium text-slate-400 mt-0.5">남은 기간</p>
+            {isAuditActive ? (
+              <>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="px-3 py-1.5 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-lg font-medium text-[11px] animate-pulse">
+                    🟢 실사 진행 중
+                    {myRunningAudits.length > 1 ? ` · ${myRunningAudits.length}건` : ''}
+                  </span>
+                  {auditDaysLeft !== null && (
+                    <div className="text-right">
+                      <p className="text-xl font-medium text-indigo-600 tracking-tighter leading-none tabular-nums">
+                        {auditDaysLeft >= 0
+                          ? `D-${auditDaysLeft}`
+                          : `D+${Math.abs(auditDaysLeft)}`}
+                      </p>
+                      <p className="text-[9px] font-medium text-slate-400 mt-0.5">남은 기간</p>
+                    </div>
+                  )}
                 </div>
-              )}
-            </div>
-            {isAuditActive && focusedAudit && (
-              <div className="rounded-xl bg-slate-50 border border-slate-100 px-3.5 py-2.5">
-                <p className="text-[9px] font-medium text-slate-400">
-                  현재 실사 운영 기간
-                </p>
-                <p className="mt-1 text-[13px] font-medium tracking-tight text-indigo-700">
-                  {focusedAudit.startDate} ~ {focusedAudit.endDate}
-                </p>
-                <p className="mt-1 text-[10px] font-medium text-slate-400 tabular-nums">
-                  마감 {(focusedAudit.endTime || '23:59').trim() || '23:59'}
+                {focusedAudit && (
+                  <div className="rounded-xl bg-slate-50 border border-slate-100 px-3.5 py-2.5">
+                    <p className="text-[9px] font-medium text-slate-400">
+                      현재 실사 운영 기간
+                    </p>
+                    <p className="mt-1 text-[13px] font-medium tracking-tight text-indigo-700">
+                      {focusedAudit.startDate} ~ {focusedAudit.endDate}
+                    </p>
+                    <p className="mt-1 text-[10px] font-medium text-slate-400 tabular-nums">
+                      마감 {(focusedAudit.endTime || '23:59').trim() || '23:59'}
+                    </p>
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="flex-1 min-h-[7.5rem] flex flex-col items-center justify-center rounded-lg border border-dashed border-slate-200 bg-slate-50/70 px-4 py-5 text-center">
+                <p className="text-[10px] font-medium text-slate-600 leading-relaxed">
+                  진행 중인 실사가 없습니다
                 </p>
               </div>
             )}
@@ -1454,7 +1463,7 @@ const handleCancelRequest = async (id: string) => {
         </div>
       </div>
 
-      <div className="bg-white border border-slate-200 rounded-[2.5rem] shadow-sm overflow-hidden animate-in fade-in duration-300 slide-in-from-top-4">
+      <div className="bg-white border border-slate-200 rounded-lg shadow-sm overflow-hidden animate-in fade-in duration-300 slide-in-from-top-4">
         <div className="p-4 px-6 bg-slate-200/70 border-b border-slate-300 flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-2 flex-wrap min-w-0">
             <div className="w-2.5 h-2.5 rounded-full bg-blue-600 shrink-0" />

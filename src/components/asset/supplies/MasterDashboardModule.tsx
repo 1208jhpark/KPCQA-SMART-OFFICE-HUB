@@ -2,6 +2,7 @@
 'use client';
      
 import React, { useState, useEffect, useMemo, Suspense, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { usePathname } from 'next/navigation';
 import Link from 'next/link';
 import { getKSTDateString } from '@/utils/dateUtils';
@@ -9,6 +10,7 @@ import { resolveInterfaceEditState, isSystemLv1User } from '@/lib/permission-uti
 import { parseSupplyOwnerDepts, parseSupplyOwnerUnitIds, resolveTopOrgName } from '@/utils/orgUnits';
 import { isSupplyDirectStockLocked, withSupplyStockLocked } from '@/utils/supplyStockLock';
 import LoadingState from '@/components/common/LoadingState';
+import DeptAssigneeLine, { useDeptAssignees } from '@/components/common/DeptAssigneeLine';
 import {
   SUPPLIES_MASTER_TABS,
   useInterfaceStepTabs,
@@ -19,6 +21,7 @@ const MENU_PATH = '/asset/supplies/master/dashboard';
 function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser?: any }) {
   const pathname = usePathname();
   const tabs = useInterfaceStepTabs(SUPPLIES_MASTER_TABS, '/asset/supplies/master');
+  const { editorNames } = useDeptAssignees(MENU_PATH);
   
   const [items, setItems] = useState<any[]>([]);
   const [pendingCount, setPendingCount] = useState(0);
@@ -41,9 +44,13 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
      
   const [editModal, setEditModal] = useState<any | null>(null);
   const [stockInModal, setStockInModal] = useState<any | null>(null);
-  const [statFilter, setStatFilter] = useState<'ALL' | 'PENDING' | 'WARNING' | 'OUT'>('ALL'); 
-  
+  const [statFilter, setStatFilter] = useState<'ALL' | 'PENDING' | 'WARNING' | 'OUT'>('ALL');
+  const [actionMenu, setActionMenu] = useState<{ id: string; top: number; left: number } | null>(
+    null
+  );
+
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const actionMenuRef = useRef<HTMLDivElement | null>(null);
      
   const fetchDashboardData = async () => {
     setLoading(true);
@@ -109,6 +116,43 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
     fetchDashboardData();
   }, []);
 
+  useEffect(() => {
+    setActionMenu(null);
+  }, [statFilter]);
+
+  useEffect(() => {
+    if (!actionMenu) return;
+    const onDoc = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (actionMenuRef.current?.contains(t)) return;
+      if ((e.target as HTMLElement | null)?.closest?.('[data-action-kebab]')) return;
+      setActionMenu(null);
+    };
+    const onWin = () => setActionMenu(null);
+    document.addEventListener('mousedown', onDoc);
+    window.addEventListener('scroll', onWin, true);
+    window.addEventListener('resize', onWin);
+    return () => {
+      document.removeEventListener('mousedown', onDoc);
+      window.removeEventListener('scroll', onWin, true);
+      window.removeEventListener('resize', onWin);
+    };
+  }, [actionMenu]);
+
+  const openActionMenu = (e: React.MouseEvent<HTMLButtonElement>, id: string) => {
+    const width = 180;
+    const r = e.currentTarget.getBoundingClientRect();
+    setActionMenu((prev) =>
+      prev?.id === id
+        ? null
+        : {
+            id,
+            top: r.bottom + 4,
+            left: Math.min(Math.max(12, r.right - width), window.innerWidth - width - 12),
+          }
+    );
+  };
+
   const canEdit = useMemo(
     () => resolveInterfaceEditState(currentUser, interfaceConfig).isEditor,
     [currentUser, interfaceConfig]
@@ -126,7 +170,7 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
   const alertNoEditPermission = () => alert('편집 권한이 없습니다.');
   const alertNoLv1Permission = () => alert('LV_1(마스터) 권한이 필요합니다.');
   const disabledActionBtn =
-    'px-2 py-1 rounded text-[10px] font-medium bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed opacity-70 whitespace-nowrap';
+    'px-2 py-1 rounded text-[11px] font-medium bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed opacity-70 whitespace-nowrap';
      
   const stats = useMemo(() => {
     const activeItems = items.filter(i => i.is_active !== false); 
@@ -512,22 +556,22 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
   <div className="absolute right-0 top-0 w-64 h-64 bg-emerald-400/15 rounded-full blur-3xl -translate-y-1/3 translate-x-1/4 pointer-events-none" />
   <div className="absolute left-1/4 bottom-0 w-48 h-48 bg-teal-800/20 rounded-full blur-3xl translate-y-1/2 pointer-events-none" />
   <div className="relative z-10">
-    <h3 className="text-[10px] font-black uppercase tracking-widest text-emerald-400 mb-2.5">
+    <h3 className="text-[10px] font-medium uppercase tracking-widest text-emerald-400 mb-2.5">
       CENTRAL SUPPLIES CONTROL TOWER
     </h3>
-    <h1 className="text-2xl font-extrabold tracking-tight text-white leading-none">
-      소모품 마스터 관리 통제실
+    <h1 className="text-2xl tracking-tight leading-none">
+      <span className="text-white font-medium">소모품 마스터 관리 통제실</span>
     </h1>
     <p className="text-emerald-100/90 text-xs mt-3 leading-relaxed">
       전사 소모품의 전체 관리 및 실시간 재고 현황을 모니터링하고 관리합니다.
     </p>
     {permissionSummary && isSystemLv1User(currentUser) && (
       <div className="flex flex-wrap items-center gap-2 mt-4 pt-3 border-t border-white/15">
-        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-white/10 border-white/25 text-emerald-50 shadow-sm">
+        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-medium border tracking-tight bg-white/10 border-white/25 text-emerald-50 shadow-sm">
           <span>👑 Master 책임자:</span>
           <span>{permissionSummary.masterName}</span>
         </div>
-        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-purple-500/20 border-purple-300/40 text-purple-100 shadow-sm">
+        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-medium border tracking-tight bg-purple-500/20 border-purple-300/40 text-purple-100 shadow-sm">
           <span>👁️ Access:</span>
           <span>{permissionSummary.accessDesignate}</span>
           <span className="opacity-50">|</span>
@@ -535,7 +579,7 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
           <span className="opacity-50">|</span>
           <span>Level: {permissionSummary.accessLevel}</span>
         </div>
-        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-emerald-400/20 border-emerald-300/40 text-emerald-100 shadow-sm">
+        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-medium border tracking-tight bg-emerald-400/20 border-emerald-300/40 text-emerald-100 shadow-sm">
           <span>✍️ Edit:</span>
           <span>{permissionSummary.editDesignate}</span>
           <span className="opacity-50">|</span>
@@ -581,11 +625,12 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
         <div className="p-3 px-5 bg-slate-200/70 border-b border-slate-300 flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2 flex-wrap min-w-0">
             <div className="w-2.5 h-2.5 rounded-full bg-blue-600 shrink-0"></div>
-            <h2 className="text-[13px] font-black text-slate-800 tracking-tight">
+            <h2 className="text-sm font-black text-slate-800 tracking-tight">
               {statFilter === 'ALL' ? '실시간 창고 재고 현황 보드' : 
                statFilter === 'PENDING' ? '신청 대기중인 물품 리스트' : 
                statFilter === 'WARNING' ? '재고부족 물품 리스트' : '품절된 물품 리스트'}
             </h2>
+            <DeptAssigneeLine editorNames={editorNames} />
             <div className="flex items-center gap-1 ml-1">
               <button
                 type="button"
@@ -667,7 +712,7 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
               <col className="w-[9%]" />
               <col className="w-[18%]" />
             </colgroup>
-            <thead className="bg-slate-100 text-slate-700 text-[10px] font-black uppercase tracking-widest border-b border-slate-200">
+            <thead className="bg-slate-100 text-slate-700 text-[11px] font-black uppercase tracking-widest border-b border-slate-200">
               <tr>
                 <th className="h-12 pl-3 text-center">NO</th>
                 <th className="h-12 px-3 text-left">품목명</th>
@@ -676,7 +721,7 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
                 <th className="h-12 px-1 text-center whitespace-nowrap bg-blue-50/60">재고 상태</th>
                 <th className="h-12 px-2 text-left bg-blue-50/60">관리 비고</th>
                 <th className="h-12 px-1 text-center whitespace-nowrap text-amber-700 border-l border-slate-300 bg-amber-50/60">지급단위</th>
-                <th className="h-12 px-1 text-center whitespace-nowrap text-amber-700 bg-amber-50/60">게시(Edit)</th>
+                <th className="h-12 px-1 text-center whitespace-nowrap text-amber-700 bg-amber-50/60">소모품신청 물품게시(Edit)</th>
                 <th className="h-12 pr-3 pl-2 text-center whitespace-nowrap border-l border-slate-300">
                   <span className="inline-flex items-center justify-center gap-0.5">
                     관리액션(Edit)
@@ -694,7 +739,7 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
             <tbody className="bg-white divide-y divide-slate-100 text-[11px] font-bold text-slate-700">
               {filteredItems.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="p-16 text-center text-slate-400 text-xs">
+                  <td colSpan={9} className="p-16 text-center text-slate-400 text-[11px]">
                     조건에 맞는 데이터가 없습니다.
                   </td>
                 </tr>
@@ -719,9 +764,6 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
                       if (Number(n.link_qty) > 0) lastLinkQty = Number(n.link_qty);
                     }
                   } catch {}
-                  const usageCount =
-                    Number(item?._count?.requests || 0) + Number(item?._count?.purchases || 0);
-                  const hasUsageHistory = usageCount > 0;
 
                   return (
                     <tr
@@ -743,7 +785,7 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
                             {item.image_url ? (
                               <img src={item.image_url} alt="" className="w-full h-full object-cover" />
                             ) : (
-                              <span className="text-[10px] opacity-40">📦</span>
+                              <span className="text-[11px] opacity-40">📦</span>
                             )}
                           </div>
                           <div className="min-w-0 flex flex-col">
@@ -751,7 +793,7 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
                               {item.name}
                             </span>
                             <span
-                              className="text-[9px] font-bold text-slate-400 truncate"
+                              className="text-[11px] font-medium text-slate-400 truncate"
                               title={`물품소속: ${formatOwnerDeptsLabel(item.owner_dept)}`}
                             >
                               {formatOwnerDeptsLabel(item.owner_dept)}
@@ -765,15 +807,15 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
                         }`}
                       >
                         {formatNum(currentStock)}
-                        <span className="text-[9px] text-slate-400 font-bold ml-0.5">{rUnit}</span>
+                        <span className="text-[11px] text-slate-400 font-medium ml-0.5">{rUnit}</span>
                       </td>
                       <td className="px-2 text-center font-mono text-slate-500 tabular-nums whitespace-nowrap bg-blue-50/20">
                         {safeStock}
-                        <span className="text-[9px] text-slate-400 font-bold ml-0.5">{rUnit}</span>
+                        <span className="text-[11px] text-slate-400 font-medium ml-0.5">{rUnit}</span>
                       </td>
                       <td className="px-2 text-center bg-blue-50/20">
                         <span
-                          className={`inline-block border px-1.5 py-0.5 rounded text-[10px] font-bold whitespace-nowrap ${
+                          className={`inline-block border px-1.5 py-0.5 rounded text-[11px] font-medium whitespace-nowrap ${
                             isOut
                               ? 'bg-red-50 text-red-600 border-red-200'
                               : isDanger
@@ -797,15 +839,15 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
                           title={canEdit ? (isPublished ? '게시내리기' : '게시올리기') : '편집 권한 필요'}
                           className={
                             canEdit
-                              ? `w-full max-w-[5rem] mx-auto py-1 px-1.5 rounded-md text-[9px] font-black shadow-sm transition-all border ${
+                              ? `w-full max-w-[6.5rem] mx-auto py-1 px-1.5 rounded-md text-[11px] font-medium shadow-sm transition-all border whitespace-nowrap ${
                                   isPublished
-                                    ? 'bg-slate-100 border-slate-200 text-slate-500 hover:bg-slate-200'
-                                    : 'bg-indigo-50 border-indigo-200 text-indigo-700 hover:bg-indigo-100'
+                                    ? 'bg-indigo-50 border-indigo-200 text-indigo-700 hover:bg-indigo-100'
+                                    : 'bg-slate-100 border-slate-200 text-slate-500 hover:bg-indigo-100 hover:border-indigo-200 hover:text-indigo-700'
                                 }`
-                              : 'w-full max-w-[5rem] mx-auto py-1 px-1.5 rounded-md text-[9px] font-black border bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed opacity-70'
+                              : 'w-full max-w-[6.5rem] mx-auto py-1 px-1.5 rounded-md text-[11px] font-medium border bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed opacity-70 whitespace-nowrap'
                           }
                         >
-                          {isPublished ? '내리기' : '올리기'}
+                          {isPublished ? '게시내리기' : '게시올리기'}
                         </button>
                       </td>
                       <td className="px-3 text-center border-l border-slate-200">
@@ -827,7 +869,7 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
                             title={canEdit ? '입고' : '편집 권한 필요'}
                             className={
                               canEdit
-                                ? 'px-2.5 py-1 rounded text-[10px] font-medium bg-emerald-600 text-white shadow-sm hover:bg-emerald-700 transition-colors whitespace-nowrap'
+                                ? 'px-2.5 py-1 rounded text-[11px] font-medium bg-emerald-600 text-white shadow-sm hover:bg-emerald-700 transition-colors whitespace-nowrap'
                                 : disabledActionBtn
                             }
                           >
@@ -839,7 +881,7 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
                             title={canEdit ? '수정' : '편집 권한 필요'}
                             className={
                               canEdit
-                                ? 'px-2.5 py-1 rounded text-[10px] font-medium bg-white text-blue-600 border border-blue-200 shadow-sm hover:bg-blue-50 transition-colors whitespace-nowrap'
+                                ? 'px-2.5 py-1 rounded text-[11px] font-medium bg-white text-blue-600 border border-blue-200 shadow-sm hover:bg-blue-50 transition-colors whitespace-nowrap'
                                 : disabledActionBtn
                             }
                           >
@@ -847,34 +889,20 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
                           </button>
                           <button
                             type="button"
-                            onClick={() => handleArchive(item.id)}
-                            title={canEdit ? '보관함' : '편집 권한 필요'}
-                            className={
-                              canEdit
-                                ? 'px-2.5 py-1 rounded text-[10px] font-medium bg-white text-slate-500 border border-slate-200 shadow-sm hover:bg-slate-100 transition-colors whitespace-nowrap'
-                                : disabledActionBtn
-                            }
+                            data-action-kebab
+                            title="더보기"
+                            onClick={(e) => openActionMenu(e, item.id)}
+                            className={`inline-flex items-center justify-center w-7 h-7 rounded-lg transition-colors ${
+                              actionMenu?.id === item.id
+                                ? 'bg-slate-200 text-slate-800'
+                                : 'text-slate-500 hover:bg-slate-100 hover:text-slate-800'
+                            }`}
                           >
-                            보관함
-                          </button>
-                          <button
-                            type="button"
-                            disabled={!canEdit || hasUsageHistory}
-                            onClick={() => handleDeleteItem(item)}
-                            className={
-                              canEdit && !hasUsageHistory
-                                ? 'px-2.5 py-1 rounded text-[10px] font-medium bg-red-50 border border-red-200 text-red-500 shadow-sm hover:bg-red-500 hover:text-white transition-colors whitespace-nowrap'
-                                : disabledActionBtn
-                            }
-                            title={
-                              !canEdit
-                                ? '편집 권한 필요'
-                                : hasUsageHistory
-                                  ? '신청·입고 이력이 있어 삭제할 수 없습니다'
-                                  : '신청·입고 이력이 없는 품목만 삭제 가능'
-                            }
-                          >
-                            삭제
+                            <svg viewBox="0 0 20 20" className="w-4 h-4" fill="currentColor" aria-hidden>
+                              <circle cx="10" cy="4.5" r="1.6" />
+                              <circle cx="10" cy="10" r="1.6" />
+                              <circle cx="10" cy="15.5" r="1.6" />
+                            </svg>
                           </button>
                         </div>
                       </td>
@@ -886,21 +914,85 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
           </table>
         </div>
       </div>
+
+      {actionMenu &&
+        createPortal(
+          <div
+            ref={actionMenuRef}
+            style={{ top: actionMenu.top, left: actionMenu.left }}
+            className="fixed z-[500] w-[180px] rounded-xl border border-slate-200 bg-white shadow-lg py-1 text-left"
+          >
+            {(() => {
+              const row = items.find((i) => i.id === actionMenu.id);
+              if (!row) return null;
+              const usageCount =
+                Number(row?._count?.requests || 0) + Number(row?._count?.purchases || 0);
+              const canDelete = canEdit && usageCount === 0;
+              return (
+                <>
+                  <button
+                    type="button"
+                    className={`w-full px-3 py-2 text-left text-[11px] font-medium ${
+                      canEdit
+                        ? 'text-slate-700 hover:bg-slate-50'
+                        : 'text-slate-400 cursor-not-allowed'
+                    }`}
+                    onClick={() => {
+                      if (!canEdit) return alertNoEditPermission();
+                      setActionMenu(null);
+                      void handleArchive(row.id);
+                    }}
+                  >
+                    폐기자산 아카이브 이동
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!canDelete}
+                    title={
+                      !canEdit
+                        ? '편집 권한 필요'
+                        : usageCount > 0
+                          ? '신청·입고 이력이 있어 삭제할 수 없습니다'
+                          : '신청·입고 이력이 없는 품목만 삭제 가능'
+                    }
+                    className={`w-full px-3 py-2 text-left text-[11px] font-medium ${
+                      canDelete
+                        ? 'text-rose-600 hover:bg-rose-50'
+                        : 'text-slate-400 cursor-not-allowed'
+                    }`}
+                    onClick={() => {
+                      if (!canDelete) return;
+                      setActionMenu(null);
+                      void handleDeleteItem(row);
+                    }}
+                  >
+                    삭제
+                  </button>
+                </>
+              );
+            })()}
+          </div>,
+          document.body
+        )}
      
       {/* ✏️ 신규 등록/수정 모달 */}
       {editModal && canEdit && (
         <div className="fixed inset-0 z-[500] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200">
-          <div className="bg-white w-full max-w-2xl rounded-[2.5rem] shadow-2xl overflow-hidden animate-in slide-in-from-bottom-8">
-            <div className="bg-slate-900 p-6 flex justify-between items-center text-white">
-              <div>
-                <h3 className="font-black text-[13px] uppercase tracking-widest text-white">
-                  {editModal.isNew ? '✨ 신규 소모품 마스터 등록' : '✏️ 소모품 정보 수정'}
-                </h3>
-              </div>
-              <button onClick={() => setEditModal(null)} className="text-slate-400 hover:text-white transition-colors text-xl">✕</button>
+          <div className="bg-white w-full max-w-2xl border border-slate-200 shadow-2xl rounded-2xl overflow-hidden animate-in slide-in-from-bottom-8">
+            <div className="flex items-center justify-between gap-3 px-6 pt-5 pb-3 border-b border-slate-200 bg-white">
+              <h3 className="text-base font-black text-slate-900 tracking-wide">
+                {editModal.isNew ? '✨ 신규 소모품 마스터 등록' : '✏️ 소모품 정보 수정'}
+              </h3>
+              <button
+                type="button"
+                onClick={() => setEditModal(null)}
+                className="text-slate-400 hover:text-slate-700 transition-colors text-xl"
+              >
+                ✕
+              </button>
             </div>
      
-            <form onSubmit={handleSaveSubmit} className="p-8 bg-slate-50 flex gap-8">
+            <form onSubmit={handleSaveSubmit} className="p-6 bg-slate-50 flex gap-8">
               <div className="w-1/3 flex flex-col gap-2">
                 <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest text-center">상품 이미지</label>
                 <div 
@@ -1001,16 +1093,16 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
                   </p>
                 </div>
      
-                <div className="bg-amber-50/60 p-3 rounded-xl border border-amber-100">
-                  <label className="text-[10px] font-black text-amber-700 uppercase tracking-widest block mb-1.5">사용자의 신청(지급) 허용 단위</label>
+                <div className="bg-rose-50 p-3 rounded-xl border border-rose-200">
+                  <label className="text-[10px] font-black text-rose-700 uppercase tracking-widest block mb-1.5">사용자에게 지급단위 설정</label>
                   {unitOptions.length > 0 ? (
-                    <select required value={editModal.r_unit} onChange={(e) => setEditModal({...editModal, r_unit: e.target.value})} className="w-full p-2.5 bg-white border border-amber-200 rounded-lg text-[11px] font-black text-slate-700 outline-none focus:border-amber-500 shadow-sm">
+                    <select required value={editModal.r_unit} onChange={(e) => setEditModal({...editModal, r_unit: e.target.value})} className="w-full p-2.5 bg-white border border-rose-300 rounded-lg text-[11px] font-black text-slate-700 outline-none focus:border-rose-500 shadow-sm">
                       {unitOptions.map((opt:any) => <option key={opt.id} value={opt.label}>{opt.label}</option>)}
                     </select>
                   ) : (
-                    <input type="text" required value={editModal.r_unit} onChange={(e) => setEditModal({...editModal, r_unit: e.target.value})} className="w-full p-2.5 bg-white border border-amber-200 rounded-lg text-[11px] font-black text-slate-900 outline-none shadow-sm" placeholder="예: EA, 병, 장" />
+                    <input type="text" required value={editModal.r_unit} onChange={(e) => setEditModal({...editModal, r_unit: e.target.value})} className="w-full p-2.5 bg-white border border-rose-300 rounded-lg text-[11px] font-black text-slate-900 outline-none shadow-sm" placeholder="예: EA, 병, 장" />
                   )}
-                  <p className="text-[9px] text-amber-600/80 font-bold mt-1.5">현재고·알람·사용자 신청은 모두 이 단위 기준입니다. 입고단위는 입고 시 입력합니다.</p>
+                  <p className="text-[9px] text-rose-600/90 font-bold mt-1.5">현재고·알람·사용자 신청은 모두 이 단위 기준입니다. 입고단위는 입고 시 입력합니다.</p>
                 </div>
      
                 <div className="grid grid-cols-2 gap-4">
@@ -1058,7 +1150,7 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
                   </div>
                   <div>
                     <label className="text-[10px] font-black text-orange-500 uppercase tracking-widest block mb-1.5">
-                      안전재고 (재고알람 기준) <span className="text-slate-400 normal-case tracking-normal">({editModal.r_unit || '지급단위'})</span>
+                      재고알람 기준설정 <span className="text-slate-400 normal-case tracking-normal">({editModal.r_unit || '지급단위'})</span>
                     </label>
                     <input 
                       type="number" min="0" required value={editModal.alert_qty} onChange={(e) => setEditModal({...editModal, alert_qty: e.target.value})}
@@ -1068,7 +1160,7 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
                 </div>
      
                 <div>
-                  <label className="text-[10px] font-black text-indigo-600 uppercase tracking-widest block mb-1.5">게시설명글 (Inventory 표시)</label>
+                  <label className="text-[10px] font-black text-indigo-600 uppercase tracking-widest block mb-1.5">게시물에 표기되는 보조문구 설정 (필요시)</label>
                   <input
                     type="text"
                     value={editModal.publish_note || ''}
@@ -1172,11 +1264,11 @@ function SuppliesMasterDashboardContent({ currentUser: propUser }: { currentUser
                     </p>
                   </div>
                   <div>
-                    <label className="text-xs font-black text-amber-600 block mb-1">지급단위</label>
-                    <div className="w-full py-2.5 px-3 bg-amber-50 border border-amber-200 rounded-lg text-sm font-black text-amber-700 text-center">
+                    <label className="text-xs font-black text-slate-500 block mb-1">지급단위</label>
+                    <div className="w-full py-2.5 px-3 bg-slate-50 border border-slate-200 rounded-lg text-sm font-black text-slate-600 text-center">
                       {stockInModal.s_unit || 'EA'}
                     </div>
-                    <p className="text-[11px] text-amber-600/80 font-bold mt-1 text-center leading-tight">마스터 고정</p>
+                    <p className="text-[11px] text-slate-500/80 font-bold mt-1 text-center leading-tight">수정 버튼에서 수정가능</p>
                   </div>
                 </div>
 

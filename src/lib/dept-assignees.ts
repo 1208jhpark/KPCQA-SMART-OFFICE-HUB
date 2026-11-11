@@ -12,7 +12,7 @@ function normalizeMenuPath(path: string) {
 }
 
 /**
- * 로그인 사용자 부서 소속 Active 인원 중 해당 메뉴 Edit 가능자
+ * 지정 unitId(또는 호출처가 넘긴 부서) 소속 Active 인원 중 해당 메뉴 Edit 가능자
  */
 export async function listDeptAssignees(options: {
   menuPath: string;

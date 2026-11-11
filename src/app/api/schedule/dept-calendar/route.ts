@@ -235,7 +235,7 @@ export async function POST(req: Request) {
       id,
       unitId,
       unitName || null,
-      title.slice(0, 120),
+      title.slice(0, 800),
       note,
       location,
       timeText,
@@ -293,7 +293,7 @@ export async function PATCH(req: Request) {
     }
 
     const title =
-      body.title !== undefined ? String(body.title || '').trim().slice(0, 120) : null;
+      body.title !== undefined ? String(body.title || '').trim().slice(0, 800) : null;
     if (body.title !== undefined && !title) {
       return NextResponse.json({ error: '내용을 입력해 주세요.' }, { status: 400 });
     }

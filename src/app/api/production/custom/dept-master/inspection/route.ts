@@ -252,7 +252,9 @@ export async function GET() {
           vendors,
           orderedAt,
           dispatchedAt,
-          items,
+          items: [...items].sort(
+            (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+          ),
         };
       })
       .sort((a, b) => {
@@ -338,7 +340,6 @@ export async function POST(req: Request) {
           where: { id: row.id },
           data: {
             options: asInputJson(nextOpts),
-            // 발주확정 → 발주완료 / 고객사 직발송은 완료이력(VERIFIED, 표기: 발주완료(고객사직발송))
             ...productionStatusChangedStamp(),
             ...(direct ? { status: 'VERIFIED' } : {}),
           },
@@ -350,8 +351,8 @@ export async function POST(req: Request) {
       return NextResponse.json({
         message:
           autoReceived > 0
-            ? `${dispatched}건 외주 발주완료 처리했습니다. (고객사 직발송 ${autoReceived}건 → 발주완료(고객사직발송)·완료이력)`
-            : `${dispatched}건 외주 발주완료 처리했습니다.`,
+            ? `${dispatched}건 외주 발주전송 처리했습니다. (고객사 직발송 ${autoReceived}건 → 완료이력)`
+            : `${dispatched}건 외주 발주전송 처리했습니다.`,
         count: dispatched,
         autoReceived,
       });

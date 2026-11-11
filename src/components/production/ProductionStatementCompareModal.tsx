@@ -1067,7 +1067,9 @@ export default function ProductionStatementCompareModal({
     setRulesDraft(rulesToDraftForm(next));
     setNewPlateGroupLabel('');
     setPlateRulesSearch('');
-    if ((categoryKey === 'PRINT' || categoryKey === 'OFFICE_SUPPLIES') && rulesActiveTab === 'certs') {
+    if (categoryKey === 'OFFICE_SUPPLIES') {
+      setRulesActiveTab('headers');
+    } else if (categoryKey === 'PRINT' && rulesActiveTab === 'certs') {
       setRulesActiveTab('plates');
     }
     setIsRulesModalOpen(true);
@@ -1843,28 +1845,28 @@ export default function ProductionStatementCompareModal({
                   </span>
                 </button>
               )}
-              <button
-                type="button"
-                onClick={() => setRulesActiveTab('plates')}
-                className={`px-4 py-2.5 text-xs font-black border-b-2 transition-all flex items-center gap-1.5 ${
-                  rulesActiveTab === 'plates'
-                    ? 'border-indigo-600 text-indigo-600'
-                    : 'border-transparent text-slate-500 hover:text-slate-800'
-                }`}
-              >
-                <span>
-                  {categoryKey === 'JEBON'
-                    ? '📚 "제본 규격/판형" 매칭 문구 설정'
-                    : categoryKey === 'PRINT'
-                    ? '📜 "제작 품목" 매칭 문구 설정'
-                    : categoryKey === 'OFFICE_SUPPLIES'
-                    ? '📎 "문구 품목" 매칭 문구 설정'
-                    : '📊 "현판품목" 매칭 문구 설정'}
-                </span>
-                <span className="px-1.5 py-0.2 rounded-full bg-indigo-50 text-[10px] text-indigo-700 font-mono">
-                  {Object.keys(rulesDraft.plateItemKeywords || {}).length}
-                </span>
-              </button>
+              {categoryKey !== 'OFFICE_SUPPLIES' && (
+                <button
+                  type="button"
+                  onClick={() => setRulesActiveTab('plates')}
+                  className={`px-4 py-2.5 text-xs font-black border-b-2 transition-all flex items-center gap-1.5 ${
+                    rulesActiveTab === 'plates'
+                      ? 'border-indigo-600 text-indigo-600'
+                      : 'border-transparent text-slate-500 hover:text-slate-800'
+                  }`}
+                >
+                  <span>
+                    {categoryKey === 'JEBON'
+                      ? '📚 "제본 규격/판형" 매칭 문구 설정'
+                      : categoryKey === 'PRINT'
+                      ? '📜 "제작 품목" 매칭 문구 설정'
+                      : '📊 "현판품목" 매칭 문구 설정'}
+                  </span>
+                  <span className="px-1.5 py-0.2 rounded-full bg-indigo-50 text-[10px] text-indigo-700 font-mono">
+                    {Object.keys(rulesDraft.plateItemKeywords || {}).length}
+                  </span>
+                </button>
+              )}
             </div>
 
             {/* 탭 내용 영역 */}
@@ -1874,6 +1876,12 @@ export default function ProductionStatementCompareModal({
                 <div className="space-y-3.5">
                   <div className="p-3 bg-indigo-50/60 rounded-xl border border-indigo-100 text-xs font-bold text-indigo-900 leading-relaxed">
                     💡 외주 거래명세표 문서의 테이블 제목행(헤더)을 인식할 때 사용하는 키워드입니다. 쉼표(,)로 구분하여 등록하세요.
+                    {categoryKey === 'OFFICE_SUPPLIES' ? (
+                      <>
+                        {' '}
+                        문구 품목 매칭은 명세 대조 때 이 서버에 자동 학습되므로 별도 설정 탭은 없습니다.
+                      </>
+                    ) : null}
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
@@ -2137,8 +2145,8 @@ export default function ProductionStatementCompareModal({
                 </div>
               )}
 
-              {/* [탭 3] 품목/판형 매칭 문구 설정 */}
-              {rulesActiveTab === 'plates' && (
+              {/* [탭 3] 품목/판형 매칭 문구 설정 — 사무문구는 자동 학습이라 숨김 */}
+              {rulesActiveTab === 'plates' && categoryKey !== 'OFFICE_SUPPLIES' && (
                 <div className="space-y-4">
                   <div className="p-3 bg-indigo-50/60 rounded-xl border border-indigo-100 text-xs font-bold text-indigo-900 leading-relaxed">
                     💡{' '}

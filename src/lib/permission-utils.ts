@@ -40,11 +40,22 @@ export function isMenuMasterUser(userId: any, menu: any): boolean {
  * 시스템 역할 LV_1 여부 (메뉴 Master 제외).
  * 배너 interface 칩(Master/Access/Edit) 표시 등에 사용.
  */
-export function isSystemLv1User(user: { roles?: unknown } | null | undefined): boolean {
-  const roles = Array.isArray(user?.roles) ? user!.roles : [];
+export function isSystemLv1User(user: { roles?: unknown; role?: unknown } | null | undefined): boolean {
+  let roles: unknown[] = [];
+  if (Array.isArray(user?.roles)) {
+    roles = user!.roles as unknown[];
+  } else if (typeof user?.roles === 'string') {
+    try {
+      const parsed = JSON.parse(user.roles);
+      roles = Array.isArray(parsed) ? parsed : [user.roles];
+    } catch {
+      roles = [user.roles];
+    }
+  }
+  if (user?.role != null && user.role !== '') roles = [...roles, user.role];
   return roles.some((r: unknown) => {
     const m = String(r ?? '').match(/(\d+)/);
-    return m ? `LV_${m[1]}` === 'LV_1' : String(r) === 'LV_1';
+    return m ? `LV_${m[1]}` === 'LV_1' : false;
   });
 }
 

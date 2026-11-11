@@ -73,11 +73,11 @@ export default function ItMasterPageBanner({
         <div className="absolute left-1/4 bottom-0 w-48 h-48 bg-teal-800/20 rounded-full blur-3xl translate-y-1/2 pointer-events-none" />
         <div className="relative z-10 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
           <div className="min-w-0">
-            <h3 className="text-[10px] font-medium text-emerald-400 mb-2.5">
+            <h3 className="text-[10px] font-medium uppercase tracking-widest text-emerald-400 mb-2.5">
               {label}
             </h3>
-            <h1 className="text-2xl font-medium tracking-tight text-white leading-none">
-              {title}
+            <h1 className="text-2xl tracking-tight leading-none">
+              <span className="text-white font-medium">{title}</span>
             </h1>
             <p className="text-emerald-100/90 text-xs mt-3 leading-relaxed">
               {description}
@@ -85,11 +85,11 @@ export default function ItMasterPageBanner({
             {permissionSummary && isSystemLv1User(currentUser) && (
               <div className="flex flex-wrap items-center gap-2 mt-4 pt-3 border-t border-white/15">
                 <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-medium border tracking-tight bg-white/10 border-white/25 text-emerald-50 shadow-sm">
-                  <span>?? Master ???:</span>
+                  <span>👑 Master 책임자:</span>
                   <span>{permissionSummary.masterName}</span>
                 </div>
                 <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-medium border tracking-tight bg-purple-500/20 border-purple-300/40 text-purple-100 shadow-sm">
-                  <span>??? Access:</span>
+                  <span>👁️ Access:</span>
                   <span>{permissionSummary.accessDesignate}</span>
                   <span className="opacity-50">|</span>
                   <span className="truncate max-w-[160px]">Org: {permissionSummary.accessOrg}</span>
@@ -97,7 +97,7 @@ export default function ItMasterPageBanner({
                   <span>Level: {permissionSummary.accessLevel}</span>
                 </div>
                 <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-medium border tracking-tight bg-emerald-400/20 border-emerald-300/40 text-emerald-100 shadow-sm">
-                  <span>?? Edit:</span>
+                  <span>✍️ Edit:</span>
                   <span>{permissionSummary.editDesignate}</span>
                   <span className="opacity-50">|</span>
                   <span>Level: {permissionSummary.editLevel}</span>

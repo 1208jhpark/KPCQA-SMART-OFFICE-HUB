@@ -6,7 +6,7 @@ import {
   authErrorToResponse,
   tryGetSessionUser,
 } from '@/lib/server-auth-guard';
-import { checkMenuPermission } from '@/lib/permission-utils';
+import { checkMenuPermission, isSystemLv1User } from '@/lib/permission-utils';
 import {
   normalizeEmail,
   prismaAssetOwnerWhere,
@@ -41,8 +41,7 @@ const getRequestModel = () => {
 };
 
 function isLv1(user: any) {
-  const roles = Array.isArray(user?.roles) ? user.roles : [];
-  return roles.some((r: any) => String(r).includes('LV_1'));
+  return isSystemLv1User(user);
 }
 
 function hasMenuAccess(auth: any, path: string) {

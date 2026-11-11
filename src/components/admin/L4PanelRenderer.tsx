@@ -1,9 +1,11 @@
 'use client';
   
 import dynamic from 'next/dynamic';
-import React from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
+import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import LoadingState from '@/components/common/LoadingState';
+import { checkMenuPermission } from '@/lib/permission-utils';
   
 const ModuleLoader = () => <LoadingState />;
   
@@ -29,6 +31,11 @@ const BusinessCardRequestPanel = dynamic(() => import('../asset/businesscard/Bus
 const BusinessCardOrderPanel = dynamic(() => import('../asset/businesscard/BusinessCardOrderPanel').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
 const BusinessCardArchivePanel = dynamic(() => import('../asset/businesscard/BusinessCardArchivePanel').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
 
+// --- [법인카드] ---
+const CorpCardDeptBoardModule = dynamic(() => import('../asset/corp-card/DeptBoardModule').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
+const CorpCardMasterMonitoringModule = dynamic(() => import('../asset/corp-card/MasterMonitoringModule').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
+const CorpCardMasterHistoryModule = dynamic(() => import('../asset/corp-card/MasterHistoryModule').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
+const CorpCardMasterRegistryModule = dynamic(() => import('../asset/corp-card/MasterRegistryModule').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
 
 // --- [부서 맞춤 제작물] ---
 const ProductionApplyForm = dynamic(() => import('../production/ProductionApplyForm').then(m => m.default || m), { loading: ModuleLoader, ssr: false });
@@ -91,6 +98,12 @@ export const ModuleRegistry: Record<string, React.ComponentType<any>> = {
   '/asset/businesscard/master/requests': BusinessCardRequestPanel,
   '/asset/businesscard/master/order': BusinessCardOrderPanel,
   '/asset/businesscard/master/archive': BusinessCardArchivePanel,
+
+  // [법인카드]
+  '/asset/corp-card/dept/board': CorpCardDeptBoardModule,
+  '/asset/corp-card/master/monitoring': CorpCardMasterMonitoringModule,
+  '/asset/corp-card/master/history': CorpCardMasterHistoryModule,
+  '/asset/corp-card/master/registry': CorpCardMasterRegistryModule,
      
 // [부서 맞춤 제작물]
 '/production/custom/my-orders/request': ProductionApplyForm,
@@ -134,20 +147,153 @@ export const ModuleRegistry: Record<string, React.ComponentType<any>> = {
   
 };
      
+/** registry 구 경로 → interface 검사에 쓸 path */
+const ACCESS_PATH_ALIAS: Record<string, string> = {
+  '/asset/supplies/master/purchase': '/asset/supplies/master/restock',
+};
+
 export default function L4PanelRenderer() {
   const pathname = usePathname();
-  
+  const [ready, setReady] = useState(false);
+  const [allowed, setAllowed] = useState(false);
+  const [denyReason, setDenyReason] = useState<string | null>(null);
+
   let lowerPath = pathname?.toLowerCase() || '';
   if (lowerPath.endsWith('/')) {
     lowerPath = lowerPath.slice(0, -1);
   }
 
-  const targetKey = Object.keys(ModuleRegistry).find(key => key.toLowerCase() === lowerPath);
+  const targetKey = useMemo(
+    () => Object.keys(ModuleRegistry).find((key) => key.toLowerCase() === lowerPath) || null,
+    [lowerPath]
+  );
   const TargetModule = targetKey ? ModuleRegistry[targetKey] : null;
-  
-  // 🚀 [원복 완료] 매핑 실패 혹은 인덱스 주소 진입 시, 경고창 없이 깨끗하게 null을 반환합니다.
-  if (!TargetModule) return null; 
-  
+  const accessPath = targetKey
+    ? ACCESS_PATH_ALIAS[targetKey] || targetKey
+    : lowerPath;
+
+  useEffect(() => {
+    let cancelled = false;
+    setReady(false);
+    setAllowed(false);
+    setDenyReason(null);
+
+    if (!targetKey) {
+      setReady(true);
+      setAllowed(false);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    (async () => {
+      try {
+        const ts = Date.now();
+        const [meRes, menuRes, unitsRes] = await Promise.all([
+          fetch(`/api/auth/me?t=${ts}`, { cache: 'no-store' }).catch(() => null),
+          fetch(`/api/admin/interface?t=${ts}`, { cache: 'no-store' }).catch(() => null),
+          fetch(`/api/admin/units?active=true&t=${ts}`, { cache: 'no-store' }).catch(() => null),
+        ]);
+
+        if (cancelled) return;
+
+        if (!meRes || !meRes.ok) {
+          setDenyReason('로그인이 필요하거나 세션이 만료되었습니다.');
+          setAllowed(false);
+          setReady(true);
+          return;
+        }
+
+        const user = await meRes.json();
+        const menusRaw = menuRes && menuRes.ok ? await menuRes.json() : [];
+        const menus = Array.isArray(menusRaw) ? menusRaw : menusRaw?.data || [];
+        const unitsRaw = unitsRes && unitsRes.ok ? await unitsRes.json() : [];
+        const units = Array.isArray(unitsRaw) ? unitsRaw : unitsRaw?.data || [];
+
+        const cleanAccess = accessPath.replace(/\/$/, '').toLowerCase();
+        // 1) 해당 L4 exact path 우선
+        let menu =
+          menus.find(
+            (m: any) => String(m.path || '').replace(/\/$/, '').toLowerCase() === cleanAccess
+          ) || null;
+
+        // 2) 없으면 상위 path 중 가장 긴 메뉴 (탭이 부모 Access만 있는 경우)
+        if (!menu) {
+          menu = [...menus]
+            .sort((a: any, b: any) => (b.path?.length || 0) - (a.path?.length || 0))
+            .find(
+              (m: any) =>
+                cleanAccess.startsWith(String(m.path || '').replace(/\/$/, '').toLowerCase()) &&
+                m.path !== '/home'
+            );
+        }
+
+        if (!menu) {
+          setDenyReason('이 경로에 대한 메뉴가 설정되어 있지 않습니다.');
+          setAllowed(false);
+          setReady(true);
+          return;
+        }
+
+        if (!menu.is_active) {
+          setDenyReason('현재 점검 중이거나 비활성화된 서비스입니다.');
+          setAllowed(false);
+          setReady(true);
+          return;
+        }
+
+        const permission = checkMenuPermission(user, menu, menus, units);
+        if (!permission.hasAccess) {
+          setDenyReason('귀하의 소속 부서 또는 권한으로는 접근할 수 없는 메뉴입니다.');
+          setAllowed(false);
+          setReady(true);
+          return;
+        }
+
+        setAllowed(true);
+        setReady(true);
+      } catch {
+        if (cancelled) return;
+        setDenyReason('권한 확인 중 오류가 발생했습니다.');
+        setAllowed(false);
+        setReady(true);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [targetKey, accessPath]);
+
+  // 매핑 실패 — 인덱스/미등록 주소는 조용히 비움
+  if (!TargetModule) return null;
+
+  if (!ready) {
+    return <LoadingState />;
+  }
+
+  if (!allowed) {
+    return (
+      <div className="w-full min-h-[50vh] flex items-center justify-center p-8 animate-fade-in">
+        <div className="bg-white border-2 border-dashed border-red-200 rounded-[2rem] p-12 max-w-lg w-full text-center shadow-xl">
+          <span className="text-6xl mb-4 block">⛔</span>
+          <h2 className="text-2xl font-black text-slate-800 mb-2 uppercase tracking-tighter">
+            Access Denied
+          </h2>
+          <p className="text-red-500 font-bold text-sm mb-8">
+            {denyReason || '접근 권한이 없습니다.'}
+          </p>
+          <Link
+            href="/home"
+            className="inline-block px-6 py-3 bg-slate-900 text-white rounded-xl font-black text-[11px] uppercase tracking-widest hover:bg-slate-800 transition-colors shadow-md"
+          >
+            홈으로 돌아가기
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="w-full h-full animate-fade-in">
       <TargetModule />

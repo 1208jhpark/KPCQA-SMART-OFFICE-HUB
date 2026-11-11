@@ -149,19 +149,69 @@ export async function GET() {
         proofFileSize: true,
         proofUploadedAt: true,
         proofUploadedBy: true,
+        proofMailReviewedAt: true,
+        proofMailReviewedBy: true,
         proofConfirmedAt: true,
         proofConfirmedBy: true,
       } as any,
     });
 
+    const batchIds = Array.from(
+      new Set(
+        myRequests
+          .map((r) => String((r as any).orderGroupId || '').trim())
+          .filter(Boolean)
+      )
+    );
+    const dispatchedByBatch = new Map<string, boolean>();
+    if (batchIds.length > 0) {
+      try {
+        const batches = await prisma.businessCardOrderBatch.findMany({
+          where: { id: { in: batchIds } },
+          select: { id: true, dispatchedDate: true },
+        });
+        for (const b of batches) {
+          dispatchedByBatch.set(b.id, Boolean(String(b.dispatchedDate || '').trim()));
+        }
+      } catch {
+        try {
+          const placeholders = batchIds.map((_, i) => `$${i + 1}`).join(', ');
+          const rows = await prisma.$queryRawUnsafe<
+            Array<{ id: string; dispatchedDate: string | null }>
+          >(
+            `SELECT id, "dispatchedDate" FROM "BusinessCardOrderBatch" WHERE id IN (${placeholders})`,
+            ...batchIds
+          );
+          for (const b of rows) {
+            dispatchedByBatch.set(
+              b.id,
+              Boolean(String(b.dispatchedDate || '').trim())
+            );
+          }
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+
     return NextResponse.json(
-      myRequests.map((r) => ({
-        ...r,
-        applicantType: r.applicantType || '본인',
-        applicantName: r.applicantName || null,
-        hasProof: Boolean((r as any).proofFileName),
-        proofConfirmed: Boolean((r as any).proofConfirmedAt),
-      })),
+      myRequests.map((r) => {
+        const proofFileName = (r as any).proofFileName as string | null;
+        const proofMailReviewedAt = (r as any).proofMailReviewedAt as
+          | Date
+          | string
+          | null;
+        const batchId = String((r as any).orderGroupId || '').trim();
+        return {
+          ...r,
+          applicantType: r.applicantType || '본인',
+          applicantName: r.applicantName || null,
+          hasProof: Boolean(proofFileName),
+          hasMailReview: Boolean(proofMailReviewedAt),
+          proofConfirmed: Boolean((r as any).proofConfirmedAt),
+          orderDispatched: batchId ? Boolean(dispatchedByBatch.get(batchId)) : false,
+        };
+      }),
       { headers: { 'Cache-Control': 'no-store, max-age=0' } }
     );
   } catch (error) {

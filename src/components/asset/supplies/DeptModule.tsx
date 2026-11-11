@@ -717,8 +717,8 @@ function DeptContent() {
 
   if (loading) return <LoadingState />;
 
-  const periodLabel = `${selectedYear === 'ALL' ? '전체 기간' : `${selectedYear}년`}${
-    selectedMonth === 'ALL' ? '' : ` ${Number(selectedMonth)}월`
+  const periodCriteriaLabel = `${selectedYear === 'ALL' ? '전체 연도' : `${selectedYear}년`} · ${
+    selectedMonth === 'ALL' ? '전체 월' : `${Number(selectedMonth)}월`
   }`;
      
   return (
@@ -729,24 +729,24 @@ function DeptContent() {
         <div className="absolute right-0 top-0 w-64 h-64 bg-indigo-500/12 rounded-full blur-3xl -translate-y-1/3 translate-x-1/4 pointer-events-none" />
         <div className="absolute left-1/4 bottom-0 w-48 h-48 bg-slate-500/10 rounded-full blur-3xl translate-y-1/2 pointer-events-none" />
         <div className="relative z-10">
-          <h3 className="text-[10px] font-black uppercase tracking-widest text-indigo-400 mb-2.5">
+          <h3 className="text-[10px] font-medium uppercase tracking-widest text-indigo-400 mb-2.5">
             SUPPLIES MANAGEMENT SYSTEM
           </h3>
           <h1 className="text-2xl tracking-tight leading-none">
             <span className="text-indigo-400 font-normal">{String(myDeptName || '소속 부서')}</span>
             <span className="text-white/30 font-normal mx-2.5">|</span>
-            <span className="text-white font-extrabold">소모품 보유 현황</span>
+            <span className="text-white font-medium">소모품 보유 현황</span>
           </h1>
           <p className="text-slate-400 text-xs mt-3 leading-relaxed">
             우리 센터(본부의 경우 하위 센터까지)의 소모품 보유 현황 및 신청 내역을 조회합니다.
           </p>
           {permissionSummary && isSystemLv1User(currentUser) && (
             <div className="flex flex-wrap items-center gap-2 mt-4 pt-3 border-t border-white/15">
-              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-white/10 border-white/25 text-slate-50 shadow-sm">
+              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-medium border tracking-tight bg-white/10 border-white/25 text-slate-50 shadow-sm">
                 <span>👑 Master 책임자:</span>
                 <span>{permissionSummary.masterName}</span>
               </div>
-              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-purple-500/20 border-purple-300/40 text-purple-100 shadow-sm">
+              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-medium border tracking-tight bg-purple-500/20 border-purple-300/40 text-purple-100 shadow-sm">
                 <span>👁️ Access:</span>
                 <span>{permissionSummary.accessDesignate}</span>
                 <span className="opacity-50">|</span>
@@ -754,7 +754,7 @@ function DeptContent() {
                 <span className="opacity-50">|</span>
                 <span>Level: {permissionSummary.accessLevel}</span>
               </div>
-              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-emerald-400/20 border-emerald-300/40 text-emerald-100 shadow-sm">
+              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-medium border tracking-tight bg-emerald-400/20 border-emerald-300/40 text-emerald-100 shadow-sm">
                 <span>✍️ Edit:</span>
                 <span>{permissionSummary.editDesignate}</span>
                 <span className="opacity-50">|</span>
@@ -771,12 +771,12 @@ function DeptContent() {
 
         <div className="md:col-span-4 bg-white rounded-none border border-slate-200 shadow-sm p-5 flex flex-col min-h-[280px] h-full">
           <div className="flex justify-between items-end mb-3 shrink-0 gap-2">
-            <h3 className="text-[11px] font-black text-slate-800 uppercase tracking-widest flex items-center gap-2 flex-wrap">
-              <span>📦 품목별 신청 집계</span>
-              <span className="normal-case tracking-normal text-[10px] font-bold text-slate-400">
-                {periodLabel} · 하단 표와 동일
-              </span>
+            <h3 className="text-sm font-medium text-slate-800 tracking-tight">
+              📦 품목별 신청 집계
             </h3>
+            <span className="text-[11px] font-medium text-slate-600 whitespace-nowrap">
+              조회 기준 <span className="text-indigo-700">{periodCriteriaLabel}</span>
+            </span>
           </div>
 
           {applicationAggItems.length === 0 ? (
@@ -814,7 +814,7 @@ function DeptContent() {
 
         <div className="md:col-span-8 bg-white rounded-none border border-slate-200 shadow-sm p-5 flex flex-col min-h-[280px] h-full">
           <div className="flex justify-between items-end mb-3 shrink-0 gap-2">
-            <h3 className="text-[11px] font-black text-slate-800 uppercase tracking-widest flex items-center gap-2 flex-wrap">
+            <h3 className="text-sm font-medium text-slate-800 tracking-tight flex items-center gap-2 flex-wrap">
               <span>📦 품목별 재고 관리</span>
               <span className="normal-case tracking-normal text-[10px] font-bold text-slate-400">
                 최근 보충일 · 보관위치 · 상태 체크
@@ -842,8 +842,13 @@ function DeptContent() {
                 <span className="min-w-0 text-[11px] font-semibold text-[#333333] text-left">
                   보관위치
                 </span>
-                <span className="text-[11px] font-semibold text-[#333333] text-right leading-tight tracking-normal">
-                  최근 이용자는 상태를 체크해주세요!
+                <span className="flex flex-col items-end gap-0.5 text-right leading-tight tracking-normal">
+                  <span className="text-[11px] font-medium text-blue-600">
+                    [우리부서 재고 현황]
+                  </span>
+                  <span className="text-[11px] font-semibold text-[#333333]">
+                    최근 이용자는 상태를 체크해주세요!
+                  </span>
                 </span>
               </div>
               <div className="divide-y divide-slate-100">
@@ -1003,7 +1008,7 @@ function DeptContent() {
                   (경영) 소모품 지급요청 내역
                 </h2>
               </button>
-              <span className="inline-flex items-center h-6 text-[10px] font-black px-2.5 rounded-md bg-slate-300/80 text-slate-700 border border-transparent leading-none">
+              <span className="inline-flex items-center h-6 text-[11px] font-medium px-2.5 rounded-md bg-slate-300/80 text-slate-700 border border-transparent leading-none">
                 {filteredRequests.length}건
               </span>
               <button
@@ -1012,7 +1017,7 @@ function DeptContent() {
                   setSelectedStatus((prev) => (prev === 'WAITING' ? 'ALL' : 'WAITING'));
                   setLedgerOpen(true);
                 }}
-                className={`inline-flex items-center h-6 text-[10px] font-black px-2.5 rounded-md border leading-none transition-colors ${
+                className={`inline-flex items-center h-6 text-[11px] font-medium px-2.5 rounded-md border leading-none transition-colors ${
                   selectedStatus === 'WAITING'
                     ? 'bg-amber-500 text-white border-amber-500'
                     : 'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100'
@@ -1025,7 +1030,7 @@ function DeptContent() {
                 <button
                   type="button"
                   onClick={() => setLedgerOpen(true)}
-                  className="text-[10px] font-bold text-indigo-600 hover:underline"
+                  className="text-[11px] font-medium text-indigo-600 hover:underline"
                 >
                   펼치기
                 </button>
@@ -1036,12 +1041,12 @@ function DeptContent() {
               <div className="relative group/filter flex items-center gap-2 bg-white px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm">
                 <span
                   role="tooltip"
-                  className="pointer-events-none absolute left-0 top-full mt-1.5 z-50 hidden group-hover/filter:block whitespace-nowrap rounded-lg bg-slate-800 px-2.5 py-1.5 text-[10px] font-bold text-white shadow-lg"
+                  className="pointer-events-none absolute left-0 top-full mt-1.5 z-50 hidden group-hover/filter:block whitespace-nowrap rounded-lg bg-slate-800 px-2.5 py-1.5 text-[11px] font-medium text-white shadow-lg"
                 >
                   연도 → 월 → 조직 · 연계필터
                 </span>
 
-                <span className="text-[10px] font-medium text-slate-400 uppercase">연도</span>
+                <span className="text-[11px] font-medium text-slate-400 uppercase">연도</span>
                 <select
                   value={selectedYear}
                   onChange={(e) => {
@@ -1059,7 +1064,7 @@ function DeptContent() {
 
                 <div className="w-px h-3.5 bg-slate-300 mx-0.5"></div>
 
-                <span className="text-[10px] font-medium text-slate-400 uppercase">월별</span>
+                <span className="text-[11px] font-medium text-slate-400 uppercase">월별</span>
                 <select
                   value={selectedMonth}
                   onChange={(e) => {
@@ -1076,7 +1081,7 @@ function DeptContent() {
 
                 <div className="w-px h-3.5 bg-slate-300 mx-0.5"></div>
 
-                <span className="text-[10px] font-medium text-slate-400 uppercase">조직</span>
+                <span className="text-[11px] font-medium text-slate-400 uppercase">조직</span>
                 <select
                   value={selectedUnitId}
                   onChange={(e) => setSelectedUnitId(e.target.value)}
@@ -1095,11 +1100,11 @@ function DeptContent() {
               <>
               <div className="flex items-center gap-2">
                 <div className="relative w-40">
-                  <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-[10px]">📦</span>
+                  <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-[11px]">📦</span>
                   <input type="text" placeholder="물품명 검색..." value={searchItemQuery} onChange={e => setSearchItemQuery(e.target.value)} className="w-full pl-7 pr-3 py-1.5 bg-white border border-slate-200 rounded-lg text-[11px] font-medium outline-none focus:border-indigo-500 shadow-sm transition-colors placeholder:font-medium" />
                 </div>
                 <div className="relative w-32">
-                  <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-[10px]">👤</span>
+                  <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-[11px]">👤</span>
                   <input type="text" placeholder="신청자 검색..." value={searchUserQuery} onChange={e => setSearchUserQuery(e.target.value)} className="w-full pl-7 pr-3 py-1.5 bg-white border border-slate-200 rounded-lg text-[11px] font-medium outline-none focus:border-indigo-500 shadow-sm transition-colors placeholder:font-medium" />
                 </div>
               </div>
@@ -1107,7 +1112,7 @@ function DeptContent() {
               <button
                 type="button"
                 onClick={handleExportExcel}
-                className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-[10px] font-medium shadow-sm hover:bg-emerald-700 transition-all whitespace-nowrap"
+                className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-[11px] font-medium shadow-sm hover:bg-emerald-700 transition-all whitespace-nowrap"
               >
                 {selectedIds.size > 0
                   ? `선택 EXCEL 다운로드(${selectedIds.size})`
@@ -1152,7 +1157,7 @@ function DeptContent() {
               </thead>
               <tbody className="bg-white divide-y divide-slate-100 text-[11px] font-normal text-[#333333]">
                 {paginatedRequests.length === 0 ? (
-                  <tr><td colSpan={10} className="p-16 text-center text-slate-400 text-xs">조건에 맞는 신청 내역이 없습니다.</td></tr>
+                  <tr><td colSpan={10} className="p-16 text-center text-slate-400 text-[11px]">조건에 맞는 신청 내역이 없습니다.</td></tr>
                 ) : (
                   paginatedRequests.map((req, i) => {
                     const isPending = isPendingSupplyRequest(req.status);
@@ -1195,13 +1200,13 @@ function DeptContent() {
                         <td className="px-2 text-center tabular-nums !text-slate-500 !no-underline" style={isRejected ? { textDecoration: 'none' } : undefined}>{rowNo}</td>
                         <td className={`px-2 text-center whitespace-nowrap tabular-nums ${isRejected ? '' : 'text-[#333333]'}`}>{createdDate}</td>
                         <td className="px-2 text-left min-w-0">
-                          <span className={`text-[10px] font-normal block truncate ${isRejected ? '' : 'text-slate-500'}`}>{String(requestDeptLabel(req))}</span>
+                          <span className={`text-[11px] font-normal block truncate ${isRejected ? '' : 'text-slate-500'}`}>{String(requestDeptLabel(req))}</span>
                           <span className={`font-normal block truncate ${isRejected ? '' : 'text-[#333333]'}`}>{req.user_name || '-'}</span>
                         </td>
                         <td className={`px-2 text-left font-medium truncate min-w-0 ${isRejected ? '' : 'text-[#333333]'}`} title={itemName}>{itemName}</td>
                         <td className={`px-2 text-center whitespace-nowrap tabular-nums font-medium ${isRejected ? '' : 'text-[#333333]'}`}>
                           {req.qty}
-                          {sUnit && <span className={`text-[10px] font-medium ml-0.5 ${isRejected ? '' : 'text-slate-500'}`}>{sUnit}</span>}
+                          {sUnit && <span className={`text-[11px] font-medium ml-0.5 ${isRejected ? '' : 'text-slate-500'}`}>{sUnit}</span>}
                         </td>
                         <td className={`px-2 text-left font-normal truncate ${isRejected ? '' : 'text-[#333333]'}`} title={req.note || ''}>
                           {req.note ? `"${req.note}"` : '-'}
@@ -1209,7 +1214,7 @@ function DeptContent() {
                         <td className="px-2 text-left min-w-0 border-l border-slate-200">
                           {!isPending ? (
                             <div className="min-w-0">
-                              <span className={`text-[10px] font-normal block truncate ${isRejected ? '' : 'text-slate-500'}`}>{req.admin_dept || '-'}</span>
+                              <span className={`text-[11px] font-normal block truncate ${isRejected ? '' : 'text-slate-500'}`}>{req.admin_dept || '-'}</span>
                               <span className={`font-normal block truncate ${isRejected ? '' : 'text-[#333333]'}`}>{req.admin_name || '관리자'}</span>
                             </div>
                           ) : (
@@ -1228,12 +1233,12 @@ function DeptContent() {
                                 e.stopPropagation();
                                 handleCancelRequest(req);
                               }}
-                              className="inline-block border px-2 py-0.5 rounded text-[10px] font-medium tracking-normal whitespace-nowrap bg-red-50 text-red-600 border-red-200 hover:bg-red-100 transition-colors disabled:opacity-40"
+                              className="inline-block border px-2 py-0.5 rounded text-[11px] font-medium tracking-normal whitespace-nowrap bg-red-50 text-red-600 border-red-200 hover:bg-red-100 transition-colors disabled:opacity-40"
                             >
                               {cancellingId === req.id ? '처리중…' : '신청취소'}
                             </button>
                           ) : isPending || isReady ? (
-                            <span className="inline-block font-medium text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded text-[10px]">
+                            <span className="inline-block font-medium text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded text-[11px]">
                               지급대기
                             </span>
                           ) : isRejected ? (
@@ -1241,21 +1246,21 @@ function DeptContent() {
                               className="inline-flex flex-col items-center leading-tight"
                               title={req.admin_opinion || ''}
                             >
-                              <span className="text-[10px] font-medium tracking-normal whitespace-nowrap text-red-600">
+                              <span className="text-[11px] font-medium tracking-normal whitespace-nowrap text-red-600">
                                 취소
                               </span>
                               {req.admin_opinion ? (
-                                <span className="text-[9px] font-medium text-red-400 truncate max-w-[88px] mt-0.5">
+                                <span className="text-[11px] font-medium text-red-400 truncate max-w-[88px] mt-0.5">
                                   {req.admin_opinion}
                                 </span>
                               ) : null}
                             </span>
                           ) : isCancelled ? (
-                            <span className="inline-block border px-2 py-0.5 rounded text-[10px] font-medium tracking-normal whitespace-nowrap bg-slate-100 text-slate-500 border-slate-200">
+                            <span className="inline-block border px-2 py-0.5 rounded text-[11px] font-medium tracking-normal whitespace-nowrap bg-slate-100 text-slate-500 border-slate-200">
                               신청취소
                             </span>
                           ) : (
-                            <span className="text-[10px] font-medium tracking-normal whitespace-nowrap text-[#333333]">
+                            <span className="text-[11px] font-medium tracking-normal whitespace-nowrap text-[#333333]">
                               지급완료
                             </span>
                           )}

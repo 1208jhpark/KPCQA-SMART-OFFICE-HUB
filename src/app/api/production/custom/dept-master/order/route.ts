@@ -348,11 +348,26 @@ export async function POST(req: Request) {
       await applyBatchShippingToBatch(bundleBatchId, batchShipping, batchShippingScope);
     }
 
+    const inspectionCategories = new Set(['SIGN', 'JEBON', 'PRINT', 'OFFICE_SUPPLIES']);
+    const orderedCats = Array.from(
+      new Set(
+        acceptedRows
+          .map((row) => String(row.category || '').trim().toUpperCase())
+          .filter((cat) => inspectionCategories.has(cat))
+      )
+    );
+    const inspectionPath = '/production/custom/dept-master/inspection';
+    const redirectTo =
+      orderedCats.length > 0
+        ? `${inspectionPath}?category=${encodeURIComponent(orderedCats[0])}`
+        : inspectionPath;
+
     return NextResponse.json({
       message: `${acceptedRows.length}건 묶음 발주 처리가 완료되었습니다. 발주/수령검수 탭에서 확인하세요.`,
       batchId: bundleBatchId,
       count: acceptedRows.length,
-      redirectTo: '/production/custom/dept-master/inspection',
+      category: orderedCats[0] || null,
+      redirectTo,
     });
   } catch (error) {
     const authRes = authErrorToResponse(error);

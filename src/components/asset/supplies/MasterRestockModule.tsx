@@ -1,16 +1,21 @@
 ﻿'use client';
-import React, { useState, useEffect, useMemo, Suspense } from 'react';
-import * as XLSX from 'xlsx';
+import React, { useState, useEffect, useMemo, Suspense, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { usePathname } from 'next/navigation';
 import Link from 'next/link';
 import { getKSTDateString, getKSTNowYearMonth, getKSTYearMonth } from '@/utils/dateUtils';
 import LoadingState from '@/components/common/LoadingState';
 import WindowedPagination from '@/components/common/WindowedPagination';
+import DeptAssigneeLine, { useDeptAssignees } from '@/components/common/DeptAssigneeLine';
 import { resolveInterfaceEditState, isSystemLv1User } from '@/lib/permission-utils';
 import {
   SUPPLIES_MASTER_TABS,
   useInterfaceStepTabs,
 } from '@/lib/interface-step-tabs';
+import {
+  downloadExcelJsBuffer,
+  writeSuppliesRestockExcelBuffer,
+} from '@/lib/supplies-request-excel';
 
 const MENU_PATH = '/asset/supplies/master/restock';
 
@@ -54,6 +59,7 @@ function getStockLevelVisual(current: number, safety: number) {
 function MasterRestockContent() {
   const pathname = usePathname();
   const tabs = useInterfaceStepTabs(SUPPLIES_MASTER_TABS, '/asset/supplies/master');
+  const { editorNames } = useDeptAssignees(MENU_PATH);
   const [purchases, setPurchases] = useState<any[]>([]);
   /** 대시보드와 동일: 활성 등록 물품 */
   const [catalogItems, setCatalogItems] = useState<any[]>([]);
@@ -80,11 +86,52 @@ function MasterRestockContent() {
   const [stockWarnOnly, setStockWarnOnly] = useState(false);
   const [ledgerOpen, setLedgerOpen] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
+  const [actionMenu, setActionMenu] = useState<{ id: string; top: number; left: number } | null>(
+    null
+  );
+  const actionMenuRef = useRef<HTMLDivElement | null>(null);
   const itemsPerPage = 10;
      
   useEffect(() => { 
     fetchData(); 
   }, []);
+
+  useEffect(() => {
+    setActionMenu(null);
+  }, [ledgerOpen, currentPage, selectedYear, selectedMonth, searchQuery]);
+
+  useEffect(() => {
+    if (!actionMenu) return;
+    const onDoc = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (actionMenuRef.current?.contains(t)) return;
+      if ((e.target as HTMLElement | null)?.closest?.('[data-action-kebab]')) return;
+      setActionMenu(null);
+    };
+    const onWin = () => setActionMenu(null);
+    document.addEventListener('mousedown', onDoc);
+    window.addEventListener('scroll', onWin, true);
+    window.addEventListener('resize', onWin);
+    return () => {
+      document.removeEventListener('mousedown', onDoc);
+      window.removeEventListener('scroll', onWin, true);
+      window.removeEventListener('resize', onWin);
+    };
+  }, [actionMenu]);
+
+  const openActionMenu = (e: React.MouseEvent<HTMLButtonElement>, id: string) => {
+    const width = 160;
+    const r = e.currentTarget.getBoundingClientRect();
+    setActionMenu((prev) =>
+      prev?.id === id
+        ? null
+        : {
+            id,
+            top: r.bottom + 4,
+            left: Math.min(Math.max(12, r.right - width), window.innerWidth - width - 12),
+          }
+    );
+  };
      
   const fetchData = async () => {
     setLoading(true);
@@ -339,55 +386,63 @@ function MasterRestockContent() {
     }
   };
      
-  const handleDownloadExcel = () => {
-    const targetList = selectedIds.size > 0 ? purchases.filter(p => selectedIds.has(p.id)) : finalFilteredPurchases;
-    if (targetList.length === 0) return alert("다운로드할 데이터가 없습니다.");
-    
-    // 엑셀 다운로드 — 입고 팝업/장부 라벨과 동일
-    const exportData = targetList.map((p, idx) => {
-      let pQty = Number(p.qty) || 0;
-      let pUnit = '';
-      let linkQty = 1;
-      let sUnit = '';
-      let stockQty = Number(p.qty) || 0;
-      
-      try {
-        if (p.item?.description) {
-          const itemExt = JSON.parse(p.item.description);
-          sUnit = itemExt.s_unit || itemExt.r_unit || '';
-          pUnit = itemExt.p_unit || '';
-        }
-      } catch(e) {}
-      
-      try {
-        if (p.note) {
-          const parsed = JSON.parse(p.note);
-          if (Number(parsed.p_qty) > 0) pQty = Number(parsed.p_qty);
-          if (parsed.p_unit) pUnit = parsed.p_unit;
-          if (Number(parsed.link_qty) > 0) linkQty = Number(parsed.link_qty);
-          if (parsed.s_unit) sUnit = parsed.s_unit;
-          if (Number(parsed.stock_qty) > 0) stockQty = Number(parsed.stock_qty);
-        }
-      } catch(e) {}
-     
-      return {
-        'NO': targetList.length - idx,
-        '창고 입고일': p.purchase_date ? getKSTDateString(p.purchase_date) : '-',
-        '물품명': p.item?.name || '(삭제된 품목)',
-        '입고수량': pQty,
-        '입고단위': pUnit || '-',
-        '환산수량 (지급/입고)': linkQty,
-        '환산 입고수량': stockQty,
-        '지급단위': sUnit || '-',
-        '등록자': p.purchaser_name || '관리자',
-        '소속부서': p.purchaser_dept || '-',
-      };
-    });
-    
-    const ws = XLSX.utils.json_to_sheet(exportData);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "입고대장");
-    XLSX.writeFile(wb, `소모품_입고대장_${selectedYear}년${selectedMonth !== 'ALL' ? `_${selectedMonth}월` : ''}.xlsx`);
+  const handleDownloadExcel = async () => {
+    const targetList =
+      selectedIds.size > 0 ? purchases.filter((p) => selectedIds.has(p.id)) : finalFilteredPurchases;
+    if (targetList.length === 0) return alert('다운로드할 데이터가 없습니다.');
+
+    try {
+      const rows = targetList.map((p, idx) => {
+        let pQty = Number(p.qty) || 0;
+        let pUnit = '';
+        let linkQty = 1;
+        let sUnit = '';
+        let stockQty = Number(p.qty) || 0;
+
+        try {
+          if (p.item?.description) {
+            const itemExt = JSON.parse(p.item.description);
+            sUnit = itemExt.s_unit || itemExt.r_unit || '';
+            pUnit = itemExt.p_unit || '';
+          }
+        } catch (e) {}
+
+        try {
+          if (p.note) {
+            const parsed = JSON.parse(p.note);
+            if (Number(parsed.p_qty) > 0) pQty = Number(parsed.p_qty);
+            if (parsed.p_unit) pUnit = parsed.p_unit;
+            if (Number(parsed.link_qty) > 0) linkQty = Number(parsed.link_qty);
+            if (parsed.s_unit) sUnit = parsed.s_unit;
+            if (Number(parsed.stock_qty) > 0) stockQty = Number(parsed.stock_qty);
+          }
+        } catch (e) {}
+
+        return {
+          NO: idx + 1,
+          '창고 입고일': p.purchase_date ? getKSTDateString(p.purchase_date) || '-' : '-',
+          물품명: p.item?.name || '(삭제된 품목)',
+          입고수량: pQty,
+          입고단위: pUnit || '-',
+          '환산수량 (지급/입고)': linkQty,
+          '환산 입고수량': stockQty,
+          지급단위: sUnit || '-',
+          등록자: p.purchaser_name || '관리자',
+          소속부서: p.purchaser_dept || '-',
+        };
+      });
+
+      const buffer = await writeSuppliesRestockExcelBuffer(rows, { sheetName: '입고대장' });
+      await downloadExcelJsBuffer(
+        buffer,
+        `소모품_입고대장_${selectedYear === 'ALL' ? '전체' : selectedYear}년${
+          selectedMonth !== 'ALL' ? `_${selectedMonth}월` : ''
+        }.xlsx`
+      );
+    } catch (err) {
+      console.error(err);
+      alert('엑셀 다운로드에 실패했습니다.');
+    }
   };
      
   const isLv1 = useMemo(() => {
@@ -405,8 +460,6 @@ function MasterRestockContent() {
   );
 
   const alertNoEditPermission = () => alert('편집 권한이 없습니다.');
-  const disabledActionBtn =
-    'px-1.5 py-1.5 bg-slate-100 text-slate-400 border border-slate-200 rounded-md text-[10px] font-medium cursor-not-allowed whitespace-nowrap opacity-70';
 
   if (loading) return <LoadingState />;
      
@@ -418,22 +471,22 @@ function MasterRestockContent() {
   <div className="absolute right-0 top-0 w-64 h-64 bg-emerald-400/15 rounded-full blur-3xl -translate-y-1/3 translate-x-1/4 pointer-events-none" />
   <div className="absolute left-1/4 bottom-0 w-48 h-48 bg-teal-800/20 rounded-full blur-3xl translate-y-1/2 pointer-events-none" />
   <div className="relative z-10">
-    <h3 className="text-[10px] font-black uppercase tracking-widest text-emerald-400 mb-2.5">
+    <h3 className="text-[10px] font-medium uppercase tracking-widest text-emerald-400 mb-2.5">
       CENTRAL SUPPLIES CONTROL TOWER
     </h3>
-    <h1 className="text-2xl font-extrabold tracking-tight text-white leading-none">
-      소모품 마스터 관리 통제실
+    <h1 className="text-2xl tracking-tight leading-none">
+      <span className="text-white font-medium">소모품 마스터 관리 통제실</span>
     </h1>
     <p className="text-emerald-100/90 text-xs mt-3 leading-relaxed">
       신규 소모품 내역의 입고 내역을 관리합니다.
     </p>
     {permissionSummary && isSystemLv1User(currentUser) && (
       <div className="flex flex-wrap items-center gap-2 mt-4 pt-3 border-t border-white/15">
-        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-white/10 border-white/25 text-emerald-50 shadow-sm">
+        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-medium border tracking-tight bg-white/10 border-white/25 text-emerald-50 shadow-sm">
           <span>👑 Master 책임자:</span>
           <span>{permissionSummary.masterName}</span>
         </div>
-        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-purple-500/20 border-purple-300/40 text-purple-100 shadow-sm">
+        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-medium border tracking-tight bg-purple-500/20 border-purple-300/40 text-purple-100 shadow-sm">
           <span>👁️ Access:</span>
           <span>{permissionSummary.accessDesignate}</span>
           <span className="opacity-50">|</span>
@@ -441,7 +494,7 @@ function MasterRestockContent() {
           <span className="opacity-50">|</span>
           <span>Level: {permissionSummary.accessLevel}</span>
         </div>
-        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-emerald-400/20 border-emerald-300/40 text-emerald-100 shadow-sm">
+        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-medium border tracking-tight bg-emerald-400/20 border-emerald-300/40 text-emerald-100 shadow-sm">
           <span>✍️ Edit:</span>
           <span>{permissionSummary.editDesignate}</span>
           <span className="opacity-50">|</span>
@@ -509,18 +562,28 @@ function MasterRestockContent() {
               · 행 클릭 시 아래 장부 필터
             </span>
           </div>
-          {(selectedItemFilter || stockWarnOnly) && (
-            <button
-              type="button"
-              onClick={() => {
-                setSelectedItemFilter(null);
-                setStockWarnOnly(false);
-              }}
-              className="text-[11px] font-medium text-indigo-600 hover:underline"
-            >
-              필터 초기화 ✕
-            </button>
-          )}
+          <div className="flex items-center gap-2 flex-wrap justify-end">
+            <span className="text-[11px] font-medium text-slate-600 whitespace-nowrap">
+              조회 기준{' '}
+              <span className="text-indigo-700">
+                {selectedYear === 'ALL' ? '전체 연도' : `${selectedYear}년`}
+                {' · '}
+                {selectedMonth === 'ALL' ? '전체 월' : `${Number(selectedMonth)}월`}
+              </span>
+            </span>
+            {(selectedItemFilter || stockWarnOnly) && (
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedItemFilter(null);
+                  setStockWarnOnly(false);
+                }}
+                className="text-[11px] font-medium text-indigo-600 hover:underline"
+              >
+                필터 초기화 ✕
+              </button>
+            )}
+          </div>
         </div>
 
         {itemCycleStats.length === 0 ? (
@@ -650,7 +713,7 @@ function MasterRestockContent() {
         )}
       </section>
 
-      <section className="bg-white rounded-[2.5rem] border border-slate-200 shadow-sm overflow-hidden mt-6">
+      <section className="bg-white rounded-lg border border-slate-200 shadow-sm overflow-hidden mt-6">
         
         <div
           className={`p-4 px-6 bg-slate-200/70 flex flex-wrap items-center justify-between gap-4 ${
@@ -679,6 +742,7 @@ function MasterRestockContent() {
             <span className="text-[11px] font-medium bg-slate-300/80 text-slate-700 px-2 py-0.5 rounded-md">
               {finalFilteredPurchases.length}건
             </span>
+            <DeptAssigneeLine editorNames={editorNames} />
             {!ledgerOpen && (
               <button
                 type="button"
@@ -730,7 +794,11 @@ function MasterRestockContent() {
               <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-[10px]">🔍</span>
               <input type="text" placeholder="물품, 등록자 검색..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} className="w-full pl-7 pr-3 py-1.5 bg-white border border-slate-200 rounded-lg text-[11px] font-medium outline-none focus:border-indigo-500 shadow-sm transition-colors placeholder:font-medium" />
             </div>
-            <button onClick={handleDownloadExcel} className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-[10px] font-medium shadow-sm hover:bg-emerald-700 transition-all whitespace-nowrap">
+            <button
+              type="button"
+              onClick={() => void handleDownloadExcel()}
+              className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-[11px] font-medium shadow-sm hover:bg-emerald-700 transition-all whitespace-nowrap"
+            >
               {selectedIds.size > 0 ? `선택 EXCEL 다운로드(${selectedIds.size})` : '화면 목록 EXCEL 다운로드'}
             </button>
           </div>
@@ -739,20 +807,20 @@ function MasterRestockContent() {
         
         {ledgerOpen && (
         <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse table-fixed min-w-[940px]">
+          <table className="w-full text-left border-collapse table-fixed">
             <colgroup>
-              <col className="w-[40px]" />
-              <col className="w-[48px]" />
-              <col className="w-[100px]" />
-              <col className="w-[170px]" />
-              <col className="w-[110px]" />
-              <col className="w-[120px]" />
-              <col className="w-[130px]" />
-              <col className="w-[110px]" />
+              <col className="w-10" />
+              <col className="w-12" />
+              <col />
+              <col />
+              <col />
+              <col />
+              <col />
+              <col className="w-14" />
             </colgroup>
-            <thead className="bg-slate-100 text-slate-700 text-[10px] font-black uppercase tracking-widest border-b border-slate-200">
+            <thead className="bg-slate-100 text-slate-700 text-[11px] font-medium border-b border-slate-200">
               <tr>
-                <th className="h-12 pl-4 text-center">
+                <th className="h-12 pl-3 text-left">
                   <input type="checkbox" checked={paginatedPurchases.length > 0 && paginatedPurchases.every(p => selectedIds.has(p.id))} onChange={() => {
                     const currentIds = paginatedPurchases.map(p => p.id);
                     const allSelected = currentIds.every(id => selectedIds.has(id));
@@ -761,18 +829,18 @@ function MasterRestockContent() {
                     setSelectedIds(next);
                   }} className="w-3 h-3 accent-indigo-600 cursor-pointer" />
                 </th>
-                <th className="h-12 px-2 text-center">NO</th>
+                <th className="h-12 pr-2 text-left">NO</th>
                 <th className="h-12 px-2 text-center whitespace-nowrap">창고 입고 일자</th>
                 <th className="h-12 px-2 text-left text-indigo-600">물품명</th>
                 <th className="h-12 px-2 text-center whitespace-nowrap">입고수량</th>
                 <th className="h-12 px-2 text-center text-indigo-600 whitespace-nowrap">환산 입고수량</th>
                 <th className="h-12 px-2 text-left border-l border-slate-200 whitespace-nowrap">부서 / 등록자</th>
-                <th className="h-12 px-2 text-center whitespace-nowrap border-l border-slate-200">관리액션(Edit)</th>
+                <th className="h-12 pr-3 text-right whitespace-nowrap border-l border-slate-200">관리액션</th>
               </tr>
             </thead>
-            <tbody className="bg-white divide-y divide-slate-100 text-[11px] font-bold text-slate-700">
+            <tbody className="bg-white divide-y divide-slate-100 text-[11px] font-medium text-slate-700">
               {paginatedPurchases.length === 0 ? (
-                <tr><td colSpan={8} className="p-16 text-center text-slate-400 text-xs">조건에 맞는 입고 내역이 없습니다.</td></tr>
+                <tr><td colSpan={8} className="p-16 text-center text-slate-400 text-[11px]">조건에 맞는 입고 내역이 없습니다.</td></tr>
               ) : paginatedPurchases.map((p, i) => {
                 const isSelected = selectedIds.has(p.id);
                 const itemName = p.item?.name || '(삭제된 품목)';
@@ -804,10 +872,10 @@ function MasterRestockContent() {
      
                 return (
                   <tr key={p.id} className={`hover:bg-slate-50/50 h-12 transition-colors ${isSelected ? 'bg-indigo-50/50' : ''}`}>
-                    <td className="pl-4 text-center" onClick={(e)=>e.stopPropagation()}>
+                    <td className="pl-3 text-left" onClick={(e)=>e.stopPropagation()}>
                       <input type="checkbox" checked={isSelected} onChange={() => { const next = new Set(selectedIds); next.has(p.id) ? next.delete(p.id) : next.add(p.id); setSelectedIds(next); }} className="w-3 h-3 accent-indigo-600 cursor-pointer" />
                     </td>
-                    <td className="px-2 text-center font-mono text-slate-500 tabular-nums">{rowNo}</td>
+                    <td className="pr-2 text-left font-mono text-slate-500 tabular-nums">{rowNo}</td>
                     <td className="px-2 text-center whitespace-nowrap tabular-nums text-slate-800">
                       {p.purchase_date ? getKSTDateString(p.purchase_date) : '-'}
                     </td>
@@ -815,34 +883,38 @@ function MasterRestockContent() {
                     <td className="px-2 text-center whitespace-nowrap tabular-nums text-slate-900">
                       <span className="font-mono">{pQty}</span>
                       {pUnit && pUnit !== '-' ? (
-                        <span className="text-[10px] font-sans ml-0.5 text-slate-500">{pUnit}</span>
+                        <span className="text-[11px] font-sans ml-0.5 text-slate-500">{pUnit}</span>
                       ) : null}
                     </td>
                     <td className="px-2 text-center whitespace-nowrap tabular-nums text-indigo-600">
                       <span className="font-mono">{stockQty}</span>
                       {sUnit ? (
-                        <span className="text-[10px] font-sans ml-0.5">{sUnit}</span>
+                        <span className="text-[11px] font-sans ml-0.5">{sUnit}</span>
                       ) : null}
                     </td>
                     <td className="px-2 text-left border-l border-slate-200">
                       <div className="truncate">
-                        <span className="text-[10px] text-slate-500 block truncate">{p.purchaser_dept || '-'}</span>
+                        <span className="text-[11px] text-slate-500 block truncate">{p.purchaser_dept || '-'}</span>
                         <span className="text-slate-800 truncate">{p.purchaser_name || '관리자'}</span>
                       </div>
                     </td>
-                    <td className="px-1.5 text-center border-l border-slate-200">
+                    <td className="pr-3 text-right border-l border-slate-200">
                       <button
                         type="button"
-                        disabled={!canEdit}
-                        onClick={() => handleCancelPurchase(p)}
-                        title={canEdit ? '입고 철회 (재고 차감)' : '편집 권한 필요'}
-                        className={
-                          canEdit
-                            ? 'px-1.5 py-1.5 bg-orange-50 text-orange-600 border border-orange-200 rounded-md text-[10px] font-medium hover:bg-orange-100 shadow-sm whitespace-nowrap'
-                            : disabledActionBtn
-                        }
+                        data-action-kebab
+                        title="더보기"
+                        onClick={(e) => openActionMenu(e, p.id)}
+                        className={`inline-flex items-center justify-center w-7 h-7 rounded-lg transition-colors ${
+                          actionMenu?.id === p.id
+                            ? 'bg-slate-200 text-slate-800'
+                            : 'text-slate-500 hover:bg-slate-100 hover:text-slate-800'
+                        }`}
                       >
-                        입고철회(Edit)
+                        <svg viewBox="0 0 20 20" className="w-4 h-4" fill="currentColor" aria-hidden>
+                          <circle cx="10" cy="4.5" r="1.6" />
+                          <circle cx="10" cy="10" r="1.6" />
+                          <circle cx="10" cy="15.5" r="1.6" />
+                        </svg>
                       </button>
                     </td>
                   </tr>
@@ -851,6 +923,38 @@ function MasterRestockContent() {
             </tbody>
           </table>
         </div>
+        )}
+
+      {actionMenu &&
+        createPortal(
+          <div
+            ref={actionMenuRef}
+            style={{ top: actionMenu.top, left: actionMenu.left }}
+            className="fixed z-[500] w-[160px] rounded-xl border border-slate-200 bg-white shadow-lg py-1 text-left"
+          >
+            {(() => {
+              const row = purchases.find((p) => p.id === actionMenu.id);
+              if (!row) return null;
+              return (
+                <button
+                  type="button"
+                  className={`w-full px-3 py-2 text-left text-[11px] font-medium ${
+                    canEdit
+                      ? 'text-orange-600 hover:bg-orange-50'
+                      : 'text-slate-400 cursor-not-allowed'
+                  }`}
+                  onClick={() => {
+                    if (!canEdit) return alertNoEditPermission();
+                    setActionMenu(null);
+                    void handleCancelPurchase(row);
+                  }}
+                >
+                  입고철회(Edit)
+                </button>
+              );
+            })()}
+          </div>,
+          document.body
         )}
      
         {ledgerOpen && finalFilteredPurchases.length > 0 && (

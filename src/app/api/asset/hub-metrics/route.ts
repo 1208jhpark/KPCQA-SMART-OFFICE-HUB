@@ -7,6 +7,7 @@ import {
 } from '@/utils/supplyRequestStatus';
 import {
   isBusinessCardUserApplyPending,
+  isBusinessCardUserProofReviewPending,
   isBusinessCardUserReadyPickup,
 } from '@/lib/businesscard-status';
 import { getKSTNowYearMonth, getKSTYearMonthParts } from '@/utils/dateUtils';
@@ -40,7 +41,12 @@ export async function GET() {
           userEmail: { equals: emailRaw, mode: 'insensitive' },
           isArchived: false,
         },
-        select: { adminStatus: true },
+        select: {
+          adminStatus: true,
+          proofFileName: true,
+          proofMailReviewedAt: true,
+          proofConfirmedAt: true,
+        },
       }),
     ]);
 
@@ -62,11 +68,19 @@ export async function GET() {
     const myBizReady = bizRows.filter((r) =>
       isBusinessCardUserReadyPickup(r.adminStatus)
     ).length;
+    /** 시안 파일 또는 개별메일확인 후·미확정 */
+    const myBizProofPending = bizRows.filter((r) =>
+      isBusinessCardUserProofReviewPending(r)
+    ).length;
 
     return NextResponse.json(
       {
         supplies: { myPending: mySupPending, readyPickup: mySupMonthlyCompleted },
-        bizcard: { myPending: myBizPending, readyPickup: myBizReady },
+        bizcard: {
+          myPending: myBizPending,
+          readyPickup: myBizReady,
+          proofPending: myBizProofPending,
+        },
       },
       { headers: { 'Cache-Control': 'no-store, max-age=0' } }
     );

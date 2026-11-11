@@ -135,13 +135,13 @@ export default function ServiceHomePage() {
         <div
           className={`w-full transition-all duration-700 max-h-full px-2
           ${isVertical 
-            ? `grid gap-4 ${gridCols === 1 ? 'grid-cols-1' : 'grid-cols-1 sm:grid-cols-2'}` 
-            : `grid gap-5 justify-center`
+            ? `grid gap-6 ${gridCols === 1 ? 'grid-cols-1' : 'grid-cols-2 sm:grid-cols-3'}` 
+            : `grid gap-x-8 gap-y-8 justify-center`
           }`}
           style={
             !isVertical
               ? {
-                  gridTemplateColumns: `repeat(${step1ColCount}, minmax(240px, 340px))`,
+                  gridTemplateColumns: `repeat(${step1ColCount}, minmax(120px, 148px))`,
                   justifyContent: 'center',
                 }
               : undefined
@@ -152,39 +152,42 @@ export default function ServiceHomePage() {
               key={menu.id} 
               href={hrefForStep1(menu)}
               onClick={(e) => !menu.is_active && handleInactiveClick(e, menu.name)}
-              className={`group flex flex-row items-center gap-5 bg-white/80 backdrop-blur-md rounded-[1.5rem] border border-slate-200/80 shadow-sm transition-all duration-300 relative overflow-hidden
-                px-5 py-3.5 min-h-24
-                ${menu.icon ? '' : 'justify-center'}
+              className={`group flex flex-col items-center gap-3 w-full text-center transition-all duration-300
                 ${!menu.is_active 
-                  ? 'opacity-30 grayscale cursor-not-allowed border-dashed bg-transparent' 
-                  : 'hover:bg-gradient-to-br hover:from-indigo-50 hover:via-white hover:to-sky-50/80 hover:border-indigo-300 hover:shadow-[0_15px_30px_rgba(99,102,241,0.12)] hover:-translate-y-1'
+                  ? 'opacity-30 grayscale cursor-not-allowed' 
+                  : 'hover:-translate-y-1'
                 }`}
             >
-              {menu.icon ? (
-                <div className="transition-all duration-500 group-hover:scale-110 shrink-0 text-4xl">
-                  {menu.icon}
-                </div>
-              ) : null}
-              
-              <div className={menu.icon ? 'text-left' : 'text-center'}>
-                <h3 className={`soh-home-menu-title text-slate-800 tracking-tight mb-1 flex items-start text-[21px] leading-snug ${menu.icon ? '' : 'justify-center'}`}>
-                  <span className="whitespace-pre-line">{menu.name}</span>
-                  {menu.is_active && (
-                    <span className="ml-2 mt-1 inline-flex items-center justify-center opacity-0 -translate-x-1.5 group-hover:opacity-100 group-hover:translate-x-0 transition-all duration-300 ease-out shrink-0">
-                      <svg className="w-4 h-4 text-indigo-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.75} aria-hidden>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M5 12h12.5m0 0L13 7.5M17.5 12 13 16.5" />
-                      </svg>
-                    </span>
-                  )}
-                </h3>
-                <p className="soh-home-menu-desc text-slate-400 leading-snug line-clamp-2 text-[12px]">
-                  {menu.description}
-                </p>
+              {/* 앱스토어형 아이콘 타일 */}
+              <div
+                className={`relative flex items-center justify-center w-[7.25rem] h-[7.25rem] sm:w-[7.75rem] sm:h-[7.75rem] rounded-[1.65rem] sm:rounded-[1.85rem] overflow-hidden shadow-[0_10px_24px_rgba(15,23,42,0.12)] transition-all duration-300
+                  ${!menu.is_active
+                    ? 'bg-slate-200 border border-dashed border-slate-300'
+                    : 'bg-gradient-to-br from-white via-slate-50 to-slate-100/90 border border-white/80 ring-1 ring-slate-200/70 group-hover:shadow-[0_14px_28px_rgba(99,102,241,0.18)] group-hover:ring-indigo-200'
+                  }`}
+              >
+                {menu.icon ? (
+                  <span className="text-[4.25rem] sm:text-[4.6rem] leading-none select-none transition-transform duration-300 group-hover:scale-[1.06] drop-shadow-sm">
+                    {menu.icon}
+                  </span>
+                ) : (
+                  <span className="text-3xl font-semibold text-slate-400 tracking-tight">
+                    {(menu.name || '?').trim().slice(0, 1)}
+                  </span>
+                )}
               </div>
-  
-              {menu.is_active && (
-                <div className="absolute bottom-0 left-0 w-full h-[2.5px] bg-indigo-500 scale-x-0 group-hover:scale-x-100 transition-transform origin-left" />
-              )}
+
+              {/* 텍스트(밖 · 아래) */}
+              <div className="w-full px-0.5">
+                <h3 className="soh-home-menu-title text-slate-800 tracking-tight text-[14px] sm:text-[15px] leading-snug font-semibold whitespace-pre-line">
+                  {menu.name}
+                </h3>
+                {menu.description ? (
+                  <p className="soh-home-menu-desc mt-0.5 text-slate-400 leading-snug line-clamp-2 text-[11px]">
+                    {menu.description}
+                  </p>
+                ) : null}
+              </div>
             </Link>
           ))}
         </div>

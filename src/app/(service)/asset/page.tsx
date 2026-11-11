@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { checkMenuPermission } from '@/lib/permission-utils';
 import { resolveEntryHref } from '@/lib/resolve-entry-href';
 
-type HubDomainKey = 'supplies' | 'it' | 'businesscard' | 'other';
+type HubDomainKey = 'supplies' | 'it' | 'businesscard' | 'corp-card' | 'other';
 
 type L2Menu = {
   id: string;
@@ -26,6 +26,7 @@ function resolveDomainKey(path: string): HubDomainKey {
   if (p.includes('/asset/supplies')) return 'supplies';
   if (p.includes('/equipment/it')) return 'it';
   if (p.includes('/asset/businesscard')) return 'businesscard';
+  if (p.includes('/asset/corp-card')) return 'corp-card';
   return 'other';
 }
 
@@ -77,10 +78,16 @@ const DOMAIN_META: Record<
     adminLink: '/equipment/it/master/dashboard',
   },
   businesscard: {
-    titleEn: 'Business Card Request',
+    titleEn: 'Business Card',
     theme: 'teal',
     userLink: '/asset/businesscard/my-page',
     adminLink: '/asset/businesscard/master/requests',
+  },
+  'corp-card': {
+    titleEn: 'Corporate Card',
+    theme: 'sky',
+    userLink: '/asset/corp-card/dept/board',
+    adminLink: '/asset/corp-card/master/monitoring',
   },
   other: {
     titleEn: 'Asset Service',
@@ -93,7 +100,8 @@ const DOMAIN_META: Record<
 export default function AssetIntegratedDashboard() {
   const [stats, setStats] = useState({
     supplies: { myPending: 0, readyPickup: 0 },
-    bizcard: { myPending: 0, readyPickup: 0 },
+    bizcard: { myPending: 0, readyPickup: 0, proofPending: 0 },
+    corpCard: { available: 0, reserved: 0 },
   });
   const [itActiveSurvey, setItActiveSurvey] = useState<any | null>(null);
   const [originUrl, setOriginUrl] = useState('');
@@ -120,12 +128,16 @@ export default function AssetIntegratedDashboard() {
     const syncDashboardMetrics = async () => {
       try {
         const ts = Date.now();
-        const [uRes, menuRes, unitsRes, hubMetricsRes, itSurvRes] = await Promise.all([
+        const [uRes, menuRes, unitsRes, hubMetricsRes, itSurvRes, corpBoardRes] =
+          await Promise.all([
           fetch(`/api/auth/me?t=${ts}`, { cache: 'no-store' }).catch(() => null),
           fetch(`/api/admin/interface?t=${ts}`, { cache: 'no-store' }).catch(() => null),
           fetch(`/api/admin/units?active=true&t=${ts}`, { cache: 'no-store' }).catch(() => null),
           fetch(`/api/asset/hub-metrics?t=${ts}`, { cache: 'no-store' }).catch(() => null),
           fetch(`/api/equipment/it/audit?t=${ts}`, { cache: 'no-store' }).catch(() => null),
+          fetch(`/api/asset/corp-card/dept/board?t=${ts}`, { cache: 'no-store' }).catch(
+            () => null
+          ),
         ]);
 
         const menus = await getSafeArray(menuRes);
@@ -179,6 +191,30 @@ export default function AssetIntegratedDashboard() {
             }
           }
 
+          let corpAvailable = 0;
+          let corpReserved = 0;
+          if (corpBoardRes && corpBoardRes.ok) {
+            try {
+              const board = await corpBoardRes.json();
+              const boardCards = Array.isArray(board?.cards) ? board.cards : [];
+              const boardItems = Array.isArray(board?.items) ? board.items : [];
+              corpAvailable = boardCards.filter(
+                (c: { usageStatus?: string }) => c.usageStatus === 'AVAILABLE'
+              ).length;
+              corpReserved = boardItems.filter(
+                (it: { status?: string }) => String(it.status || '') === 'RESERVED'
+              ).length;
+              if (corpReserved === 0) {
+                corpReserved = boardCards.filter(
+                  (c: { usageStatus?: string }) => c.usageStatus === 'RESERVED'
+                ).length;
+              }
+            } catch {
+              corpAvailable = 0;
+              corpReserved = 0;
+            }
+          }
+
           setStats({
             supplies: {
               myPending: Number(hubMetrics?.supplies?.myPending) || 0,
@@ -187,7 +223,9 @@ export default function AssetIntegratedDashboard() {
             bizcard: {
               myPending: Number(hubMetrics?.bizcard?.myPending) || 0,
               readyPickup: Number(hubMetrics?.bizcard?.readyPickup) || 0,
+              proofPending: Number(hubMetrics?.bizcard?.proofPending) || 0,
             },
+            corpCard: { available: corpAvailable, reserved: corpReserved },
           });
         }
       } catch (err) {
@@ -227,7 +265,9 @@ export default function AssetIntegratedDashboard() {
               ? '나의 IT·업무자산 →'
               : key === 'businesscard'
                 ? '신규 신청하기 →'
-                : '나의 신청 / 현황 →',
+                : key === 'corp-card'
+                  ? '부서 법인카드 →'
+                  : '나의 신청 / 현황 →',
         showAdminButton: canAccessAdminPath(
           meta.adminLink,
           currentUser,
@@ -243,14 +283,11 @@ export default function AssetIntegratedDashboard() {
       <div className="bg-slate-900 pt-16 pb-32 px-6">
         <div className="max-w-[1600px] mx-auto">
           <p className="text-indigo-400 font-black tracking-widest text-[11px] uppercase mb-4">
-            Resource Command Center
+            OFFICE SUPPORT CENTER
           </p>
           <h1 className="text-4xl md:text-5xl font-extrabold text-white tracking-tight">
-            전사 경영·업무자산 대시보드
+            업무지원 대시보드
           </h1>
-          <p className="text-slate-400 mt-4 font-medium leading-relaxed md:whitespace-nowrap">
-            공통 소모품·명함·IT 업무자산 등 경영·업무 자원을 한곳에서 신청·관리합니다.
-          </p>
         </div>
       </div>
 
@@ -275,6 +312,11 @@ export default function AssetIntegratedDashboard() {
                     : undefined
               }
               myPendingLabel="나의 신청대기"
+              myPendingNote={
+                card.key === 'businesscard'
+                  ? `[시안 검수요청 ${stats.bizcard.proofPending}건]`
+                  : undefined
+              }
               rightCount={
                 card.key === 'supplies'
                   ? stats.supplies.readyPickup
@@ -295,14 +337,32 @@ export default function AssetIntegratedDashboard() {
               showAdminButton={card.showAdminButton}
               isManager={isManager}
               customContent={
-                card.key === 'it' ? (
+                card.key === 'corp-card' ? (
                   <div className="w-full">
-                    <p className="text-[10px] font-black text-indigo-400 uppercase tracking-widest mb-1">
+                    <p className="text-[10px] font-medium text-sky-600 tracking-wide mb-1">
+                      부서 잔여 카드
+                      <span className="text-slate-400 ml-1 normal-case tracking-normal">
+                        [예약 건]
+                      </span>
+                    </p>
+                    <div className="flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5">
+                      <span className="text-2xl font-medium tracking-tighter text-sky-600">
+                        {stats.corpCard.available}
+                      </span>
+                      <span className="text-[10px] font-medium text-sky-600/70">건</span>
+                      <span className="text-[11px] font-medium text-slate-400 normal-case tracking-normal">
+                        [당일 예약 {stats.corpCard.reserved}건]
+                      </span>
+                    </div>
+                  </div>
+                ) : card.key === 'it' ? (
+                  <div className="w-full">
+                    <p className="text-[10px] font-medium text-indigo-400 uppercase tracking-widest mb-1">
                       실사진행현황
                     </p>
                     {itActiveSurvey ? (
-                      <div className="text-[11px] font-bold text-slate-700 leading-snug bg-indigo-50/50 p-2.5 rounded-xl border border-indigo-100">
-                        <span className="text-indigo-600 font-black block mb-0.5">
+                      <div className="text-[11px] font-medium text-slate-700 leading-snug bg-indigo-50/50 p-2.5 rounded-xl border border-indigo-100">
+                        <span className="text-indigo-600 font-medium block mb-0.5">
                           실사 진행중 🚨
                         </span>
                         <span className="text-slate-500 text-[10px]">
@@ -310,7 +370,7 @@ export default function AssetIntegratedDashboard() {
                         </span>
                         {originUrl ? (
                           <div className="mt-1.5 flex items-center justify-between gap-2">
-                            <span className="text-[10px] font-bold text-slate-600 truncate">
+                            <span className="text-[10px] font-medium text-slate-600 truncate">
                               모바일(사내WiFi) 실사 URL
                             </span>
                             <button
@@ -327,7 +387,7 @@ export default function AssetIntegratedDashboard() {
                                   );
                                 }
                               }}
-                              className="shrink-0 px-2 py-0.5 rounded-md bg-indigo-600 text-white text-[9px] font-black hover:bg-indigo-700 transition-colors"
+                              className="shrink-0 px-2 py-0.5 rounded-md bg-indigo-600 text-white text-[9px] font-medium hover:bg-indigo-700 transition-colors"
                             >
                               {auditLinkCopied ? '복사됨' : '복사'}
                             </button>
@@ -337,7 +397,7 @@ export default function AssetIntegratedDashboard() {
                     ) : (
                       <div className="flex items-baseline gap-1 mt-0.5">
                         <span className="text-sm opacity-70">⏸️</span>
-                        <span className="text-lg font-black text-slate-400 tracking-tight">
+                        <span className="text-lg font-medium text-slate-400 tracking-tight">
                           실사 대기중
                         </span>
                       </div>
@@ -362,6 +422,7 @@ type HubCardProps = {
   theme: 'amber' | 'indigo' | 'teal' | 'sky' | 'slate';
   myPendingCount?: number;
   myPendingLabel?: string;
+  myPendingNote?: string;
   rightCount?: number;
   rightLabel?: string;
   userLink: string;
@@ -380,6 +441,7 @@ const HubCard = ({
   theme,
   myPendingCount,
   myPendingLabel = '나의 신청대기',
+  myPendingNote,
   rightCount,
   rightLabel = '전사 신청대기',
   userLink,
@@ -435,11 +497,11 @@ const HubCard = ({
           {icon}
         </div>
         <div className="min-w-0 flex-1">
-          <h2 className="text-lg font-black text-slate-900 tracking-tight leading-tight">
+          <h2 className="text-lg font-medium text-slate-900 tracking-tight leading-tight">
             {title}
           </h2>
           <span
-            className={`inline-block mt-1 px-2 py-0.5 rounded text-[9px] font-black tracking-widest uppercase leading-none ${c.badge}`}
+            className={`inline-block mt-1 px-2 py-0.5 rounded text-[9px] font-medium tracking-widest uppercase leading-none ${c.badge}`}
           >
             {titleEn}
           </span>
@@ -460,26 +522,29 @@ const HubCard = ({
           <div className="grid grid-cols-2 gap-3">
             <div>
               <p
-                className={`text-[10px] font-black uppercase tracking-widest mb-0.5 ${c.warnColor}`}
+                className={`text-[10px] font-medium uppercase tracking-widest mb-0.5 ${c.warnColor}`}
               >
                 {myPendingLabel}
               </p>
-              <div className="flex items-baseline gap-0.5">
-                <span className={`text-2xl font-black tracking-tighter ${c.warnColor}`}>
+              <div className="flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5">
+                <span className={`text-2xl font-medium tracking-tighter ${c.warnColor}`}>
                   {myPendingCount || 0}
                 </span>
-                <span className={`text-[10px] font-bold ${c.warnColor} opacity-70`}>건</span>
+                <span className={`text-[10px] font-medium ${c.warnColor} opacity-70`}>건</span>
+                {myPendingNote ? (
+                  <span className="text-[11px] font-medium text-slate-500">{myPendingNote}</span>
+                ) : null}
               </div>
             </div>
             <div className="pl-3 border-l border-slate-100">
-              <p className="text-[10px] font-black uppercase tracking-widest mb-0.5 text-slate-500">
+              <p className="text-[10px] font-medium uppercase tracking-widest mb-0.5 text-slate-500">
                 {rightLabel}
               </p>
               <div className="flex items-baseline gap-0.5">
-                <span className="text-2xl font-black tracking-tighter text-slate-800">
+                <span className="text-2xl font-medium tracking-tighter text-slate-800">
                   {rightCount || 0}
                 </span>
-                <span className="text-[10px] font-bold text-slate-500">건</span>
+                <span className="text-[10px] font-medium text-slate-500">건</span>
               </div>
             </div>
           </div>

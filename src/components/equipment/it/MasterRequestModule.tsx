@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useMemo, useRef, Suspense, Fragment } from 'react';
 import { getKSTDateString, getKSTNowYearMonth, getKSTYearMonthParts, toSortableTime, formatKSTDateTime, formatKSTDisplayDate } from '@/utils/dateUtils';
-import { resolveInterfaceEditState } from '@/lib/permission-utils';
+import { isSystemLv1User, resolveInterfaceEditState } from '@/lib/permission-utils';
 import LoadingState from '@/components/common/LoadingState';
 import WindowedPagination from '@/components/common/WindowedPagination';
 import DeptAssigneeLine, { useDeptAssignees } from '@/components/common/DeptAssigneeLine';
@@ -345,6 +345,157 @@ function threadTurns(req: any) {
   return turns;
 }
 
+type AssetThread = { root: any; latest: any; msgs: any[]; closed: boolean };
+
+function collectAssetThreads(assetKey: any, allRequests: any[]): AssetThread[] {
+  const pool = allRequests.filter((r) => sameAssetCode(r, assetKey));
+  if (!pool.length) return [];
+  const parentOf = new Map<string, string>();
+  pool.forEach((r) => {
+    const pid = getThreadParentId(r, pool);
+    if (pid) parentOf.set(String(r.id), pid);
+  });
+  const rootOf = (id: string) => {
+    let cur = String(id);
+    const seen = new Set<string>();
+    while (parentOf.has(cur) && !seen.has(cur)) {
+      seen.add(cur);
+      cur = parentOf.get(cur) as string;
+    }
+    return cur;
+  };
+  const groups = new Map<string, any[]>();
+  pool.forEach((r) => {
+    const rootId = rootOf(String(r.id));
+    const list = groups.get(rootId) || [];
+    list.push(r);
+    groups.set(rootId, list);
+  });
+  return Array.from(groups.values()).map((msgs) => {
+    const sorted = [...msgs].sort((a, b) => reqTime(a) - reqTime(b));
+    const latest = sorted[sorted.length - 1];
+    return {
+      root: sorted[0],
+      latest,
+      msgs: sorted,
+      closed: isClosedStatus(latest?.status),
+    };
+  });
+}
+
+function CommModalHeader({
+  title,
+  subtitle,
+  closedCount,
+  showClosedHistory,
+  onToggle,
+}: {
+  title: string;
+  subtitle: string;
+  closedCount: number;
+  showClosedHistory: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <>
+      <div className="flex items-start justify-between gap-3 mb-2">
+        <h4 className="text-[14px] font-medium text-slate-900 tracking-tight">{title}</h4>
+        <button
+          type="button"
+          disabled={closedCount === 0}
+          onClick={onToggle}
+          title={closedCount === 0 ? '완료된 문의 내역이 없습니다' : '같은 자산의 이전 완료 대화를 이어 봅니다'}
+          className={`shrink-0 px-2.5 py-1.5 rounded-lg border text-[10px] font-medium leading-tight text-right whitespace-nowrap transition-colors ${
+            closedCount === 0
+              ? 'border-slate-100 text-slate-300 cursor-not-allowed'
+              : showClosedHistory
+                ? 'border-indigo-200 bg-indigo-50 text-indigo-600'
+                : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+          }`}
+        >
+          {showClosedHistory ? '이전 내역 접기' : '완료된 문의 내역 보기'}
+        </button>
+      </div>
+      <p className="text-[10px] font-medium text-slate-400 mb-6 border-b-2 border-slate-900 pb-3">
+        {subtitle}
+      </p>
+    </>
+  );
+}
+
+function ClosedHistoryBlock({ threads }: { threads: AssetThread[] }) {
+  if (!threads.length) {
+    return (
+      <p className="text-[11px] font-medium text-slate-400 px-1">완료된 문의 내역이 없습니다.</p>
+    );
+  }
+  const ordered = [...threads].sort((a, b) => reqTime(a.latest) - reqTime(b.latest));
+  return (
+    <div className="space-y-5">
+      {ordered.map((thread, idx) => {
+        const turns = thread.msgs.flatMap(threadTurns);
+        if (!turns.length) return null;
+        const date =
+          formatKSTDisplayDate(thread.latest.completedAt || thread.latest.requestDate || thread.latest.createdAt) ||
+          getKSTDateString(thread.latest.completedAt || thread.latest.requestDate || thread.latest.createdAt) ||
+          '';
+        return (
+          <div key={String(thread.root?.id || idx)} className="space-y-3">
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] font-medium text-slate-500">완료된 문의 {idx + 1}</span>
+              {date && <span className="text-[10px] font-medium text-slate-400 tabular-nums">{date}</span>}
+            </div>
+            <div className="border-l-2 border-slate-200 ml-2 space-y-4">
+              {turns.map((turn, tIdx) => {
+                const isAdmin = turn.role === 'admin';
+                const roleTag = isAdmin ? '관리자' : '사용자';
+                return (
+                  <div key={`${turn.role}-${tIdx}`} className="relative pl-5">
+                    <span
+                      className={`absolute -left-[5px] top-2 w-2 h-2 rounded-full ring-2 ring-white ${
+                        isAdmin ? 'bg-blue-500' : 'bg-slate-400'
+                      }`}
+                      aria-hidden
+                    />
+                    <div className="flex items-center justify-between gap-3 mb-1.5">
+                      <span
+                        className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium whitespace-nowrap ${
+                          isAdmin ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-600'
+                        }`}
+                      >
+                        [{roleTag}] {turn.name}
+                      </span>
+                      {turn.date && (
+                        <span className="text-[10px] font-medium text-slate-400 tabular-nums shrink-0">
+                          {turn.date}
+                        </span>
+                      )}
+                    </div>
+                    <div
+                      className={`rounded-md border p-3.5 text-[11px] font-medium whitespace-pre-wrap leading-relaxed ${
+                        isAdmin
+                          ? 'bg-blue-50/40 border-blue-200 text-slate-800'
+                          : 'bg-white border-slate-200 text-slate-800'
+                      }`}
+                    >
+                      {turn.text}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })}
+      <div className="flex items-center gap-2 py-1">
+        <div className="flex-1 h-px bg-slate-200" />
+        <span className="text-[10px] font-medium text-slate-400">현재 대화</span>
+        <div className="flex-1 h-px bg-slate-200" />
+      </div>
+    </div>
+  );
+}
+
 function userRequestContent(raw: string | null | undefined) {
   const text = String(raw || '').trim();
   if (!text || text === '(관리자 의견)') return '-';
@@ -415,6 +566,7 @@ function ITMasterRequestContent() {
   const [editingReq, setEditingReq] = useState<any>(null);
   const [editOpinion, setEditOpinion] = useState('');
   const [commEditMode, setCommEditMode] = useState(false);
+  const [showClosedHistory, setShowClosedHistory] = useState(false);
   const [adminComposeReq, setAdminComposeReq] = useState<any>(null);
 
   const [filterDept, setFilterDept] = useState('ALL');
@@ -525,6 +677,17 @@ function ITMasterRequestContent() {
     [currentUser, interfaceConfig]
   );
 
+  const closedHistoryThreads = useMemo(() => {
+    if (!editingReq) return [];
+    const threads = collectAssetThreads(editingReq, requests);
+    const currentIds = new Set(
+      collectThreadMessages(editingReq, requests).map((m) => String(m.id))
+    );
+    return threads.filter(
+      (t) => t.closed && !t.msgs.some((m) => currentIds.has(String(m.id)))
+    );
+  }, [editingReq, requests]);
+
   const submitThreadAction = async (mode: 'reply' | 'close') => {
     if (!editingReq) return;
     if (!canEdit) return alert('편집 권한이 없습니다.');
@@ -629,6 +792,7 @@ function ITMasterRequestContent() {
         setEditingReq(null);
         setEditOpinion('');
         setCommEditMode(false);
+        setShowClosedHistory(false);
         fetchData();
       } else {
         alert('❌ 취소에 실패했습니다.');
@@ -677,6 +841,7 @@ function ITMasterRequestContent() {
     if (!canEdit) return alert('편집 권한이 없습니다.');
     setEditingReq(null);
     setCommEditMode(false);
+    setShowClosedHistory(false);
     setAdminComposeReq(req);
     setEditOpinion('');
   };
@@ -726,7 +891,7 @@ function ITMasterRequestContent() {
     }
   };
 
-  const isLV1 = useMemo(() => !!currentUser?.roles?.includes('LV_1'), [currentUser]);
+  const isLV1 = useMemo(() => isSystemLv1User(currentUser), [currentUser]);
 
   const handleDeleteSelected = async () => {
     if (!isLV1) {
@@ -1000,6 +1165,7 @@ function ITMasterRequestContent() {
   const openReqModal = (req: any) => {
     setAdminComposeReq(null);
     setCommEditMode(false);
+    setShowClosedHistory(false);
     setEditingReq(req);
     setEditOpinion(
       isWaitingForUser(req.status) ? opinionDisplay(req.adminOpinion) : ''
@@ -1146,7 +1312,7 @@ function ITMasterRequestContent() {
         canEdit={canEdit}
       />
 
-      <div className={`bg-white border border-slate-200 rounded-[2.5rem] shadow-sm animate-in fade-in duration-300 slide-in-from-top-4 ${orgMenuOpen ? 'overflow-visible' : 'overflow-hidden'}`}>
+      <div className={`bg-white border border-slate-200 rounded-lg shadow-sm animate-in fade-in duration-300 slide-in-from-top-4 ${orgMenuOpen ? 'overflow-visible' : 'overflow-hidden'}`}>
         <div className={`p-3 px-4 bg-slate-200/70 border-b border-slate-300 flex items-center gap-2 min-w-0 relative ${orgMenuOpen ? 'z-[80] overflow-visible' : ''}`}>
           <div className="flex items-center gap-1.5 shrink-0">
             <div className="w-2.5 h-2.5 rounded-full bg-blue-600 shrink-0" />
@@ -1458,26 +1624,31 @@ function ITMasterRequestContent() {
               className="bg-white w-[500px] border border-slate-200 shadow-2xl p-8 rounded-3xl animate-in zoom-in-95 duration-200 flex flex-col max-h-[90vh]"
               onClick={(e) => e.stopPropagation()}
             >
-              <h4 className="text-[14px] font-medium text-slate-900 tracking-tight mb-2">
-                {threadClosed
-                  ? '처리 완료(종료)'
-                  : waitingForUser
-                    ? (latest.status === '관리자 답변' ? '관리자 답변' : '관리자 신규접수')
-                    : isIncomingReply(latest, requests)
-                      ? '사용자 답변'
-                      : '사용자 신규접수'}
-              </h4>
-              <p className="text-[10px] font-medium text-slate-400 mb-6 border-b-2 border-slate-900 pb-3">
-                {!canEdit
-                  ? '주고받은 전체 이력을 확인할 수 있습니다 (조회 전용)'
-                  : !openedIsLatest
-                    ? '과거 이력 조회 · 답변/종료는 가장 최근 행의 상태를 눌러 주세요'
-                    : threadClosed
-                      ? '주고받은 전체 이력을 확인할 수 있습니다'
-                      : waitingForUser
-                        ? '사용자 답변 전 · 전송 취소 또는 내용 수정 가능'
-                        : '답변을 작성하거나 처리 완료(종료)할 수 있습니다'}
-              </p>
+              <CommModalHeader
+                title={
+                  threadClosed
+                    ? '처리 완료(종료)'
+                    : waitingForUser
+                      ? (latest.status === '관리자 답변' ? '관리자 답변' : '관리자 신규접수')
+                      : isIncomingReply(latest, requests)
+                        ? '사용자 답변'
+                        : '사용자 신규접수'
+                }
+                subtitle={
+                  !canEdit
+                    ? '주고받은 전체 이력을 확인할 수 있습니다 (조회 전용)'
+                    : !openedIsLatest
+                      ? '과거 이력 조회 · 답변/종료는 가장 최근 행의 상태를 눌러 주세요'
+                      : threadClosed
+                        ? '주고받은 전체 이력을 확인할 수 있습니다'
+                        : waitingForUser
+                          ? '사용자 답변 전 · 전송 취소 또는 내용 수정 가능'
+                          : '답변을 작성하거나 처리 완료(종료)할 수 있습니다'
+                }
+                closedCount={closedHistoryThreads.length}
+                showClosedHistory={showClosedHistory}
+                onToggle={() => setShowClosedHistory((v) => !v)}
+              />
 
               <div className="overflow-y-auto flex-1 pr-2 space-y-4 min-h-0">
                 <div className="rounded-xl bg-slate-50 border border-slate-100 px-4 py-3 space-y-2">
@@ -1504,6 +1675,8 @@ function ITMasterRequestContent() {
                     </span>
                   </div>
                 </div>
+
+                {showClosedHistory && <ClosedHistoryBlock threads={closedHistoryThreads} />}
 
                 <div className="border-l-2 border-slate-200 ml-2 space-y-4">
                   {turns.map((turn, idx) => {
@@ -1605,6 +1778,7 @@ function ITMasterRequestContent() {
                       setEditingReq(null);
                       setEditOpinion('');
                       setCommEditMode(false);
+                      setShowClosedHistory(false);
                     }}
                     className="flex-1 py-3.5 bg-slate-100 text-slate-600 rounded-xl font-medium text-[11px] hover:bg-slate-200 transition-colors"
                   >
@@ -1638,6 +1812,7 @@ function ITMasterRequestContent() {
                         setEditingReq(null);
                         setEditOpinion('');
                         setCommEditMode(false);
+                        setShowClosedHistory(false);
                       }}
                       className="flex-1 py-3.5 bg-slate-100 text-slate-600 rounded-xl font-medium text-[11px] hover:bg-slate-200 transition-colors"
                     >
@@ -1659,6 +1834,7 @@ function ITMasterRequestContent() {
                         setEditingReq(null);
                         setEditOpinion('');
                         setCommEditMode(false);
+                        setShowClosedHistory(false);
                       }}
                       className="flex-1 py-3.5 bg-slate-100 text-slate-600 rounded-xl font-medium text-[11px] hover:bg-slate-200 transition-colors"
                     >

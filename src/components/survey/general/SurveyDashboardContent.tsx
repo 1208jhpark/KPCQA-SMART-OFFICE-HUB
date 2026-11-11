@@ -405,24 +405,24 @@ export default function SurveyDashboardContent() {
         <div className="xl:w-2/5 bg-gradient-to-r from-blue-700 to-indigo-800 p-6 rounded-[2.5rem] min-h-[120px] flex flex-col justify-center text-white shadow-xl relative overflow-hidden group">
           <div className="absolute right-[-10px] top-[-10px] w-24 h-24 bg-white/10 rounded-full blur-2xl group-hover:scale-150 transition-transform duration-700"></div>
           <div>
-            <p className="text-[10px] font-black uppercase tracking-widest opacity-80 mb-1">My Survey Mission</p>
-            <div className="flex items-end gap-2 mt-1"><h3 className="text-4xl font-black">{stats.myPendingCount}</h3><p className="text-xs font-bold mb-1 opacity-90">건의 참여할 설문이 있습니다.</p></div>
+            <p className="text-[10px] font-medium uppercase tracking-widest opacity-80 mb-1">My Survey Mission</p>
+            <div className="flex items-end gap-2 mt-1"><h3 className="text-4xl font-medium">{stats.myPendingCount}</h3><p className="text-xs font-medium mb-1 opacity-90">건의 참여할 설문이 있습니다.</p></div>
           </div>
           <div className="absolute right-6 top-1/2 -translate-y-1/2">
-            <button onClick={() => { if (stats.myPendingCount === 0) return alert('미참여 대기 설문이 없습니다.'); setFilterPending(!filterPending); setFilterNudged(false); setFilterClosingToday(false); }} className={`shrink-0 text-[10px] font-black px-4 py-2 rounded-xl transition-all border shadow-sm ${filterPending ? 'bg-white text-indigo-700 border-white' : 'bg-white/20 hover:bg-white/30 text-white border-white/20'}`}>{filterPending ? '전체 목록 ↺' : '대상만 보기 →'}</button>
+            <button onClick={() => { if (stats.myPendingCount === 0) return alert('미참여 대기 설문이 없습니다.'); setFilterPending(!filterPending); setFilterNudged(false); setFilterClosingToday(false); }} className={`shrink-0 text-[10px] font-medium px-4 py-2 rounded-xl transition-all border shadow-sm ${filterPending ? 'bg-white text-indigo-700 border-white' : 'bg-white/20 hover:bg-white/30 text-white border-white/20'}`}>{filterPending ? '전체 목록 ↺' : '대상만 보기 →'}</button>
           </div>
         </div>
         <div className="xl:w-3/5 flex flex-col md:flex-row gap-4">
           <div className="flex-1 bg-white border border-slate-200 p-5 rounded-[2.5rem] shadow-sm flex items-center justify-between min-h-[120px]">
-            <div><p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">진행 중 조사</p><h3 className="text-3xl font-black text-slate-800 mt-1">{stats.ongoingCount} <span className="text-sm font-bold text-slate-400">건</span></h3></div><div className="w-12 h-12 bg-blue-50 text-blue-600 rounded-2xl flex items-center justify-center text-2xl">📝</div>
+            <div><p className="text-[10px] font-medium text-slate-400 uppercase tracking-widest mb-1">진행 중 조사</p><h3 className="text-3xl font-medium text-slate-800 mt-1">{stats.ongoingCount} <span className="text-sm font-medium text-slate-400">건</span></h3></div><div className="w-12 h-12 bg-blue-50 text-blue-600 rounded-2xl flex items-center justify-center text-2xl">📝</div>
           </div>
           
           <div onClick={() => { if (stats.closingTodayCount === 0) return alert('오늘 마감이 임박한 조사가 없습니다.'); setFilterClosingToday(!filterClosingToday); setFilterPending(false); setFilterNudged(false); }} className={`flex-1 p-5 rounded-[2.5rem] shadow-sm flex items-center justify-between min-h-[120px] cursor-pointer transition-all border-2 ${filterClosingToday ? 'bg-red-50 border-red-400 scale-[1.02] shadow-lg' : 'bg-white border-slate-200 hover:border-red-200 hover:bg-red-50/30'}`}>
-            <div><p className="text-[10px] font-black text-red-400 uppercase tracking-widest mb-1">오늘 마감</p><h3 className="text-3xl font-black text-red-600 mt-1">{stats.closingTodayCount} <span className="text-sm font-bold text-red-300">건</span></h3></div><div className={`w-12 h-12 rounded-2xl flex items-center justify-center text-2xl transition-all ${filterClosingToday ? 'bg-red-500 text-white animate-pulse' : 'bg-red-50'}`}>⏰</div>
+            <div><p className="text-[10px] font-medium text-red-400 uppercase tracking-widest mb-1">오늘 마감</p><h3 className="text-3xl font-medium text-red-600 mt-1">{stats.closingTodayCount} <span className="text-sm font-medium text-red-300">건</span></h3></div><div className={`w-12 h-12 rounded-2xl flex items-center justify-center text-2xl transition-all ${filterClosingToday ? 'bg-red-500 text-white animate-pulse' : 'bg-red-50'}`}>⏰</div>
           </div>
           
           <div onClick={() => { if (stats.nudgeCount === 0) return alert('접수된 참여 요청 건이 없습니다.'); setFilterNudged(!filterNudged); setFilterPending(false); setFilterClosingToday(false); }} className={`flex-1 p-5 rounded-[2.5rem] shadow-sm flex items-center justify-between min-h-[120px] cursor-pointer transition-all border-2 ${filterNudged ? 'bg-red-500 border-red-600 scale-[1.02] shadow-lg' : 'bg-white border-red-100 hover:border-red-300 hover:bg-red-50/30'}`}>
-            <div><p className={`text-[10px] font-black uppercase tracking-widest mb-1 ${filterNudged ? 'text-red-100' : 'text-red-400'}`}>참여 요청</p><h3 className={`text-3xl font-black mt-1 ${filterNudged ? 'text-white' : 'text-red-600'}`}>{stats.nudgeCount} <span className={`text-sm font-bold ${filterNudged ? 'text-red-200' : 'text-red-300'}`}>건</span></h3></div>
+            <div><p className={`text-[10px] font-medium uppercase tracking-widest mb-1 ${filterNudged ? 'text-red-100' : 'text-red-400'}`}>참여 요청</p><h3 className={`text-3xl font-medium mt-1 ${filterNudged ? 'text-white' : 'text-red-600'}`}>{stats.nudgeCount} <span className={`text-sm font-medium ${filterNudged ? 'text-red-200' : 'text-red-300'}`}>건</span></h3></div>
             <div className={`w-12 h-12 rounded-2xl flex items-center justify-center text-2xl transition-all ${filterNudged ? 'bg-red-600 text-white' : stats.nudgeCount > 0 ? 'bg-red-50 animate-bounce shadow-md' : 'bg-slate-50 text-slate-300 grayscale opacity-50'}`}>🚨</div>
           </div>
         </div>
@@ -430,25 +430,25 @@ export default function SurveyDashboardContent() {
   
       <div className="bg-white border border-slate-200 rounded-[2.5rem] shadow-sm overflow-hidden mt-6">
       <div className="p-6 bg-slate-800 border-b border-slate-700 flex items-center justify-between">
-          <h3 className="text-sm font-black text-white flex items-center gap-2"><span className="text-blue-500">●</span> {filterNudged ? '🚨 참여 요청 내역' : filterClosingToday ? '⏰ 오늘 마감 설문' : '진행 중인 전사 설문 리스트'}</h3>
+          <h3 className="text-sm font-medium text-white flex items-center gap-2"><span className="text-blue-500">●</span> {filterNudged ? '🚨 참여 요청 내역' : filterClosingToday ? '⏰ 오늘 마감 설문' : '진행 중인 전사 설문 리스트'}</h3>
           <div className="flex items-center gap-2">
-            {filterPending && <span className="text-[10px] font-black bg-indigo-500 text-white px-2 py-0.5 rounded-full border border-indigo-600 animate-pulse">대상 내역 표시 중</span>}
-            {filterNudged && <span className="text-[10px] font-black bg-red-500 text-white px-2 py-0.5 rounded-full border border-red-600 animate-pulse">독촉 건만 표시 중</span>}
-            {filterClosingToday && <span className="text-[10px] font-black bg-red-50 text-red-600 px-2 py-0.5 rounded-full border border-red-200 animate-pulse">오늘 마감 건 표시 중</span>}
+            {filterPending && <span className="text-[10px] font-medium bg-indigo-500 text-white px-2 py-0.5 rounded-full border border-indigo-600 animate-pulse">대상 내역 표시 중</span>}
+            {filterNudged && <span className="text-[10px] font-medium bg-red-500 text-white px-2 py-0.5 rounded-full border border-red-600 animate-pulse">독촉 건만 표시 중</span>}
+            {filterClosingToday && <span className="text-[10px] font-medium bg-red-50 text-red-600 px-2 py-0.5 rounded-full border border-red-200 animate-pulse">오늘 마감 건 표시 중</span>}
             
-            <span className="text-xs font-black bg-slate-700 text-indigo-300 px-2.5 py-0.5 rounded-full border border-slate-600">조회 {filteredSurveys.length}건</span>
+            <span className="text-xs font-medium bg-slate-700 text-indigo-300 px-2.5 py-0.5 rounded-full border border-slate-600">조회 {filteredSurveys.length}건</span>
           </div>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse">
-            <thead className="bg-slate-100 text-slate-700 text-[10px] font-black uppercase tracking-widest border-b border-slate-200">
+            <thead className="bg-slate-100 text-slate-700 text-[10px] font-medium uppercase tracking-widest border-b border-slate-200">
               <tr>
                 <th className="py-4 pl-8 w-16 text-center">NO</th><th className="py-4 px-2 w-20 text-center whitespace-nowrap">게시번호</th><th className="py-4 px-3 w-32 text-center whitespace-nowrap">게시일</th><th className="py-4 px-4">게시명</th><th className="py-4 px-3 w-24 text-center">익명여부</th><th className="py-4 px-3 w-44 text-center">대상</th><th className="py-4 px-3 w-36 text-center">기간</th><th className="py-4 px-2 w-16 text-center">참여율</th><th className="py-4 px-2 w-16 text-center">참여</th><th className="py-4 px-2 w-16 text-center">미참여</th><th className="py-4 pr-8 w-32 text-center">상태 / 액션</th>
               </tr>
             </thead>
-            <tbody className="bg-white divide-y divide-slate-100 text-xs font-bold text-slate-700">
+            <tbody className="bg-white divide-y divide-slate-100 text-xs font-medium text-slate-700">
               {filteredSurveys.length === 0 ? (
-                <tr><td colSpan={11} className="py-24 text-center text-slate-400 font-bold bg-slate-50/30">조건에 맞는 설문이 없습니다.</td></tr>
+                <tr><td colSpan={11} className="py-24 text-center text-slate-400 font-medium bg-slate-50/30">조건에 맞는 설문이 없습니다.</td></tr>
               ) : filteredSurveys.map((s, idx) => {
                 
                // 🚀 서버 GET_STATS: 대상인원(targetCounts) + 참여자수(participation)
@@ -487,8 +487,8 @@ export default function SurveyDashboardContent() {
                             : 'hover:bg-slate-50/50'
                     }`}
                   >
-                    <td className="text-center text-slate-400 font-black pl-8 py-4">{idx + 1}</td>
-                    <td className="text-center font-black text-slate-600 px-2 py-4">{s.postNumber}</td>
+                    <td className="text-center text-slate-400 font-medium pl-8 py-4">{idx + 1}</td>
+                    <td className="text-center font-medium text-slate-600 px-2 py-4">{s.postNumber}</td>
                     <td className="text-center font-mono text-slate-500 px-3 py-4 whitespace-nowrap">{s.postDate || '-'}</td>
                     
                     <td className="px-4 py-4">
@@ -496,63 +496,63 @@ export default function SurveyDashboardContent() {
                         <div className="flex items-center gap-2">
                           <button 
                             onClick={() => isTargeted && !isSubmitted && !isClosed && handleOpenIntro(s)} 
-                            className={`font-black text-[12px] text-left line-clamp-1 ${!isTargeted || isClosed || isSubmitted ? 'text-slate-400 cursor-not-allowed' : 'text-slate-800 hover:text-blue-600 hover:underline'}`}
+                            className={`font-medium text-[12px] text-left line-clamp-1 ${!isTargeted || isClosed || isSubmitted ? 'text-slate-400 cursor-not-allowed' : 'text-slate-800 hover:text-blue-600 hover:underline'}`}
                             disabled={!isTargeted || isSubmitted || isClosed}
                           >
                             {s.title}
                           </button>
                           
                           {dDayText && (
-                            <span className="shrink-0 bg-red-600 text-white text-[8px] px-1.5 py-0.5 rounded font-black animate-pulse">
+                            <span className="shrink-0 bg-red-600 text-white text-[8px] px-1.5 py-0.5 rounded font-medium animate-pulse">
                               {dDayText}
                             </span>
                           )}
                           
-                          {isClosed && <span className="shrink-0 bg-slate-500 text-white text-[8px] px-1.5 py-0.5 rounded font-black">종료됨</span>}
+                          {isClosed && <span className="shrink-0 bg-slate-500 text-white text-[8px] px-1.5 py-0.5 rounded font-medium">종료됨</span>}
                         </div>
                         {isNudged && !isClosed && (
-                          <span className="inline-block bg-red-100 text-red-600 border border-red-200 text-[8px] px-2 py-0.5 rounded shadow-sm font-black animate-pulse">🚨 관리자 참여 요청</span>
+                          <span className="inline-block bg-red-100 text-red-600 border border-red-200 text-[8px] px-2 py-0.5 rounded shadow-sm font-medium animate-pulse">🚨 관리자 참여 요청</span>
                         )}
                       </div>
                     </td>
                     
                     <td className="text-center py-4 px-3">
-                      <span className={`px-2 py-0.5 border text-[10px] rounded ${s.isAnonymous ? 'bg-slate-700 text-white font-black border-slate-900' : 'text-slate-400 border-slate-200'}`}>{s.isAnonymous ? '익명' : '기명'}</span>
+                      <span className={`px-2 py-0.5 border text-[10px] rounded ${s.isAnonymous ? 'bg-slate-700 text-white font-medium border-slate-900' : 'text-slate-400 border-slate-200'}`}>{s.isAnonymous ? '익명' : '기명'}</span>
                     </td>
                     
                     <td className="px-3 py-4 text-center text-slate-600 font-medium whitespace-normal break-keep leading-relaxed">{s.target}</td>
                     
                     <td className="text-center text-slate-500 text-[10px] px-3 py-4">
                       <div>{s.startDate} ~</div>
-                      <div className={isClosed ? 'text-red-400 font-bold' : isUrgent ? 'text-red-500 font-black' : ''}>
+                      <div className={isClosed ? 'text-red-400 font-medium' : isUrgent ? 'text-red-500 font-medium' : ''}>
                         {s.endDate} <span className="text-[8px]">({s.endTime || '23:59'})</span>
                       </div>
                     </td>
                     
-                    <td className="text-center font-black text-slate-700 px-2 py-4">{rate}%</td>
-                    <td className="text-center font-black text-blue-600 px-2 py-4">{done}명</td>
-                    <td className="text-center font-black text-red-500 px-2 py-4">{notDone}명</td>
+                    <td className="text-center font-medium text-slate-700 px-2 py-4">{rate}%</td>
+                    <td className="text-center font-medium text-blue-600 px-2 py-4">{done}명</td>
+                    <td className="text-center font-medium text-red-500 px-2 py-4">{notDone}명</td>
                     
                     <td className="text-center pr-8 py-4">
                       {!isTargeted ? (
-                        <button disabled className="px-4 py-1.5 rounded-lg font-black text-[10px] bg-slate-200 text-slate-500 cursor-not-allowed">🚫 대상아님</button>
+                        <button disabled className="px-4 py-1.5 rounded-lg font-medium text-[10px] bg-slate-200 text-slate-500 cursor-not-allowed">🚫 대상아님</button>
                       ) : isSubmitted ? (
-                        <button onClick={() => alert(`✅ 제출 내역 정보: ${myResponses[s.id].submittedAt}`)} className="px-3 py-1.5 rounded-lg font-black text-[10px] bg-emerald-50 border border-emerald-100 text-emerald-700 hover:bg-emerald-100/50">📬 제출완료</button>
+                        <button onClick={() => alert(`✅ 제출 내역 정보: ${myResponses[s.id].submittedAt}`)} className="px-3 py-1.5 rounded-lg font-medium text-[10px] bg-emerald-50 border border-emerald-100 text-emerald-700 hover:bg-emerald-100/50">📬 제출완료</button>
                       ) : isClosed ? (
                         <button
                           disabled
                           title={s.status === '완료' ? '관리자 마감 · 미참여' : '기간종료 · 미참여'}
-                          className="px-3 py-1.5 rounded-lg font-black text-[10px] bg-slate-100 text-slate-500 border border-slate-200 cursor-not-allowed leading-tight"
+                          className="px-3 py-1.5 rounded-lg font-medium text-[10px] bg-slate-100 text-slate-500 border border-slate-200 cursor-not-allowed leading-tight"
                         >
                           <span className="block">📥 미참여</span>
-                          <span className="block text-[8px] font-bold text-slate-400 mt-0.5">
+                          <span className="block text-[8px] font-medium text-slate-400 mt-0.5">
                             {s.status === '완료' ? '마감됨' : '기간종료'}
                           </span>
                         </button>
                       ) : (
                         <button 
                           onClick={() => handleOpenIntro(s)} 
-                          className={`px-4 py-1.5 rounded-lg font-black text-[10px] shadow-sm transition-all ${isNudged ? 'bg-red-600 text-white hover:bg-red-700 animate-bounce' : 'bg-blue-600 text-white hover:bg-blue-700'}`}
+                          className={`px-4 py-1.5 rounded-lg font-medium text-[10px] shadow-sm transition-all ${isNudged ? 'bg-red-600 text-white hover:bg-red-700 animate-bounce' : 'bg-blue-600 text-white hover:bg-blue-700'}`}
                         >
                           {isNudged ? '🔥참여요청' : '📥 미참여'}
                         </button>
@@ -570,24 +570,24 @@ export default function SurveyDashboardContent() {
         <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-sm z-[200] flex items-center justify-center p-4">
           <div className="bg-white w-[500px] rounded-[2rem] overflow-hidden shadow-2xl flex flex-col p-8 items-center text-center animate-in zoom-in duration-300">
             <div className="w-16 h-16 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center text-3xl mb-6">📋</div>
-            <h3 className="text-xl font-black text-slate-800 mb-4">{introModalSurvey.title}</h3>
-            <p className="text-sm font-bold text-slate-500 bg-slate-50 p-4 rounded-xl w-full leading-relaxed mb-4 border border-slate-100 whitespace-pre-wrap text-left">
+            <h3 className="text-xl font-medium text-slate-800 mb-4">{introModalSurvey.title}</h3>
+            <p className="text-sm font-medium text-slate-500 bg-slate-50 p-4 rounded-xl w-full leading-relaxed mb-4 border border-slate-100 whitespace-pre-wrap text-left">
               {introModalSurvey.description || '본 설문조사에 참여하여 의견을 남겨주세요.'}
             </p>
             {introModalSurvey.isAnonymous && (
               <div className="w-full mb-6 px-4 py-3 rounded-xl border border-slate-300 bg-slate-100 text-left">
-                <p className="text-[12px] font-black text-slate-700 flex items-center gap-2">
+                <p className="text-[12px] font-medium text-slate-700 flex items-center gap-2">
                   <span className="text-base">🔒</span>
                   익명 게시의 경우 답변 수정이 불가능합니다.
                 </p>
-                <p className="text-[10px] font-bold text-slate-500 mt-1.5 leading-relaxed">
+                <p className="text-[10px] font-medium text-slate-500 mt-1.5 leading-relaxed">
                   제출 완료 후 본인에게도 답변 내용을 다시 열람·수정할 수 없습니다.
                 </p>
               </div>
             )}
             <div className="flex gap-3 w-full">
-              <button onClick={() => setIntroModalSurvey(null)} className="flex-1 py-3.5 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-xl font-black transition-colors">닫기</button>
-              <button onClick={handleStartSurvey} className="flex-[2] py-3.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-black shadow-lg transition-colors text-[13px]">🚀 설문 응답 제출하기</button>
+              <button onClick={() => setIntroModalSurvey(null)} className="flex-1 py-3.5 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-xl font-medium transition-colors">닫기</button>
+              <button onClick={handleStartSurvey} className="flex-[2] py-3.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-medium shadow-lg transition-colors text-[13px]">🚀 설문 응답 제출하기</button>
             </div>
           </div>
         </div>
@@ -597,12 +597,12 @@ export default function SurveyDashboardContent() {
         <div className="fixed inset-0 bg-slate-50 z-[500] overflow-y-auto flex flex-col text-[11px]">
           <div className="sticky top-0 bg-white border-b border-slate-200 px-6 py-4 flex justify-between items-center shadow-sm z-10">
             <div className="flex items-center gap-4">
-              <button onClick={() => { if(confirm('작성을 중단하고 나가시겠습니까?')) setActiveFullScreenSurvey(null); }} className="px-4 py-2 bg-slate-100 hover:bg-slate-200 rounded-xl font-black text-xs text-slate-600">⬅️ 나가기</button>
+              <button onClick={() => { if(confirm('작성을 중단하고 나가시겠습니까?')) setActiveFullScreenSurvey(null); }} className="px-4 py-2 bg-slate-100 hover:bg-slate-200 rounded-xl font-medium text-xs text-slate-600">⬅️ 나가기</button>
               <div className="h-6 w-px bg-slate-200 mx-1"></div>
-              <h1 className="text-base font-black text-slate-800">{activeFullScreenSurvey.title}</h1>
+              <h1 className="text-base font-medium text-slate-800">{activeFullScreenSurvey.title}</h1>
             </div>
             <div className="flex items-center gap-3">
-              <button onClick={handleSaveDraft} className="px-5 py-2.5 bg-slate-800 text-white rounded-xl text-xs font-black shadow-sm">💾 중간 저장</button>
+              <button onClick={handleSaveDraft} className="px-5 py-2.5 bg-slate-800 text-white rounded-xl text-xs font-medium shadow-sm">💾 중간 저장</button>
             </div>
           </div>
      
@@ -611,7 +611,7 @@ export default function SurveyDashboardContent() {
               <div className="fixed inset-0 z-[600] flex items-center justify-center bg-slate-900/90 backdrop-blur-sm p-4 cursor-zoom-out animate-in fade-in duration-200" onClick={() => setZoomedImage(null)}>
                 <div className="relative max-w-5xl max-h-[90vh] flex items-center justify-center">
                   <img src={zoomedImage} alt="Zoomed Area" className="max-w-full max-h-[85vh] object-contain rounded-2xl shadow-2xl cursor-default" onClick={(e) => e.stopPropagation()} />
-                  <button className="absolute -top-12 right-0 text-white font-black text-lg bg-black/40 hover:bg-black/80 w-9 h-9 rounded-full flex items-center justify-center transition-colors" onClick={() => setZoomedImage(null)}>✕</button>
+                  <button className="absolute -top-12 right-0 text-white font-medium text-lg bg-black/40 hover:bg-black/80 w-9 h-9 rounded-full flex items-center justify-center transition-colors" onClick={() => setZoomedImage(null)}>✕</button>
                 </div>
               </div>
             )}
@@ -619,16 +619,16 @@ export default function SurveyDashboardContent() {
             {renderedQuestions.map((q: any) => {
               if (q.type === 'SECTION') return (
                 <div key={q.id} className="bg-blue-900 text-white p-5 rounded-2xl shadow-sm border border-blue-950 mb-2">
-                  <h3 className="text-sm font-black flex items-center gap-1.5">🔖 {q.title}</h3>
+                  <h3 className="text-sm font-medium flex items-center gap-1.5">🔖 {q.title}</h3>
                   {q.description && <p className="text-[10px] text-blue-200 mt-2 font-medium whitespace-pre-wrap">{q.description}</p>}
                 </div>
               );
               return (
                 <div key={q.id} className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
                   <div>
-                    <h4 className="font-black text-slate-800 text-xs flex items-center gap-1">{q.title} {q.isRequired && <span className="text-red-500 font-extrabold">*</span>}</h4>
-                    {q.description && <p className="text-[10px] text-slate-400 mt-1 font-bold whitespace-pre-wrap">💡 {q.description}</p>}
-                    {q.referenceLink && <a href={q.referenceLink} target="_blank" rel="noopener noreferrer" className="mt-2 inline-block px-2.5 py-1 bg-blue-50 text-blue-600 rounded text-[9px] font-black border border-blue-100 hover:bg-blue-100">🔗 관련 참고 링크 열기</a>}
+                    <h4 className="font-medium text-slate-800 text-xs flex items-center gap-1">{q.title} {q.isRequired && <span className="text-red-500 font-medium">*</span>}</h4>
+                    {q.description && <p className="text-[10px] text-slate-400 mt-1 font-medium whitespace-pre-wrap">💡 {q.description}</p>}
+                    {q.referenceLink && <a href={q.referenceLink} target="_blank" rel="noopener noreferrer" className="mt-2 inline-block px-2.5 py-1 bg-blue-50 text-blue-600 rounded text-[9px] font-medium border border-blue-100 hover:bg-blue-100">🔗 관련 참고 링크 열기</a>}
                     {q.questionImageUrl && (
                       <img 
                         src={q.questionImageUrl} 
@@ -668,11 +668,11 @@ export default function SurveyDashboardContent() {
                               }
                             }} className="w-3.5 h-3.5 accent-blue-600 cursor-pointer" />
                             <div className="flex flex-col flex-1">
-                              <span className={`font-bold ${isOutOfStock ? 'text-slate-400 line-through' : 'text-slate-700'}`}>{opt.label}</span>
+                              <span className={`font-medium ${isOutOfStock ? 'text-slate-400 line-through' : 'text-slate-700'}`}>{opt.label}</span>
                               {isOutOfStock ? (
-                                <span className="text-[10px] w-fit mt-1 font-black bg-red-100 text-red-600 border border-red-200 px-1.5 py-0.5 rounded shadow-sm animate-pulse">SOLD OUT</span>
+                                <span className="text-[10px] w-fit mt-1 font-medium bg-red-100 text-red-600 border border-red-200 px-1.5 py-0.5 rounded shadow-sm animate-pulse">SOLD OUT</span>
                               ) : isStockLimited ? (
-                                <span className="text-[10px] w-fit mt-1 font-black text-pink-600 bg-pink-50 border border-pink-100 px-1.5 py-0.5 rounded shadow-sm">잔여: {remaining}개</span>
+                                <span className="text-[10px] w-fit mt-1 font-medium text-pink-600 bg-pink-50 border border-pink-100 px-1.5 py-0.5 rounded shadow-sm">잔여: {remaining}개</span>
                               ) : null}
                               {opt.referenceLink && <a href={opt.referenceLink} target="_blank" rel="noopener noreferrer" className="text-[9px] text-blue-500 hover:underline mt-0.5 w-fit" onClick={e => e.stopPropagation()}>🔗 상세 명세 링크</a>}
                               {opt.imageUrl && (
@@ -708,11 +708,11 @@ export default function SurveyDashboardContent() {
                           }`}>
                             <input type="checkbox" disabled={isOutOfStock} checked={isChecked} onChange={(e) => handleCheckboxChange(q.id, opt.label, e.target.checked)} className="w-3.5 h-3.5 accent-blue-600 rounded" />
                             <div className="flex flex-col flex-1">
-                              <span className={`font-bold ${isOutOfStock ? 'text-slate-400 line-through' : 'text-slate-700'}`}>{opt.label}</span>
+                              <span className={`font-medium ${isOutOfStock ? 'text-slate-400 line-through' : 'text-slate-700'}`}>{opt.label}</span>
                               {isOutOfStock ? (
-                                <span className="text-[10px] w-fit mt-1 font-black bg-red-100 text-red-600 border border-red-200 px-1.5 py-0.5 rounded shadow-sm animate-pulse">SOLD OUT</span>
+                                <span className="text-[10px] w-fit mt-1 font-medium bg-red-100 text-red-600 border border-red-200 px-1.5 py-0.5 rounded shadow-sm animate-pulse">SOLD OUT</span>
                               ) : isStockLimited ? (
-                                <span className="text-[10px] w-fit mt-1 font-black text-pink-600 bg-pink-50 border border-pink-100 px-1.5 py-0.5 rounded shadow-sm">잔여: {remaining}개</span>
+                                <span className="text-[10px] w-fit mt-1 font-medium text-pink-600 bg-pink-50 border border-pink-100 px-1.5 py-0.5 rounded shadow-sm">잔여: {remaining}개</span>
                               ) : null}
                               {opt.referenceLink && <a href={opt.referenceLink} target="_blank" rel="noopener noreferrer" className="text-[9px] text-blue-500 hover:underline mt-0.5 w-fit" onClick={e => e.stopPropagation()}>🔗 관련 링크</a>}
                               {opt.imageUrl && (
@@ -730,43 +730,43 @@ export default function SurveyDashboardContent() {
                     </div>
                   )}
      
-                  {q.type === 'TEXT_SHORT' && <input type="text" value={formData[q.id] || ''} onChange={(e) => handleInputChange(q.id, e.target.value)} className="w-full p-3 border border-slate-200 rounded-xl outline-none focus:border-blue-500 font-bold bg-slate-50 focus:bg-white text-xs" placeholder="답변 내용을 작성해 주세요." />}
-                  {q.type === 'TEXT_LONG' && <textarea value={formData[q.id] || ''} onChange={(e) => handleInputChange(q.id, e.target.value)} className="w-full p-3 border border-slate-200 rounded-xl outline-none focus:border-blue-500 font-bold bg-slate-50 focus:bg-white text-xs min-h-[100px] whitespace-pre-wrap" placeholder="세부적인 의견을 여러 줄로 입력하실 수 있습니다." />}
+                  {q.type === 'TEXT_SHORT' && <input type="text" value={formData[q.id] || ''} onChange={(e) => handleInputChange(q.id, e.target.value)} className="w-full p-3 border border-slate-200 rounded-xl outline-none focus:border-blue-500 font-medium bg-slate-50 focus:bg-white text-xs" placeholder="답변 내용을 작성해 주세요." />}
+                  {q.type === 'TEXT_LONG' && <textarea value={formData[q.id] || ''} onChange={(e) => handleInputChange(q.id, e.target.value)} className="w-full p-3 border border-slate-200 rounded-xl outline-none focus:border-blue-500 font-medium bg-slate-50 focus:bg-white text-xs min-h-[100px] whitespace-pre-wrap" placeholder="세부적인 의견을 여러 줄로 입력하실 수 있습니다." />}
                   
                   {q.type === 'SCALE' && (
                     <div className="flex items-center justify-between bg-slate-50 p-4 border border-slate-200 rounded-xl">
-                      <span className="font-black text-slate-400">매우 미흡</span>
+                      <span className="font-medium text-slate-400">매우 미흡</span>
                       <div className="flex gap-2">
                         {Array.from({ length: q.scaleMax || 5 }, (_, i) => i + 1).map((n) => (
-                          <button key={n} type="button" onClick={() => handleInputChange(q.id, n)} className={`w-8 h-8 rounded-full font-mono font-black border transition-all text-xs ${formData[q.id] === n ? 'bg-blue-600 text-white border-blue-600 shadow-md scale-110' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-100'}`}>{n}</button>
+                          <button key={n} type="button" onClick={() => handleInputChange(q.id, n)} className={`w-8 h-8 rounded-full font-mono font-medium border transition-all text-xs ${formData[q.id] === n ? 'bg-blue-600 text-white border-blue-600 shadow-md scale-110' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-100'}`}>{n}</button>
                         ))}
                       </div>
-                      <span className="font-black text-slate-600">매우 우수</span>
+                      <span className="font-medium text-slate-600">매우 우수</span>
                     </div>
                   )}
      
                   {q.type === 'SEARCH_ADDRESS' && (
                     <div className="space-y-2 bg-slate-50 p-4 rounded-xl border">
-                      <button type="button" onClick={() => openPostcodeEngine(q.id)} className="px-4 py-2 bg-slate-900 text-white font-black rounded-lg hover:bg-slate-800 transition-colors">🔍 주소지 검색 찾기</button>
+                      <button type="button" onClick={() => openPostcodeEngine(q.id)} className="px-4 py-2 bg-slate-900 text-white font-medium rounded-lg hover:bg-slate-800 transition-colors">🔍 주소지 검색 찾기</button>
                       {formData[q.id]?.roadAddress && (
-                        <div className="p-3 bg-white rounded border space-y-1 text-[10px] font-bold text-slate-700"><p>우편번호: <span className="text-blue-600">{formData[q.id]?.zipCode}</span></p><p>기본주소: {formData[q.id]?.roadAddress}</p></div>
+                        <div className="p-3 bg-white rounded border space-y-1 text-[10px] font-medium text-slate-700"><p>우편번호: <span className="text-blue-600">{formData[q.id]?.zipCode}</span></p><p>기본주소: {formData[q.id]?.roadAddress}</p></div>
                       )}
-                      <input type="text" placeholder="상세 건물명 및 동/호수" value={formData[q.id]?.detailAddress || ''} onChange={(e) => setFormData(prev => ({...prev, [q.id]: { ...(prev[q.id] || {}), detailAddress: e.target.value }}))} className="w-full p-2.5 border rounded-lg bg-white outline-none focus:border-blue-500 font-bold" />
+                      <input type="text" placeholder="상세 건물명 및 동/호수" value={formData[q.id]?.detailAddress || ''} onChange={(e) => setFormData(prev => ({...prev, [q.id]: { ...(prev[q.id] || {}), detailAddress: e.target.value }}))} className="w-full p-2.5 border rounded-lg bg-white outline-none focus:border-blue-500 font-medium" />
                     </div>
                   )}
      
-                  {q.type === 'CALENDAR' && <input type="date" value={formData[q.id] || ''} onChange={(e) => handleInputChange(q.id, e.target.value)} className="p-3 border rounded-xl bg-slate-50 font-black text-slate-700 outline-none focus:border-blue-500" />}
+                  {q.type === 'CALENDAR' && <input type="date" value={formData[q.id] || ''} onChange={(e) => handleInputChange(q.id, e.target.value)} className="p-3 border rounded-xl bg-slate-50 font-medium text-slate-700 outline-none focus:border-blue-500" />}
      
                   {q.type === 'FILE' && (
                     <div className="space-y-3 p-4 bg-slate-50 border border-slate-200 rounded-xl">
                       {q.templateFileName && (
-                        <div className="flex items-center justify-between bg-white p-3 rounded-lg border border-blue-100 shadow-sm"><div className="flex items-center gap-2"><span className="text-base">📥</span><div><p className="font-black text-slate-700">{q.templateFileName}</p><p className="text-[9px] text-slate-400 font-bold">작성 가이드라인 양식을 다운로드 하세요.</p></div></div><button type="button" onClick={() => { if (q.templateFileData) fetch(q.templateFileData).then(r => r.blob()).then(blob => saveAs(blob, q.templateFileName!)); }} className="px-3 py-1.5 bg-blue-50 text-blue-600 rounded font-black border border-blue-100 hover:bg-blue-100">양식 받기</button></div>
+                        <div className="flex items-center justify-between bg-white p-3 rounded-lg border border-blue-100 shadow-sm"><div className="flex items-center gap-2"><span className="text-base">📥</span><div><p className="font-medium text-slate-700">{q.templateFileName}</p><p className="text-[9px] text-slate-400 font-medium">작성 가이드라인 양식을 다운로드 하세요.</p></div></div><button type="button" onClick={() => { if (q.templateFileData) fetch(q.templateFileData).then(r => r.blob()).then(blob => saveAs(blob, q.templateFileName!)); }} className="px-3 py-1.5 bg-blue-50 text-blue-600 rounded font-medium border border-blue-100 hover:bg-blue-100">양식 받기</button></div>
                       )}
                       <div className="border-2 border-dashed border-slate-200 rounded-xl p-4 bg-white text-center">
                         {formData[q.id]?.fileName ? (
-                          <div className="flex items-center justify-between text-left font-bold text-slate-700"><span>📎 첨부됨: {formData[q.id].fileName}</span><button type="button" onClick={() => handleInputChange(q.id, null)} className="text-red-400 font-black hover:underline">취소</button></div>
+                          <div className="flex items-center justify-between text-left font-medium text-slate-700"><span>📎 첨부됨: {formData[q.id].fileName}</span><button type="button" onClick={() => handleInputChange(q.id, null)} className="text-red-400 font-medium hover:underline">취소</button></div>
                         ) : (
-                          <label className="cursor-pointer text-blue-600 font-black hover:underline">➕ 기재 완료한 파일 업로드 하기<input type="file" className="hidden" onChange={(e) => handleUserFileUpload(q.id, e)} accept=".hwp,.pdf,.doc,.docx,.xls,.xlsx" /></label>
+                          <label className="cursor-pointer text-blue-600 font-medium hover:underline">➕ 기재 완료한 파일 업로드 하기<input type="file" className="hidden" onChange={(e) => handleUserFileUpload(q.id, e)} accept=".hwp,.pdf,.doc,.docx,.xls,.xlsx" /></label>
                         )}
                       </div>
                     </div>
@@ -776,11 +776,11 @@ export default function SurveyDashboardContent() {
             })}
      
             <div className="pt-4 flex justify-between gap-4">
-              {hasSections && currentSectionIndex > 0 && <button type="button" onClick={() => setCurrentSectionId(sectionsOrder[currentSectionIndex - 1])} className="px-5 py-3.5 bg-white border border-slate-300 rounded-xl font-black text-slate-600 shadow-sm hover:bg-slate-50">◀ 이전 단계</button>}
+              {hasSections && currentSectionIndex > 0 && <button type="button" onClick={() => setCurrentSectionId(sectionsOrder[currentSectionIndex - 1])} className="px-5 py-3.5 bg-white border border-slate-300 rounded-xl font-medium text-slate-600 shadow-sm hover:bg-slate-50">◀ 이전 단계</button>}
               {!isLastSection ? (
-                <button type="button" onClick={() => setCurrentSectionId(sectionsOrder[currentSectionIndex + 1])} className="flex-1 py-3.5 bg-blue-600 text-white font-black text-xs rounded-xl shadow-lg hover:bg-blue-700 transition-all">다음 단계 진행하기 ▶</button>
+                <button type="button" onClick={() => setCurrentSectionId(sectionsOrder[currentSectionIndex + 1])} className="flex-1 py-3.5 bg-blue-600 text-white font-medium text-xs rounded-xl shadow-lg hover:bg-blue-700 transition-all">다음 단계 진행하기 ▶</button>
               ) : (
-                <button type="button" onClick={handleSubmitForm} className="flex-1 py-3.5 bg-slate-900 text-white font-black text-xs rounded-xl shadow-lg hover:bg-black transition-all">💾 최종 답변서 제출하기</button>
+                <button type="button" onClick={handleSubmitForm} className="flex-1 py-3.5 bg-slate-900 text-white font-medium text-xs rounded-xl shadow-lg hover:bg-black transition-all">💾 최종 답변서 제출하기</button>
               )}
             </div>
           </div>

@@ -3,7 +3,6 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
-import * as XLSX from 'xlsx';
 import { getKSTDateString, getKSTDaysUntil } from '@/utils/dateUtils';
 import { resolveCalibSchedule, toCalibYmd } from '@/utils/equipmentCalib';
 import EquipmentQrImage from '@/components/equipment/EquipmentQrImage';
@@ -13,6 +12,7 @@ import { SEED_EQUIPMENT_BY_CATEGORY } from '@/lib/equipment-seed-performance';
 import { isActiveEquipmentRow } from '@/utils/equipmentActive';
 import { resolveInterfaceEditState } from '@/lib/permission-utils';
 import WindowedPagination from '@/components/common/WindowedPagination';
+import { writeEquipmentMainExcelBuffer } from '@/lib/equipment-main-excel';
 
 const LoadingSkeleton = () => (
   <div className="w-full max-w-[1600px] mx-auto py-16 px-8 space-y-6 animate-pulse">
@@ -41,9 +41,9 @@ const renderDDay = (targetDate: string | null) => {
   const ymd = toCalibYmd(targetDate);
   if (!ymd) return null;
   const diffDays = getKSTDaysUntil(ymd);
-  if (diffDays === 0) return <span className="text-red-500 font-black px-1.5 py-0.5 rounded bg-red-50 ml-1.5 text-[9px]">D-Day</span>;
-  if (diffDays > 0) return <span className="text-blue-600 font-black px-1.5 py-0.5 rounded bg-blue-50 ml-1.5 text-[9px]">D-{diffDays}</span>;
-  return <span className="text-red-600 font-black px-1.5 py-0.5 rounded bg-red-50 ml-1.5 text-[9px]">D+{Math.abs(diffDays)}</span>;
+  if (diffDays === 0) return <span className="text-red-500 font-medium px-1.5 py-0.5 rounded bg-red-50 ml-1.5 text-[9px]">D-Day</span>;
+  if (diffDays > 0) return <span className="text-blue-600 font-medium px-1.5 py-0.5 rounded bg-blue-50 ml-1.5 text-[9px]">D-{diffDays}</span>;
+  return <span className="text-red-600 font-medium px-1.5 py-0.5 rounded bg-red-50 ml-1.5 text-[9px]">D+{Math.abs(diffDays)}</span>;
 };
 
 export default function EquipmentMainDashboard() {
@@ -477,32 +477,40 @@ export default function EquipmentMainDashboard() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [bulkPrintAssets, bulkQrReady, bulkQrMap]);
 
-  const handleExportExcel = () => {
+  const handleExportExcel = async () => {
     const targetAssets =
       selectedMainIds.size > 0
         ? filteredEquipments.filter((a) => selectedMainIds.has(a.id))
         : filteredEquipments;
     if (targetAssets.length === 0) return alert('다운로드할 데이터가 없습니다.');
-    const exportData = targetAssets.map((a, idx) => {
-      const { nCalib, applicable } = resolveCalibSchedule(a);
-      return {
-        NO: targetAssets.length - idx,
-        자산번호: displayAssetNo(a.asset_no),
-        품목명: a.name,
-        제조사: a.brand || '-',
-        모델번호: a.model_name || '-',
-        시리얼번호: a.serial_no || '-',
-        보유개수: a.qty,
-        제품사양: a.spec_summary || '-',
-        구매일: a.purchase_date ? String(a.purchase_date).split('T')[0] : '-',
-        검교정예정일: !applicable ? '대상 아님' : nCalib || '-',
-        장비관리소속: a.department || '-',
-      };
-    });
-    const ws = XLSX.utils.json_to_sheet(exportData);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, '전체장비');
-    XLSX.writeFile(wb, `전체장비리스트_${getKSTDateString()}.xlsx`);
+    try {
+      const rows = targetAssets.map((a) => {
+        const { nCalib, applicable } = resolveCalibSchedule(a);
+        return {
+          asset_no: displayAssetNo(a.asset_no),
+          name: a.name,
+          brand: a.brand,
+          model_name: a.model_name,
+          serial_no: a.serial_no,
+          qty: a.qty,
+          purchase_date: a.purchase_date ? String(a.purchase_date).split('T')[0] : null,
+          calibDue: !applicable ? '대상 아님' : nCalib || null,
+          department: a.department,
+        };
+      });
+      const buffer = await writeEquipmentMainExcelBuffer(rows, { sheetName: '전체장비' });
+      const blob = new Blob([buffer], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `전체장비리스트_${getKSTDateString()}.xlsx`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      alert('엑셀 다운로드에 실패했습니다.');
+    }
   };
    
   if (loading) return <LoadingSkeleton />;
@@ -521,12 +529,12 @@ export default function EquipmentMainDashboard() {
           <div className="flex flex-col justify-center min-w-0">
             <div className="flex items-center gap-2 mb-2.5">
               <span className="inline-block w-2 h-2 rounded-full bg-sky-400 animate-pulse" />
-              <p className="text-[10px] font-black uppercase tracking-widest text-sky-400">
+              <p className="text-[10px] font-medium uppercase tracking-widest text-sky-400">
                 CENTRAL EQUIPMENT CONTROL TOWER
               </p>
             </div>
-            <h1 className="text-2xl font-extrabold tracking-tight text-white leading-none">
-              전사 통합 장비 관제탑
+            <h1 className="text-2xl tracking-tight leading-none">
+              <span className="text-white font-medium">전사 통합 장비 관제탑</span>
             </h1>
             <p className="text-slate-400 text-xs mt-3 leading-relaxed">
               전 부서 보유 자산 현황을 실시간 모니터링하고, 검교정 주기 및 만료 예정 장비를 관리합니다.
@@ -648,10 +656,10 @@ export default function EquipmentMainDashboard() {
       </div>
     </div>
    
-      <div className={`mt-6 bg-white border rounded-[2.5rem] shadow-sm overflow-hidden transition-all duration-300 ${showUrgentOnly ? 'border-red-300 shadow-[0_4px_20px_rgba(239,68,68,0.1)]' : 'border-slate-200'}`}>
+      <div className={`mt-6 bg-white border rounded-lg shadow-sm overflow-hidden transition-all duration-300 ${showUrgentOnly ? 'border-red-300 shadow-[0_4px_20px_rgba(239,68,68,0.1)]' : 'border-slate-200'}`}>
         <div className="p-4 px-6 bg-slate-200/70 border-b border-slate-300 flex flex-wrap items-center justify-between gap-4">
-          <div className="flex items-center gap-2 flex-wrap">
-            <div className={`w-2.5 h-2.5 rounded-full ${showUrgentOnly ? 'bg-red-500' : 'bg-blue-600'}`}></div>
+          <div className="flex items-center gap-2 flex-wrap min-w-0">
+            <div className={`w-2.5 h-2.5 rounded-full shrink-0 ${showUrgentOnly ? 'bg-red-500' : 'bg-blue-600'}`}></div>
             <h2 className="text-sm font-black text-slate-800 tracking-tight">
               {showUrgentOnly
                 ? `🚨 검교정 일정 확인 D-30/D+ (${selectedDept === 'ALL' ? '전체' : (sortedDepts.find((d) => d.key === selectedDept)?.label || selectedDept)})`
@@ -675,7 +683,7 @@ export default function EquipmentMainDashboard() {
                   ? '선택 자산 QR 일괄출력'
                   : 'QR 일괄출력은 Edit 권한이 필요합니다.'
               }
-              className={`px-3 py-1.5 rounded-lg text-[10px] font-black shadow-sm transition-all whitespace-nowrap ${
+              className={`px-3 py-1.5 rounded-lg text-[10px] font-medium shadow-sm transition-all whitespace-nowrap ${
                 canEdit
                   ? 'bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 cursor-pointer'
                   : 'bg-slate-200 text-slate-400 border border-slate-200 cursor-not-allowed'
@@ -688,20 +696,20 @@ export default function EquipmentMainDashboard() {
             <button
               type="button"
               onClick={handleExportExcel}
-              className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-[10px] font-black shadow-sm hover:bg-emerald-700 transition-all whitespace-nowrap"
+              className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-[10px] font-medium shadow-sm hover:bg-emerald-700 transition-all whitespace-nowrap"
             >
               {selectedMainIds.size > 0
                 ? `선택 EXCEL 다운로드(${selectedMainIds.size})`
                 : '화면 목록 EXCEL 다운로드'}
             </button>
-            <div className="relative w-56">
+            <div className="relative w-[22rem] min-w-[22rem] shrink-0">
               <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-xs">🔍</span>
               <input
                 type="text"
-                placeholder="품목명, 모델번호, 시리얼번호, 자산번호 검색..."
+                placeholder="자산번호, 품목명, 모델번호, 시리얼번호 검색..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full pl-8 pr-3 py-1.5 text-[11px] font-bold bg-white border border-slate-200 rounded-lg outline-none focus:border-indigo-500 shadow-sm transition-colors"
+                className="w-full pl-8 pr-3 py-1.5 text-[11px] font-medium font-sans placeholder:font-medium placeholder:text-slate-400 bg-white border border-slate-200 rounded-lg outline-none focus:border-indigo-500 shadow-sm transition-colors"
               />
             </div>
           </div>
@@ -734,7 +742,7 @@ export default function EquipmentMainDashboard() {
                 <th className="h-12 pr-6 w-28 text-center whitespace-nowrap">액션</th>
               </tr>
             </thead>
-            <tbody className="bg-white divide-y divide-slate-100 text-xs font-bold text-slate-700">
+            <tbody className="bg-white divide-y divide-slate-100 text-[11px] font-medium font-sans text-slate-700">
               {paginatedEquipments.length === 0 ? (
                 <tr><td colSpan={14} className="h-24 text-center text-slate-400 italic">조건에 맞는 장비가 없습니다.</td></tr>
               ) : paginatedEquipments.map((eq, idx) => (
@@ -752,7 +760,7 @@ export default function EquipmentMainDashboard() {
                       className="accent-indigo-600 cursor-pointer w-3.5 h-3.5"
                     />
                   </td>
-                  <td className="px-3 text-center text-slate-400 font-mono text-[10px] tabular-nums">{filteredEquipments.length - ((currentPage - 1) * itemsPerPage + idx)}</td>
+                  <td className="px-3 text-center text-slate-400 tabular-nums">{filteredEquipments.length - ((currentPage - 1) * itemsPerPage + idx)}</td>
                   <td className="text-center">
                     {resolveImageSrc(eq.thumbnail_url) ? (
                       <img src={resolveImageSrc(eq.thumbnail_url)!} alt="" className="w-10 h-10 object-cover rounded-md mx-auto border" />
@@ -760,25 +768,25 @@ export default function EquipmentMainDashboard() {
                       <div className="w-10 h-10 bg-slate-100 rounded-md mx-auto flex items-center justify-center text-[8px] text-slate-300 border">NO</div>
                     )}
                   </td>
-                  <td className="px-3 text-left font-mono font-black text-slate-900">{displayAssetNo(eq.asset_no)}</td>
-                  <td className="px-3 text-left text-blue-700 max-w-[13rem]" title={eq.name || ''}>
+                  <td className="px-3 text-left text-slate-900">{displayAssetNo(eq.asset_no)}</td>
+                  <td className="px-3 text-left text-slate-700 max-w-[13rem]" title={eq.name || ''}>
                     <span className="line-clamp-1">{eq.name}</span>
                   </td>
                   <td className="px-2 text-left truncate max-w-[6rem]" title={eq.brand || ''}>{eq.brand || '-'}</td>
-                  <td className="px-2 text-left text-[10px] text-slate-500 truncate max-w-[7.5rem]" title={eq.model_name || ''}>{eq.model_name || '-'}</td>
-                  <td className="px-2 text-left text-[10px] font-mono text-slate-500 truncate max-w-[6.5rem]" title={eq.serial_no || ''}>{eq.serial_no || '-'}</td>
+                  <td className="px-2 text-left truncate max-w-[7.5rem]" title={eq.model_name || ''}>{eq.model_name || '-'}</td>
+                  <td className="px-2 text-left truncate max-w-[6.5rem]" title={eq.serial_no || ''}>{eq.serial_no || '-'}</td>
                   <td className="text-center tabular-nums">
                     {eq.qty}{' '}
                     {(qtyUnitLabelByValue[String(eq.qty_unit || 'EA')] || eq.qty_unit || 'EA')
                       .replace(/\([^)]*\)/g, '')
                       .trim() || 'EA'}
                   </td>
-                  <td className="text-center font-bold text-slate-700 tabular-nums">
+                  <td className="text-center tabular-nums">
                     {eq.purchase_date ? String(eq.purchase_date).split('T')[0] : '-'}
                   </td>
-                  <td className="text-center font-black tabular-nums">
+                  <td className="text-center tabular-nums">
                     {eq.calibApplicable === false ? (
-                      <span className="text-slate-400 font-bold">대상 아님</span>
+                      <span className="text-slate-400">대상 아님</span>
                     ) : eq.nCalib ? (
                       <div className="inline-flex items-center justify-center flex-nowrap whitespace-nowrap">
                         <span className="text-slate-900">{eq.nCalib}</span>
@@ -787,13 +795,26 @@ export default function EquipmentMainDashboard() {
                     ) : <span className="text-slate-300">-</span>}
                   </td>
                   <td
-                    className="px-3 text-left text-slate-600 whitespace-nowrap"
+                    className="px-3 text-left whitespace-nowrap"
                     title={eq.department || ''}
                   >
                     {eq.department || '-'}
                   </td>
                   <td className="text-center">
-                    <button type="button" onClick={(e) => { e.stopPropagation(); setShowQrModal(eq); }} className="px-2 py-1 bg-white border border-sky-200 text-sky-600 rounded text-[10px] whitespace-nowrap hover:bg-sky-50 transition-colors shadow-sm">QR보기</button>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setShowQrModal(eq);
+                      }}
+                      title="QR 라벨 보기"
+                      className="inline-flex items-center justify-center text-slate-500 hover:text-slate-800 transition-colors"
+                    >
+                      <svg viewBox="0 0 20 20" className="w-4 h-4" fill="currentColor" aria-hidden>
+                        <path d="M2 2h6v6H2V2zm1.5 1.5v3h3v-3h-3zM12 2h6v6h-6V2zm1.5 1.5v3h3v-3h-3zM2 12h6v6H2v-6zm1.5 1.5v3h3v-3h-3z" />
+                        <path d="M12 12h2.5v2.5H12V12zm3.5 0H18v2.5h-2.5V12zM12 15.5h2.5V18H12v-2.5zm3.5 0H18V18h-2.5v-2.5z" />
+                      </svg>
+                    </button>
                   </td>
                   <td className="pr-6 pl-2 text-center whitespace-nowrap">
                     <button
@@ -802,7 +823,7 @@ export default function EquipmentMainDashboard() {
                         e.stopPropagation();
                         router.push(`/equipment/main/${eq.category}/inventory?detailId=${eq.id}`);
                       }}
-                      className={`px-2.5 py-1.5 border rounded-lg text-[10px] font-black transition-colors shadow-sm whitespace-nowrap ${eq.isUrgent ? 'bg-red-50 border-red-200 text-red-600 hover:bg-red-600 hover:text-white' : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-800 hover:text-white'}`}
+                      className={`px-2.5 py-1.5 border rounded-lg text-[11px] font-medium font-sans transition-colors shadow-sm whitespace-nowrap ${eq.isUrgent ? 'bg-red-50 border-red-200 text-red-600 hover:bg-red-600 hover:text-white' : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-800 hover:text-white'}`}
                     >
                       상세이동
                     </button>

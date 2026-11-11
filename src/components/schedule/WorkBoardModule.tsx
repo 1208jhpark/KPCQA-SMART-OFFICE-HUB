@@ -1,6 +1,7 @@
 'use client';
 
 import React, { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
+import { saveAs } from 'file-saver';
 import { getKSTDateString, getKSTNowYearMonth } from '@/utils/dateUtils';
 import { getKrHolidaysForYear, KR_HOLIDAY_COLOR } from '@/utils/krHolidays';
 import {
@@ -344,39 +345,307 @@ function buildDayPrintHtml(opts: {
 
   return `<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8"/>
 <title>공유프로젝트-${formatDotDate(dateStr)}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;700&display=swap" rel="stylesheet" />
 <style>
-  @page { size: A4; margin: 12mm; }
-  body { font-family: "Malgun Gothic","Apple SD Gothic Neo",sans-serif; color:#0f172a; font-size:11px; }
-  h1 { font-size:16px; margin:0 0 4px; }
-  .sub { color:#64748b; margin:0 0 14px; font-size:11px; }
-  h2 { font-size:13px; margin:16px 0 6px; border-bottom:1px solid #e2e8f0; padding-bottom:4px; }
-  h2 span { color:#94a3b8; font-weight:normal; }
-  table { width:100%; border-collapse:collapse; margin-bottom:4px; table-layout:fixed; }
-  col.c-proj { width: 34%; }
-  col.c-due { width: 86px; }
-  col.c-note { width: 14%; }
-  col.c-lines { width: auto; }
-  th, td { border:1px solid #e2e8f0; padding:5px 6px; vertical-align:top; text-align:left; word-break:break-word; }
-  th { background:#f8fafc; font-weight:600; }
-  th.c-due, td.c-due {
-    padding:5px 4px;
-    white-space:nowrap;
-    font-variant-numeric:tabular-nums;
-    text-align:center;
-    font-size:10px;
-    overflow:hidden;
+  @page { size: A4; margin: 10mm; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: "Noto Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+    font-size: 8pt;
+    color: #222;
+    margin: 0;
+    padding: 0;
+    line-height: 1.35;
   }
-  td.empty { color:#94a3b8; text-align:center; }
-  tr.urgent td { background:#fff1f2; }
-  ul.lines { margin:0; padding-left:14px; }
-  ul.lines li { margin:1px 0; }
-  .total { margin-top:12px; color:#64748b; }
+  .header {
+    margin: 0 0 8px;
+    padding: 0 0 6px;
+    border-bottom: 1px solid #B4B4B4;
+  }
+  .header h1 {
+    margin: 0;
+    font-size: 10pt;
+    font-weight: 700;
+    font-family: "Noto Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+  }
+  .header p {
+    margin: 2px 0 0;
+    font-size: 8pt;
+    color: #444;
+    font-weight: 400;
+  }
+  h2 {
+    font-size: 9pt;
+    font-weight: 700;
+    margin: 12px 0 4px;
+    color: #222;
+  }
+  h2 span { color: #888; font-weight: 400; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 4px;
+    table-layout: fixed;
+    font-family: "Noto Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+    font-size: 8pt;
+  }
+  col.c-proj { width: 34%; }
+  col.c-due { width: 12%; }
+  col.c-note { width: 16%; }
+  col.c-lines { width: 38%; }
+  th, td {
+    border: 1px solid #BFBFBF;
+    padding: 3px 4px;
+    vertical-align: middle;
+    text-align: left;
+    word-break: break-word;
+    font-size: 8pt;
+    font-weight: 400;
+    color: #222;
+  }
+  th {
+    background: #DDEBF7;
+    font-weight: 700;
+    text-align: center;
+  }
+  th.c-due, td.c-due {
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+    text-align: center;
+  }
+  td.empty { color: #888; text-align: center; padding: 10px 4px; }
+  tr.urgent td { background: #FFF1F2; }
+  ul.lines { margin: 0; padding-left: 14px; }
+  ul.lines li { margin: 1px 0; }
+  .total {
+    margin-top: 10px;
+    font-size: 8pt;
+    color: #444;
+  }
+  @media print {
+    body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  }
 </style></head><body>
-  <h1>공유 프로젝트 업무 보드</h1>
-  <p class="sub">${formatDotDate(dateStr)}${unitName ? ` · ${escapeHtml(unitName)}` : ''} · 전체 ${items.length}건</p>
+  <div class="header">
+    <h1>${formatDotDate(dateStr)} 공유 프로젝트 업무 보드</h1>
+    <p>일별${unitName ? ` / ${escapeHtml(unitName)}` : ''} · 전체 ${items.length}건</p>
+  </div>
   ${sections}
   <p class="total">할 일 ${byCol.TODO.length} · 진행 중 ${byCol.DOING.length} · 완료 ${byCol.DONE.length}</p>
 </body></html>`;
+}
+
+function formatWorkLinesPlain(item: WorkItem): string {
+  const lines = Array.isArray(item.lines) ? item.lines : [];
+  if (!lines.length) return '';
+  return lines
+    .map((l) => {
+      const st = STATUS_LABEL[normalizeStatus(l.status) || 'TODO'];
+      const who = String(l.assignee_name || '').trim();
+      return `${String(l.area || '').trim()}${who ? ` · ${who}` : ''} · ${st}`;
+    })
+    .join('\n');
+}
+
+/** 선택일 워크보드 엑셀 */
+async function downloadDayWorkBoardExcel(opts: {
+  dateStr: string;
+  unitName: string;
+  items: WorkItem[];
+}) {
+  const { dateStr, unitName, items } = opts;
+  const byCol: Record<WorkStatus, WorkItem[]> = { TODO: [], DOING: [], DONE: [] };
+  for (const item of items) {
+    const lines = Array.isArray(item.lines) ? item.lines : [];
+    const key = lines.length
+      ? deriveProjectStatus(lines)
+      : ((normalizeStatus(item.status) || 'TODO') as WorkStatus);
+    byCol[key].push(item);
+  }
+
+  const ExcelJS = (await import('exceljs')).default;
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet('일보드');
+
+  sheet.mergeCells(1, 1, 1, 5);
+  const titleCell = sheet.getCell(1, 1);
+  titleCell.value = `${formatDotDate(dateStr)} 공유 프로젝트 업무 보드${
+    unitName ? ` / ${unitName}` : ''
+  } · ${items.length}건`;
+  titleCell.font = { name: '맑은 고딕', size: 12, bold: true, color: { argb: 'FF0F172A' } };
+  titleCell.alignment = { vertical: 'middle', horizontal: 'left' };
+  sheet.getRow(1).height = 24;
+
+  const headers = ['구분', '프로젝트', '마감', '메모', '세부분야 · 담당 · 상태'];
+  sheet.addRow(headers);
+  const thin = { style: 'thin' as const, color: { argb: 'FFBFBFBF' } };
+  const border = { top: thin, left: thin, bottom: thin, right: thin };
+  const headerRow = sheet.getRow(2);
+  headerRow.height = 20;
+  headerRow.eachCell((cell) => {
+    cell.font = { name: '맑은 고딕', size: 9, bold: true, color: { argb: 'FF1E293B' } };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFDDEBF7' } };
+    cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+    cell.border = border;
+  });
+
+  const pushDataRow = (vals: string[]) => {
+    const row = sheet.addRow(vals);
+    row.eachCell((cell, col) => {
+      cell.font = { name: '맑은 고딕', size: 9, color: { argb: 'FF222222' } };
+      cell.border = border;
+      cell.alignment = {
+        vertical: 'middle',
+        horizontal: col === 1 || col === 3 ? 'center' : 'left',
+        wrapText: true,
+      };
+    });
+    const lines = Math.max(
+      1,
+      ...vals.map((v) => String(v || '').split(/\n/).length)
+    );
+    row.height = Math.max(18, lines * 14);
+  };
+
+  if (items.length === 0) {
+    pushDataRow(['', '등록된 프로젝트가 없습니다', '', '', '']);
+  } else {
+    for (const col of COLUMNS) {
+      for (const item of byCol[col.key]) {
+        pushDataRow([
+          col.label,
+          `${isUrgent(item) ? '[긴급] ' : ''}${item.title || ''}`,
+          String(item.due_date || '').trim(),
+          String(item.note || '').trim(),
+          formatWorkLinesPlain(item),
+        ]);
+      }
+    }
+  }
+
+  sheet.getColumn(1).width = 10;
+  sheet.getColumn(2).width = 28;
+  sheet.getColumn(3).width = 12;
+  sheet.getColumn(4).width = 18;
+  sheet.getColumn(5).width = 36;
+
+  const buffer = await workbook.xlsx.writeBuffer();
+  const safe = formatDotDate(dateStr).replace(/[\\/:*?"<>|]/g, '-');
+  saveAs(
+    new Blob([buffer], {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    }),
+    `공유프로젝트-${safe}.xlsx`
+  );
+}
+
+/** 월간 워크보드 엑셀 (일자별, 빈 날짜 포함) */
+async function downloadMonthWorkBoardExcel(opts: {
+  year: number;
+  month: number;
+  unitName: string;
+  items: WorkItem[];
+  holidays: Map<string, string>;
+}) {
+  const { year, month, unitName, items, holidays } = opts;
+  const title = `${year}.${pad2(month)}`;
+  const lastDay = new Date(year, month, 0).getDate();
+  const byDate = new Map<string, WorkItem[]>();
+  for (const item of items) {
+    const span = itemDateSpan(item);
+    if (!span) continue;
+    let cur = span.start;
+    while (cur <= span.end) {
+      const [yy, mm, dd] = cur.split('-').map(Number);
+      if (yy === year && mm === month) {
+        const list = byDate.get(cur) || [];
+        list.push(item);
+        byDate.set(cur, list);
+      }
+      const next = new Date(yy, mm - 1, dd + 1);
+      cur = ymd(next.getFullYear(), next.getMonth() + 1, next.getDate());
+      if (cur <= span.start) break;
+    }
+  }
+
+  const ExcelJS = (await import('exceljs')).default;
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet('월보드');
+
+  let total = 0;
+  for (let d = 1; d <= lastDay; d++) {
+    total += (byDate.get(ymd(year, month, d)) || []).length;
+  }
+
+  sheet.mergeCells(1, 1, 1, 3);
+  const titleCell = sheet.getCell(1, 1);
+  titleCell.value = `${title} 공유 프로젝트${unitName ? ` / ${unitName}` : ''} · ${total}건`;
+  titleCell.font = { name: '맑은 고딕', size: 12, bold: true, color: { argb: 'FF0F172A' } };
+  titleCell.alignment = { vertical: 'middle', horizontal: 'left' };
+  sheet.getRow(1).height = 24;
+
+  const headers = ['일자', '프로젝트', '비고'];
+  sheet.addRow(headers);
+  const thin = { style: 'thin' as const, color: { argb: 'FFBFBFBF' } };
+  const border = { top: thin, left: thin, bottom: thin, right: thin };
+  const headerRow = sheet.getRow(2);
+  headerRow.height = 20;
+  headerRow.eachCell((cell) => {
+    cell.font = { name: '맑은 고딕', size: 9, bold: true, color: { argb: 'FF1E293B' } };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFDDEBF7' } };
+    cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+    cell.border = border;
+  });
+
+  const pushDataRow = (vals: string[]) => {
+    const row = sheet.addRow(vals);
+    row.eachCell((cell, col) => {
+      cell.font = { name: '맑은 고딕', size: 9, color: { argb: 'FF222222' } };
+      cell.border = border;
+      cell.alignment = {
+        vertical: 'middle',
+        horizontal: col === 1 ? 'center' : 'left',
+        wrapText: true,
+      };
+    });
+    const lines = Math.max(
+      1,
+      ...vals.map((v) => String(v || '').split(/\n/).length)
+    );
+    row.height = Math.max(18, lines * 14);
+  };
+
+  for (let d = 1; d <= lastDay; d++) {
+    const dateStr = ymd(year, month, d);
+    const dow = WEEKDAYS[new Date(year, month - 1, d).getDay()];
+    const dayLabel = `${d}(${dow})`;
+    const holiday = holidays.get(dateStr);
+    const dayList = byDate.get(dateStr) || [];
+
+    if (dayList.length === 0) {
+      pushDataRow([dayLabel, '', holiday ? `공휴일 · ${holiday}` : '']);
+      continue;
+    }
+
+    const titles = dayList
+      .map((item) => `${isUrgent(item) ? '[긴급] ' : ''}${item.title || ''}`)
+      .join('\n');
+    pushDataRow([dayLabel, titles, holiday ? `공휴일 · ${holiday}` : '']);
+  }
+
+  sheet.getColumn(1).width = 10;
+  sheet.getColumn(2).width = 42;
+  sheet.getColumn(3).width = 22;
+
+  const buffer = await workbook.xlsx.writeBuffer();
+  saveAs(
+    new Blob([buffer], {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    }),
+    `공유프로젝트-${title}.xlsx`
+  );
 }
 
 /** 월간 일자별 등록 프로젝트 — 일자·제목만, A4 좌우 2단 */
@@ -1033,24 +1302,45 @@ export default function WorkBoardModule() {
                 </div>
               </div>
               <div className="flex items-center gap-1.5 shrink-0">
-                <button
-                  type="button"
-                  title={`${viewYear}.${pad2(viewMonth)} 일자별 등록 프로젝트 인쇄·다운로드`}
-                  onClick={() => {
-                    const stamp = `${viewYear}.${pad2(viewMonth)}`;
-                    const html = buildMonthPrintHtml({
-                      year: viewYear,
-                      month: viewMonth,
-                      unitName,
-                      items: monthItems,
-                      holidays,
-                    });
-                    openWorkBoardPrint(html, `공유프로젝트-${stamp}`);
-                  }}
-                  className="h-7 px-2.5 rounded-md border border-slate-200 bg-white text-slate-700 text-[10px] font-medium hover:bg-slate-50 hover:border-slate-300"
-                >
-                  ⬇ 월 다운
-                </button>
+                <div className="inline-flex items-stretch rounded-lg border border-slate-200 overflow-hidden shadow-sm">
+                  <button
+                    type="button"
+                    title={`${viewYear}.${pad2(viewMonth)} 인쇄·PDF 다운`}
+                    onClick={() => {
+                      const stamp = `${viewYear}.${pad2(viewMonth)}`;
+                      const html = buildMonthPrintHtml({
+                        year: viewYear,
+                        month: viewMonth,
+                        unitName,
+                        items: monthItems,
+                        holidays,
+                      });
+                      openWorkBoardPrint(html, `공유프로젝트-${stamp}`);
+                    }}
+                    className="h-7 px-2.5 bg-sky-50 text-sky-700 text-[10px] font-medium hover:bg-sky-100 border-r border-slate-200"
+                  >
+                    ⬇ 월·일정
+                  </button>
+                  <button
+                    type="button"
+                    title={`${viewYear}.${pad2(viewMonth)} 엑셀 다운`}
+                    onClick={() => {
+                      void downloadMonthWorkBoardExcel({
+                        year: viewYear,
+                        month: viewMonth,
+                        unitName,
+                        items: monthItems,
+                        holidays,
+                      }).catch((err) => {
+                        console.error('[work-board month excel]', err);
+                        alert('엑셀 다운로드에 실패했습니다.');
+                      });
+                    }}
+                    className="h-7 px-2.5 bg-emerald-50 text-emerald-700 text-[10px] font-medium hover:bg-emerald-100"
+                  >
+                    엑셀
+                  </button>
+                </div>
                 <button
                   type="button"
                   onClick={() => shiftMonth(-1)}
@@ -1281,25 +1571,45 @@ export default function WorkBoardModule() {
                     </span>
                   </h2>
                 </div>
-                <button
-                  type="button"
-                  title="이 날짜 할 일·진행 중·완료 전체 인쇄·다운로드"
-                  onClick={() => {
-                    const dateStr = asYmd(selectedDate, today);
-                    const html = buildDayPrintHtml({
-                      dateStr,
-                      unitName,
-                      items: dayItems,
-                    });
-                    openWorkBoardPrint(
-                      html,
-                      `공유프로젝트-${formatDotDate(dateStr)}`
-                    );
-                  }}
-                  className="h-7 px-2.5 rounded-md border border-slate-200 bg-white text-slate-700 text-[10px] font-medium hover:bg-slate-50 hover:border-slate-300 shrink-0"
-                >
-                  ⬇ 일 다운
-                </button>
+                <div className="inline-flex items-stretch rounded-lg border border-slate-200 overflow-hidden shadow-sm shrink-0">
+                  <button
+                    type="button"
+                    title="이 날짜 할 일·진행 중·완료 전체 인쇄·PDF 다운"
+                    onClick={() => {
+                      const dateStr = asYmd(selectedDate, today);
+                      const html = buildDayPrintHtml({
+                        dateStr,
+                        unitName,
+                        items: dayItems,
+                      });
+                      openWorkBoardPrint(
+                        html,
+                        `공유프로젝트-${formatDotDate(dateStr)}`
+                      );
+                    }}
+                    className="h-7 px-2.5 bg-sky-50 text-sky-700 text-[10px] font-medium hover:bg-sky-100 border-r border-slate-200"
+                  >
+                    ⬇ 일·일정
+                  </button>
+                  <button
+                    type="button"
+                    title="이 날짜 보드 엑셀 다운"
+                    onClick={() => {
+                      const dateStr = asYmd(selectedDate, today);
+                      void downloadDayWorkBoardExcel({
+                        dateStr,
+                        unitName,
+                        items: dayItems,
+                      }).catch((err) => {
+                        console.error('[work-board day excel]', err);
+                        alert('엑셀 다운로드에 실패했습니다.');
+                      });
+                    }}
+                    className="h-7 px-2.5 bg-emerald-50 text-emerald-700 text-[10px] font-medium hover:bg-emerald-100"
+                  >
+                    엑셀
+                  </button>
+                </div>
               </div>
               <p className="text-[11px] text-slate-500 leading-snug">
                 세부분야 상태가 모두 진행 중이면 진행 중 보드로, 모두 완료면 완료 보드로

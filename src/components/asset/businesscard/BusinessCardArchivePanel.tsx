@@ -2,7 +2,6 @@
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { usePathname } from 'next/navigation';
-import * as XLSX from 'xlsx';
 import Link from 'next/link';
 import { resolveInterfaceEditState, isSystemLv1User } from '@/lib/permission-utils';
 import { getKSTNowYearMonth } from '@/utils/dateUtils';
@@ -11,6 +10,7 @@ import {
   useInterfaceStepTabs,
 } from '@/lib/interface-step-tabs';
 import { stripBusinessCardEnPlus } from '@/lib/businesscard-phone';
+import { writeBusinessCardOrderExcelBuffer } from '@/lib/businesscard-order-excel';
 import { collectDescendantUnitNames, rowMatchesOrgUnit } from '@/lib/org-unit-match';
 import WindowedPagination from '@/components/common/WindowedPagination';
 
@@ -79,36 +79,6 @@ function archiveDateKey(batch: ArchivedBatch): string {
 
 function formatBatchNo(id: string) {
   return String(id || '').replace(/^BATCH-/, 'PO-BC-');
-}
-
-function toBulkOrderExcelRows(batch: ArchivedBatch, items: RequestItem[]) {
-  return items.map((r) => ({
-    '관리번호': r.postNumber,
-    '수량(통)': r.quantity || 1,
-    '정산금액': itemInspectPrice(batch, r) ?? '-',
-    '성명': r.userName,
-    '신청일자': r.applyDate,
-    '본부': r.deptHead,
-    '소속': r.deptName || '',
-    '직책/직급': r.title,
-    '추가사항': r.additionalKo || '',
-    '우편번호': r.zipCode,
-    '주소': r.addressKo,
-    '휴대전화': r.mobile,
-    '전화번호': r.phone || '',
-    '팩스': r.fax || '',
-    '이메일': r.email,
-    '영문이름': r.userNameEn || '',
-    '영문본부': r.deptHeadEn || '',
-    '영문소속': r.deptNameEn || '',
-    '영문직책': r.titleEn || '',
-    '영문추가': r.additionalEn || '',
-    '영문주소': r.addressEn || '',
-    '영문 휴대전화': stripBusinessCardEnPlus(r.mobileEn || ''),
-    '영문전화': stripBusinessCardEnPlus(r.phoneEn || ''),
-    '영문팩스': stripBusinessCardEnPlus(r.faxEn || ''),
-    '이메일(영문)': r.emailEn || r.email,
-  }));
 }
 
 interface UnitItem {
@@ -193,15 +163,15 @@ function formatPriceWon(price: number | null) {
   return `₩${price.toLocaleString()}`;
 }
 
-/** 묶음 시안확인 상태: 업로드대기 → 확정대기 → 확정완료 */
+/** 묶음 시안확인 상태: 시안확인대기 → 확정대기 → 확정완료 */
 function getBatchProofStatus(
   batch: ArchivedBatch,
   items?: RequestItem[]
-): '업로드대기' | '확정대기' | '확정완료' {
+): '시안확인대기' | '확정대기' | '확정완료' {
   const list = items || batch.items || [];
-  if (list.length === 0) return '업로드대기';
+  if (list.length === 0) return '시안확인대기';
   const allUploaded = list.every((it) => Boolean(it.proofFileName));
-  if (!allUploaded) return '업로드대기';
+  if (!allUploaded) return '시안확인대기';
   const allConfirmed = list.every((it) => Boolean(it.proofConfirmedAt));
   if (!allConfirmed) return '확정대기';
   return '확정완료';
@@ -505,19 +475,34 @@ export default function BusinessCardArchivePanel() {
     });
   });
 
-  const handleListExcelDownload = () => {
+  const handleListExcelDownload = async () => {
     if (!canEditMaster) return alertNoEditPermission();
-    const targets = selectedBatchIds.size > 0
-      ? processedBatches.filter((b) => selectedBatchIds.has(b.id))
-      : processedBatches;
-    const excelData = targets.flatMap((batch) =>
-      toBulkOrderExcelRows(batch, batch.displayItems || batch.items || [])
-    );
-    if (excelData.length === 0) return alert('내려받을 내역이 없습니다.');
-    const ws = XLSX.utils.json_to_sheet(excelData);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, '명함발주데이터');
-    XLSX.writeFile(wb, '명함발주서_보관함.xlsx');
+    const targets =
+      selectedBatchIds.size > 0
+        ? processedBatches.filter((b) => selectedBatchIds.has(b.id))
+        : processedBatches;
+    const items = targets.flatMap((batch) => batch.displayItems || batch.items || []);
+    if (items.length === 0) return alert('내려받을 내역이 없습니다.');
+    try {
+      const buffer = await writeBusinessCardOrderExcelBuffer(items, {
+        sheetName: '명함발주서',
+      });
+      const blob = new Blob([buffer], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download =
+        targets.length === 1
+          ? `명함발주서_${formatBatchNo(targets[0].id)}.xlsx`
+          : '명함발주서_보관함.xlsx';
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error(err);
+      alert('명함 발주서 다운로드에 실패했습니다.');
+    }
   };
 
   const pageBatchIds = paginatedBatches.map((b) => b.id);
@@ -624,10 +609,10 @@ export default function BusinessCardArchivePanel() {
         <div className="absolute right-0 top-0 w-64 h-64 bg-emerald-400/15 rounded-full blur-3xl -translate-y-1/3 translate-x-1/4 pointer-events-none" />
         <div className="absolute left-1/4 bottom-0 w-48 h-48 bg-teal-800/20 rounded-full blur-3xl translate-y-1/2 pointer-events-none" />
         <div className="relative z-10">
-          <h3 className="text-[10px] font-black uppercase tracking-widest text-emerald-400 mb-2.5">
+          <h3 className="text-[10px] font-medium uppercase tracking-widest text-emerald-400 mb-2.5">
             BUSINESS CARD TOTAL GOVERNANCE
           </h3>
-          <h1 className="text-2xl font-extrabold tracking-tight text-white leading-none">
+          <h1 className="text-2xl font-medium tracking-tight text-white leading-none">
             전사 임직원 명함 통합 관리 대장
           </h1>
           <p className="text-emerald-100/90 text-xs mt-3 leading-relaxed">
@@ -635,11 +620,11 @@ export default function BusinessCardArchivePanel() {
           </p>
           {permissionSummary && isSystemLv1User(currentUser) && (
             <div className="flex flex-wrap items-center gap-2 mt-4 pt-3 border-t border-white/15">
-              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-white/10 border-white/25 text-emerald-50 shadow-sm">
+              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-medium border tracking-tight bg-white/10 border-white/25 text-emerald-50 shadow-sm">
                 <span>👑 Master 책임자:</span>
                 <span>{permissionSummary.masterName}</span>
               </div>
-              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-purple-500/20 border-purple-300/40 text-purple-100 shadow-sm">
+              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-medium border tracking-tight bg-purple-500/20 border-purple-300/40 text-purple-100 shadow-sm">
                 <span>👁️ Access:</span>
                 <span>{permissionSummary.accessDesignate}</span>
                 <span className="opacity-50">|</span>
@@ -647,7 +632,7 @@ export default function BusinessCardArchivePanel() {
                 <span className="opacity-50">|</span>
                 <span>Level: {permissionSummary.accessLevel}</span>
               </div>
-              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-emerald-400/20 border-emerald-300/40 text-emerald-100 shadow-sm">
+              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-medium border tracking-tight bg-emerald-400/20 border-emerald-300/40 text-emerald-100 shadow-sm">
                 <span>✍️ Edit:</span>
                 <span>{permissionSummary.editDesignate}</span>
                 <span className="opacity-50">|</span>
@@ -666,7 +651,7 @@ export default function BusinessCardArchivePanel() {
               <Link
                 key={tab.id}
                 href={tab.path}
-                className={`px-5 py-2 rounded-md text-xs font-black transition-all flex items-center gap-2 ${
+                className={`px-5 py-2 rounded-md text-xs font-medium transition-all flex items-center gap-2 ${
                   isActive
                     ? `bg-white ${tab.activeColor || 'text-indigo-600'} shadow-sm border border-slate-200/80`
                     : 'text-slate-500 hover:text-slate-800'
@@ -677,14 +662,14 @@ export default function BusinessCardArchivePanel() {
             );
           })}
         </div>
-        <p className="text-[10px] text-slate-400 font-bold px-3 hidden sm:block">
+        <p className="text-[10px] text-slate-400 font-medium px-3 hidden sm:block">
           ※ 탭을 클릭하여 신청현황·외주발주·보관함을 전환합니다.
         </p>
       </div>
 
       <div className="bg-white border border-slate-200 rounded-2xl shadow-sm px-5 py-3 space-y-3">
         <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 border-b border-slate-100 pb-2">
-          <h2 className="text-base font-black text-slate-800 whitespace-nowrap">🗄️ 과거 발주 및 지급 완료 묶음 결산 이력</h2>
+          <h2 className="text-base font-medium text-slate-800 whitespace-nowrap">🗄️ 과거 발주 및 지급 완료 묶음 결산 이력</h2>
           <p className="text-xs text-slate-500">
             아래 표의 연도·월·조직·대상자 검색에 맞춰 수량과 금액이 바로 집계됩니다.
           </p>
@@ -692,18 +677,18 @@ export default function BusinessCardArchivePanel() {
 
         <div className="grid grid-cols-1 lg:grid-cols-[minmax(200px,15.5rem)_minmax(0,1fr)] gap-3 items-stretch">
           <div className="bg-white border border-slate-200 rounded-lg p-3 flex flex-col justify-center min-h-[64px]">
-            <h3 className="text-slate-400 text-[9px] font-black tracking-widest mb-1.5">TOTAL SUMMARY</h3>
+            <h3 className="text-slate-400 text-[9px] font-medium tracking-widest mb-1.5">TOTAL SUMMARY</h3>
             <div className="flex flex-col gap-1.5">
               <div className="flex items-baseline gap-2 flex-wrap">
-                <span className="text-xs font-bold text-slate-500 whitespace-nowrap">총 발주 수량</span>
-                <span className="text-lg font-black text-slate-800 font-mono tabular-nums">
+                <span className="text-xs font-medium text-slate-500 whitespace-nowrap">총 발주 수량</span>
+                <span className="text-lg font-medium text-slate-800 font-mono tabular-nums">
                   {totalQty}
-                  <span className="text-xs font-bold text-slate-500 ml-0.5">통</span>
+                  <span className="text-xs font-medium text-slate-500 ml-0.5">통</span>
                 </span>
               </div>
               <div className="flex items-baseline gap-2 flex-wrap">
-                <span className="text-xs font-bold text-slate-500 whitespace-nowrap">외주 정산 총액</span>
-                <span className="text-lg font-bold text-indigo-600 font-mono tabular-nums tracking-tight">
+                <span className="text-xs font-medium text-slate-500 whitespace-nowrap">외주 정산 총액</span>
+                <span className="text-lg font-medium text-indigo-600 font-mono tabular-nums tracking-tight">
                   {totalPriceKnown > 0 ? `₩${totalCalculatedPrice.toLocaleString()}` : '-'}
                 </span>
               </div>
@@ -712,14 +697,14 @@ export default function BusinessCardArchivePanel() {
 
           <div className="bg-white rounded-lg border border-slate-200 flex flex-col shadow-sm min-h-[64px] min-w-0">
             <div className="bg-slate-50/90 px-3 py-1 border-b border-slate-200 flex justify-between items-center shrink-0">
-              <h3 className="text-slate-500 text-[10px] font-black tracking-widest">조직별 조회</h3>
-              <span className="text-[10px] font-bold text-slate-400 bg-slate-200/50 px-1.5 py-0.5 rounded">
+              <h3 className="text-slate-500 text-[10px] font-medium tracking-widest">조직별 조회</h3>
+              <span className="text-[10px] font-medium text-slate-400 bg-slate-200/50 px-1.5 py-0.5 rounded">
                 {Object.keys(deptStatsMap).length}개 조직
               </span>
             </div>
             <div className="px-2 py-1.5">
               {Object.keys(deptStatsMap).length === 0 ? (
-                <p className="text-slate-400 text-xs text-center py-1 font-bold">조건에 맞는 데이터가 없습니다.</p>
+                <p className="text-slate-400 text-xs text-center py-1 font-medium">조건에 맞는 데이터가 없습니다.</p>
               ) : (
                 <div className="flex flex-wrap gap-1.5">
                   {Object.entries(deptStatsMap)
@@ -742,7 +727,7 @@ export default function BusinessCardArchivePanel() {
                         <span className="text-slate-300">·</span>
                         <span className="text-slate-500 tabular-nums whitespace-nowrap">{data.qty}통</span>
                         <span className="text-slate-300">·</span>
-                        <span className="font-bold text-indigo-600 font-mono tabular-nums whitespace-nowrap">
+                        <span className="font-medium text-indigo-600 font-mono tabular-nums whitespace-nowrap">
                           {data.priceKnown > 0 ? `₩${data.price.toLocaleString()}` : '-'}
                         </span>
                       </div>
@@ -754,12 +739,12 @@ export default function BusinessCardArchivePanel() {
         </div>
       </div>
 
-      <div className={`bg-white border border-indigo-200 rounded-[2.5rem] shadow-sm ${orgMenuOpen ? 'overflow-visible' : 'overflow-hidden'}`}>
+      <div className={`bg-white border border-indigo-200 rounded-lg shadow-sm ${orgMenuOpen ? 'overflow-visible' : 'overflow-hidden'}`}>
         <div className={`p-4 px-6 bg-indigo-50 border-b border-indigo-200 flex flex-wrap items-center justify-between gap-4 relative ${orgMenuOpen ? 'z-[80] overflow-visible' : ''}`}>
           <div className="flex items-center gap-2">
             <div className="w-2.5 h-2.5 rounded-full bg-indigo-600 shrink-0" />
-            <h2 className="text-sm font-black text-slate-800 tracking-tight">검수 완료 보관함 대장</h2>
-            <span className="text-[11px] font-bold bg-indigo-200/80 text-indigo-800 px-2 py-0.5 rounded-md">{processedBatches.length}건</span>
+            <h2 className="text-sm font-medium text-slate-800 tracking-tight">명세대조 완료 보관함 대장</h2>
+            <span className="text-[11px] font-medium bg-indigo-200/80 text-indigo-800 px-2 py-0.5 rounded-md">{processedBatches.length}건</span>
           </div>
           <div className={`flex items-center gap-2 flex-wrap ml-auto ${orgMenuOpen ? 'relative z-[90] overflow-visible' : ''}`}>
             {isLV1 && (
@@ -768,7 +753,7 @@ export default function BusinessCardArchivePanel() {
                 disabled={selectedBatchIds.size === 0 || deletingBulk}
                 onClick={handleBulkDeleteLv1}
                 title="체크한 보관 묶음을 영구 삭제 (LV_1 전용)"
-                className="h-7 px-2.5 rounded-lg text-[10px] font-black border border-red-200 bg-red-50 text-red-600 hover:bg-red-100 disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
+                className="h-7 px-2.5 rounded-lg text-[10px] font-medium border border-red-200 bg-red-50 text-red-600 hover:bg-red-100 disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
               >
                 {deletingBulk
                   ? '삭제중…'
@@ -780,7 +765,7 @@ export default function BusinessCardArchivePanel() {
             <div className={`relative group/filter flex items-center gap-1.5 bg-white px-2.5 rounded-lg border border-indigo-200 shadow-sm h-7 box-border ${orgMenuOpen ? 'relative z-[90]' : ''}`}>
               <span
                 role="tooltip"
-                className={`pointer-events-none absolute left-0 top-full mt-1.5 z-50 hidden whitespace-nowrap rounded-lg bg-slate-800 px-2.5 py-1.5 text-[10px] font-bold text-white shadow-lg ${orgMenuOpen ? '' : 'group-hover/filter:block'}`}
+                className={`pointer-events-none absolute left-0 top-full mt-1.5 z-50 hidden whitespace-nowrap rounded-lg bg-slate-800 px-2.5 py-1.5 text-[10px] font-medium text-white shadow-lg ${orgMenuOpen ? '' : 'group-hover/filter:block'}`}
               >
                 연도 → 월 · 연계필터 / 조직은 마스터 정렬
               </span>
@@ -835,7 +820,7 @@ export default function BusinessCardArchivePanel() {
                             setOrgMenuOpen(false);
                           }}
                           className={`w-full text-left pr-3 py-1.5 text-[11px] ${
-                            bold ? 'font-black text-slate-900' : 'font-medium text-slate-600'
+                            bold ? 'font-medium text-slate-900' : 'font-medium text-slate-600'
                           } ${orgFilter === dept.id ? 'bg-indigo-50' : 'hover:bg-slate-50'}`}
                           style={{ paddingLeft: `${12 + dept.depth * 12}px` }}
                         >
@@ -880,16 +865,15 @@ export default function BusinessCardArchivePanel() {
             <colgroup>
               <col style={{ width: '40px' }} />
               <col style={{ width: '40px' }} />
-              <col style={{ width: '168px' }} />
-              <col style={{ width: '120px' }} />
-              {/* 신청 상세: 남는 폭 흡수 (이름·건수 텍스트) · pl로 발주완료일과 간격 맞춤 */}
               <col />
-              <col style={{ width: '88px' }} />
-              <col style={{ width: '88px' }} />
-              <col style={{ width: '112px' }} />
-              <col style={{ width: '108px' }} />
+              <col />
+              <col />
+              <col />
+              <col />
+              <col />
+              <col />
             </colgroup>
-            <thead className="bg-indigo-100 text-indigo-900 text-[10px] font-black uppercase tracking-widest border-b border-indigo-200">
+            <thead className="bg-indigo-100 text-indigo-900 text-[10px] font-medium uppercase tracking-widest border-b border-indigo-200">
               <tr>
                 <th className="h-12 px-2 text-center">
                   <input
@@ -901,21 +885,21 @@ export default function BusinessCardArchivePanel() {
                   />
                 </th>
                 <th className="h-12 px-1 text-center">NO</th>
-                <th className="h-12 px-2 text-left">묶음 번호</th>
+                <th className="h-12 px-2 text-center">묶음 번호</th>
                 <th className="h-12 px-2 text-center">발주완료일</th>
-                <th className="h-12 pl-8 pr-2 text-left">신청 상세</th>
-                <th className="h-12 px-1 text-center">
+                <th className="h-12 px-2 text-center">신청 상세</th>
+                <th className="h-12 px-2 text-center">
                   <div className="flex flex-col items-center justify-center gap-0.5 leading-tight">
                     <span className="whitespace-nowrap">원문</span>
-                    <span className="text-[10px] font-bold text-indigo-700/80 normal-case tracking-normal whitespace-nowrap">
+                    <span className="text-[10px] font-medium text-indigo-700/80 normal-case tracking-normal whitespace-nowrap">
                       (Edit)
                     </span>
                   </div>
                 </th>
-                <th className="h-12 px-1 text-center">
+                <th className="h-12 px-2 text-center">
                   <div className="flex flex-col items-center justify-center gap-0.5 leading-tight">
                     <span className="whitespace-nowrap">시안확인</span>
-                    <span className="text-[10px] font-bold text-indigo-700/80 normal-case tracking-normal whitespace-nowrap">
+                    <span className="text-[10px] font-medium text-indigo-700/80 normal-case tracking-normal whitespace-nowrap">
                       (Edit)
                     </span>
                   </div>
@@ -924,7 +908,7 @@ export default function BusinessCardArchivePanel() {
                 <th className="h-12 px-2 text-center">상태</th>
               </tr>
             </thead>
-            <tbody className="bg-white text-xs font-bold text-slate-900 divide-y divide-slate-100">
+            <tbody className="bg-white text-xs font-medium text-slate-900 divide-y divide-slate-100">
               {isLoading ? (
                 <tr><td colSpan={9} className="p-16 text-center text-slate-400 text-xs">데이터를 불러오는 중입니다...</td></tr>
               ) : paginatedBatches.length === 0 ? (
@@ -951,7 +935,7 @@ export default function BusinessCardArchivePanel() {
                         </td>
                         <td className="px-1 text-center font-mono text-slate-900 tabular-nums">{rowNo}</td>
                         <td
-                          className="px-2 text-left font-mono text-slate-900 cursor-pointer whitespace-nowrap tabular-nums truncate overflow-hidden"
+                          className="px-2 text-center font-mono text-slate-900 cursor-pointer whitespace-nowrap tabular-nums truncate overflow-hidden"
                           title={formatBatchNo(batch.id)}
                           onClick={() => toggleBatchExpand(batch.id)}
                         >
@@ -961,7 +945,7 @@ export default function BusinessCardArchivePanel() {
                           {batch.dispatchedDate || '-'}
                         </td>
                         <td
-                          className="pl-8 pr-2 text-left cursor-pointer"
+                          className="px-2 text-center cursor-pointer"
                           onClick={() => toggleBatchExpand(batch.id)}
                         >
                           <span className="text-slate-700 underline underline-offset-2 whitespace-nowrap">
@@ -972,15 +956,15 @@ export default function BusinessCardArchivePanel() {
                             if (names.length === 0) return null;
                             const label = names.join(', ');
                             return (
-                              <p className="text-[10px] text-slate-400 mt-0.5 truncate" title={label}>
+                              <p className="text-[10px] text-slate-400 mt-0.5 truncate text-center" title={label}>
                                 {label}
                               </p>
                             );
                           })()}
                         </td>
-                        <td className="px-1 text-center text-slate-300">—</td>
+                        <td className="px-2 text-center text-slate-300">—</td>
                         <td
-                          className="px-1 text-center cursor-pointer"
+                          className="px-2 text-center cursor-pointer"
                           onClick={() => toggleBatchExpand(batch.id)}
                           title="클릭하면 상세에서 시안 확인"
                         >
@@ -988,12 +972,12 @@ export default function BusinessCardArchivePanel() {
                             const proofStatus = getBatchProofStatus(batch, displayItems);
                             const cls =
                               proofStatus === '확정완료'
-                                ? 'text-emerald-600'
+                                ? 'text-slate-700'
                                 : proofStatus === '확정대기'
                                   ? 'text-amber-600'
                                   : 'text-slate-500';
                             return (
-                              <span className={`text-[10px] font-medium whitespace-nowrap ${cls}`}>
+                              <span className={`font-medium whitespace-nowrap ${cls}`}>
                                 {proofStatus}
                               </span>
                             );
@@ -1003,18 +987,18 @@ export default function BusinessCardArchivePanel() {
                           {batchPriceKnown > 0 ? `₩${batchPriceSum.toLocaleString()}` : '-'}
                         </td>
                         <td className="px-2 text-center">
-                          <span className="text-[10px] font-bold whitespace-nowrap text-slate-900">명세대조완료</span>
+                          <span className="font-medium whitespace-nowrap text-slate-900">명세대조완료</span>
                         </td>
                       </tr>
                       {expandedBatchIds.has(batch.id) && (
-                        <tr className="bg-slate-200/90 text-slate-700 text-[10px] font-semibold tracking-wide border-y border-slate-300">
+                        <tr className="bg-slate-200/90 text-slate-700 text-[10px] font-medium tracking-wide border-y border-slate-300">
                           <td className="h-9 px-2 text-center border-l-4 border-l-blue-500 bg-slate-200/90">NO</td>
                           <td className="h-9 px-1 text-center text-slate-400">—</td>
-                          <td className="h-9 px-2 text-left whitespace-nowrap">관리번호</td>
+                          <td className="h-9 px-2 text-center whitespace-nowrap">관리번호</td>
                           <td className="h-9 px-2 text-center whitespace-nowrap">신청일</td>
-                          <td className="h-9 pl-8 pr-2 text-left whitespace-nowrap">신청주체 / 부서·이름</td>
-                          <td className="h-9 px-1 text-center whitespace-nowrap">원문확인</td>
-                          <td className="h-9 px-1 text-center whitespace-nowrap">시안확인</td>
+                          <td className="h-9 px-2 text-center whitespace-nowrap">신청주체 / 부서·이름</td>
+                          <td className="h-9 px-2 text-center whitespace-nowrap">원문확인</td>
+                          <td className="h-9 px-2 text-center whitespace-nowrap">시안확인</td>
                           <td className="h-9 px-2 text-center whitespace-nowrap">정산액</td>
                           <td className="h-9 px-2 text-center text-slate-400">—</td>
                         </tr>
@@ -1037,7 +1021,7 @@ export default function BusinessCardArchivePanel() {
                               </td>
                               <td className="px-1 text-center text-slate-300 bg-slate-50/80">—</td>
                               <td
-                                className="px-2 text-left font-mono text-slate-900 tabular-nums truncate bg-slate-50/80"
+                                className="px-2 text-center font-mono text-slate-900 tabular-nums truncate bg-slate-50/80"
                                 title={item.postNumber}
                               >
                                 {item.postNumber}
@@ -1046,7 +1030,7 @@ export default function BusinessCardArchivePanel() {
                                 {item.applyDate || '-'}
                               </td>
                               <td
-                                className="pl-8 pr-2 text-left min-w-0 bg-slate-50/80"
+                                className="px-2 text-center min-w-0 bg-slate-50/80"
                                 title={[item.deptHead, displayDeptName(item, units), item.title]
                                   .filter(Boolean)
                                   .join(' · ')}
@@ -1067,7 +1051,7 @@ export default function BusinessCardArchivePanel() {
                                   </span>
                                 </span>
                               </td>
-                              <td className="px-1 text-center bg-slate-50/80">
+                              <td className="px-2 text-center bg-slate-50/80">
                                 <button
                                   type="button"
                                   disabled={!canEditMaster}
@@ -1085,7 +1069,7 @@ export default function BusinessCardArchivePanel() {
                                   원문보기
                                 </button>
                               </td>
-                              <td className="px-1 text-center bg-slate-50/80">
+                              <td className="px-2 text-center bg-slate-50/80">
                                 <div className="inline-flex flex-col items-center gap-1">
                                   {!item.proofFileName ? (
                                     <button
@@ -1128,7 +1112,7 @@ export default function BusinessCardArchivePanel() {
                                   )}
                                   {item.proofConfirmedAt ? (
                                     <span
-                                      className="text-[9px] font-medium text-emerald-600 whitespace-nowrap"
+                                      className="text-[9px] font-medium text-slate-700 whitespace-nowrap"
                                       title={item.proofConfirmedBy || undefined}
                                     >
                                       확정
@@ -1190,10 +1174,10 @@ export default function BusinessCardArchivePanel() {
           <div className="bg-white border border-slate-200 rounded-[2.5rem] shadow-2xl max-w-5xl w-full max-h-[90vh] overflow-y-auto p-6 space-y-4">
             <div className="flex justify-between items-center border-b border-slate-100 pb-3">
               <div>
-                <span className="text-[10px] font-black text-blue-600 font-mono tracking-widest">
+                <span className="text-[10px] font-medium text-blue-600 font-mono tracking-widest">
                   🔎 원문 확인
                 </span>
-                <h2 className="text-base font-black text-slate-900 mt-1">
+                <h2 className="text-base font-medium text-slate-900 mt-1">
                   명함 신청 원문 확인 ({detailTarget.userName || '-'} 님)
                 </h2>
                 <p className="text-[10px] font-medium text-slate-400 mt-0.5 font-mono">
@@ -1203,7 +1187,7 @@ export default function BusinessCardArchivePanel() {
               <button
                 type="button"
                 onClick={() => setDetailTarget(null)}
-                className="w-8 h-8 rounded-full bg-slate-100 text-slate-500 hover:bg-slate-200 font-black text-sm transition-colors"
+                className="w-8 h-8 rounded-full bg-slate-100 text-slate-500 hover:bg-slate-200 font-medium text-sm transition-colors"
               >
                 ✕
               </button>
@@ -1211,32 +1195,32 @@ export default function BusinessCardArchivePanel() {
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-slate-50 p-5 rounded-2xl border border-slate-100">
               <div className="space-y-2 border-r border-slate-200 pr-5 flex flex-col">
-                <h3 className="text-xs font-black text-slate-800 border-b pb-1.5">1. 국문 조판 데이터</h3>
-                <div className="space-y-1.5 text-xs font-bold text-slate-600 flex-1">
+                <h3 className="text-xs font-medium text-slate-800 border-b pb-1.5">1. 국문 조판 데이터</h3>
+                <div className="space-y-1.5 text-xs font-medium text-slate-600 flex-1">
                   <label className="block text-[10px] text-slate-400 mt-1">성명</label>
-                  <p className="text-slate-900 font-black">{detailTarget.userName || '-'}</p>
+                  <p className="text-slate-900 font-medium">{detailTarget.userName || '-'}</p>
                   <label className="block text-[10px] text-slate-400 mt-1">본부 (상위 조직)</label>
-                  <p className="text-slate-900 font-black">{detailTarget.deptHead || '-'}</p>
+                  <p className="text-slate-900 font-medium">{detailTarget.deptHead || '-'}</p>
                   <label className="block text-[10px] text-slate-400 mt-1">센터 (하위 조직)</label>
-                  <p className="text-slate-900 font-black">
+                  <p className="text-slate-900 font-medium">
                     {displayDeptName(detailTarget, units) || detailTarget.deptName || '-'}
                   </p>
                   <label className="block text-[10px] text-slate-400 mt-1">직책/직급</label>
-                  <p className="text-slate-900 font-black">{detailTarget.title || '-'}</p>
+                  <p className="text-slate-900 font-medium">{detailTarget.title || '-'}</p>
                   <label className="block text-[10px] text-slate-400 mt-1">자격사항</label>
-                  <p className="text-slate-900 font-black">{detailTarget.additionalKo || '-'}</p>
+                  <p className="text-slate-900 font-medium">{detailTarget.additionalKo || '-'}</p>
                   <label className="block text-[10px] text-slate-400 mt-1">휴대전화</label>
-                  <p className="text-slate-900 font-mono font-black">{detailTarget.mobile || '-'}</p>
+                  <p className="text-slate-900 font-mono font-medium">{detailTarget.mobile || '-'}</p>
                   <label className="block text-[10px] text-slate-400 mt-1">내선전화</label>
                   <p className="text-slate-900 font-mono">{detailTarget.phone || '-'}</p>
                   <label className="block text-[10px] text-slate-400 mt-1">이메일</label>
                   <p className="text-slate-900 font-mono">{detailTarget.email || '-'}</p>
                 </div>
                 <div className="mt-4 p-3 bg-white rounded-xl border border-slate-200 space-y-1.5">
-                  <p className="text-[11px] font-bold text-slate-600 mb-1">
+                  <p className="text-[11px] font-medium text-slate-600 mb-1">
                     팩스: <span className="font-mono text-slate-900">{detailTarget.fax || '-'}</span>
                   </p>
-                  <p className="text-[11px] font-bold text-slate-600 leading-relaxed">
+                  <p className="text-[11px] font-medium text-slate-600 leading-relaxed">
                     주소:{' '}
                     <span className="text-slate-900">
                       [{detailTarget.zipCode || '-'}] {detailTarget.addressKo || '-'}
@@ -1246,22 +1230,22 @@ export default function BusinessCardArchivePanel() {
               </div>
 
               <div className="space-y-2 pl-1 flex flex-col">
-                <h3 className="text-xs font-black text-indigo-800 border-b border-indigo-100 pb-1.5">
+                <h3 className="text-xs font-medium text-indigo-800 border-b border-indigo-100 pb-1.5">
                   2. 영문 조판 데이터
                 </h3>
-                <div className="space-y-1.5 text-xs font-bold text-slate-600 flex-1">
+                <div className="space-y-1.5 text-xs font-medium text-slate-600 flex-1">
                   <label className="block text-[10px] text-slate-400 mt-1">영문 성명</label>
-                  <p className="text-indigo-900 font-black">{detailTarget.userNameEn || '-'}</p>
+                  <p className="text-indigo-900 font-medium">{detailTarget.userNameEn || '-'}</p>
                   <label className="block text-[10px] text-slate-400 mt-1">영문 본부</label>
-                  <p className="text-indigo-900 font-black">{detailTarget.deptHeadEn || '-'}</p>
+                  <p className="text-indigo-900 font-medium">{detailTarget.deptHeadEn || '-'}</p>
                   <label className="block text-[10px] text-slate-400 mt-1">영문 센터</label>
-                  <p className="text-indigo-900 font-black">{detailTarget.deptNameEn || '-'}</p>
+                  <p className="text-indigo-900 font-medium">{detailTarget.deptNameEn || '-'}</p>
                   <label className="block text-[10px] text-slate-400 mt-1">영문 직책/직급</label>
-                  <p className="text-indigo-900 font-black">{detailTarget.titleEn || '-'}</p>
+                  <p className="text-indigo-900 font-medium">{detailTarget.titleEn || '-'}</p>
                   <label className="block text-[10px] text-slate-400 mt-1">영문 자격사항</label>
-                  <p className="text-indigo-900 font-black">{detailTarget.additionalEn || '-'}</p>
+                  <p className="text-indigo-900 font-medium">{detailTarget.additionalEn || '-'}</p>
                   <label className="block text-[10px] text-slate-400 mt-1">영문 휴대전화</label>
-                  <p className="text-indigo-900 font-mono font-black">
+                  <p className="text-indigo-900 font-mono font-medium">
                     {stripBusinessCardEnPlus(detailTarget.mobileEn) || '-'}
                   </p>
                   <label className="block text-[10px] text-slate-400 mt-1">영문 내선전화</label>
@@ -1272,13 +1256,13 @@ export default function BusinessCardArchivePanel() {
                   <p className="text-indigo-900 font-mono">{detailTarget.emailEn || '-'}</p>
                 </div>
                 <div className="mt-4 p-3 bg-white rounded-xl border border-indigo-100">
-                  <p className="text-[11px] font-bold text-slate-600 mb-1">
+                  <p className="text-[11px] font-medium text-slate-600 mb-1">
                     영문 팩스:{' '}
                     <span className="font-mono text-indigo-900">
                       {stripBusinessCardEnPlus(detailTarget.faxEn) || '-'}
                     </span>
                   </p>
-                  <p className="text-[11px] font-bold text-slate-600 leading-relaxed">
+                  <p className="text-[11px] font-medium text-slate-600 leading-relaxed">
                     영문 주소: <span className="text-indigo-900">{detailTarget.addressEn || '-'}</span>
                   </p>
                 </div>

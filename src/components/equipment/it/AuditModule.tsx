@@ -3,11 +3,12 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { getKSTDateString, getKSTNowYearMonth, getKSTYearMonthParts, isPastKSTDeadline } from '@/utils/dateUtils';
 import { resolveTopOrgName } from '@/utils/orgUnits';
-import { resolveInterfaceEditState } from '@/lib/permission-utils';
+import { isSystemLv1User, resolveInterfaceEditState } from '@/lib/permission-utils';
 import LoadingState from '@/components/common/LoadingState';
 import DeptAssigneeLine, { useDeptAssignees } from '@/components/common/DeptAssigneeLine';
 import ItMasterPageBanner from '@/components/equipment/it/ItMasterPageBanner';
 import { auditTargetsOverlap } from '@/utils/itAuditTarget';
+import { writeItAuditArchiveExcelBuffer } from '@/lib/it-personal-excel';
 
 const MENU_PATH = '/equipment/it/master/audit';
 
@@ -41,6 +42,7 @@ export default function AuditModule() {
   const [selectedYear, setSelectedYear] = useState(() => String(getKSTNowYearMonth().year));
   const [selectedMonth, setSelectedMonth] = useState('ALL');
   const [historyPage, setHistoryPage] = useState(1);
+  const [selectedHistoryIds, setSelectedHistoryIds] = useState<Set<string>>(new Set());
   const itemsPerPage = 10;
   
   const fetchAuditData = async () => {
@@ -79,7 +81,10 @@ export default function AuditModule() {
   };
   
   useEffect(() => { fetchAuditData(); }, []);
-  useEffect(() => { setHistoryPage(1); }, [selectedYear, selectedMonth]);
+  useEffect(() => {
+    setHistoryPage(1);
+    setSelectedHistoryIds(new Set());
+  }, [selectedYear, selectedMonth]);
 
   const hasRunningAudit = useMemo(() => audits.some((a) => a.status === '진행중'), [audits]);
 
@@ -97,22 +102,7 @@ export default function AuditModule() {
     return () => clearInterval(timer);
   }, [hasRunningAudit]);
   
-  const isLV1 = useMemo(() => {
-    if (!currentUser) return false;
-    const roles = Array.isArray(currentUser.roles)
-      ? currentUser.roles
-      : (() => {
-          try {
-            return JSON.parse(currentUser.roles || '[]');
-          } catch {
-            return [];
-          }
-        })();
-    return roles.some((r: any) => {
-      const m = String(r).match(/\d+/);
-      return m ? `LV_${m[0]}` === 'LV_1' : String(r).includes('LV_1');
-    });
-  }, [currentUser]);
+  const isLV1 = useMemo(() => isSystemLv1User(currentUser), [currentUser]);
 
   const canEdit = useMemo(
     () => resolveInterfaceEditState(currentUser, interfaceConfig).isEditor,
@@ -183,6 +173,21 @@ export default function AuditModule() {
   
   const totalHistoryPages = Math.max(1, Math.ceil(filteredHistory.length / itemsPerPage));
   const paginatedHistory = filteredHistory.slice((historyPage - 1) * itemsPerPage, historyPage * itemsPerPage);
+  const pageHistoryIds = paginatedHistory.map((h) => String(h.id));
+  const allPageHistorySelected =
+    pageHistoryIds.length > 0 && pageHistoryIds.every((id) => selectedHistoryIds.has(id));
+  const toggleHistorySelectAllPage = () => {
+    const next = new Set(selectedHistoryIds);
+    if (allPageHistorySelected) pageHistoryIds.forEach((id) => next.delete(id));
+    else pageHistoryIds.forEach((id) => next.add(id));
+    setSelectedHistoryIds(next);
+  };
+  const toggleHistorySelect = (id: string) => {
+    const next = new Set(selectedHistoryIds);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    setSelectedHistoryIds(next);
+  };
 
   const parseTargets = (target: string) =>
     String(target || '')
@@ -338,23 +343,89 @@ export default function AuditModule() {
     }
   };
 
-  const handleStatusChange = async (id: string, action: 'PUBLISH' | 'STOP' | 'CLOSE' | 'REOPEN' | 'ARCHIVE' | 'RESTORE' | 'DELETE') => {
-    if (action === 'DELETE') {
-      if (!isLV1) return alert('데이터 영구 삭제는 최고 관리자(LV_1) 권한이 필요합니다.');
-      if (!confirm('🚨 경고: 이 실사 이력을 영구적으로 삭제하시겠습니까? 데이터 복구가 불가능합니다.')) return;
-      try {
-        const res = await fetch(`/api/equipment/it/audit?id=${id}`, { method: 'DELETE' });
-        if (!res.ok) {
-          const err = await res.json().catch(() => null);
-          return alert(`❌ 삭제에 실패했습니다.${err?.error ? `\n${err.error}` : ''}`);
-        }
-        await fetchAuditData();
-      } catch {
-        alert('❌ 삭제 중 오류가 발생했습니다.');
-      }
+  const formatPeriodText = (audit: {
+    startDate?: string;
+    endDate?: string;
+    endTime?: string | null;
+  }) => {
+    const time = normalizeEndTime24(audit.endTime);
+    const start = String(audit.startDate || '').trim() || '-';
+    const end = String(audit.endDate || '').trim() || '-';
+    return `${start} ~ ${end} (마감 ${time})`;
+  };
+
+  const handleHistoryExcelDownload = async () => {
+    const targetRows =
+      selectedHistoryIds.size > 0
+        ? filteredHistory.filter((h) => selectedHistoryIds.has(String(h.id)))
+        : filteredHistory;
+    if (targetRows.length === 0) return alert('엑셀 다운로드할 대상을 선택해 주세요.');
+    try {
+      const rows = targetRows.map((h) => ({
+        postDate: h.postDate,
+        title: h.title,
+        description: h.description,
+        periodLabel: formatPeriodText(h),
+        targetLabel: formatTargetLabel(h.target),
+      }));
+      const buffer = await writeItAuditArchiveExcelBuffer(rows, {
+        sheetName: '실사종료이력',
+      });
+      const blob = new Blob([buffer], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'IT_Audit_Archive.xlsx';
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      alert('엑셀 다운로드에 실패했습니다.');
+    }
+  };
+
+  /** Archive 선택 이력 일괄 영구삭제 — LV_1 전용 */
+  const handleDeleteSelectedHistory = async () => {
+    if (!isLV1) return alert('❌ 삭제 권한이 거부되었습니다. (LV_1 전용)');
+    if (selectedHistoryIds.size === 0) {
+      return alert('삭제할 이력을 체크박스로 선택해 주세요.');
+    }
+    if (
+      !confirm(
+        `🚨 경고: 선택한 실사 이력 ${selectedHistoryIds.size}건을 영구 삭제하시겠습니까?\n데이터 복구가 불가능합니다.`
+      )
+    ) {
       return;
     }
+    try {
+      const ids = Array.from(selectedHistoryIds);
+      let ok = 0;
+      let failMsg = '';
+      for (const id of ids) {
+        const res = await fetch(`/api/equipment/it/audit?id=${encodeURIComponent(id)}`, {
+          method: 'DELETE',
+        });
+        if (res.ok) {
+          ok += 1;
+        } else {
+          const err = await res.json().catch(() => null);
+          failMsg = err?.error || '삭제 실패';
+        }
+      }
+      setSelectedHistoryIds(new Set());
+      await fetchAuditData();
+      if (ok === ids.length) {
+        alert(`✅ ${ok}건이 영구 삭제되었습니다.`);
+      } else {
+        alert(`⚠️ ${ok}/${ids.length}건 삭제됨${failMsg ? `\n${failMsg}` : ''}`);
+      }
+    } catch {
+      alert('❌ 삭제 중 오류가 발생했습니다.');
+    }
+  };
 
+  const handleStatusChange = async (id: string, action: 'PUBLISH' | 'STOP' | 'CLOSE' | 'REOPEN' | 'ARCHIVE') => {
     if (!canEdit) return alert('편집 권한이 없습니다.');
 
     const row = audits.find((a) => a.id === id);
@@ -404,20 +475,6 @@ export default function AuditModule() {
       patchData = { id, status: '진행중' };
     }
     if (action === 'ARCHIVE') patchData = { id, status: '보관됨', archivedAt: todayStr };
-    if (action === 'RESTORE') {
-      const targetAudit = historyAuditsRaw.find((h) => h.id === id);
-      const overlaps = findOverlappingRunning(
-        targetAudit?.target || '',
-        id,
-        targetAudit?.target_unit_ids
-      );
-      if (overlaps.length > 0) {
-        const names = overlaps.map((a) => `· ${a.title} (${a.target})`).join('\n');
-        return alert(`대상범위가 겹치는 진행 중 실사가 있어 복구할 수 없습니다.\n\n${names}`);
-      }
-      if (!confirm("선택한 이력을 현황판(운영 리스트)으로 복구하시겠습니까?")) return;
-      patchData = { id, status: '마감' }; 
-    }
   
     try {
       const res = await fetch('/api/equipment/it/audit', {
@@ -479,14 +536,13 @@ export default function AuditModule() {
 
   const archiveColgroup = (
     <colgroup>
+      <col className="w-[40px]" />
       <col className="w-[44px]" />
       <col className="w-[88px]" />
+      <col className="w-[220px]" />
+      <col className="w-[260px]" />
+      <col className="w-[220px]" />
       <col className="w-[200px]" />
-      <col className="w-[220px]" />
-      <col className="w-[220px]" />
-      <col className="w-[180px]" />
-      <col className="w-[72px]" />
-      <col className="w-[158px]" />
     </colgroup>
   );
 
@@ -513,13 +569,13 @@ export default function AuditModule() {
       />
   
       {/* 진행 중 현황판 */}
-      <div className="mt-6 bg-white border border-slate-200 rounded-[2.5rem] shadow-sm overflow-hidden">
-        <div className="p-4 px-6 bg-slate-200/70 border-b border-slate-300 flex items-center justify-between gap-3 flex-wrap">
+      <div className="mt-6 bg-white border border-emerald-200 rounded-lg shadow-sm overflow-hidden">
+        <div className="p-4 px-6 bg-emerald-600 border-b border-emerald-700 flex items-center justify-between gap-3 flex-wrap">
           <div className="flex items-center gap-2 min-w-0 flex-wrap">
-            <div className="w-2.5 h-2.5 rounded-full bg-blue-600 shrink-0" />
-            <h2 className="text-sm font-medium text-slate-800 tracking-tight">운영 중인 실사 현황 (Active)</h2>
-            <span className="text-[11px] font-medium bg-slate-300/80 text-slate-700 px-2 py-0.5 rounded-md">{activeAudits.length}건</span>
-            <DeptAssigneeLine editorNames={editorNames} />
+            <div className="w-2.5 h-2.5 rounded-full bg-emerald-200 shrink-0" />
+            <h2 className="text-sm font-medium text-white tracking-tight">운영 중인 실사 현황 (Active)</h2>
+            <span className="text-[11px] font-medium bg-emerald-500/80 text-white px-2 py-0.5 rounded-md">{activeAudits.length}건</span>
+            <DeptAssigneeLine editorNames={editorNames} onColor />
           </div>
           <button
             type="button"
@@ -531,7 +587,7 @@ export default function AuditModule() {
             }}
             className={`px-4 py-2 rounded-xl font-medium text-xs whitespace-nowrap transition-all ${
               canEdit
-                ? 'bg-teal-600 hover:bg-teal-500 text-white shadow-md active:scale-95'
+                ? 'bg-white text-emerald-700 hover:bg-emerald-50 shadow-md border border-emerald-100 active:scale-95'
                 : disabledActionClass
             }`}
           >
@@ -541,7 +597,7 @@ export default function AuditModule() {
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse table-fixed min-w-[1230px]">
             {tableColgroup}
-            <thead className="bg-slate-100 text-slate-700 text-[10px] font-medium tracking-wide border-b border-slate-200">
+            <thead className="bg-emerald-50 text-emerald-900 text-[10px] font-medium tracking-wide border-b border-emerald-100">
               <tr>
                 <th className="h-12 pl-4 text-center">NO</th>
                 <th className="h-12 px-2 text-center whitespace-nowrap">게시일</th>
@@ -549,14 +605,14 @@ export default function AuditModule() {
                 <th className="h-12 px-3 text-left whitespace-nowrap">내용 요약</th>
                 <th className="h-12 px-2 text-center whitespace-nowrap">실사 운영 기간</th>
                 <th className="h-12 px-2 text-center whitespace-nowrap">대상범위</th>
-                <th className="h-12 px-2 text-center border-l border-slate-200">
+                <th className="h-12 px-2 text-center border-l border-emerald-100">
                   <div className="flex flex-col items-center justify-center gap-0.5 py-1">
                     <span className="whitespace-nowrap">모바일/웹 배포 링크</span>
-                    <span className="text-[8px] font-medium text-slate-400 leading-tight whitespace-nowrap">참여 시 계정로그인 또는 사번 인증</span>
+                    <span className="text-[8px] font-medium text-emerald-600/70 leading-tight whitespace-nowrap">참여 시 계정로그인 또는 사번 인증</span>
                   </div>
                 </th>
                 <th className="h-12 px-2 text-center whitespace-nowrap">상태</th>
-                <th className="h-12 pr-4 text-center border-l border-slate-200 whitespace-nowrap">관리액션(Edit)</th>
+                <th className="h-12 pr-4 text-center border-l border-emerald-100 whitespace-nowrap">관리액션(Edit)</th>
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-slate-100 text-[11px] font-medium text-slate-700">
@@ -597,10 +653,16 @@ export default function AuditModule() {
                     </td>
                     <td className="pr-4 text-center border-l border-slate-100">
                       <div className="flex justify-center gap-1.5 whitespace-nowrap">
-                        {a.status === '작성중' || a.status === '게시중단' ? (
+                        {a.status === '작성중' ? (
                           <>
                             <button type="button" disabled={!canEdit} title={!canEdit ? '편집 권한 필요' : undefined} onClick={() => handleStatusChange(a.id, 'PUBLISH')} className={`px-3 py-1.5 rounded-lg text-[10px] font-medium ${canEdit ? 'bg-indigo-600 text-white hover:bg-indigo-700' : disabledActionClass}`}>실사 시작</button>
                             <button type="button" disabled={!canEdit} title={!canEdit ? '편집 권한 필요' : undefined} onClick={() => { if (!canEdit) return; setEditModal(a); }} className={`px-3 py-1.5 rounded-lg text-[10px] font-medium border ${canEdit ? 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50' : disabledActionClass}`}>수정</button>
+                          </>
+                        ) : a.status === '게시중단' ? (
+                          <>
+                            <button type="button" disabled={!canEdit} title={!canEdit ? '편집 권한 필요' : undefined} onClick={() => handleStatusChange(a.id, 'PUBLISH')} className={`px-3 py-1.5 rounded-lg text-[10px] font-medium ${canEdit ? 'bg-indigo-600 text-white hover:bg-indigo-700' : disabledActionClass}`}>실사 시작</button>
+                            <button type="button" disabled={!canEdit} title={!canEdit ? '편집 권한 필요' : undefined} onClick={() => { if (!canEdit) return; setEditModal(a); }} className={`px-3 py-1.5 rounded-lg text-[10px] font-medium border ${canEdit ? 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50' : disabledActionClass}`}>수정</button>
+                            <button type="button" disabled={!canEdit} title={!canEdit ? '편집 권한 필요' : undefined} onClick={() => handleStatusChange(a.id, 'CLOSE')} className={`px-3 py-1.5 rounded-lg text-[10px] font-medium ${canEdit ? 'bg-emerald-600 text-white hover:bg-emerald-700' : disabledActionClass}`}>마감</button>
                           </>
                         ) : a.status === '진행중' ? (
                           <>
@@ -627,7 +689,7 @@ export default function AuditModule() {
       </div>
 
       {/* 이력 보관함 */}
-      <div className="mt-6 bg-white border border-slate-200 rounded-[2.5rem] shadow-sm overflow-hidden">
+      <div className="mt-6 bg-white border border-slate-200 rounded-lg shadow-sm overflow-hidden">
         <div className={`p-4 px-6 bg-slate-200/70 flex flex-wrap items-center justify-between gap-4 ${isHistoryOpen ? 'border-b border-slate-300' : ''}`}>
           <div className="flex items-center gap-2 flex-wrap min-w-0 flex-1">
             <button
@@ -661,6 +723,37 @@ export default function AuditModule() {
 
           {isHistoryOpen && (
           <div className="flex items-center gap-2 flex-wrap">
+            <button
+              type="button"
+              onClick={handleHistoryExcelDownload}
+              title={
+                selectedHistoryIds.size > 0
+                  ? `선택한 ${selectedHistoryIds.size}건 엑셀 다운로드`
+                  : '필터된 전체 이력 엑셀 다운로드'
+              }
+              className="px-3 py-1.5 rounded-lg text-[10px] font-medium border transition-colors whitespace-nowrap bg-emerald-600 text-white border-emerald-600 hover:bg-emerald-700 shadow-sm"
+            >
+              {selectedHistoryIds.size > 0
+                ? `⬇️ 선택 엑셀(${selectedHistoryIds.size})`
+                : '⬇️ 엑셀 다운로드'}
+            </button>
+            {isLV1 && (
+              <button
+                type="button"
+                onClick={handleDeleteSelectedHistory}
+                title="체크한 이력 영구 삭제 (LV_1)"
+                className={`px-3 py-1.5 rounded-lg text-[10px] font-medium border transition-colors whitespace-nowrap ${
+                  selectedHistoryIds.size > 0
+                    ? 'bg-white border-red-200 text-red-600 hover:bg-red-50'
+                    : 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'
+                }`}
+                disabled={selectedHistoryIds.size === 0}
+              >
+                {selectedHistoryIds.size > 0
+                  ? `삭제(LV_1)(${selectedHistoryIds.size})`
+                  : '삭제(LV_1)'}
+              </button>
+            )}
             <div className="relative group/filter flex items-center gap-2 bg-white px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm">
               <span
                 role="tooltip"
@@ -702,33 +795,44 @@ export default function AuditModule() {
         {isHistoryOpen && (
           <>
             <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse table-fixed min-w-[1020px]">
+              <table className="w-full text-left border-collapse table-fixed min-w-[980px]">
                 {archiveColgroup}
                 <thead className="bg-slate-100 text-slate-700 text-[10px] font-medium border-b border-slate-200">
                   <tr>
-                    <th className="h-12 pl-4 text-center">NO</th>
+                    <th className="h-12 pl-3 pr-1 text-center">
+                      <input
+                        type="checkbox"
+                        checked={allPageHistorySelected}
+                        onChange={toggleHistorySelectAllPage}
+                        title="현재 페이지 전체 선택"
+                        className="accent-slate-800 cursor-pointer w-3 h-3"
+                      />
+                    </th>
+                    <th className="h-12 text-center">NO</th>
                     <th className="h-12 px-2 text-center whitespace-nowrap">게시일</th>
                     <th className="h-12 px-3 text-left whitespace-nowrap">실사명</th>
                     <th className="h-12 px-3 text-left whitespace-nowrap">내용 요약</th>
                     <th className="h-12 px-2 text-center whitespace-nowrap">실사 운영 기간</th>
-                    <th className="h-12 px-2 text-center whitespace-nowrap">대상범위</th>
-                    <th className="h-12 px-2 text-center whitespace-nowrap">상태</th>
-                    <th className="h-12 pr-4 text-center border-l border-slate-200 whitespace-nowrap">관리액션(Edit)</th>
+                    <th className="h-12 pr-4 px-2 text-center whitespace-nowrap">대상범위</th>
                   </tr>
                 </thead>
                 <tbody className="bg-white divide-y divide-slate-100 text-[11px] font-medium text-slate-700">
                   {paginatedHistory.length === 0 ? (
-                    <tr><td colSpan={8} className="py-12 text-center text-slate-400">데이터가 없습니다.</td></tr>
+                    <tr><td colSpan={7} className="py-12 text-center text-slate-400">데이터가 없습니다.</td></tr>
                   ) : paginatedHistory.map((h, idx) => {
                     const no = filteredHistory.length - ((historyPage - 1) * itemsPerPage + idx);
-                    const restoreBlocked = findOverlappingRunning(
-                      h.target,
-                      h.id,
-                      h.target_unit_ids
-                    ).length > 0;
+                    const rowId = String(h.id);
                     return (
                       <tr key={h.id} className="h-14 hover:bg-slate-50/50 transition-colors">
-                        <td className="pl-4 text-center text-slate-400">{no}</td>
+                        <td className="pl-3 pr-1 text-center">
+                          <input
+                            type="checkbox"
+                            checked={selectedHistoryIds.has(rowId)}
+                            onChange={() => toggleHistorySelect(rowId)}
+                            className="accent-slate-800 cursor-pointer w-3 h-3"
+                          />
+                        </td>
+                        <td className="text-center text-slate-400">{no}</td>
                         <td className="px-2 text-center font-medium tabular-nums text-slate-500 whitespace-nowrap">{h.postDate || '-'}</td>
                         <td className="px-3">
                           <div className="font-medium text-slate-900 truncate" title={h.title}>{h.title || '-'}</div>
@@ -737,44 +841,8 @@ export default function AuditModule() {
                           <div className="text-[11px] font-medium text-slate-500 truncate" title={h.description}>{h.description || '-'}</div>
                         </td>
                         {formatPeriodLabel(h)}
-                        <td className="px-2 text-center text-slate-600" title={h.target || ''}>
+                        <td className="pr-4 px-2 text-center text-slate-600" title={h.target || ''}>
                           <div className="whitespace-normal break-keep leading-snug">{formatTargetLabel(h.target)}</div>
-                        </td>
-                        <td className="px-2 text-center whitespace-nowrap">
-                          <span className={`px-2 py-1 rounded-md text-[10px] font-medium ${statusBadgeClass(h.status)}`}>{h.status}</span>
-                        </td>
-                        <td className="pr-4 text-center border-l border-slate-100">
-                          <div className="flex justify-center gap-1.5 whitespace-nowrap">
-                            <button
-                              type="button"
-                              disabled={!canEdit}
-                              onClick={() => handleStatusChange(h.id, 'RESTORE')}
-                              title={
-                                !canEdit
-                                  ? '편집 권한 필요 (admin/interface)'
-                                  : restoreBlocked
-                                    ? '진행 중 실사와 대상범위가 겹칩니다. 클릭 시 안내가 표시됩니다.'
-                                    : '현황판으로 복구'
-                              }
-                              className={`px-3 py-1.5 rounded-lg text-[10px] font-medium transition-colors border ${
-                                !canEdit
-                                  ? disabledActionClass
-                                  : 'bg-white border-slate-300 text-slate-700 hover:bg-slate-800 hover:text-white'
-                              }`}
-                            >
-                              복구
-                            </button>
-                            {isLV1 && (
-                              <button
-                                type="button"
-                                onClick={() => handleStatusChange(h.id, 'DELETE')}
-                                title="최고 관리자(LV_1) 전용 · 영구 삭제"
-                                className="px-3 py-1.5 rounded-lg text-[10px] font-medium border transition-colors bg-white border-red-200 text-red-500 hover:bg-red-50"
-                              >
-                                삭제(LV_1)
-                              </button>
-                            )}
-                          </div>
                         </td>
                       </tr>
                     );
@@ -798,7 +866,7 @@ export default function AuditModule() {
   
       {editModal && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[200] flex items-center justify-center p-4">
-          <div className="bg-white w-[500px] rounded-[2.5rem] overflow-hidden shadow-2xl">
+          <div className="bg-white w-[500px] rounded-lg overflow-hidden shadow-2xl">
             <div className="p-6 bg-slate-900 text-white flex justify-between items-center"><h3 className="font-medium text-sm">실사 계획 수립</h3><button type="button" onClick={() => setEditModal(null)} className="text-slate-400 hover:text-white">✕</button></div>
             <form onSubmit={saveAuditPlan} className="p-8 space-y-5 bg-slate-50">
               <div><label className="text-[11px] font-medium text-slate-500">실사 제목</label><input required type="text" value={editModal.title} onChange={e => setEditModal({...editModal, title: e.target.value})} className="w-full p-3 bg-white border border-slate-200 rounded-xl text-xs font-medium outline-none focus:border-indigo-500 mt-1 shadow-sm" /></div>

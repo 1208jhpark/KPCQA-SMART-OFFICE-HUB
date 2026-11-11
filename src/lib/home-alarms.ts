@@ -374,6 +374,38 @@ export async function buildHomeAlarms(user: SessionUser): Promise<HomeAlarm[]> {
       });
     })(),
     (async () => {
+      // 모니터링 Edit Special(Master·Task Access·Task Editor) — 반출/반납 대기
+      if (!special('/asset/corp-card/master/monitoring')) return;
+      try {
+        const checkoutPending = await prisma.$queryRaw<Array<{ at: Date | null }>>`
+          SELECT COALESCE("updatedAt", "checkoutAt", "createdAt") AS at
+          FROM "CorpCardUsage"
+          WHERE "status" = 'CHECKOUT_PENDING'
+        `;
+        const returning = await prisma.$queryRaw<Array<{ at: Date | null }>>`
+          SELECT COALESCE("updatedAt", "returnedAt", "createdAt") AS at
+          FROM "CorpCardUsage"
+          WHERE "status" = 'RETURNING'
+        `;
+        pushAlarm(alarms, {
+          id: 'corp-card-checkout-pending',
+          label: '[법인카드] 반출 신청',
+          count: checkoutPending.length,
+          href: '/asset/corp-card/master/monitoring',
+          at: maxAt(...checkoutPending.map((r) => r.at)),
+        });
+        pushAlarm(alarms, {
+          id: 'corp-card-returning',
+          label: '[법인카드] 반납 신청',
+          count: returning.length,
+          href: '/asset/corp-card/master/monitoring',
+          at: maxAt(...returning.map((r) => r.at)),
+        });
+      } catch {
+        /* CorpCardUsage 미적용 환경 */
+      }
+    })(),
+    (async () => {
       if (!special('/production/custom/dept-master/order') || scopeIds.size === 0) return;
       const names = units
         .filter((u) => scopeIds.has(u.id))
@@ -418,7 +450,7 @@ export async function buildHomeAlarms(user: SessionUser): Promise<HomeAlarm[]> {
       }
       pushAlarm(alarms, {
         id: 'prod-statement',
-        label: '[제작물] 명세서 대조 대기',
+        label: '[제작물] 명세서 대조 요청',
         count: fileCount,
         href: '/production/custom/dept-master/settlement',
         at: fileAt,
@@ -428,7 +460,7 @@ export async function buildHomeAlarms(user: SessionUser): Promise<HomeAlarm[]> {
       );
       pushAlarm(alarms, {
         id: 'prod-statement-memo',
-        label: '[제작물] 관리자 메모 도착',
+        label: '[제작물] 관리자 메모 확인 요청',
         count: memoRows.length,
         href: '/production/custom/dept-master/settlement',
         at: maxAt(...memoRows.map((row: any) => row?.updatedAt || row?.requestedAt)),
@@ -671,7 +703,7 @@ export async function buildHomeAlarms(user: SessionUser): Promise<HomeAlarm[]> {
       });
     })(),
     (async () => {
-      // my-page 「수령대기」(사무실 도착·찾아가기)만 — 「발주중」(발주완료)은 제외
+      // my-page 「수령대기」(사무실 도착·찾아가기)만 — 「발주전송」(발주완료)은 제외
       const rows = await prisma.businessCardRequest.findMany({
         where: {
           isArchived: false,
@@ -689,23 +721,35 @@ export async function buildHomeAlarms(user: SessionUser): Promise<HomeAlarm[]> {
       });
     })(),
     (async () => {
-      // my-page 「시안 검수요청」— 시안 업로드·미확정
+      // my-page 「시안 검수요청」— 시안 업로드 또는 개별메일확인·미확정
       const rows = await prisma.businessCardRequest.findMany({
         where: {
           isArchived: false,
           userEmail: { equals: email, mode: 'insensitive' },
           adminStatus: '발주완료',
-          proofFileName: { not: null },
           proofConfirmedAt: null,
+          OR: [
+            { proofFileName: { not: null } },
+            { proofMailReviewedAt: { not: null } },
+          ],
         },
-        select: { proofUploadedAt: true, updatedAt: true, createdAt: true },
+        select: {
+          proofUploadedAt: true,
+          proofMailReviewedAt: true,
+          updatedAt: true,
+          createdAt: true,
+        },
       });
       pushAlarm(alarms, {
         id: 'bc-proof-review',
         label: '[명함] 시안 검수 요청',
         count: rows.length,
         href: '/asset/businesscard/my-page',
-        at: maxAt(...rows.map((r) => maxAt(r.proofUploadedAt, r.updatedAt, r.createdAt))),
+        at: maxAt(
+          ...rows.map((r) =>
+            maxAt(r.proofUploadedAt, r.proofMailReviewedAt, r.updatedAt, r.createdAt)
+          )
+        ),
       });
     })(),
     (async () => {
@@ -740,7 +784,7 @@ export async function buildHomeAlarms(user: SessionUser): Promise<HomeAlarm[]> {
       }
     })(),
     (async () => {
-      // apply/history 「수령완료」(VERIFIED) · 명세대조 이동 전
+      // my-orders/history 「물품수령완료」(VERIFIED) · 명세대조 이동 전
       // 고객사 직발송(발주확정 시 완료)은 수령 대기 알람 제외
       const rows = await prisma.productionRequest.findMany({
         where: {

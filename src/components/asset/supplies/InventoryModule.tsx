@@ -172,15 +172,15 @@ export default function InventoryModule() {
   return (
     <div className="w-full max-w-[1600px] mx-auto space-y-6 p-8 font-sans text-slate-900 pb-24 animate-fade-in">
       
-      <div className="w-full bg-gradient-to-r from-blue-700 to-indigo-800 rounded-3xl text-white shadow-lg relative overflow-hidden px-6 md:px-8 py-6">
+      <div className="w-full bg-gradient-to-r from-blue-700 to-indigo-800 rounded-lg text-white shadow-lg relative overflow-hidden px-6 md:px-8 py-6">
         <div className="absolute right-0 top-0 w-64 h-64 bg-sky-400/15 rounded-full blur-3xl -translate-y-1/3 translate-x-1/4 pointer-events-none" />
         <div className="absolute left-1/4 bottom-0 w-48 h-48 bg-indigo-900/20 rounded-full blur-3xl translate-y-1/2 pointer-events-none" />
         <div className="relative z-10">
-          <h3 className="text-[10px] font-black uppercase tracking-widest text-blue-200 mb-2.5">
+          <h3 className="text-[10px] font-medium uppercase tracking-widest text-blue-200 mb-2.5">
             GENERAL OFFICE SUPPLIES
           </h3>
-          <h1 className="text-2xl font-extrabold tracking-tight text-white leading-none">
-            소모품 조회 및 신청 대장
+          <h1 className="text-2xl tracking-tight leading-none">
+            <span className="text-white font-medium">소모품 조회 및 신청 대장</span>
           </h1>
           <p className="text-white/70 text-xs mt-3 leading-relaxed">
             센터 단위로 소모품을 신청합니다.
@@ -188,11 +188,11 @@ export default function InventoryModule() {
         </div>
       </div>
 
-      <div className="bg-white border border-slate-200 rounded-[2.5rem] shadow-sm overflow-hidden mt-6">
+      <div className="bg-white border border-slate-200 rounded-lg shadow-sm overflow-hidden mt-6">
         <div className="p-4 px-6 bg-slate-200/70 border-b border-slate-300 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
           <div className="flex items-center gap-2">
             <div className="w-2.5 h-2.5 rounded-full bg-blue-600"></div>
-            <h2 className="text-sm font-black text-slate-800 tracking-tight">소모품 품목</h2>
+            <h2 className="text-sm font-medium text-slate-800 tracking-tight">소모품 품목</h2>
             <span className="text-[11px] font-bold bg-slate-300/80 text-slate-700 px-2 py-0.5 rounded-md">{filteredItems.length}개 품목</span>
           </div>
      
@@ -221,7 +221,7 @@ export default function InventoryModule() {
                 const applyDisabled = isOut || !canApply;
           
                 return (
-                  <div key={item.id} className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm hover:shadow-lg transition-all group flex flex-col h-full">
+                  <div key={item.id} className="bg-white rounded-lg border border-slate-200 overflow-hidden shadow-sm hover:shadow-lg transition-all group flex flex-col h-full">
                     <div className={`relative w-full aspect-square bg-slate-100 border-b border-slate-100 overflow-hidden ${isOut ? 'grayscale opacity-70' : ''}`}>
                       {item.image_url ? (
                         <img
@@ -241,7 +241,7 @@ export default function InventoryModule() {
                     </div>
                     
                     <div className="p-3 flex flex-col flex-1">
-                      <h3 className={`text-[12px] font-black leading-tight mb-1 line-clamp-2 h-[34px] ${isOut ? 'text-slate-400 line-through' : 'text-slate-800'}`} title={item.name}>{item.name}</h3>
+                      <h3 className={`text-[12px] font-medium leading-tight mb-1 line-clamp-2 h-[34px] ${isOut ? 'text-slate-400 line-through' : 'text-slate-800'}`} title={item.name}>{item.name}</h3>
                       <span
                         className="text-[9px] text-slate-400 font-bold mb-3 truncate normal-case tracking-normal"
                         title={publishNote || undefined}
@@ -284,7 +284,7 @@ export default function InventoryModule() {
      
         return (
           <div className="fixed inset-0 z-[500] bg-slate-900/60 backdrop-blur-md flex items-center justify-center p-4 animate-in fade-in duration-300">
-            <div className="bg-white w-full max-w-md rounded-[2.5rem] shadow-2xl overflow-hidden animate-in slide-in-from-bottom-12 duration-500">
+            <div className="bg-white w-full max-w-md rounded-lg shadow-2xl overflow-hidden animate-in slide-in-from-bottom-12 duration-500">
               <div className="bg-gradient-to-r from-blue-700 to-indigo-800 px-6 py-5 flex justify-between items-center text-white shadow-md">
                 <div>
                   <p className="text-[10px] font-normal uppercase tracking-widest text-blue-200 mb-1">SUPPLY REQUEST</p>

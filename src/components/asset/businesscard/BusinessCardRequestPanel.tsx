@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useMemo, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { usePathname, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { getKSTDateString, getKSTNowYearMonth } from '@/utils/dateUtils';
@@ -23,7 +24,7 @@ const DISABLED_ACTION_BTN =
 
 const FOLDER_TABS = [
   { id: 'PENDING' as const, label: '신청검토/개별발주', icon: '⏳', activeClass: 'bg-slate-900 text-white border-slate-900 border-b-white z-10 -mb-px' },
-  { id: 'ACCEPTED' as const, label: '묶음발주대기', icon: '📋', activeClass: 'bg-indigo-600 text-white border-indigo-500 border-b-white z-10 -mb-px shadow-sm' },
+  { id: 'ACCEPTED' as const, label: '묶음취합대기', icon: '📋', activeClass: 'bg-indigo-600 text-white border-indigo-500 border-b-white z-10 -mb-px shadow-sm' },
 ];
 const FOLDER_TAB_IDLE =
   'bg-slate-100 text-slate-400 border-slate-200 border-b-transparent hover:bg-slate-200/80 hover:text-slate-600';
@@ -195,6 +196,10 @@ export default function BusinessCardRequestPanel() {
   const [rejectTarget, setRejectTarget] = useState<RequestHistory | null>(null);
   const [rejectReason, setRejectReason] = useState('');
   const [savingReject, setSavingReject] = useState(false);
+  const [actionMenu, setActionMenu] = useState<{ id: string; top: number; left: number } | null>(
+    null
+  );
+  const actionMenuRef = useRef<HTMLDivElement | null>(null);
 
   const [isAddressModalOpen, setIsAddressModalOpen] = useState(false);
   const [addresses, setAddresses] = useState<AddressMaster[]>([]); 
@@ -378,7 +383,9 @@ export default function BusinessCardRequestPanel() {
       setLoading(true);
       const ts = Date.now();
       const [reqRes, meRes, ifRes, summaryRes] = await Promise.all([
-        fetch(`/api/asset/businesscard/master/requests?t=${ts}`, { cache: 'no-store' }),
+        fetch(`/api/asset/businesscard/master/requests?t=${ts}`, { cache: 'no-store' }).catch(
+          () => null
+        ),
         fetch(`/api/auth/me?t=${ts}`, { cache: 'no-store' }).catch(() => null),
         fetch(`/api/admin/interface?t=${ts}`, { cache: 'no-store' }).catch(() => null),
         fetch(`/api/admin/interface/summary?path=${encodeURIComponent(MENU_PATH)}&t=${ts}`, {
@@ -408,7 +415,7 @@ export default function BusinessCardRequestPanel() {
 
       const canHealOrphans = resolveInterfaceEditState(meUser, nextInterface).isEditor;
 
-      if (reqRes.ok) {
+      if (reqRes && reqRes.ok) {
         const data = await reqRes.json();
         const list = Array.isArray(data) ? data : [];
         const orphans = list.filter((r: any) => r.adminStatus === '발주완료' && !r.orderGroupId);
@@ -419,7 +426,7 @@ export default function BusinessCardRequestPanel() {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ id: r.id, adminStatus: '접수완료' }),
-              })
+              }).catch(() => null)
             )
           );
           setRequests(
@@ -434,7 +441,11 @@ export default function BusinessCardRequestPanel() {
       if (summaryRes && summaryRes.ok) setPermissionSummary(await summaryRes.json());
       else setPermissionSummary(null);
     } catch (error) {
-      console.error("데이터 로드 실패:", error);
+      // HMR·이탈 중 TypeError("Failed to fetch")는 Next 오버레이로 올리지 않음
+      const msg = error instanceof Error ? error.message : String(error);
+      if (msg !== 'Failed to fetch' && msg !== 'network error') {
+        console.error('데이터 로드 실패:', error);
+      }
     } finally {
       setLoading(false);
     }
@@ -526,7 +537,46 @@ export default function BusinessCardRequestPanel() {
   useEffect(() => {
     setCurrentPage(1);
     setSelectedIds(new Set());
+    setActionMenu(null);
   }, [activeFolder, selectedYear, selectedMonth, selectedOrg, searchUserQuery]);
+
+  useEffect(() => {
+    if (!actionMenu) return;
+    const onDoc = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (actionMenuRef.current?.contains(t)) return;
+      if ((e.target as HTMLElement | null)?.closest?.('[data-action-kebab]')) return;
+      setActionMenu(null);
+    };
+    const onWin = () => setActionMenu(null);
+    document.addEventListener('mousedown', onDoc);
+    window.addEventListener('scroll', onWin, true);
+    window.addEventListener('resize', onWin);
+    return () => {
+      document.removeEventListener('mousedown', onDoc);
+      window.removeEventListener('scroll', onWin, true);
+      window.removeEventListener('resize', onWin);
+    };
+  }, [actionMenu]);
+
+  useEffect(() => {
+    setActionMenu(null);
+  }, [currentPage]);
+
+  const openActionMenu = (e: React.MouseEvent<HTMLButtonElement>, id: string) => {
+    if (!canEditMaster) return alertNoEditPermission();
+    const width = 220;
+    const r = e.currentTarget.getBoundingClientRect();
+    setActionMenu((prev) =>
+      prev?.id === id
+        ? null
+        : {
+            id,
+            top: r.bottom + 4,
+            left: Math.min(Math.max(12, r.right - width), window.innerWidth - width - 12),
+          }
+    );
+  };
   
   const totalPages = Math.ceil(filteredRequests.length / itemsPerPage) || 1;
   const paginatedRequests = filteredRequests.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
@@ -551,7 +601,7 @@ export default function BusinessCardRequestPanel() {
 
   const handleApprove = async (id: string, postNumber: string) => {
     if (!canEditMaster) return alertNoEditPermission();
-    if (!confirm(`[${postNumber}] 묶음발주대기로 이동할까요?`)) return;
+    if (!confirm(`[${postNumber}] 묶음취합으로 이동할까요?`)) return;
     const todayStr = getKSTDateString();
     try {
       const res = await fetch(`/api/asset/businesscard/master/requests`, {
@@ -569,7 +619,7 @@ export default function BusinessCardRequestPanel() {
         fetchRequests();
       } else {
         const data = await res.json().catch(() => ({}));
-        alert(data.message || '묶음발주대기 이동에 실패했습니다.');
+        alert(data.message || '묶음취합대기 이동에 실패했습니다.');
       }
     } catch (err) {
       alert("서버 연결 실패");
@@ -660,8 +710,8 @@ export default function BusinessCardRequestPanel() {
     try {
       await createOrderBatch(targets);
       setSelectedIds(new Set());
-      alert('🚀 발주 묶음이 생성되었습니다. 외주발주 탭에서 확인할 수 있습니다.');
-      fetchRequests();
+      alert('🚀 발주 묶음이 생성되었습니다. 외주발주 탭으로 이동합니다.');
+      router.push('/asset/businesscard/master/order');
     } catch (error: any) {
       console.error(error);
       alert(`❌ 발주 처리 실패: ${error.message}`);
@@ -773,7 +823,7 @@ export default function BusinessCardRequestPanel() {
     if (deletingBulk) return;
     const ids = Array.from(selectedIds);
     if (ids.length === 0) return alert('삭제할 신청을 체크박스로 선택해 주세요.');
-    const folderLabel = activeFolder === 'PENDING' ? '신청검토/개별발주' : '묶음발주대기';
+    const folderLabel = activeFolder === 'PENDING' ? '신청검토/개별발주' : '묶음취합대기';
     if (
       !confirm(
         `경고: 선택한 ${ids.length}건(${folderLabel})을 영구 삭제하시겠습니까?\n대상자 마이페이지 내역에서도 함께 삭제됩니다.`
@@ -1035,22 +1085,22 @@ export default function BusinessCardRequestPanel() {
   <div className="absolute right-0 top-0 w-64 h-64 bg-emerald-400/15 rounded-full blur-3xl -translate-y-1/3 translate-x-1/4 pointer-events-none" />
   <div className="absolute left-1/4 bottom-0 w-48 h-48 bg-teal-800/20 rounded-full blur-3xl translate-y-1/2 pointer-events-none" />
   <div className="relative z-10">
-    <h3 className="text-[10px] font-black uppercase tracking-widest text-emerald-400 mb-2.5">
+    <h3 className="text-[10px] font-medium uppercase tracking-widest text-emerald-400 mb-2.5">
       BUSINESS CARD TOTAL GOVERNANCE
     </h3>
-    <h1 className="text-2xl font-extrabold tracking-tight text-white leading-none">
-      전사 임직원 명함 통합 관리 대장
+    <h1 className="text-2xl tracking-tight leading-none">
+      <span className="text-white font-medium">전사 임직원 명함 통합 관리 대장</span>
     </h1>
     <p className="text-emerald-100/90 text-xs mt-3 leading-relaxed">
-      [신청검토/개별발주] 신청 건의 원문을 검수하고, [묶음발주대기] 상태의 건들을 묶음으로 취합하여 외주 발주합니다.
+      [신청검토/개별발주] 신청 건의 원문을 검수하고, [묶음취합대기] 상태의 건들을 묶음으로 취합하여 외주 발주합니다.
     </p>
     {permissionSummary && isSystemLv1User(currentUser) && (
       <div className="flex flex-wrap items-center gap-2 mt-4 pt-3 border-t border-white/15">
-        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-white/10 border-white/25 text-emerald-50 shadow-sm">
+        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-medium border tracking-tight bg-white/10 border-white/25 text-emerald-50 shadow-sm">
           <span>👑 Master 책임자:</span>
           <span>{permissionSummary.masterName}</span>
         </div>
-        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-purple-500/20 border-purple-300/40 text-purple-100 shadow-sm">
+        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-medium border tracking-tight bg-purple-500/20 border-purple-300/40 text-purple-100 shadow-sm">
           <span>👁️ Access:</span>
           <span>{permissionSummary.accessDesignate}</span>
           <span className="opacity-50">|</span>
@@ -1058,7 +1108,7 @@ export default function BusinessCardRequestPanel() {
           <span className="opacity-50">|</span>
           <span>Level: {permissionSummary.accessLevel}</span>
         </div>
-        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-emerald-400/20 border-emerald-300/40 text-emerald-100 shadow-sm">
+        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-medium border tracking-tight bg-emerald-400/20 border-emerald-300/40 text-emerald-100 shadow-sm">
           <span>✍️ Edit:</span>
           <span>{permissionSummary.editDesignate}</span>
           <span className="opacity-50">|</span>
@@ -1098,9 +1148,10 @@ export default function BusinessCardRequestPanel() {
         💡{' '}
         <span className="font-medium text-slate-900">발주 전</span>
         {' : '}
-        <span className="font-medium">[신청검토/개별발주]</span> 원문검수 후 개별발주 또는 묶음발주대기로 분기{' '}
+        <span className="font-medium">[신청검토/개별발주]</span> 원문검토 후 개별발주 또는{' '}
+        <span className="font-medium">[묶음취합]</span> 이동{' '}
         <b className="font-medium text-amber-600">→</b>{' '}
-        <span className="font-medium">[묶음발주대기]</span> 선택·묶음발주 후 외주발주 탭으로 이관
+        <span className="font-medium">[묶음취합대기]</span> 선택·묶음발주 후 외주발주 탭으로 이관
       </div>
 
       {/* 신청검수 / 묶음발주대기 서류철 + 설정 칩 */}
@@ -1125,7 +1176,7 @@ export default function BusinessCardRequestPanel() {
                   aria-selected={active}
                   onClick={() => setActiveFolder(tab.id)}
                   title={
-                    isOrderWait ? '묶음발주대기 · 묶음발주 후 검수 탭으로 이관' : undefined
+                    isOrderWait ? '묶음취합대기 · 묶음발주 후 검수 탭으로 이관' : undefined
                   }
                   className={
                     isReception
@@ -1248,14 +1299,14 @@ export default function BusinessCardRequestPanel() {
           </div>
         </div>
 
-      <div className={`bg-white border border-t-0 border-slate-200 rounded-b-[2.5rem] rounded-tr-2xl shadow-sm animate-in fade-in duration-300 ${orgMenuOpen ? 'overflow-visible' : 'overflow-hidden'}`}>
+      <div className={`bg-white border border-t-0 border-slate-200 rounded-b-lg rounded-tr-lg shadow-sm animate-in fade-in duration-300 ${orgMenuOpen ? 'overflow-visible' : 'overflow-hidden'}`}>
         <div className={`p-4 px-6 bg-slate-200/70 border-b border-slate-300 flex flex-wrap items-center justify-between gap-4 relative ${orgMenuOpen ? 'z-[80] overflow-visible' : ''}`}>
           <div className="flex items-center gap-2 flex-wrap">
             <div className="w-2.5 h-2.5 rounded-full bg-blue-600" />
             <h2 className="text-sm font-medium text-slate-800 tracking-tight">
               {activeFolder === 'ACCEPTED'
-                ? '묶음발주대기 서류철 (접수완료 · 묶음발주)'
-                : '신청검토/개별발주 서류철 (원문검수 · 개별/묶음 이동)'}
+                ? '묶음취합대기 서류철 (접수완료 · 묶음발주)'
+                : '신청검토/개별발주 서류철 (원문검토 · 개별/묶음 이동)'}
             </h2>
             <span className="text-[11px] font-medium bg-slate-300/80 text-slate-700 px-2 py-0.5 rounded-md">{filteredRequests.length}건</span>
             {selectedIds.size > 0 && (
@@ -1271,7 +1322,7 @@ export default function BusinessCardRequestPanel() {
                 type="button"
                 disabled={selectedIds.size === 0 || deletingBulk}
                 onClick={handleBulkDeleteLv1}
-                title="체크한 신청을 영구 삭제 (LV_1 전용 · 신청검수/묶음발주대기)"
+                title="체크한 신청을 영구 삭제 (LV_1 전용 · 신청검수/묶음취합대기)"
                 className="h-7 px-2.5 rounded-lg text-[10px] font-medium border border-red-200 bg-red-50 text-red-600 hover:bg-red-100 disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
               >
                 {deletingBulk
@@ -1378,7 +1429,7 @@ export default function BusinessCardRequestPanel() {
                     : DISABLED_ACTION_BTN
                 }`}
               >
-                + 관리자 직접 신청(Edit)
+                + 관리자 직접 명함 신청(Edit)
               </button>
             ) : (
               <button
@@ -1407,42 +1458,87 @@ export default function BusinessCardRequestPanel() {
           <table className="w-full table-fixed text-left border-collapse">
             <colgroup>
               <col style={{ width: '2.5rem' }} />
-              <col style={{ width: '2.5rem' }} />
-              <col style={{ width: '10%' }} />
-              <col style={{ width: '6.5%' }} />
-              <col style={{ width: '5rem' }} />
-              <col style={{ width: '12%' }} />
-              <col style={{ width: '5.5rem' }} />
-              <col style={{ width: '4rem' }} />
-              <col style={{ width: '5.5rem' }} />
-              {/* 신청검수 버튼 3개 기준 — 제작물 order와 유사 폭 */}
-              <col style={{ width: '15.5rem' }} />
+              {/* 관리번호 ~ 관리액션: 잔여 폭 8등분 */}
+              <col />
+              <col />
+              <col />
+              <col />
+              <col />
+              <col />
+              <col />
+              <col />
             </colgroup>
             <thead className="bg-slate-100 text-slate-700 text-[10px] font-medium border-b border-slate-200">
               <tr>
-                <th className="h-12 pl-4 text-center">
-                  <input
-                    type="checkbox"
-                    onChange={handleSelectAll}
-                    checked={paginatedRequests.length > 0 && paginatedRequests.every((r) => selectedIds.has(r.id))}
-                    className="w-3 h-3 accent-indigo-600 cursor-pointer"
-                  />
-                </th>
                 <th className="h-12 px-2 text-center">NO</th>
                 <th className="h-12 px-2 text-center whitespace-nowrap">관리번호</th>
                 <th className="h-12 px-2 text-center whitespace-nowrap">신청일</th>
                 <th className="h-12 px-2 text-center whitespace-nowrap">신청주체</th>
                 <th className="h-12 px-2 text-left">부서 / 이름</th>
-                <th className="h-12 px-2 text-center whitespace-nowrap">신청내역 (Edit)</th>
                 <th className="h-12 px-2 text-center whitespace-nowrap">수량(통)</th>
                 <th className="h-12 px-2 text-center whitespace-nowrap">공정상태</th>
-                <th className="h-12 px-2 text-center whitespace-nowrap">관리액션(Edit)</th>
+                <th className="h-12 px-2 text-center whitespace-nowrap border-l border-r border-slate-300 bg-amber-50 text-amber-800">
+                  <div className="flex flex-col items-center gap-1 px-1">
+                    <span>신청내역</span>
+                    <div
+                      className="flex w-full max-w-[4.5rem] items-center"
+                      title="신청내역 확인"
+                      aria-hidden
+                    >
+                      <div className="h-2.5 flex-1 rounded-l-full bg-amber-500/80" />
+                      <div className="h-0 w-0 shrink-0 border-y-[10px] border-y-transparent border-l-[16px] border-l-amber-500/80" />
+                    </div>
+                  </div>
+                </th>
+                <th className="h-12 px-2 text-center whitespace-nowrap bg-indigo-50 text-indigo-700">
+                  {activeFolder === 'PENDING' ? (
+                    <div className="flex flex-col items-center gap-1 px-1">
+                      <span>관리액션</span>
+                      <div
+                        className="flex w-full max-w-full items-center"
+                        title="관리 액션 진행"
+                        aria-hidden
+                      >
+                        <div className="h-2.5 flex-1 rounded-l-full bg-indigo-500/80" />
+                        <div className="h-0 w-0 shrink-0 border-y-[10px] border-y-transparent border-l-[16px] border-l-indigo-500/80" />
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex w-full flex-col items-center gap-0.5 px-1">
+                      <div
+                        className="flex flex-col items-center"
+                        title="위쪽 묶음발주(취합) 버튼으로 이동"
+                        aria-hidden
+                      >
+                        <div className="h-0 w-0 border-x-[7px] border-x-transparent border-b-[10px] border-b-indigo-500/80" />
+                        <div className="h-2.5 w-2 rounded-b-full bg-indigo-500/80" />
+                      </div>
+                      <span>관리액션</span>
+                      {/* 행과 동일: 체크 + 케밥(w-7) 자리 → 체크박스 세로 정렬 */}
+                      <div className="flex w-full items-center justify-center gap-1">
+                        <input
+                          type="checkbox"
+                          className="w-3 h-3 accent-indigo-600 rounded cursor-pointer"
+                          onChange={handleSelectAll}
+                          checked={
+                            paginatedRequests.length > 0 &&
+                            paginatedRequests.every((r) => selectedIds.has(r.id))
+                          }
+                          title="묶음발주(취합)할 건 선택"
+                        />
+                        <span className="inline-block w-7 h-7 shrink-0" aria-hidden />
+                      </div>
+                    </div>
+                  )}
+                </th>
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-slate-100 text-[11px] font-medium text-slate-700">
               {paginatedRequests.length === 0 ? (
                 <tr>
-                  <td colSpan={10} className="p-16 text-center text-slate-400 text-[11px] font-medium">표시할 명함 데이터가 존재하지 않습니다.</td>
+                  <td colSpan={9} className="p-16 text-center text-slate-400 text-[11px] font-medium">
+                    표시할 명함 데이터가 존재하지 않습니다.
+                  </td>
                 </tr>
               ) : (
                 paginatedRequests.map((row, index) => {
@@ -1468,14 +1564,6 @@ export default function BusinessCardRequestPanel() {
 
                   return (
                     <tr key={row.id} className={`hover:bg-slate-50/50 h-12 transition-colors ${isSelected ? 'bg-indigo-50/50' : ''}`}>
-                      <td className="pl-2 text-center" onClick={(e) => e.stopPropagation()}>
-                        <input
-                          type="checkbox"
-                          checked={isSelected}
-                          onChange={() => handleSelectRow(row.id)}
-                          className="w-3 h-3 accent-indigo-600 cursor-pointer"
-                        />
-                      </td>
                       <td className="px-2 text-center font-mono text-slate-500 tabular-nums">{rowNo}</td>
                       <td className="px-2 text-center font-mono text-slate-900 tabular-nums truncate" title={row.postNumber}>{row.postNumber}</td>
                       <td className="px-2 text-center whitespace-nowrap tabular-nums text-slate-800">{row.applyDate}</td>
@@ -1497,7 +1585,13 @@ export default function BusinessCardRequestPanel() {
                         <span className="text-[10px] text-slate-500 block truncate">{deptLabel}</span>
                         <span className="text-slate-800 block truncate">{row.userName || '-'}</span>
                       </td>
+                      <td className="px-2 text-center font-mono tabular-nums text-slate-900">{row.quantity || 1}</td>
                       <td className="px-2 text-center">
+                        <span className={`text-[10px] font-medium whitespace-nowrap ${statusClass}`}>
+                          {formatBusinessCardAdminStatusLabel(row.adminStatus)}
+                        </span>
+                      </td>
+                      <td className="px-2 text-center border-l border-r border-slate-300">
                         {isPending ? (
                           <button
                             type="button"
@@ -1513,7 +1607,7 @@ export default function BusinessCardRequestPanel() {
                                 : DISABLED_ACTION_BTN
                             }`}
                           >
-                            원문검수
+                            원문검토 · 수정가능
                           </button>
                         ) : activeFolder === 'ACCEPTED' ? (
                           <button
@@ -1545,92 +1639,89 @@ export default function BusinessCardRequestPanel() {
                           </button>
                         )}
                       </td>
-                      <td className="px-2 text-center font-mono tabular-nums text-slate-900">{row.quantity || 1}</td>
-                      <td className="px-2 text-center">
-                        <span className={`text-[10px] font-medium whitespace-nowrap ${statusClass}`}>
-                          {formatBusinessCardAdminStatusLabel(row.adminStatus)}
-                        </span>
-                      </td>
-                      <td className="px-2 text-center">
-                        {activeFolder === 'ACCEPTED' ? (
-                          <button
-                            type="button"
-                            disabled={!canEditMaster || creatingBatch || actionBusyId === row.id}
-                            title={
-                              !canEditMaster
-                                ? '편집 권한 필요'
-                                : '묶음발주 대기열 제외 · 신청검토로 복귀'
-                            }
-                            onClick={() => handleCancelAccept(row.id, row.postNumber)}
-                            className={`h-7 box-border inline-flex items-center justify-center px-2.5 text-[11px] font-medium rounded-lg transition-colors whitespace-nowrap ${
-                              canEditMaster
-                                ? 'bg-rose-50 border border-rose-200 hover:bg-rose-100 text-rose-600 disabled:opacity-50'
-                                : DISABLED_ACTION_BTN
-                            }`}
-                          >
-                            {actionBusyId === row.id ? '처리중' : '↺ 신청검토'}
-                          </button>
-                        ) : isPending ? (
-                          <div className="flex flex-row flex-wrap items-center justify-center gap-1">
+                      <td className="px-1 text-center align-middle">
+                        {isPending ? (
+                          <div className="flex w-full items-center justify-end gap-1 whitespace-nowrap">
                             <button
                               type="button"
                               disabled={!canEditMaster || creatingBatch || actionBusyId === row.id}
                               title={!canEditMaster ? '편집 권한 필요' : '검수 후 바로 개별발주(외주발주 탭)'}
                               onClick={() => handleDirectSingleOrder(row)}
-                              className={`h-7 box-border inline-flex items-center justify-center px-2.5 text-[11px] font-medium rounded-lg transition-colors whitespace-nowrap ${
+                              className={`h-7 box-border inline-flex items-center justify-center gap-1 px-2 text-[10px] font-medium rounded-lg transition-colors whitespace-nowrap ${
                                 canEditMaster
                                   ? 'bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50'
                                   : DISABLED_ACTION_BTN
                               }`}
                             >
-                              {creatingBatch || actionBusyId === row.id ? '처리중' : '→개별발주'}
+                              <span>→</span>
+                              <span>
+                                {creatingBatch || actionBusyId === row.id ? '처리중' : '개별발주'}
+                              </span>
                             </button>
                             <button
                               type="button"
                               disabled={!canEditMaster || creatingBatch || actionBusyId === row.id}
-                              title={!canEditMaster ? '편집 권한 필요' : '묶음발주대기로 이동'}
+                              title={!canEditMaster ? '편집 권한 필요' : '묶음취합으로 이동'}
                               onClick={() => handleApprove(row.id, row.postNumber)}
-                              className={`h-7 box-border inline-flex items-center justify-center px-2.5 text-[11px] font-medium rounded-lg transition-colors whitespace-nowrap ${
+                              className={`h-7 box-border inline-flex items-center justify-center gap-1 px-2 text-[10px] font-medium rounded-lg transition-colors whitespace-nowrap ${
                                 canEditMaster
                                   ? 'bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50'
                                   : DISABLED_ACTION_BTN
                               }`}
                             >
-                              →묶음발주대기
+                              <span>→</span>
+                              <span>{actionBusyId === row.id ? '처리중' : '묶음취합'}</span>
                             </button>
-                            {row.applicantType === '관리자대행' ? (
-                              <button
-                                type="button"
-                                disabled={!canEditMaster}
-                                title={!canEditMaster ? '편집 권한 필요' : undefined}
-                                onClick={() => handleCancelProxy(row)}
-                                className={`h-7 box-border inline-flex items-center justify-center px-2.5 text-[11px] font-medium rounded-lg transition-colors whitespace-nowrap ${
-                                  canEditMaster
-                                    ? 'bg-rose-50 border border-rose-200 hover:bg-rose-100 text-rose-600'
-                                    : DISABLED_ACTION_BTN
-                                }`}
-                              >
-                                취소
-                              </button>
-                            ) : (
-                              <button
-                                type="button"
-                                disabled={!canEditMaster}
-                                title={!canEditMaster ? '편집 권한 필요' : undefined}
-                                onClick={() => {
-                                  if (!canEditMaster) return alertNoEditPermission();
-                                  setRejectTarget(row);
-                                  setRejectReason('');
-                                }}
-                                className={`h-7 box-border inline-flex items-center justify-center px-2.5 text-[11px] font-medium rounded-lg transition-colors whitespace-nowrap ${
-                                  canEditMaster
-                                    ? 'bg-rose-50 border border-rose-200 hover:bg-rose-100 text-rose-600'
-                                    : DISABLED_ACTION_BTN
-                                }`}
-                              >
-                                신청반려
-                              </button>
-                            )}
+                            <button
+                              type="button"
+                              data-action-kebab
+                              disabled={!canEditMaster || creatingBatch || actionBusyId === row.id}
+                              title={!canEditMaster ? '편집 권한 필요' : '더보기'}
+                              onClick={(e) => openActionMenu(e, row.id)}
+                              className={`inline-flex items-center justify-center w-7 h-7 shrink-0 rounded-lg transition-colors ${
+                                canEditMaster
+                                  ? actionMenu?.id === row.id
+                                    ? 'bg-slate-200 text-slate-800'
+                                    : 'text-slate-500 hover:bg-slate-100 hover:text-slate-800'
+                                  : 'text-slate-300 cursor-not-allowed'
+                              }`}
+                            >
+                              <svg viewBox="0 0 20 20" className="w-4 h-4" fill="currentColor" aria-hidden>
+                                <circle cx="10" cy="4.5" r="1.6" />
+                                <circle cx="10" cy="10" r="1.6" />
+                                <circle cx="10" cy="15.5" r="1.6" />
+                              </svg>
+                            </button>
+                          </div>
+                        ) : activeFolder === 'ACCEPTED' ? (
+                          <div className="flex w-full items-center justify-center gap-1">
+                            <input
+                              type="checkbox"
+                              className="w-3 h-3 accent-indigo-600 rounded cursor-pointer"
+                              checked={isSelected}
+                              onChange={() => handleSelectRow(row.id)}
+                              title="묶음발주(취합) 대상"
+                            />
+                            <button
+                              type="button"
+                              data-action-kebab
+                              disabled={!canEditMaster || creatingBatch || actionBusyId === row.id}
+                              title={!canEditMaster ? '편집 권한 필요' : '더보기'}
+                              onClick={(e) => openActionMenu(e, row.id)}
+                              className={`inline-flex items-center justify-center w-7 h-7 shrink-0 rounded-lg transition-colors ${
+                                canEditMaster
+                                  ? actionMenu?.id === row.id
+                                    ? 'bg-slate-200 text-slate-800'
+                                    : 'text-slate-500 hover:bg-slate-100 hover:text-slate-800'
+                                  : 'text-slate-300 cursor-not-allowed'
+                              }`}
+                            >
+                              <svg viewBox="0 0 20 20" className="w-4 h-4" fill="currentColor" aria-hidden>
+                                <circle cx="10" cy="4.5" r="1.6" />
+                                <circle cx="10" cy="10" r="1.6" />
+                                <circle cx="10" cy="15.5" r="1.6" />
+                              </svg>
+                            </button>
                           </div>
                         ) : (
                           <span className="text-[10px] text-slate-500 font-medium whitespace-nowrap">
@@ -1663,6 +1754,66 @@ export default function BusinessCardRequestPanel() {
         )}
       </div>
       </div>
+
+{actionMenu &&
+  createPortal(
+    <div
+      ref={actionMenuRef}
+      style={{ top: actionMenu.top, left: actionMenu.left }}
+      className="fixed z-[500] w-[220px] rounded-xl border border-slate-200 bg-white shadow-lg py-1 text-left"
+    >
+      {(() => {
+        const menuRow = requests.find((r) => r.id === actionMenu.id);
+        if (!menuRow) return null;
+        if (isOrderWaitItem(menuRow) || activeFolder === 'ACCEPTED') {
+          return (
+            <button
+              type="button"
+              disabled={!canEditMaster || creatingBatch || actionBusyId === actionMenu.id}
+              className="w-full px-3 py-2 text-left text-[11px] font-medium text-rose-600 hover:bg-rose-50 disabled:opacity-50 whitespace-nowrap"
+              onClick={() => {
+                setActionMenu(null);
+                void handleCancelAccept(menuRow.id, menuRow.postNumber);
+              }}
+            >
+              ↺ 신청검토 복구 · 묶음발주 취소
+            </button>
+          );
+        }
+        if (menuRow.applicantType === '관리자대행') {
+          return (
+            <button
+              type="button"
+              disabled={!canEditMaster}
+              className="w-full px-3 py-2 text-left text-[11px] font-medium text-rose-600 hover:bg-rose-50 disabled:opacity-50"
+              onClick={() => {
+                setActionMenu(null);
+                void handleCancelProxy(menuRow);
+              }}
+            >
+              취소
+            </button>
+          );
+        }
+        return (
+          <button
+            type="button"
+            disabled={!canEditMaster}
+            className="w-full px-3 py-2 text-left text-[11px] font-medium text-rose-600 hover:bg-rose-50 disabled:opacity-50"
+            onClick={() => {
+              setActionMenu(null);
+              if (!canEditMaster) return alertNoEditPermission();
+              setRejectTarget(menuRow);
+              setRejectReason('');
+            }}
+          >
+            신청반려
+          </button>
+        );
+      })()}
+    </div>,
+    document.body
+  )}
 
 {/* 반려 사유 입력 */}
 {rejectTarget && (

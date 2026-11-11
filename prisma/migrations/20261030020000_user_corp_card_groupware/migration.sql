@@ -1,0 +1,1 @@
+ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "corp_card_groupware_url" TEXT NOT NULL DEFAULT '';

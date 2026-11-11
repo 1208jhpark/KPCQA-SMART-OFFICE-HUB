@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { usePathname } from 'next/navigation';
 import * as XLSX from 'xlsx';
 import Link from 'next/link';
@@ -26,6 +27,7 @@ import {
   formatBusinessCardEnNumber,
   stripBusinessCardEnPlus,
 } from '@/lib/businesscard-phone';
+import { writeBusinessCardOrderExcelBuffer } from '@/lib/businesscard-order-excel';
 import { formatKrPhoneInput } from '@/lib/format-kr-phone';
 import { formatCompanyAddressKo } from '@/lib/businesscard-seed-addresses';
 import {
@@ -91,6 +93,8 @@ interface RequestHistory {
   adminModifiedAt?: string | null;
   proofFileName?: string | null;
   proofUploadedAt?: string | null;
+  proofMailReviewedAt?: string | null;
+  proofMailReviewedBy?: string | null;
   proofConfirmedAt?: string | null;
   proofConfirmedBy?: string | null;
 }
@@ -391,6 +395,107 @@ const statementFileInputRef = useRef<HTMLInputElement>(null);
   const [searchUserQuery, setSearchUserQuery] = useState('');
   const [expandedBatchIds, setExpandedBatchIds] = useState<Set<string>>(new Set());
   const [batchPage, setBatchPage] = useState(1);
+  const [actionMenu, setActionMenu] = useState<{
+    type: 'batch' | 'item';
+    id: string;
+    top: number;
+    left: number;
+  } | null>(null);
+  const actionMenuRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!actionMenu) return;
+    const onDoc = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (actionMenuRef.current?.contains(t)) return;
+      if ((e.target as HTMLElement | null)?.closest?.('[data-action-kebab]')) return;
+      setActionMenu(null);
+    };
+    const onWin = () => setActionMenu(null);
+    document.addEventListener('mousedown', onDoc);
+    window.addEventListener('scroll', onWin, true);
+    window.addEventListener('resize', onWin);
+    return () => {
+      document.removeEventListener('mousedown', onDoc);
+      window.removeEventListener('scroll', onWin, true);
+      window.removeEventListener('resize', onWin);
+    };
+  }, [actionMenu]);
+
+  useEffect(() => {
+    setActionMenu(null);
+  }, [batchPage, selectedYear, selectedMonth, selectedOrg, searchUserQuery]);
+
+  const openActionMenu = (
+    e: React.MouseEvent<HTMLButtonElement>,
+    id: string,
+    type: 'batch' | 'item' = 'batch'
+  ) => {
+    if (!canEditMaster) return alertNoEditPermission();
+    const width = 220;
+    const r = e.currentTarget.getBoundingClientRect();
+    setActionMenu((prev) =>
+      prev?.id === id && prev?.type === type
+        ? null
+        : {
+            type,
+            id,
+            top: r.bottom + 4,
+            left: Math.min(Math.max(12, r.right - width), window.innerWidth - width - 12),
+          }
+    );
+  };
+
+  const handleResetItemProof = async (item: RequestHistory) => {
+    if (!canEditMaster) return alertNoEditPermission();
+    if (
+      !item.proofFileName &&
+      !item.proofMailReviewedAt &&
+      !item.proofConfirmedAt
+    ) {
+      return alert('초기화할 시안·메일확인 내역이 없습니다.');
+    }
+    if (
+      !confirm(
+        `[${item.postNumber}] ${item.userName || ''} 님 시안 상태를 초기화할까요?\n업로드 파일·메일확인요청·확정이 모두 해제됩니다.`
+      )
+    ) {
+      return;
+    }
+    try {
+      const res = await fetch('/api/asset/businesscard/proof', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: item.id, action: 'reset' }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(data.message || '시안 초기화에 실패했습니다.');
+        return;
+      }
+      setBatches((prev) =>
+        prev.map((b) => ({
+          ...b,
+          items: (b.items || []).map((it) =>
+            it.id === item.id
+              ? {
+                  ...it,
+                  proofFileName: null,
+                  proofUploadedAt: null,
+                  proofMailReviewedAt: null,
+                  proofMailReviewedBy: null,
+                  proofConfirmedAt: null,
+                  proofConfirmedBy: null,
+                }
+              : it
+          ),
+        }))
+      );
+      alert(data.message || '시안 상태를 초기화했습니다.');
+    } catch {
+      alert('시안 초기화 중 오류가 발생했습니다.');
+    }
+  };
 
   const fetchData = async () => {
     try {
@@ -518,9 +623,23 @@ const statementFileInputRef = useRef<HTMLInputElement>(null);
       .catch(() => {});
   }, []);
 
+  const isBatchInspectConfirmed = (batch: OrderBatch) => {
+    if (batch.inspectResult?.settlementManual) return true;
+    if (batch.inspectStatus === 'match') return true;
+    const items = batch.items || [];
+    if (items.length === 0) return false;
+    const statuses = items.map((item) => itemMatchStatus[item.id] || 'idle');
+    if (statuses.every((s) => s === 'idle')) return false;
+    return statuses.every((s) => s === 'match');
+  };
+
   const handleSelectAllBatches = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const pageIds = filteredBatches
-      .slice((batchPage - 1) * BATCH_PAGE_SIZE, batchPage * BATCH_PAGE_SIZE)
+    const pageBatches = filteredBatches.slice(
+      (batchPage - 1) * BATCH_PAGE_SIZE,
+      batchPage * BATCH_PAGE_SIZE
+    );
+    const pageIds = pageBatches
+      .filter((b) => !isBatchInspectConfirmed(b))
       .map((b) => b.id);
     if (e.target.checked) {
       setSelectedBatchIds((prev) => new Set([...prev, ...pageIds]));
@@ -533,8 +652,11 @@ const statementFileInputRef = useRef<HTMLInputElement>(null);
     }
   };
   const handleSelectBatchRow = (id: string) => {
+    const batch = batches.find((b) => b.id === id);
+    if (batch && isBatchInspectConfirmed(batch)) return;
     const nextSet = new Set(selectedBatchIds);
-    if (nextSet.has(id)) nextSet.delete(id); else nextSet.add(id);
+    if (nextSet.has(id)) nextSet.delete(id);
+    else nextSet.add(id);
     setSelectedBatchIds(nextSet);
   };
 
@@ -708,17 +830,67 @@ const handleProofDownloadAdmin = (itemId: string, fileName?: string | null) => {
   a.remove();
 };
 
-const handleAdminProofConfirm = async (item: RequestHistory) => {
+const isItemProofReady = (item: RequestHistory) =>
+  Boolean(item.proofFileName || item.proofMailReviewedAt);
+
+const handleIndividualMailReview = async (item: RequestHistory) => {
   if (!canEditMaster) return alertNoEditPermission();
-  if (!item.proofFileName) {
-    return alert('업로드된 시안이 없습니다. 먼저 시안을 업로드해 주세요.');
-  }
   if (item.proofConfirmedAt) {
     return alert('이미 시안이 확정되었습니다.');
   }
   if (
+    !confirm('신청자에게 외주사로부터 받은 시안 메일을 전송해주세요.')
+  ) {
+    return;
+  }
+
+  try {
+    const res = await fetch('/api/asset/businesscard/proof', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: item.id, action: 'mail-review' }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      alert(data.message || '메일확인요청 처리에 실패했습니다.');
+      return;
+    }
+    setBatches((prev) =>
+      prev.map((b) => ({
+        ...b,
+        items: (b.items || []).map((it) =>
+          it.id === item.id
+            ? {
+                ...it,
+                proofMailReviewedAt:
+                  data.proofMailReviewedAt || new Date().toISOString(),
+                proofMailReviewedBy: data.proofMailReviewedBy || null,
+              }
+            : it
+        ),
+      }))
+    );
+  } catch {
+    alert('메일확인요청 처리 중 오류가 발생했습니다.');
+  }
+};
+
+const handleAdminProofConfirm = async (item: RequestHistory) => {
+  if (!canEditMaster) return alertNoEditPermission();
+  if (!isItemProofReady(item)) {
+    return alert(
+      '시안 파일을 업로드하거나, [메일확인요청] 후 확정해 주세요.'
+    );
+  }
+  if (item.proofConfirmedAt) {
+    return alert('이미 시안이 확정되었습니다.');
+  }
+  const viaMail = !item.proofFileName && Boolean(item.proofMailReviewedAt);
+  if (
     !confirm(
-      `[${item.postNumber}] ${item.userName || ''} 님 시안을 관리자 권한으로 확정할까요?`
+      viaMail
+        ? `[${item.postNumber}] ${item.userName || ''} 님 — 메일확인요청 건을 관리자 권한으로 확정할까요?`
+        : `[${item.postNumber}] ${item.userName || ''} 님 시안을 관리자 권한으로 확정할까요?`
     )
   ) {
     return;
@@ -743,6 +915,10 @@ const handleAdminProofConfirm = async (item: RequestHistory) => {
                 ...it,
                 proofConfirmedAt: data.proofConfirmedAt || new Date().toISOString(),
                 proofConfirmedBy: data.proofConfirmedBy || null,
+                proofMailReviewedAt:
+                  data.proofMailReviewedAt ?? it.proofMailReviewedAt,
+                proofMailReviewedBy:
+                  data.proofMailReviewedBy ?? it.proofMailReviewedBy,
               }
             : it
         ),
@@ -1313,38 +1489,27 @@ const beginRequestEdit = (row: RequestHistory) => {
   setAdminMemoInput(row.adminMemo || '');
 };
 
-const handleBatchExcelDownload = (batch: OrderBatch) => {
+const handleBatchExcelDownload = async (batch: OrderBatch) => {
   if (!canEditMaster) return alertNoEditPermission();
-  const excelData = batch.items.map(r => ({
-    '관리번호': r.postNumber,
-    '수량(통)': r.quantity || 1,
-    '성명': r.userName,
-    '신청일자': r.applyDate,
-    '본부': r.deptHead,
-    '소속': r.deptName || '',
-    '직책/직급': r.title,
-    '추가사항': r.additionalKo || '',
-    '우편번호': r.zipCode,
-    '주소': r.addressKo,
-    '휴대전화': r.mobile,
-    '전화번호': r.phone || '',
-    '팩스': r.fax || '',
-    '이메일': r.email,
-    '영문이름': r.userNameEn || '',
-    '영문본부': r.deptHeadEn || '',
-    '영문소속': r.deptNameEn || '',
-    '영문직책': r.titleEn || '',
-    '영문추가': r.additionalEn || '',
-    '영문주소': r.addressEn || '',
-    '영문 휴대전화': stripBusinessCardEnPlus(r.mobileEn || ''),
-    '영문전화': stripBusinessCardEnPlus(r.phoneEn || ''),
-    '영문팩스': stripBusinessCardEnPlus(r.faxEn || ''),
-    '이메일(영문)': r.emailEn || r.email
-  }));
-  const ws = XLSX.utils.json_to_sheet(excelData);
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, "명함발주데이터");
-  XLSX.writeFile(wb, `명함발주서_${formatBatchNo(batch.id)}.xlsx`);
+  const items = batch.items || [];
+  if (items.length === 0) return alert('다운로드할 명함 데이터가 없습니다.');
+  try {
+    const buffer = await writeBusinessCardOrderExcelBuffer(items, {
+      sheetName: '명함발주서',
+    });
+    const blob = new Blob([buffer], {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `명함발주서_${formatBatchNo(batch.id)}.xlsx`;
+    a.click();
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    console.error(err);
+    alert('명함 발주서 다운로드에 실패했습니다.');
+  }
 };
 
 const openEmailModal = (batch: OrderBatch) => {
@@ -1666,17 +1831,17 @@ const isBatchProofConfirmed = (batch: OrderBatch) => {
   return items.every((it) => Boolean(it.proofConfirmedAt));
 };
 
-/** 묶음 시안확인 상태: 업로드대기 → 확정대기 → 확정완료 */
+/** 묶음 시안확인 상태: 대기 → 시안확정대기 → 시안확정완료 (파일 업로드 또는 개별메일확인) */
 const getBatchProofStatus = (
   batch: OrderBatch
-): '업로드대기' | '확정대기' | '확정완료' => {
+): '시안확인대기' | '시안확정대기' | '시안확정완료' => {
   const items = batch.items || [];
-  if (items.length === 0) return '업로드대기';
-  const allUploaded = items.every((it) => Boolean(it.proofFileName));
-  if (!allUploaded) return '업로드대기';
+  if (items.length === 0) return '시안확인대기';
+  const allReady = items.every((it) => isItemProofReady(it));
+  if (!allReady) return '시안확인대기';
   const allConfirmed = items.every((it) => Boolean(it.proofConfirmedAt));
-  if (!allConfirmed) return '확정대기';
-  return '확정완료';
+  if (!allConfirmed) return '시안확정대기';
+  return '시안확정완료';
 };
 
 const openDispatchModal = (batch: OrderBatch) => {
@@ -1882,7 +2047,7 @@ const handleMoveBatchToArchive = async (batch: OrderBatch, e: React.MouseEvent) 
   }
   if (getBatchInspectStatus(batch) !== 'match') {
     return alert(
-      '명세서 검수가 일치하거나, [명세표 대조]에서 수기 단가를 확정한 묶음만 이동할 수 있습니다.'
+      '명세서 검수가 일치하거나, [명세표 수기 대조]에서 수기 단가를 확정한 묶음만 이동할 수 있습니다.'
     );
   }
   if (!confirm(`[${formatBatchNo(batch.id)}] 검수 완료 보관함으로 이동하시겠습니까?`)) return;
@@ -1972,9 +2137,11 @@ const paginatedBatches = filteredBatches.slice(
   (batchPage - 1) * BATCH_PAGE_SIZE,
   batchPage * BATCH_PAGE_SIZE
 );
-const pageBatchIds = paginatedBatches.map((b) => b.id);
+const selectablePageBatches = paginatedBatches.filter((b) => !isBatchInspectConfirmed(b));
+const selectablePageBatchIds = selectablePageBatches.map((b) => b.id);
 const allPageBatchesSelected =
-  pageBatchIds.length > 0 && pageBatchIds.every((id) => selectedBatchIds.has(id));
+  selectablePageBatchIds.length > 0 &&
+  selectablePageBatchIds.every((id) => selectedBatchIds.has(id));
 
 useEffect(() => {
   setBatchPage(1);
@@ -2087,7 +2254,8 @@ return (
           <span className="font-medium text-slate-900 whitespace-nowrap">1) 발주진행</span>
           <span>
             발주서 엑셀↓ + 메일 작성(그룹웨어){' '}
-            <b className="font-medium text-amber-600">→</b> 시안업로드(신청자 공유됨){' '}
+            <b className="font-medium text-amber-600">→</b> 시안업로드{' '}
+            <span className="text-amber-700">또는</span> 메일확인요청{' '}
             <b className="font-medium text-amber-600">→</b> 시안확정(신청자 또는 관리자 클릭){' '}
             <b className="font-medium text-amber-600">→</b> 최종 발주확정일 지정 (시안확정 후 최종메일 송부)
           </span>
@@ -2108,7 +2276,7 @@ return (
       </div>
 
     {/* 외주 발주 묶음 대장 */}
-    <div className={`bg-white border border-indigo-200 rounded-[2.5rem] shadow-sm ${orgMenuOpen ? 'overflow-visible' : 'overflow-hidden'}`}>
+    <div className={`bg-white border border-indigo-200 rounded-lg shadow-sm ${orgMenuOpen ? 'overflow-visible' : 'overflow-hidden'}`}>
       <div className={`p-4 px-6 bg-indigo-50 border-b border-indigo-200 flex flex-wrap items-center justify-between gap-4 relative ${orgMenuOpen ? 'z-[80] overflow-visible' : ''}`}>
         <div className="flex items-start gap-2">
           <div className="w-2.5 h-2.5 rounded-full bg-indigo-600 mt-1.5 shrink-0" />
@@ -2251,37 +2419,48 @@ return (
               </th>
               <th
                 colSpan={2}
-                className="bg-amber-50 text-amber-800 border-b border-r border-amber-200 font-medium text-center text-xs py-1.5 normal-case tracking-normal"
+                className="bg-amber-50 text-amber-800 border-b border-r border-slate-300 font-medium text-center text-xs py-1.5 normal-case tracking-normal"
               >
                 <div className="flex flex-col items-center gap-1 px-2">
                   <span>명세 대조·검수</span>
                   <div
-                    className="flex w-full max-w-full items-center"
-                    title="명세 검수 진행 방향"
-                    aria-hidden
+                    className="flex w-full max-w-full items-center gap-1.5"
+                    title="파일 검수 또는 수기 대조 중 하나로 확정"
                   >
                     <div className="h-2.5 flex-1 rounded-l-full bg-amber-500/80" />
-                    <div
-                      className="h-0 w-0 shrink-0 border-y-[10px] border-y-transparent border-l-[16px] border-l-amber-500/80"
-                    />
+                    <span className="shrink-0 text-[10px] font-medium text-amber-800 whitespace-nowrap">
+                      또는
+                    </span>
+                    <div className="h-2.5 flex-1 bg-amber-500/80" />
+                    <div className="h-0 w-0 shrink-0 border-y-[10px] border-y-transparent border-l-[16px] border-l-amber-500/80" />
                   </div>
                 </div>
               </th>
               <th
                 colSpan={2}
-                className="bg-indigo-50 text-indigo-700 border-b border-indigo-200 font-medium text-center text-xs py-1.5 normal-case tracking-normal"
+                className="bg-emerald-50 text-emerald-800 border-b border-emerald-200 font-medium text-center text-xs py-1.5 normal-case tracking-normal"
               >
-                관리 액션
+                <div className="flex flex-col items-center gap-1 px-2">
+                  <span>관리 액션</span>
+                  <div
+                    className="flex w-full max-w-full items-center"
+                    title="완료 보관함 이동 진행 방향"
+                    aria-hidden
+                  >
+                    <div className="h-2.5 flex-1 rounded-l-full bg-emerald-500/80" />
+                    <div className="h-0 w-0 shrink-0 border-y-[10px] border-y-transparent border-l-[16px] border-l-emerald-500/80" />
+                  </div>
+                </div>
               </th>
             </tr>
             <tr className="bg-indigo-100">
-              <th className="h-12 px-4 w-[50px] text-center"><input type="checkbox" onChange={handleSelectAllBatches} checked={allPageBatchesSelected} className="w-3 h-3 accent-indigo-600 cursor-pointer" /></th>
+              <th className="h-12 w-12 px-0 text-center">NO</th>
               <th className="h-12 px-2 w-[160px] text-left">묶음 번호</th>
               <th className="h-12 px-4 w-[120px] text-center">발주생성일</th>
               <th className="h-12 px-2 w-[140px] text-left border-r border-slate-300">신청 상세</th>
               <th className="h-12 px-2 text-center w-[120px]">
                 <div className="flex flex-col items-center justify-center gap-0.5 leading-tight">
-                  <span className="whitespace-nowrap">발주서다운</span>
+                  <span className="whitespace-nowrap">📥 발주서 다운</span>
                   <span className="text-[10px] font-medium text-indigo-700/80 normal-case tracking-normal whitespace-nowrap">
                     (Edit · 엑셀)
                   </span>
@@ -2289,7 +2468,7 @@ return (
               </th>
               <th className="h-12 px-2 text-center w-[100px]">
                 <div className="flex flex-col items-center justify-center gap-0.5 leading-tight">
-                  <span className="whitespace-nowrap">메일 작성</span>
+                  <span className="whitespace-nowrap">메일 바로가기</span>
                   <span className="text-[10px] font-medium text-indigo-700/80 normal-case tracking-normal whitespace-nowrap">
                     (그룹웨어)
                   </span>
@@ -2319,28 +2498,52 @@ return (
                   </span>
                 </div>
               </th>
-              <th className="h-12 px-2 text-center w-[110px] border-r border-blue-200">
+              <th className="h-12 px-2 text-center w-[128px] min-w-[128px] border-r border-blue-200">
                 <span className="whitespace-nowrap">사용자 지급</span>
               </th>
-              <th className="h-12 px-1 text-center w-[132px]">
-                <div className="flex flex-col items-center justify-center gap-1">
-                  <span className="whitespace-nowrap">명세서 업로드 검수</span>
+              <th className="h-12 px-0.5 text-center w-[148px] min-w-[148px] max-w-[148px]">
+                <div className="flex flex-col items-center justify-center gap-1 px-0.5 py-1">
+                  <span className="inline-flex items-center justify-center gap-0.5 whitespace-nowrap">
+                    명세서 업로드 검수
+                  </span>
                   <button
                     type="button"
                     onClick={openCompareModal}
                     disabled={!canEditMaster || selectedBatchIds.size === 0}
-                    title={!canEditMaster ? '편집 권한 필요' : undefined}
-                    className={`px-1.5 py-1 font-medium text-[9px] rounded-lg shadow-sm whitespace-nowrap normal-case tracking-normal leading-tight ${
+                    title={
+                      !canEditMaster
+                        ? '편집 권한 필요'
+                        : selectedBatchIds.size === 0
+                          ? '비교할 발주 묶음을 체크박스로 선택해 주세요'
+                          : `상단 등록 명세표와 선택 ${selectedBatchIds.size}건을 대조 검수합니다`
+                    }
+                    className={`h-7 box-border inline-flex items-center justify-center px-2.5 text-[11px] font-medium rounded-lg whitespace-nowrap transition-colors ${
                       canEditMaster
                         ? 'bg-amber-500 hover:bg-amber-600 text-white disabled:opacity-40'
                         : DISABLED_ACTION_BTN
                     }`}
                   >
-                    선택 검수({selectedBatchIds.size}건)
+                    선택건 파일로 검수({selectedBatchIds.size}건)
                   </button>
+                  <input
+                    type="checkbox"
+                    onChange={handleSelectAllBatches}
+                    checked={allPageBatchesSelected}
+                    disabled={selectablePageBatches.length === 0}
+                    className={`w-3 h-3 accent-amber-500 ${
+                      selectablePageBatches.length === 0
+                        ? 'cursor-not-allowed opacity-40'
+                        : 'cursor-pointer'
+                    }`}
+                    title={
+                      selectablePageBatches.length === 0
+                        ? '선택할 미확정 묶음이 없습니다'
+                        : '현재 페이지 전체 선택'
+                    }
+                  />
                 </div>
               </th>
-              <th className="h-12 px-1 text-center w-[132px] border-r border-amber-200">
+              <th className="h-12 w-[132px] min-w-[132px] px-1 text-center border-r border-slate-300">
                 <div className="flex flex-col items-center justify-center gap-0.5 leading-tight">
                   <span className="whitespace-nowrap">명세표 수기 대조</span>
                   <span className="text-[10px] font-medium text-indigo-700/80 normal-case tracking-normal whitespace-nowrap">
@@ -2348,14 +2551,11 @@ return (
                   </span>
                 </div>
               </th>
-              <th className="h-12 px-2 text-center w-[150px]">완료 보관함 이동</th>
-              <th className="h-12 px-2 text-center w-[100px]">
-                <div className="flex flex-col items-center justify-center gap-0.5 leading-tight">
-                  <span className="whitespace-nowrap">↺ 발주대기</span>
-                  <span className="text-[10px] font-medium text-indigo-700/80 normal-case tracking-normal whitespace-nowrap">
-                    (Edit)
-                  </span>
-                </div>
+              <th className="h-12 px-2 text-center w-[150px]">
+                <span className="whitespace-nowrap">완료 보관함 이동</span>
+              </th>
+              <th className="h-12 px-1 text-center w-[44px]" title="보조 관리 액션">
+                <span className="sr-only">관리 메뉴</span>
               </th>
             </tr>
           </thead>
@@ -2364,16 +2564,19 @@ return (
               <tr>
                 <td colSpan={14} className="p-16 text-center text-slate-400 text-xs">발주 묶음이 없습니다.</td>
               </tr>
-            ) : paginatedBatches.map((batch) => {
+            ) : paginatedBatches.map((batch, batchIdx) => {
               const allDispatched = Boolean(batch.dispatchedDate);
               /** 발주확정 후 발주서·메일작성은 회색 (클릭은 유지) — 제작물 inspection과 동일 */
               const prepActionBtnClass = allDispatched
                 ? 'bg-slate-100 hover:bg-slate-200/80 text-slate-400 border border-slate-200'
                 : 'bg-white hover:bg-slate-50 text-slate-700 border border-slate-200';
+              const rowNo = (batchPage - 1) * BATCH_PAGE_SIZE + batchIdx + 1;
               return (
               <React.Fragment key={batch.id}>
                 <tr className={`h-16 hover:bg-indigo-50/40 transition-colors ${selectedBatchIds.has(batch.id) ? 'bg-indigo-50/50' : ''}`}>
-                  <td className="px-4 text-center"><input type="checkbox" checked={selectedBatchIds.has(batch.id)} onChange={() => handleSelectBatchRow(batch.id)} className="w-3 h-3 accent-indigo-600 cursor-pointer" /></td>
+                  <td className="w-12 px-0 text-center text-slate-500 tabular-nums">
+                    {rowNo}
+                  </td>
                   <td
                     className="px-2 text-left text-slate-800 cursor-pointer whitespace-nowrap truncate overflow-hidden"
                     title={formatBatchNo(batch.id)}
@@ -2424,7 +2627,7 @@ return (
                         canEditMaster ? prepActionBtnClass : DISABLED_ACTION_BTN
                       }`}
                     >
-                      발주서↓
+                      📥 발주서 다운
                     </button>
                   </td>
                   <td className="px-2 text-center">
@@ -2438,7 +2641,7 @@ return (
                       }
                       className={`px-2.5 py-1 text-[11px] font-medium rounded-lg w-full whitespace-nowrap transition-colors ${prepActionBtnClass}`}
                     >
-                      메일 작성
+                      메일 바로가기
                     </button>
                   </td>
                   <td
@@ -2449,9 +2652,9 @@ return (
                     {(() => {
                       const proofStatus = getBatchProofStatus(batch);
                       const cls =
-                        proofStatus === '확정완료'
-                          ? 'text-emerald-600'
-                          : proofStatus === '확정대기'
+                        proofStatus === '시안확정완료'
+                          ? 'text-slate-700'
+                          : proofStatus === '시안확정대기'
                             ? 'text-amber-600'
                             : 'text-slate-500';
                       return (
@@ -2463,7 +2666,7 @@ return (
                   </td>
                   <td className="px-2 text-center border-r border-slate-200">
                     {allDispatched ? (
-                      <span className="font-medium text-emerald-600 whitespace-nowrap">
+                      <span className="font-medium text-slate-800 whitespace-nowrap">
                         {batch.dispatchedDate}
                       </span>
                     ) : (
@@ -2488,7 +2691,7 @@ return (
                                 : DISABLED_ACTION_BTN
                             }`}
                           >
-                            → 발주확정
+                            →발주확정하기
                           </button>
                         );
                       })()
@@ -2509,7 +2712,7 @@ return (
                       const pendingCls = allDispatched ? 'text-red-600' : 'text-slate-500';
                       if (total > 0 && received >= total) {
                         return (
-                          <span className="font-medium text-emerald-600 whitespace-nowrap">
+                          <span className="font-medium text-slate-800 whitespace-nowrap">
                             수령완료
                           </span>
                         );
@@ -2522,9 +2725,9 @@ return (
                       );
                     })()}
                   </td>
-                  <td className="px-2 text-center border-r border-slate-200">
+                  <td className="px-2 text-center border-r border-slate-200 whitespace-nowrap">
                     {batch.status === '지급완료' ? (
-                      <span className="font-medium whitespace-nowrap text-slate-900">지급완료</span>
+                      <span className="font-medium whitespace-nowrap text-slate-800">지급완료</span>
                     ) : batch.status === '수령완료' ||
                       ((batch.items || []).length > 0 &&
                         (batch.items || []).every(
@@ -2535,60 +2738,105 @@ return (
                         disabled={!canEditMaster}
                         title={!canEditMaster ? '편집 권한 필요' : undefined}
                         onClick={(e) => handleMarkAsDistributed(batch.id, e)}
-                        className={`inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium rounded-lg transition-colors ${
+                        className={`inline-flex items-center justify-center gap-1 px-2.5 py-1 text-[11px] font-medium rounded-lg whitespace-nowrap transition-colors ${
                           canEditMaster
-                            ? 'bg-blue-600 hover:bg-blue-700 text-white'
+                            ? 'bg-sky-500 hover:bg-sky-600 text-white'
                             : DISABLED_ACTION_BTN
                         }`}
                       >
-                        <span>→</span>
-                        <span>명함지급완료</span>
+                        →명함지급완료
                       </button>
                     ) : (
                       <span className="font-medium text-slate-300">—</span>
                     )}
                   </td>
-                  <td className="px-1 text-center w-[132px]">
-                    <div className="flex items-center justify-center">
-                      {(() => {
-                        const inspect = getBatchInspectStatus(batch);
-                        if (inspect === 'match') {
-                          return <span className="font-medium text-indigo-600">일치</span>;
-                        }
-                        if (inspect === 'mismatch') {
-                          return <span className="font-medium text-rose-600">불일치</span>;
-                        }
-                        return <span className="font-medium text-slate-400">미검수</span>;
-                      })()}
-                    </div>
+                  <td className="px-1 text-center">
+                    {(() => {
+                      const inspect = getBatchInspectStatus(batch);
+                      const confirmed = isBatchInspectConfirmed(batch);
+                      return (
+                        <div className="flex flex-col items-center justify-center gap-1">
+                          <input
+                            type="checkbox"
+                            checked={!confirmed && selectedBatchIds.has(batch.id)}
+                            disabled={confirmed}
+                            onChange={() => handleSelectBatchRow(batch.id)}
+                            className={`w-3 h-3 accent-amber-500 ${
+                              confirmed
+                                ? 'cursor-not-allowed opacity-40'
+                                : 'cursor-pointer'
+                            }`}
+                            title={
+                              confirmed
+                                ? '대조 확정된 묶음은 선택할 수 없습니다'
+                                : '명세 대조 검수 대상 선택'
+                            }
+                          />
+                          {!confirmed &&
+                            (inspect === 'match' ? (
+                              <span className="font-medium text-slate-800 whitespace-nowrap">
+                                일치
+                              </span>
+                            ) : inspect === 'mismatch' ? (
+                              <span className="font-medium text-rose-600 whitespace-nowrap">
+                                불일치
+                              </span>
+                            ) : (
+                              <span className="font-medium text-slate-400 whitespace-nowrap">
+                                미검수
+                              </span>
+                            ))}
+                        </div>
+                      );
+                    })()}
                   </td>
-                  <td className="px-1 text-center w-[132px] border-r border-slate-200">
-                    <div className="flex items-center justify-center">
-                      <button
-                        type="button"
-                        disabled={!canEditMaster}
-                        title={
-                          !canEditMaster
-                            ? '편집 권한 필요'
-                            : batch.inspectResult?.settlementManual
-                              ? '수기 대조로 확정됨 · 다시 열어 수정 가능'
+                  <td className="px-1 text-center border-r border-slate-300">
+                    {(() => {
+                      const handConfirmed = Boolean(batch.inspectResult?.settlementManual);
+                      const inspectMatched = getBatchInspectStatus(batch) === 'match';
+                      const confirmed = handConfirmed || inspectMatched;
+                      if (confirmed) {
+                        return (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              openSettlementModal(batch);
+                            }}
+                            title={
+                              handConfirmed
+                                ? '수기 단가 확정됨 · 다시 열어 수정 가능'
+                                : '파일 검수 전원 일치 · 다시 열어 확인 가능'
+                            }
+                            className="font-medium text-slate-800 whitespace-nowrap hover:underline underline-offset-2"
+                          >
+                            대조 확정됨
+                          </button>
+                        );
+                      }
+                      return (
+                        <button
+                          type="button"
+                          disabled={!canEditMaster}
+                          title={
+                            !canEditMaster
+                              ? '편집 권한 필요'
                               : '검수 불일치여도 수기 단가로 확정할 수 있습니다'
-                        }
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          openSettlementModal(batch);
-                        }}
-                        className={`px-2.5 py-1 text-[11px] font-medium rounded-lg whitespace-nowrap transition-colors ${
-                          canEditMaster
-                            ? batch.inspectResult?.settlementManual
-                              ? 'bg-indigo-600 hover:bg-indigo-700 text-white'
-                              : 'bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200'
-                            : DISABLED_ACTION_BTN
-                        }`}
-                      >
-                        {batch.inspectResult?.settlementManual ? '대조 확정됨' : '명세표 대조'}
-                      </button>
-                    </div>
+                          }
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openSettlementModal(batch);
+                          }}
+                          className={`inline-flex items-center justify-center px-2.5 py-1 text-[11px] font-medium rounded-lg whitespace-nowrap transition-colors ${
+                            canEditMaster
+                              ? 'bg-amber-500 hover:bg-amber-600 text-white'
+                              : DISABLED_ACTION_BTN
+                          }`}
+                        >
+                          명세표 수기 대조
+                        </button>
+                      );
+                    })()}
                   </td>
                   <td className="px-2 text-center">
                     {batch.status === '지급완료' && getBatchInspectStatus(batch) === 'match' ? (
@@ -2609,40 +2857,48 @@ return (
                       <span className="font-medium text-slate-300">—</span>
                     )}
                   </td>
-                  <td className="px-2 text-center">
-                    {batch.status === '발주완료' ? (
-                      <button
-                        type="button"
-                        disabled={!canEditMaster}
-                        title={!canEditMaster ? '편집 권한 필요' : undefined}
-                        onClick={(e) => handleCancelOrderBatch(batch, e)}
-                        className={`px-2.5 py-1 text-[11px] font-medium rounded-lg w-full whitespace-nowrap transition-colors ${
-                          canEditMaster
-                            ? 'bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-200'
-                            : DISABLED_ACTION_BTN
-                        }`}
-                      >
-                        ↺ 발주대기
-                      </button>
-                    ) : (
-                      <span className="font-medium text-slate-300">—</span>
-                    )}
+                  <td className="px-0.5 text-center whitespace-nowrap">
+                    <button
+                      type="button"
+                      data-action-kebab
+                      disabled={!canEditMaster}
+                      title={!canEditMaster ? '편집 권한 필요' : '더보기'}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        openActionMenu(e, batch.id, 'batch');
+                      }}
+                      className={`inline-flex items-center justify-center w-7 h-7 rounded-lg transition-colors ${
+                        canEditMaster
+                          ? actionMenu?.type === 'batch' && actionMenu?.id === batch.id
+                            ? 'bg-slate-200 text-slate-800'
+                            : 'text-slate-500 hover:bg-slate-100 hover:text-slate-800'
+                          : 'text-slate-300 cursor-not-allowed'
+                      }`}
+                    >
+                      <svg viewBox="0 0 20 20" className="w-4 h-4" fill="currentColor" aria-hidden>
+                        <circle cx="10" cy="4.5" r="1.6" />
+                        <circle cx="10" cy="10" r="1.6" />
+                        <circle cx="10" cy="15.5" r="1.6" />
+                      </svg>
+                    </button>
                   </td>
                 </tr>
                 
                 {expandedBatchIds.has(batch.id) && (
                   <tr className="bg-slate-200/90 text-slate-700 text-[10px] font-medium border-y border-slate-300">
-                    <td className="h-9 px-4 text-center border-l-4 border-l-blue-500 bg-slate-200/90">NO</td>
+                    <td className="h-9 w-12 px-0 text-center border-l-4 border-l-blue-500 bg-slate-200/90">
+                      NO
+                    </td>
                     <td className="h-9 px-2 text-left whitespace-nowrap">관리번호</td>
                     <td className="h-9 px-4 text-center whitespace-nowrap">신청일</td>
                     <td className="h-9 px-2 text-left border-r border-slate-300 whitespace-nowrap">신청주체 / 부서·이름</td>
                     <td className="h-9 px-2 text-center whitespace-nowrap">원문확인</td>
                     <td className="h-9 px-2 text-center text-slate-400">—</td>
-                    <td className="h-9 px-1 text-center whitespace-nowrap">시안업로드·확정</td>
+                    <td className="h-9 px-1 text-center whitespace-nowrap">시안업로드or메일·확정</td>
                     <td className="h-9 px-2 text-center text-slate-400 border-r border-slate-300">—</td>
                     <td className="h-9 px-1 text-center whitespace-nowrap align-middle">
                       <div className="inline-flex flex-col items-center gap-0.5 py-1">
-                        <span>수령확인</span>
+                        <span>수령확정</span>
                         {(() => {
                           const pendingCount = (batch.items || []).filter(
                             (it) => it.adminStatus === '발주완료'
@@ -2662,19 +2918,19 @@ return (
                                     ? '발주확정일을 먼저 기록해 주세요'
                                     : pendingCount === 0
                                       ? '수령 대기 건이 없습니다'
-                                      : `미수령 ${pendingCount}건 일괄 수령확인`
+                                      : `미수령 ${pendingCount}건 일괄수령확정`
                               }
                               onClick={(e) => {
                                 e.stopPropagation();
                                 void handleConfirmReceiveAll(batch);
                               }}
-                              className={`px-2 py-0.5 text-[9px] font-medium rounded-md transition-colors whitespace-nowrap ${
+                              className={`h-7 box-border inline-flex items-center justify-center px-2.5 text-[10px] font-medium rounded-lg transition-colors whitespace-nowrap ${
                                 canBulk
-                                  ? 'bg-emerald-600 text-white hover:bg-emerald-700'
+                                  ? 'bg-sky-500 text-white hover:bg-sky-600'
                                   : DISABLED_ACTION_BTN
                               }`}
                             >
-                              일괄 수령확인
+                              일괄수령확정
                               {pendingCount > 0 ? `(${pendingCount})` : ''}
                             </button>
                           );
@@ -2702,8 +2958,7 @@ return (
                           mStatus === 'mismatch' || mStatus === 'missing' ? 'bg-rose-50/80' : ''
                         }`}
                       >
-                        {/* 체크박스 자리 · 파란 바 최좌측 */}
-                        <td className="px-4 text-center border-l-4 border-l-blue-500 bg-slate-100/70">
+                        <td className="w-12 px-0 text-center border-l-4 border-l-blue-500 bg-slate-100/70">
                           <span className="text-[10px] font-mono text-slate-400 tabular-nums">
                             {idx + 1}
                           </span>
@@ -2765,65 +3020,15 @@ return (
                         </td>
                         {/* 메일 ↓ — */}
                         <td className="px-2 text-center text-slate-300 bg-slate-50/80">—</td>
-                        {/* 시안확인 ↓ 업로드·확정 (Edit 권한) */}
+                        {/* 시안확인 ↓ 업로드 또는 개별메일확인 → 확정 */}
                         <td className="px-1 text-center bg-slate-50/80">
                           {item.adminStatus === '발주완료' ||
                           item.adminStatus === '수령완료' ||
                           item.adminStatus === '지급완료' ? (
                             <div className="inline-flex flex-col items-center gap-1">
-                              <button
-                                type="button"
-                                disabled={!canEditMaster || proofUploadingId === item.id}
-                                title={
-                                  !canEditMaster
-                                    ? '편집 권한 필요'
-                                    : item.proofFileName
-                                      ? `재업로드: ${item.proofFileName}`
-                                      : '시안 파일 업로드'
-                                }
-                                onClick={() => {
-                                  if (!canEditMaster) return alertNoEditPermission();
-                                  openProofUpload(item.id);
-                                }}
-                                className={`px-2 py-0.5 text-[10px] font-medium rounded-md transition-colors whitespace-nowrap ${
-                                  canEditMaster
-                                    ? item.proofFileName
-                                      ? 'bg-indigo-50 text-indigo-700 border border-indigo-200 hover:bg-indigo-100'
-                                      : 'bg-blue-600 text-white hover:bg-blue-700'
-                                    : DISABLED_ACTION_BTN
-                                }`}
-                              >
-                                {proofUploadingId === item.id
-                                  ? '업로드중…'
-                                  : item.proofFileName
-                                    ? '재업로드'
-                                    : '시안업로드'}
-                              </button>
-                              {item.proofFileName ? (
-                                <button
-                                  type="button"
-                                  disabled={!canEditMaster}
-                                  title={
-                                    !canEditMaster
-                                      ? '편집 권한 필요'
-                                      : item.proofFileName || '시안 다운로드'
-                                  }
-                                  onClick={() => {
-                                    if (!canEditMaster) return alertNoEditPermission();
-                                    handleProofDownloadAdmin(item.id, item.proofFileName);
-                                  }}
-                                  className={`text-[9px] font-medium underline ${
-                                    canEditMaster
-                                      ? 'text-slate-500 hover:text-blue-600'
-                                      : 'text-slate-300 cursor-not-allowed no-underline'
-                                  }`}
-                                >
-                                  다운로드
-                                </button>
-                              ) : null}
                               {item.proofConfirmedAt ? (
                                 <span
-                                  className="text-[9px] font-medium text-emerald-600 whitespace-nowrap"
+                                  className="text-[9px] font-medium text-slate-700 whitespace-nowrap"
                                   title={item.proofConfirmedBy || undefined}
                                 >
                                   확정
@@ -2832,28 +3037,142 @@ return (
                                     ? '관리자'
                                     : '신청자'}
                                 </span>
-                              ) : item.proofFileName ? (
-                                <button
-                                  type="button"
-                                  disabled={!canEditMaster}
-                                  title={
-                                    !canEditMaster
-                                      ? '편집 권한 필요'
-                                      : '관리자가 시안을 직접 확정'
-                                  }
-                                  onClick={() => {
-                                    if (!canEditMaster) return alertNoEditPermission();
-                                    handleAdminProofConfirm(item);
-                                  }}
-                                  className={`px-2 py-0.5 text-[10px] font-medium rounded-md transition-colors whitespace-nowrap ${
-                                    canEditMaster
-                                      ? 'bg-emerald-600 text-white hover:bg-emerald-700'
-                                      : DISABLED_ACTION_BTN
-                                  }`}
-                                >
-                                  확정
-                                </button>
-                              ) : null}
+                              ) : item.proofMailReviewedAt ? (
+                                <>
+                                  <span
+                                    className="text-[10px] font-medium text-amber-700 whitespace-nowrap"
+                                    title={
+                                      item.proofMailReviewedBy
+                                        ? `요청: ${item.proofMailReviewedBy}`
+                                        : '신청자 메일 확인 대기'
+                                    }
+                                  >
+                                    메일확인요청중
+                                  </span>
+                                  <button
+                                    type="button"
+                                    disabled={!canEditMaster}
+                                    title={
+                                      !canEditMaster
+                                        ? '편집 권한 필요'
+                                        : '신청자 확인 전에도 관리자가 확정 가능'
+                                    }
+                                    onClick={() => {
+                                      if (!canEditMaster) return alertNoEditPermission();
+                                      handleAdminProofConfirm(item);
+                                    }}
+                                    className={`px-2 py-0.5 text-[10px] font-medium rounded-md transition-colors whitespace-nowrap ${
+                                      canEditMaster
+                                        ? 'bg-amber-500 text-white hover:bg-amber-600'
+                                        : DISABLED_ACTION_BTN
+                                    }`}
+                                  >
+                                    시안확정
+                                  </button>
+                                </>
+                              ) : (
+                                <>
+                                  <button
+                                    type="button"
+                                    disabled={
+                                      !canEditMaster || proofUploadingId === item.id
+                                    }
+                                    title={
+                                      !canEditMaster
+                                        ? '편집 권한 필요'
+                                        : item.proofFileName
+                                          ? `재업로드: ${item.proofFileName}`
+                                          : '시안 파일 업로드'
+                                    }
+                                    onClick={() => {
+                                      if (!canEditMaster) return alertNoEditPermission();
+                                      openProofUpload(item.id);
+                                    }}
+                                    className={`px-2 py-0.5 text-[10px] font-medium rounded-md transition-colors whitespace-nowrap ${
+                                      canEditMaster
+                                        ? item.proofFileName
+                                          ? 'bg-indigo-50 text-indigo-700 border border-indigo-200 hover:bg-indigo-100'
+                                          : 'bg-blue-600 text-white hover:bg-blue-700'
+                                        : DISABLED_ACTION_BTN
+                                    }`}
+                                  >
+                                    {proofUploadingId === item.id
+                                      ? '업로드중…'
+                                      : item.proofFileName
+                                        ? '재업로드'
+                                        : '시안업로드'}
+                                  </button>
+                                  {!item.proofFileName ? (
+                                    <button
+                                      type="button"
+                                      disabled={!canEditMaster}
+                                      title={
+                                        !canEditMaster
+                                          ? '편집 권한 필요'
+                                          : '파일 없이 메일확인요청으로 진행'
+                                      }
+                                      onClick={() => {
+                                        if (!canEditMaster) return alertNoEditPermission();
+                                        void handleIndividualMailReview(item);
+                                      }}
+                                      className={`px-2 py-0.5 text-[10px] font-medium rounded-md transition-colors whitespace-nowrap ${
+                                        canEditMaster
+                                          ? 'bg-violet-600 text-white hover:bg-violet-700'
+                                          : DISABLED_ACTION_BTN
+                                      }`}
+                                    >
+                                      메일확인요청
+                                    </button>
+                                  ) : null}
+                                  {item.proofFileName ? (
+                                    <button
+                                      type="button"
+                                      disabled={!canEditMaster}
+                                      title={
+                                        !canEditMaster
+                                          ? '편집 권한 필요'
+                                          : item.proofFileName || '시안 다운로드'
+                                      }
+                                      onClick={() => {
+                                        if (!canEditMaster) return alertNoEditPermission();
+                                        handleProofDownloadAdmin(
+                                          item.id,
+                                          item.proofFileName
+                                        );
+                                      }}
+                                      className={`text-[9px] font-medium underline ${
+                                        canEditMaster
+                                          ? 'text-slate-500 hover:text-blue-600'
+                                          : 'text-slate-300 cursor-not-allowed no-underline'
+                                      }`}
+                                    >
+                                      다운로드
+                                    </button>
+                                  ) : null}
+                                  {item.proofFileName ? (
+                                    <button
+                                      type="button"
+                                      disabled={!canEditMaster}
+                                      title={
+                                        !canEditMaster
+                                          ? '편집 권한 필요'
+                                          : '관리자가 시안을 직접 확정'
+                                      }
+                                      onClick={() => {
+                                        if (!canEditMaster) return alertNoEditPermission();
+                                        handleAdminProofConfirm(item);
+                                      }}
+                                      className={`px-2 py-0.5 text-[10px] font-medium rounded-md transition-colors whitespace-nowrap ${
+                                        canEditMaster
+                                          ? 'bg-amber-500 text-white hover:bg-amber-600'
+                                          : DISABLED_ACTION_BTN
+                                      }`}
+                                    >
+                                      시안확정
+                                    </button>
+                                  ) : null}
+                                </>
+                              )}
                             </div>
                           ) : (
                             <span className="text-[10px] font-medium text-slate-300">—</span>
@@ -2861,10 +3180,10 @@ return (
                         </td>
                         {/* 발주완료 ↓ — */}
                         <td className="px-2 text-center text-slate-300 border-r border-slate-200 bg-slate-50/80">—</td>
-                        {/* 수령검수 ↓ 수령확인 */}
+                        {/* 수령검수 ↓ 수령확정 */}
                         <td className="px-1 text-center bg-slate-50/80">
                           {item.adminStatus === '수령완료' || item.adminStatus === '지급완료' ? (
-                            <span className="text-[10px] font-medium text-emerald-600 whitespace-nowrap">
+                            <span className="text-[10px] font-medium text-slate-800 whitespace-nowrap">
                               수령완료
                             </span>
                           ) : item.adminStatus === '발주완료' ? (
@@ -2879,13 +3198,13 @@ return (
                                     : undefined
                               }
                               onClick={() => handleConfirmReceiveItem(item, batch.id)}
-                              className={`px-2 py-1 text-[10px] font-medium rounded-lg transition-colors ${
+                              className={`h-7 box-border inline-flex items-center justify-center px-2.5 text-[10px] font-medium rounded-lg whitespace-nowrap transition-colors ${
                                 canEditMaster && batch.dispatchedDate
-                                  ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                                  ? 'bg-sky-50/80 text-sky-700 border border-sky-400 hover:bg-sky-100'
                                   : DISABLED_ACTION_BTN
                               }`}
                             >
-                              수령확인
+                              수령확정
                             </button>
                           ) : (
                             <span className="text-[10px] font-medium text-slate-300">—</span>
@@ -2918,7 +3237,31 @@ return (
                           )}
                         </td>
                         <td className="px-2 text-center text-slate-300 bg-slate-50/80">—</td>
-                        <td className="px-2 text-center text-slate-300 bg-slate-50/80">—</td>
+                        <td className="px-0.5 text-center whitespace-nowrap bg-slate-50/80">
+                          <button
+                            type="button"
+                            data-action-kebab
+                            disabled={!canEditMaster}
+                            title={!canEditMaster ? '편집 권한 필요' : '더보기'}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              openActionMenu(e, item.id, 'item');
+                            }}
+                            className={`inline-flex items-center justify-center w-7 h-7 rounded-lg transition-colors ${
+                              canEditMaster
+                                ? actionMenu?.type === 'item' && actionMenu?.id === item.id
+                                  ? 'bg-slate-200 text-slate-800'
+                                  : 'text-slate-500 hover:bg-slate-100 hover:text-slate-800'
+                                : 'text-slate-300 cursor-not-allowed'
+                            }`}
+                          >
+                            <svg viewBox="0 0 20 20" className="w-4 h-4" fill="currentColor" aria-hidden>
+                              <circle cx="10" cy="4.5" r="1.6" />
+                              <circle cx="10" cy="10" r="1.6" />
+                              <circle cx="10" cy="15.5" r="1.6" />
+                            </svg>
+                          </button>
+                        </td>
                       </tr>
                     );
                   })}
@@ -2937,6 +3280,52 @@ return (
         />
       )}
     </div>
+
+    {actionMenu &&
+      createPortal(
+        <div
+          ref={actionMenuRef}
+          style={{ top: actionMenu.top, left: actionMenu.left }}
+          className="fixed z-[500] w-[240px] rounded-xl border border-slate-200 bg-white shadow-lg py-1 text-left"
+        >
+          {actionMenu.type === 'batch' ? (
+            <button
+              type="button"
+              disabled={
+                !canEditMaster ||
+                batches.find((b) => b.id === actionMenu.id)?.status !== '발주완료'
+              }
+              className="w-full px-3 py-2 text-left text-[11px] font-medium text-rose-600 hover:bg-rose-50 disabled:opacity-40 disabled:text-slate-400 disabled:hover:bg-white whitespace-nowrap"
+              onClick={(e) => {
+                const batch = batches.find((b) => b.id === actionMenu.id);
+                setActionMenu(null);
+                if (!batch) return;
+                void handleCancelOrderBatch(batch, e);
+              }}
+            >
+              ↺ 발주대기 복구 · 발주진행 취소
+            </button>
+          ) : (
+            <button
+              type="button"
+              disabled={!canEditMaster}
+              className="w-full px-3 py-2 text-left text-[11px] font-medium text-rose-600 hover:bg-rose-50 disabled:opacity-40 disabled:text-slate-400 disabled:hover:bg-white whitespace-nowrap"
+              onClick={() => {
+                const item = batches
+                  .flatMap((b) => b.items || [])
+                  .find((it) => it.id === actionMenu.id);
+                setActionMenu(null);
+                if (!item) return;
+                void handleResetItemProof(item);
+              }}
+            >
+              ↺ 시안 초기화
+            </button>
+          )}
+        </div>,
+        document.body
+      )}
+
     {detailTarget && (
       <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-50 p-4 animate-fade-in">
         <div className="bg-white border border-slate-200 rounded-[2.5rem] shadow-2xl max-w-5xl w-full max-h-[90vh] overflow-y-auto p-6 space-y-4">

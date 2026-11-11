@@ -7,6 +7,7 @@
  */
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import * as XLSX from 'xlsx';
 import { getKSTDateString } from '@/utils/dateUtils';
 import { resolveInterfaceEditState, isSystemLv1User } from '@/lib/permission-utils';
@@ -14,27 +15,35 @@ import {
   formatMarketingClientLocation,
   marketingClientNameDupKey,
 } from '@/lib/marketing-client-address';
+import {
+  writeClientAddressListExcelBuffer,
+  writeClientAddressUploadTemplateBuffer,
+} from '@/lib/production-sign-excel';
 import LoadingState from '@/components/common/LoadingState';
 import WindowedPagination from '@/components/common/WindowedPagination';
+import DeptAssigneeLine, { useDeptAssignees } from '@/components/common/DeptAssigneeLine';
 
 const MENU_PATH = '/production/custom/clients';
 
 const HeaderLight = ({
   title,
   count,
+  extraLeft,
   children,
 }: {
   title: string;
   count: number;
+  extraLeft?: React.ReactNode;
   children?: React.ReactNode;
 }) => (
   <div className="p-4 px-6 bg-slate-200/70 border-b border-slate-300 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
-    <div className="flex items-center gap-2 shrink-0">
+    <div className="flex items-center gap-2 shrink-0 flex-wrap">
       <div className="w-2.5 h-2.5 rounded-full bg-sky-600" />
-      <h2 className="text-sm font-black text-slate-800 tracking-tight">{title}</h2>
-      <span className="text-[11px] font-bold bg-slate-300/80 text-slate-700 px-2 py-0.5 rounded-md">
+      <h2 className="text-sm font-medium text-slate-800 tracking-tight">{title}</h2>
+      <span className="text-[11px] font-medium bg-slate-300/80 text-slate-700 px-2 py-0.5 rounded-md">
         {count}건
       </span>
+      {extraLeft}
     </div>
     {children ? (
       <div className="flex items-center gap-2 flex-wrap justify-end min-w-0">{children}</div>
@@ -61,6 +70,18 @@ async function readApiError(res: Response, fallback: string) {
   }
 }
 
+/** 등록 직후 updatedAt ≈ createdAt 이면 수정한 적 없음 → '-' */
+function displayUpdatedDate(createdAt: unknown, updatedAt: unknown): string {
+  if (!updatedAt) return '-';
+  const updatedMs = new Date(updatedAt as string | Date).getTime();
+  if (!Number.isFinite(updatedMs)) return '-';
+  if (createdAt) {
+    const createdMs = new Date(createdAt as string | Date).getTime();
+    if (Number.isFinite(createdMs) && updatedMs <= createdMs + 2000) return '-';
+  }
+  return getKSTDateString(updatedAt) || '-';
+}
+
 const emptyClientForm = {
   name: '',
   zip_code: '',
@@ -71,6 +92,7 @@ const emptyClientForm = {
 };
 
 export default function ProductionClientAddressModule() {
+  const { editorNames } = useDeptAssignees(MENU_PATH);
   const [clients, setClients] = useState<any[]>([]);
   const [masterCategories, setMasterCategories] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
@@ -86,6 +108,10 @@ export default function ProductionClientAddressModule() {
   const [formData, setFormData] = useState(emptyClientForm);
   const [selectedClientIds, setSelectedClientIds] = useState<Set<string>>(new Set());
   const excelUploadInputRef = useRef<HTMLInputElement>(null);
+  const [actionMenu, setActionMenu] = useState<{ id: string; top: number; left: number } | null>(
+    null
+  );
+  const actionMenuRef = useRef<HTMLDivElement | null>(null);
 
   const [currentUser, setCurrentUser] = useState<any>(null);
   const [interfaceConfig, setInterfaceConfig] = useState<any>(null);
@@ -216,6 +242,29 @@ export default function ProductionClientAddressModule() {
   }, [canEditMaster]);
 
   useEffect(() => {
+    setActionMenu(null);
+  }, [currentPage, searchNameQuery, searchLocationQuery, selectedCategory]);
+
+  useEffect(() => {
+    if (!actionMenu) return;
+    const onDoc = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (actionMenuRef.current?.contains(t)) return;
+      if ((e.target as HTMLElement | null)?.closest?.('[data-action-kebab]')) return;
+      setActionMenu(null);
+    };
+    const onWin = () => setActionMenu(null);
+    document.addEventListener('mousedown', onDoc);
+    window.addEventListener('scroll', onWin, true);
+    window.addEventListener('resize', onWin);
+    return () => {
+      document.removeEventListener('mousedown', onDoc);
+      window.removeEventListener('scroll', onWin, true);
+      window.removeEventListener('resize', onWin);
+    };
+  }, [actionMenu]);
+
+  useEffect(() => {
     if (typeof window === 'undefined') return;
     const scriptId = 'kakao-postcode-script-production-clients';
     if (!document.getElementById(scriptId)) {
@@ -262,7 +311,7 @@ export default function ProductionClientAddressModule() {
     setSelectedClientIds(next);
   };
 
-  const handleExcelDownload = () => {
+  const handleExcelDownload = async () => {
     if (!canEditMaster) return alert('엑셀 다운로드는 편집 권한이 필요합니다.');
     const targetList =
       selectedClientIds.size > 0
@@ -270,22 +319,43 @@ export default function ProductionClientAddressModule() {
         : filteredClients;
     if (targetList.length === 0) return alert('다운로드할 데이터가 없습니다.');
 
-    const dataToExport = targetList.map((c) => ({
-      고객사명: c.name,
-      업무범주: c.category || '-',
-      소재지: formatMarketingClientLocation(c) || '-',
-      우편번호: c.zip_code || '-',
-      '기본(도로명)주소': c.address_road || '-',
-      상세주소: c.address_detail || '-',
-      관리비고: c.note || '-',
-      등록일: c.createdAt ? getKSTDateString(c.createdAt) : '-',
-      수정일: c.updatedAt ? getKSTDateString(c.updatedAt) : '-',
-    }));
+    const dash = (v: unknown) => {
+      const s = String(v ?? '').trim();
+      return s || '-';
+    };
 
-    const ws = XLSX.utils.json_to_sheet(dataToExport);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, '고객사_주소');
-    XLSX.writeFile(wb, `고객사_주소_${getKSTDateString()}.xlsx`);
+    const rows = targetList.map((c, idx) => {
+      const listIdx = filteredClients.findIndex((row) => row.id === c.id);
+      const no = listIdx >= 0 ? filteredClients.length - listIdx : idx + 1;
+      return {
+        NO: no,
+        고객사명: dash(c.name),
+        업무범주: dash(c.category),
+        우편번호: dash(c.zip_code),
+        '기본(도로명)주소': dash(c.address_road),
+        상세주소: dash(c.address_detail),
+        소재지: dash(formatMarketingClientLocation(c)),
+        관리비고: dash(c.note),
+        등록일: c.createdAt ? getKSTDateString(c.createdAt) || '-' : '-',
+        수정일: displayUpdatedDate(c.createdAt, c.updatedAt),
+      };
+    });
+
+    try {
+      const buffer = await writeClientAddressListExcelBuffer(rows);
+      const blob = new Blob([buffer], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `고객사_주소_목록_${getKSTDateString()}.xlsx`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error(err);
+      alert('엑셀 다운로드에 실패했습니다.');
+    }
   };
 
   const cellStr = (row: Record<string, unknown>, ...keys: string[]) => {
@@ -315,73 +385,10 @@ export default function ProductionClientAddressModule() {
     const sampleCategory = categories[0] || '';
 
     try {
-      const ExcelJS = (await import('exceljs')).default;
-      const workbook = new ExcelJS.Workbook();
-      workbook.creator = 'KPCQA WISE';
-
-      const sheet = workbook.addWorksheet('고객사_업로드양식');
-      const headers = [
-        '고객사명',
-        '업무범주',
-        '우편번호',
-        '기본(도로명)주소',
-        '상세주소',
-        '관리비고',
-      ];
-      sheet.addRow(headers);
-      sheet.addRow([
-        '예시고객사',
-        sampleCategory,
-        '12345',
-        '서울특별시 예시구 예시로 1',
-        '101호',
-        '',
-      ]);
-      sheet.getRow(1).font = { bold: true };
-      sheet.getRow(1).fill = {
-        type: 'pattern',
-        pattern: 'solid',
-        fgColor: { argb: 'FFE2E8F0' },
-      };
-      [22, 22, 12, 36, 18, 24].forEach((w, i) => {
-        sheet.getColumn(i + 1).width = w;
-      });
-
-      const listSheet = workbook.addWorksheet('업무범주목록');
-      categories.forEach((cat, i) => {
-        listSheet.getCell(i + 1, 1).value = cat;
-      });
-      listSheet.getColumn(1).width = 28;
-      listSheet.state = 'hidden';
-
-      const listEnd = Math.max(categories.length, 1);
-      const dvFormula = `'업무범주목록'!$A$1:$A$${listEnd}`;
-      for (let r = 2; r <= 501; r++) {
-        sheet.getCell(r, 2).dataValidation = {
-          type: 'list',
-          allowBlank: true,
-          formulae: [dvFormula],
-          showErrorMessage: true,
-          errorStyle: 'warning',
-          errorTitle: '업무범주',
-          error: `다음 중 선택해 주세요.\n${categories.join('\n')}`,
-          showInputMessage: true,
-          promptTitle: '업무범주',
-          prompt: `선택 가능: ${categories.join(' / ')}`,
-        };
-      }
-
-      const guide = workbook.addWorksheet('작성안내');
-      guide.getCell(1, 1).value = '고객사 주소 엑셀 업로드 안내';
-      guide.getCell(1, 1).font = { bold: true, size: 13 };
-      guide.getCell(3, 1).value =
-        '1) 「고객사_업로드양식」시트에 데이터를 입력한 뒤 업로드하세요.';
-      guide.getCell(4, 1).value = '2) 업무범주 칸은 드롭다운에서 선택하세요.';
-      guide.getCell(5, 1).value =
-        '3) 이미 등록된 고객사명은 업로드되지 않습니다. 상태는 운영중으로 등록됩니다.';
-      guide.getColumn(1).width = 72;
-
-      const buffer = await workbook.xlsx.writeBuffer();
+      const buffer = await writeClientAddressUploadTemplateBuffer(
+        categories,
+        sampleCategory
+      );
       const blob = new Blob([buffer], {
         type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       });
@@ -397,6 +404,37 @@ export default function ProductionClientAddressModule() {
     }
   };
 
+  const clientAddressSheetRows = (
+    sheet: XLSX.WorkSheet
+  ): Record<string, unknown>[] => {
+    const aoa = XLSX.utils.sheet_to_json<unknown[]>(sheet, {
+      header: 1,
+      defval: '',
+      raw: false,
+    }) as unknown[][];
+    if (!aoa.length) return [];
+    const asText = (row: unknown[] | undefined) =>
+      (row || []).map((c) => String(c ?? '').trim());
+    const row0 = asText(aoa[0]);
+    const row1 = asText(aoa[1]);
+    const grouped =
+      row1.includes('고객사명') &&
+      (row0.includes('고객사정보') || row0.includes('주소정보') || row0.includes('NO'));
+    const headerRow = grouped ? row1 : row0;
+    const dataStart = grouped ? 2 : 1;
+    const keys = headerRow.map((h, i) => h || `col${i}`);
+    const out: Record<string, unknown>[] = [];
+    for (let r = dataStart; r < aoa.length; r += 1) {
+      const line = aoa[r] || [];
+      const rec: Record<string, unknown> = {};
+      keys.forEach((k, i) => {
+        rec[k] = line[i];
+      });
+      out.push(rec);
+    }
+    return out;
+  };
+
   const handleExcelUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -405,9 +443,13 @@ export default function ProductionClientAddressModule() {
     reader.onload = async (evt) => {
       try {
         const wb = XLSX.read(evt.target?.result, { type: 'array', cellDates: true });
+        const skipSheets = new Set(['작성안내', '업무범주목록']);
         const preferred =
-          wb.SheetNames.find((n) => n === '고객사_업로드양식') || wb.SheetNames[0];
-        const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(wb.Sheets[preferred]);
+          wb.SheetNames.find((n) => n === '고객사_주소') ||
+          wb.SheetNames.find((n) => n === '고객사_업로드양식') ||
+          wb.SheetNames.find((n) => !skipSheets.has(n)) ||
+          wb.SheetNames[0];
+        const rows = clientAddressSheetRows(wb.Sheets[preferred]);
         if (!rows.length) {
           alert('엑셀에 업로드할 데이터가 없습니다.');
           return;
@@ -427,9 +469,18 @@ export default function ProductionClientAddressModule() {
         }> = [];
         let skippedDup = 0;
         let skippedInvalid = 0;
+        let scanned = 0;
 
         for (const row of rows) {
           const name = cellStr(row, '고객사명');
+          const categoryRaw = cellStr(row, '업무범주');
+          const zip = cellStr(row, '우편번호');
+          const road = cellStr(row, '기본(도로명)주소');
+          const detail = cellStr(row, '상세주소');
+          const note = cellStr(row, '관리비고', '비고');
+          if (!name && !categoryRaw && !zip && !road && !detail && !note) continue;
+          if (name === '예시고객사') continue;
+          scanned++;
           if (!name) {
             skippedInvalid++;
             continue;
@@ -441,7 +492,7 @@ export default function ProductionClientAddressModule() {
             continue;
           }
 
-          let category = cellStr(row, '업무범주');
+          let category = categoryRaw;
           if (masterCategories.length > 0) {
             if (!category) {
               skippedInvalid++;
@@ -461,23 +512,28 @@ export default function ProductionClientAddressModule() {
           valid.push({
             name,
             category,
-            zip_code: cellStr(row, '우편번호'),
-            address_road: cellStr(row, '기본(도로명)주소'),
-            address_detail: cellStr(row, '상세주소'),
-            note: cellStr(row, '관리비고', '비고'),
+            zip_code: zip,
+            address_road: road,
+            address_detail: detail,
+            note,
           });
+        }
+
+        if (scanned === 0) {
+          alert('엑셀에 업로드할 데이터가 없습니다.');
+          return;
         }
 
         if (valid.length === 0) {
           alert(
-            `업로드할 신규 고객사가 없습니다.\n(전체 ${rows.length}건 · 중복 ${skippedDup}건 · 형식오류 ${skippedInvalid}건)`
+            `업로드할 신규 고객사가 없습니다.\n(전체 ${scanned}건 · 중복 ${skippedDup}건 · 형식오류 ${skippedInvalid}건)`
           );
           return;
         }
 
         if (skippedDup > 0 || skippedInvalid > 0) {
           alert(
-            `총 ${rows.length}건 중 신규 ${valid.length}건을 등록합니다.\n(중복 제외 ${skippedDup}건 · 형식오류 ${skippedInvalid}건)`
+            `총 ${scanned}건 중 신규 ${valid.length}건을 등록합니다.\n(중복 제외 ${skippedDup}건 · 형식오류 ${skippedInvalid}건)`
           );
         }
 
@@ -585,6 +641,33 @@ export default function ProductionClientAddressModule() {
   };
   const canDeleteClient = (client: any) => canEditMaster || isOwnClient(client);
 
+  const openClientEdit = (client: any) => {
+    setEditClient(client);
+    setFormData({
+      name: client.name,
+      zip_code: client.zip_code || '',
+      address_road: client.address_road || '',
+      address_detail: client.address_detail || '',
+      category: client.category || '',
+      note: client.note || '',
+    });
+    setShowModal(true);
+  };
+
+  const openActionMenu = (e: React.MouseEvent<HTMLButtonElement>, id: string) => {
+    const width = 160;
+    const r = e.currentTarget.getBoundingClientRect();
+    setActionMenu((prev) =>
+      prev?.id === id
+        ? null
+        : {
+            id,
+            top: r.bottom + 4,
+            left: Math.min(Math.max(12, r.right - width), window.innerWidth - width - 12),
+          }
+    );
+  };
+
   const handleDeleteClient = async (id: string) => {
     const client = clients.find((c) => c.id === id);
     if (!client) return;
@@ -617,7 +700,7 @@ export default function ProductionClientAddressModule() {
   return (
     <div className="w-full max-w-[1600px] mx-auto space-y-6 p-8 font-sans text-slate-900 pb-24 animate-fade-in">
       {loadError && (
-        <div className="bg-amber-50 border border-amber-200 text-amber-800 px-5 py-3 rounded-2xl text-xs font-bold flex justify-between items-center gap-4">
+        <div className="bg-amber-50 border border-amber-200 text-amber-800 px-5 py-3 rounded-lg text-xs font-bold flex justify-between items-center gap-4">
           <span>⚠️ {loadError}</span>
           <button
             type="button"
@@ -632,25 +715,25 @@ export default function ProductionClientAddressModule() {
         </div>
       )}
 
-      <div className="w-full bg-gradient-to-r from-sky-900 to-slate-800 rounded-3xl text-white shadow-lg relative overflow-hidden px-6 md:px-8 py-6">
+      <div className="w-full bg-gradient-to-r from-sky-900 to-slate-800 rounded-lg text-white shadow-lg relative overflow-hidden px-6 md:px-8 py-6">
         <div className="absolute right-0 top-0 w-64 h-64 bg-sky-400/15 rounded-full blur-3xl -translate-y-1/3 translate-x-1/4 pointer-events-none" />
         <div className="relative z-10">
-          <h3 className="text-[10px] font-black uppercase tracking-widest text-sky-300 mb-2.5">
+          <h3 className="text-[10px] font-medium uppercase tracking-widest text-sky-300 mb-2.5">
             PRODUCTION CLIENT ADDRESS
           </h3>
-          <h1 className="text-2xl font-extrabold tracking-tight text-white leading-none">
-            고객사 주소관리
+          <h1 className="text-2xl tracking-tight leading-none">
+            <span className="text-white font-medium">고객사 주소관리</span>
           </h1>
           <p className="text-sky-100/90 text-xs mt-3 leading-relaxed">
             제작물 배송·현판 신청에 쓰는 고객사 주소(회사명·업무범주·소재지)를 등록·관리합니다.
           </p>
           {permissionSummary && isSystemLv1User(currentUser) && (
             <div className="flex flex-wrap items-center gap-2 mt-4 pt-3 border-t border-white/15">
-              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-white/10 border-white/25 text-sky-50 shadow-sm">
+              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-medium border tracking-tight bg-white/10 border-white/25 text-sky-50 shadow-sm">
                 <span>👑 Master 책임자:</span>
                 <span>{permissionSummary.masterName}</span>
               </div>
-              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-purple-500/20 border-purple-300/40 text-purple-100 shadow-sm">
+              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-medium border tracking-tight bg-purple-500/20 border-purple-300/40 text-purple-100 shadow-sm">
                 <span>👁️ Access:</span>
                 <span>{permissionSummary.accessDesignate}</span>
                 <span className="opacity-50">|</span>
@@ -658,7 +741,7 @@ export default function ProductionClientAddressModule() {
                 <span className="opacity-50">|</span>
                 <span>Level: {permissionSummary.accessLevel}</span>
               </div>
-              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-sky-400/20 border-sky-300/40 text-sky-100 shadow-sm">
+              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-medium border tracking-tight bg-sky-400/20 border-sky-300/40 text-sky-100 shadow-sm">
                 <span>✍️ Edit:</span>
                 <span>{permissionSummary.editDesignate}</span>
                 <span className="opacity-50">|</span>
@@ -678,7 +761,7 @@ export default function ProductionClientAddressModule() {
           >
             {selectedClientIds.size > 0
               ? `선택 EXCEL 다운로드(${selectedClientIds.size})(Edit)`
-              : '화면 목록 EXCEL 다운로드(Edit)'}
+              : '목록 EXCEL 다운로드(Edit)'}
           </button>
         )}
         <button
@@ -715,14 +798,25 @@ export default function ProductionClientAddressModule() {
         </button>
       </div>
 
-      <div className="bg-white border border-slate-200 rounded-[2.5rem] shadow-sm overflow-hidden">
-        <HeaderLight title="고객사 주소 대장" count={filteredClients.length}>
+      <div className="bg-white border border-slate-200 rounded-lg shadow-sm overflow-hidden">
+        <HeaderLight
+          title="고객사 주소 대장"
+          count={filteredClients.length}
+          extraLeft={
+            <DeptAssigneeLine
+              editorNames={editorNames}
+              label="👤 편집 권한자"
+              popupLabel="편집 권한자"
+              showIcon={false}
+            />
+          }
+        >
           <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm">
-            <span className="text-[10px] font-black text-slate-400 uppercase">업무범주</span>
+            <span className="text-[10px] font-medium text-slate-400 uppercase">업무범주</span>
             <select
               value={selectedCategory}
               onChange={(e) => setSelectedCategory(e.target.value)}
-              className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent max-w-[140px]"
+              className="text-[11px] font-medium text-slate-800 outline-none cursor-pointer bg-transparent max-w-[140px]"
             >
               <option value="ALL">전체</option>
               {uniqueCategories.map((cat) => (
@@ -742,7 +836,7 @@ export default function ProductionClientAddressModule() {
                 placeholder="회사명 검색..."
                 value={searchNameQuery}
                 onChange={(e) => setSearchNameQuery(e.target.value)}
-                className="w-full pl-7 pr-3 py-1.5 bg-white border border-slate-200 rounded-lg text-[11px] font-bold outline-none focus:border-sky-500 shadow-sm"
+                className="w-full pl-7 pr-3 py-1.5 bg-white border border-slate-200 rounded-lg text-[11px] font-medium outline-none focus:border-sky-500 shadow-sm"
               />
             </div>
             <div className="relative w-36">
@@ -754,7 +848,7 @@ export default function ProductionClientAddressModule() {
                 placeholder="소재지 검색..."
                 value={searchLocationQuery}
                 onChange={(e) => setSearchLocationQuery(e.target.value)}
-                className="w-full pl-7 pr-3 py-1.5 bg-white border border-slate-200 rounded-lg text-[11px] font-bold outline-none focus:border-sky-500 shadow-sm"
+                className="w-full pl-7 pr-3 py-1.5 bg-white border border-slate-200 rounded-lg text-[11px] font-medium outline-none focus:border-sky-500 shadow-sm"
               />
             </div>
           </div>
@@ -767,12 +861,12 @@ export default function ProductionClientAddressModule() {
               <col className="w-12" />
               <col className="w-[20%]" />
               <col className="w-[12%]" />
-              <col className="w-[30%]" />
-              <col className="w-[14%]" />
-              <col className="w-[110px]" />
-              <col className="w-[160px]" />
+              <col className="w-[36%]" />
+              <col className="w-[12%]" />
+              <col className="w-[128px]" />
+              <col className="w-14" />
             </colgroup>
-            <thead className="bg-slate-100 text-slate-700 text-[10px] font-black uppercase tracking-widest border-b border-slate-200">
+            <thead className="bg-slate-100 text-slate-700 text-[10px] font-medium uppercase tracking-widest border-b border-slate-200">
               <tr>
                 {showSelection && (
                   <th className="h-12 text-center pl-4">
@@ -788,15 +882,15 @@ export default function ProductionClientAddressModule() {
                 <th className="h-12 pl-3 text-left">회사명</th>
                 <th className="h-12 px-3 text-left">업무범주</th>
                 <th className="h-12 px-3 text-left">소재지 주소</th>
-                <th className="h-12 px-3 text-left">관리비고</th>
-                <th className="h-12 px-2 text-center whitespace-nowrap">등록/수정일</th>
+                <th className="h-12 pl-5 pr-3 text-left">관리비고</th>
+                <th className="h-12 pl-6 pr-3 text-left whitespace-nowrap">등록/수정일</th>
                 <th className="h-12 pr-4 text-center whitespace-nowrap">관리액션</th>
               </tr>
             </thead>
-            <tbody className="bg-white divide-y divide-slate-100 text-xs font-bold text-slate-700">
+            <tbody className="bg-white divide-y divide-slate-100 text-xs font-medium text-slate-700">
               {paginatedClients.length === 0 ? (
                 <tr>
-                  <td colSpan={tableColCount} className="p-16 text-center text-slate-400 text-sm">
+                  <td colSpan={tableColCount} className="p-16 text-center text-slate-400 text-xs font-medium">
                     조건에 맞는 고객사가 없습니다.
                   </td>
                 </tr>
@@ -813,57 +907,58 @@ export default function ProductionClientAddressModule() {
                           />
                         </td>
                       )}
-                      <td className="text-center font-black tabular-nums text-slate-400">
+                      <td className="text-center font-medium tabular-nums text-slate-400">
                         {filteredClients.length - ((currentPage - 1) * itemsPerPage + idx)}
                       </td>
                       <td className="pl-3 pr-2 text-left max-w-0">
                         <span
-                          className="block font-black text-[13px] text-slate-900 truncate"
+                          className="block font-bold text-[13px] text-slate-900 truncate"
                           title={client.name}
                         >
                           {client.name}
                         </span>
                       </td>
                       <td
-                        className="px-3 text-left text-sky-700 font-black text-[11px] truncate max-w-0"
+                        className="px-3 text-left text-sky-700 font-medium truncate max-w-0"
                         title={client.category}
                       >
                         {client.category || '-'}
                       </td>
                       <td
-                        className="px-3 text-left text-slate-500 text-[11px] truncate max-w-0"
+                        className="px-3 text-left text-slate-500 truncate max-w-0"
                         title={formatMarketingClientLocation(client) || '-'}
                       >
                         {formatMarketingClientLocation(client) || '-'}
                       </td>
                       <td
-                        className="px-3 text-left text-slate-500 text-[11px] truncate"
+                        className="pl-5 pr-3 text-left text-slate-500 truncate"
                         title={client.note || '-'}
                       >
                         {client.note || '-'}
                       </td>
-                      <td className="px-2 text-center whitespace-nowrap">
+                      <td className="pl-6 pr-3 text-left whitespace-nowrap">
                         {(() => {
                           // DB: createdAt(@default(now)) · updatedAt(@updatedAt) — 신규/수정 시 Prisma 자동 반영
                           // 표시: 코드베이스 공통 getKSTDateString → KST YYYY-MM-DD
                           const created = client.createdAt
                             ? getKSTDateString(client.createdAt) || '-'
                             : '-';
-                          const updated = client.updatedAt
-                            ? getKSTDateString(client.updatedAt) || '-'
-                            : '-';
+                          const updated = displayUpdatedDate(
+                            client.createdAt,
+                            client.updatedAt
+                          );
                           return (
                             <div
-                              className="flex flex-col items-center gap-0.5 leading-tight"
+                              className="flex flex-col items-start gap-0.5 leading-tight"
                               title={`등록 ${created} · 수정 ${updated}`}
                             >
-                              <span className="text-[9px] font-bold text-slate-400">
+                              <span className="text-xs font-medium text-slate-400">
                                 등록{' '}
                                 <span className="font-mono tabular-nums text-slate-600">
                                   {created}
                                 </span>
                               </span>
-                              <span className="text-[9px] font-bold text-slate-400">
+                              <span className="text-xs font-medium text-slate-400">
                                 수정{' '}
                                 <span className="font-mono tabular-nums text-slate-700">
                                   {updated}
@@ -874,40 +969,23 @@ export default function ProductionClientAddressModule() {
                         })()}
                       </td>
                       <td className="pr-4 text-center whitespace-nowrap">
-                          <div className="flex justify-center items-center gap-1 flex-nowrap">
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setEditClient(client);
-                                    setFormData({
-                                      name: client.name,
-                                      zip_code: client.zip_code || '',
-                                      address_road: client.address_road || '',
-                                      address_detail: client.address_detail || '',
-                                      category: client.category || '',
-                                      note: client.note || '',
-                                    });
-                                    setShowModal(true);
-                                  }}
-                                  className="px-3 py-1 bg-white border border-slate-200 text-slate-600 rounded-lg text-[9px] font-black hover:bg-slate-50 shadow-sm"
-                                >
-                                  수정
-                                </button>
-                            {canDeleteClient(client) && (
-                              <button
-                                type="button"
-                                onClick={() => handleDeleteClient(client.id)}
-                                className="px-3 py-1 bg-red-50 border border-red-200 text-red-500 rounded-lg text-[9px] font-medium hover:bg-red-500 hover:text-white shadow-sm"
-                                title={
-                                  isOwnClient(client)
-                                    ? '본인이 등록한 고객사 삭제'
-                                    : '편집 권한으로 삭제'
-                                }
-                              >
-                                {isOwnClient(client) ? '삭제' : '삭제(Edit)'}
-                              </button>
-                            )}
-                          </div>
+                        <button
+                          type="button"
+                          data-action-kebab
+                          title="더보기"
+                          onClick={(e) => openActionMenu(e, client.id)}
+                          className={`inline-flex items-center justify-center w-7 h-7 rounded-lg transition-colors ${
+                            actionMenu?.id === client.id
+                              ? 'bg-slate-200 text-slate-800'
+                              : 'text-slate-500 hover:bg-slate-100 hover:text-slate-800'
+                          }`}
+                        >
+                          <svg viewBox="0 0 20 20" className="w-4 h-4" fill="currentColor" aria-hidden>
+                            <circle cx="10" cy="4.5" r="1.6" />
+                            <circle cx="10" cy="10" r="1.6" />
+                            <circle cx="10" cy="15.5" r="1.6" />
+                          </svg>
+                        </button>
                       </td>
                     </tr>
                   ))
@@ -938,13 +1016,54 @@ export default function ProductionClientAddressModule() {
         </div>
       )}
 
+      {actionMenu &&
+        createPortal(
+          <div
+            ref={actionMenuRef}
+            style={{ top: actionMenu.top, left: actionMenu.left }}
+            className="fixed z-[500] w-[160px] rounded-xl border border-slate-200 bg-white shadow-lg py-1 text-left"
+          >
+            {(() => {
+              const row = clients.find((c) => c.id === actionMenu.id);
+              if (!row) return null;
+              return (
+                <>
+                  <button
+                    type="button"
+                    className="w-full px-3 py-2 text-left text-[11px] font-medium text-slate-700 hover:bg-slate-50"
+                    onClick={() => {
+                      setActionMenu(null);
+                      openClientEdit(row);
+                    }}
+                  >
+                    수정
+                  </button>
+                  {canDeleteClient(row) ? (
+                    <button
+                      type="button"
+                      className="w-full px-3 py-2 text-left text-[11px] font-medium text-rose-600 hover:bg-rose-50"
+                      onClick={() => {
+                        setActionMenu(null);
+                        void handleDeleteClient(row.id);
+                      }}
+                    >
+                      {isOwnClient(row) ? '삭제' : '삭제(Edit)'}
+                    </button>
+                  ) : null}
+                </>
+              );
+            })()}
+          </div>,
+          document.body
+        )}
+
       {showModal && (
         <div
           className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[400] flex items-center justify-center p-6"
           onClick={() => setShowModal(false)}
         >
           <div
-            className="bg-white w-full max-w-[420px] p-8 rounded-[2rem] shadow-2xl flex flex-col border border-slate-200"
+            className="bg-white w-full max-w-[420px] p-8 rounded-lg shadow-2xl flex flex-col border border-slate-200"
             onClick={(e) => e.stopPropagation()}
           >
             <h3 className="font-black text-lg text-slate-900 border-b border-slate-100 pb-4 mb-6 flex items-center gap-2">

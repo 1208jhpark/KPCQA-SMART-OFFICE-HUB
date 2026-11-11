@@ -6,6 +6,7 @@ import {
   authErrorToResponse,
   tryGetSessionUser,
 } from '@/lib/server-auth-guard';
+import { isSystemLv1User } from '@/lib/permission-utils';
 import { assetInAnyAuditTarget, auditTargetsOverlap, parseAuditTargetUnitIds } from '@/utils/itAuditTarget';
 
 export const dynamic = 'force-dynamic';
@@ -410,9 +411,7 @@ export async function PATCH(req: Request) {
 export async function DELETE(req: Request) {
   try {
     const auth = await authorizeAnyMenuPaths([IT_AUDIT_WRITE_PATH], { requireEditor: true });
-    const roles = Array.isArray(auth.user?.roles) ? auth.user.roles : [];
-    const lv1 = roles.some((r: any) => String(r).includes('LV_1'));
-    if (!lv1) {
+    if (!isSystemLv1User(auth.user)) {
       return NextResponse.json({ error: '영구 삭제는 LV_1 권한이 필요합니다.' }, { status: 403 });
     }
 

@@ -10,7 +10,6 @@ const config: Config = {
           "Noto Sans KR",
           "var(--font-noto-sans-kr)",
           "Roboto",
-          "var(--font-roboto)",
           "ui-sans-serif",
           "system-ui",
           "sans-serif",

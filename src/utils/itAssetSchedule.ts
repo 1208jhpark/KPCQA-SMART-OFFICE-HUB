@@ -13,19 +13,35 @@ export type ItAssetSchedule = {
   replace_dday: number | null;
 };
 
-/** 전사 공통 교체주기: 입고일 기준 4년(48개월) */
+/** 기본 교체주기: 입고일 기준 4년(48개월) — 렌탈/구독기간(M)이 있으면 그 값 우선 */
 export const IT_REPLACE_CYCLE_MONTHS = 48;
 
-/** 마스터 규칙: 교체예정 = 입고일(in_date) + 4년 */
+/**
+ * 마스터 규칙: 교체예정 = 입고일(in_date) + N개월
+ * - 렌탈/구독기간(M) > 0 이면 그 개월수
+ * - 아니면 기본 48개월
+ */
+export function resolveItReplaceCycleMonths(
+  rentalMonths?: number | string | null
+): number {
+  const parsed = parseInt(String(rentalMonths ?? ''), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : IT_REPLACE_CYCLE_MONTHS;
+}
+
 export function computeItAssetReplaceSchedule(asset: {
   in_date?: string | null;
   cycle?: number | string | null;
+  rental_months?: number | string | null;
 }): ItAssetSchedule {
-  const inDate = String(asset.in_date || '').trim();
-  if (!inDate) {
+  // ISO datetime 등도 YYYY-MM-DD 앞부분만 사용
+  const inRaw = String(asset.in_date || '').trim();
+  const inMatch = inRaw.match(/^(\d{4}-\d{2}-\d{2})/);
+  const inDate = inMatch ? inMatch[1] : inRaw;
+  if (!inDate || !/^\d{4}-\d{2}-\d{2}/.test(inDate)) {
     return { scheduleBaseDate: null, replace_due_date: '-', replace_dday: null };
   }
-  const computed = addMonthsToKSTDateOnly(inDate, IT_REPLACE_CYCLE_MONTHS);
+  const months = resolveItReplaceCycleMonths(asset.rental_months);
+  const computed = addMonthsToKSTDateOnly(inDate, months);
   if (!computed) {
     return { scheduleBaseDate: inDate, replace_due_date: '-', replace_dday: null };
   }

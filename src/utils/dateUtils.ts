@@ -95,11 +95,25 @@ export const getKSTTimeString = (dateInput: Date | string | number = Date.now())
     minute: '2-digit',
     second: '2-digit',
     hour12: false,
+    hourCycle: 'h23',
   }).formatToParts(date);
   const get = (type: Intl.DateTimeFormatPartTypes) =>
     parts.find((p) => p.type === type)?.value ?? '00';
-  return `${get('hour')}:${get('minute')}:${get('second')}`;
+  let hour = get('hour');
+  if (hour === '24') hour = '00';
+  return `${hour}:${get('minute')}:${get('second')}`;
 };
+
+/**
+ * datetime-local 값 (YYYY-MM-DDTHH:mm).
+ * 브라우저 TZ와 무관하게 Asia/Seoul 벽시계. 저장 시 +09:00 으로 해석한다.
+ */
+export function getKSTDateTimeLocal(dateInput: Date | string | number = Date.now()) {
+  const ymd = getKSTDateString(dateInput);
+  const t = getKSTTimeString(dateInput);
+  if (!ymd || !t) return '';
+  return `${ymd}T${t.slice(0, 5)}`;
+}
 
 /**
  * 제출일시 등 표시용: `YYYY-MM-DD HH:mm:ss` (KST)

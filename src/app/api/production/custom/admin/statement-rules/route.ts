@@ -10,7 +10,11 @@ import {
   migrateLegacyZebCertKeywords,
   type ProductionStatementRules,
 } from '@/lib/production-statement-match';
-import { mergeLearnedOfficeProductAliases } from '@/lib/production-office-statement-match';
+import {
+  mergeLearnedOfficeProductAliases,
+  sanitizeOfficeProductAliases,
+  unionOfficeAliasMaps,
+} from '@/lib/production-office-statement-match';
 
 export const dynamic = 'force-dynamic';
 
@@ -41,6 +45,7 @@ async function getStoredRules(category: string = 'SIGN'): Promise<ProductionStat
   const filePath = getRulesFilePath(category);
   const legacyFilePath = path.join(UPLOAD_DIR, 'matching-rules.json');
   const defaults = getDefaultRulesForCategory(category);
+  const isOffice = String(category).toUpperCase() === 'OFFICE_SUPPLIES';
 
   try {
     let raw = '';
@@ -53,9 +58,9 @@ async function getStoredRules(category: string = 'SIGN'): Promise<ProductionStat
       }
     }
 
-    if (!raw) return defaults;
+    let parsed: Partial<ProductionStatementRules> = {};
+    if (raw) parsed = JSON.parse(raw);
 
-    const parsed = JSON.parse(raw);
     const merged: ProductionStatementRules = {
       columnHeaders: {
         ...defaults.columnHeaders,
@@ -70,6 +75,14 @@ async function getStoredRules(category: string = 'SIGN'): Promise<ProductionStat
           ? parsed.plateItemKeywords
           : defaults.plateItemKeywords,
     };
+
+    if (isOffice) {
+      merged.plateItemKeywords = unionOfficeAliasMaps(
+        defaults.plateItemKeywords,
+        sanitizeOfficeProductAliases(merged.plateItemKeywords)
+      );
+    }
+
     return migrateLegacyZebCertKeywords(merged, category);
   } catch {
     return defaults;
@@ -162,6 +175,8 @@ export async function POST(req: Request) {
     await ensureDir();
 
     const defaults = getDefaultRulesForCategory(category);
+    const stored = await getStoredRules(category);
+    const isOffice = category === 'OFFICE_SUPPLIES';
     const rules: ProductionStatementRules = migrateLegacyZebCertKeywords(
       {
         columnHeaders: {
@@ -172,8 +187,9 @@ export async function POST(req: Request) {
           body.certTypeKeywords !== undefined
             ? body.certTypeKeywords
             : defaults.certTypeKeywords,
-        plateItemKeywords:
-          body.plateItemKeywords !== undefined
+        plateItemKeywords: isOffice
+          ? stored.plateItemKeywords
+          : body.plateItemKeywords !== undefined
             ? body.plateItemKeywords
             : defaults.plateItemKeywords,
       },

@@ -1,6 +1,7 @@
-﻿'use client';
+'use client';
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { saveAs } from 'file-saver';
 import { getKSTDateString, getKSTNowYearMonth } from '@/utils/dateUtils';
 import { getKrHolidaysForYear, KR_HOLIDAY_COLOR } from '@/utils/krHolidays';
 
@@ -73,6 +74,185 @@ function pad2(n: number) {
   return String(n).padStart(2, '0');
 }
 
+/** 30분 간격 시간 선택 · 타임라인 (07:00 ~ 23:00) */
+const TIME_RANGE_START_MIN = 7 * 60;
+const TIME_RANGE_END_MIN = 23 * 60;
+const TIME_OPTIONS: string[] = Array.from(
+  { length: (TIME_RANGE_END_MIN - TIME_RANGE_START_MIN) / 30 + 1 },
+  (_, i) => {
+    const total = TIME_RANGE_START_MIN + i * 30;
+    return `${pad2(Math.floor(total / 60))}:${pad2(total % 60)}`;
+  }
+);
+
+function parseTimeText(raw: string): { start_time: string; end_time: string } {
+  const s = String(raw || '').trim();
+  if (!s) return { start_time: '', end_time: '' };
+  const m = s.match(/^(\d{1,2}):(\d{2})\s*[~\-–—]\s*(\d{1,2}):(\d{2})$/);
+  if (m) {
+    return {
+      start_time: `${pad2(Number(m[1]))}:${m[2]}`,
+      end_time: `${pad2(Number(m[3]))}:${m[4]}`,
+    };
+  }
+  const single = s.match(/^(\d{1,2}):(\d{2})$/);
+  if (single) {
+    return { start_time: `${pad2(Number(single[1]))}:${single[2]}`, end_time: '' };
+  }
+  return { start_time: '', end_time: '' };
+}
+
+function composeTimeText(start_time: string, end_time: string) {
+  const a = String(start_time || '').trim();
+  const b = String(end_time || '').trim();
+  if (a && b) return `${a}~${b}`;
+  if (a) return a;
+  if (b) return b;
+  return '';
+}
+
+/** 내용/프로젝트 복수 항목 — title 필드에 줄바꿈으로 저장 */
+function splitTitles(raw: string): string[] {
+  const parts = String(raw || '')
+    .split(/\n+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return parts.length > 0 ? parts : [''];
+}
+
+function joinTitles(titles: string[]): string {
+  return titles.map((t) => String(t || '').trim()).filter(Boolean).join('\n');
+}
+
+function formatTitlesInline(raw: string): string {
+  return splitTitles(raw).filter(Boolean).join(' · ');
+}
+
+/** 인쇄 HTML용 — 복수 내용/프로젝트는 줄바꿈 */
+function formatTitlesHtml(raw: string): string {
+  const parts = splitTitles(raw).filter(Boolean);
+  if (parts.length === 0) return '';
+  return parts.map((t) => escapeHtml(t)).join('<br/>');
+}
+
+/** 참석자: 4명까지 한 줄 고정, 5명부터 줄바꿈(칸 너비로 중간 끊김 방지) */
+function formatAttendeesHtml(raw: string): string {
+  const names = String(raw || '')
+    .split(/[,，、]/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (names.length === 0) return '';
+  const lines: string[] = [];
+  for (let i = 0; i < names.length; i += 4) {
+    const chunk = names
+      .slice(i, i + 4)
+      .map((n) => escapeHtml(n))
+      .join(', ');
+    // nowrap으로 4명이 CSS에 의해 3명에서 끊기지 않게 함
+    lines.push(`<span class="att-line">${chunk}</span>`);
+  }
+  return lines.join('<br/>');
+}
+
+function snapToTimeSlot(hhmm: string): string {
+  const [h, m] = String(hhmm || '')
+    .split(':')
+    .map((x) => Number(x));
+  if (Number.isNaN(h) || Number.isNaN(m)) return '';
+  const total = h * 60 + m;
+  const snapped = Math.round(total / 30) * 30;
+  const clamped = Math.min(
+    TIME_RANGE_END_MIN,
+    Math.max(TIME_RANGE_START_MIN, snapped)
+  );
+  return `${pad2(Math.floor(clamped / 60))}:${pad2(clamped % 60)}`;
+}
+
+/** 타임라인 30분 칸 높이(px) — 범위 블록 absolute 배치용 */
+const TIMELINE_SLOT_H = 28;
+
+function resolveSlotIndex(hhmm: string): number {
+  const snapped = TIME_OPTIONS.includes(hhmm) ? hhmm : snapToTimeSlot(hhmm);
+  return TIME_OPTIONS.indexOf(snapped);
+}
+
+type TimelineSpan = {
+  ev: CalEvent;
+  startIdx: number;
+  /** exclusive — 종료 시각 줄에서 블록이 끝남 */
+  endIdx: number;
+  lane: number;
+  lanes: number;
+  rangeLabel: string;
+};
+
+function buildTimelineSpans(dayEvents: CalEvent[]): {
+  untimedEvents: CalEvent[];
+  timedSpans: TimelineSpan[];
+} {
+  const untimed: CalEvent[] = [];
+  const raw: Array<Omit<TimelineSpan, 'lane' | 'lanes'>> = [];
+
+  for (const ev of dayEvents) {
+    const times = parseTimeText(String(ev.time_text || ''));
+    if (!times.start_time && !times.end_time) {
+      untimed.push(ev);
+      continue;
+    }
+    let startIdx = times.start_time ? resolveSlotIndex(times.start_time) : -1;
+    let endIdx = times.end_time ? resolveSlotIndex(times.end_time) : -1;
+    if (startIdx < 0 && endIdx < 0) {
+      untimed.push(ev);
+      continue;
+    }
+    if (startIdx < 0) startIdx = endIdx;
+    // 종료 시각까지 보이게: 블록 하단이 종료 슬롯 줄에 오도록 exclusive end
+    if (endIdx < 0) endIdx = startIdx + 1;
+    else if (endIdx <= startIdx) endIdx = startIdx + 1;
+
+    endIdx = Math.min(TIME_OPTIONS.length, endIdx);
+    startIdx = Math.max(0, Math.min(startIdx, TIME_OPTIONS.length - 1));
+    if (endIdx <= startIdx) endIdx = startIdx + 1;
+
+    raw.push({
+      ev,
+      startIdx,
+      endIdx,
+      rangeLabel: composeTimeText(
+        times.start_time || TIME_OPTIONS[startIdx],
+        times.end_time || ''
+      ),
+    });
+  }
+
+  raw.sort(
+    (a, b) =>
+      a.startIdx - b.startIdx || b.endIdx - b.startIdx - (a.endIdx - a.startIdx)
+  );
+
+  const active: Array<{ endIdx: number; lane: number }> = [];
+  const placed: TimelineSpan[] = [];
+  for (const item of raw) {
+    for (let i = active.length - 1; i >= 0; i--) {
+      if (active[i].endIdx <= item.startIdx) active.splice(i, 1);
+    }
+    const used = new Set(active.map((a) => a.lane));
+    let lane = 0;
+    while (used.has(lane)) lane += 1;
+    active.push({ endIdx: item.endIdx, lane });
+    placed.push({ ...item, lane, lanes: 1 });
+  }
+
+  for (const r of placed) {
+    const overlapping = placed.filter(
+      (o) => o.startIdx < r.endIdx && o.endIdx > r.startIdx
+    );
+    r.lanes = Math.max(1, ...overlapping.map((o) => o.lane + 1));
+  }
+
+  return { untimedEvents: untimed, timedSpans: placed };
+}
+
 function ymd(year: number, month: number, day: number) {
   return `${year}-${pad2(month)}-${pad2(day)}`;
 }
@@ -128,9 +308,9 @@ function buildMonthPrintHtml(opts: {
     if (holiday) {
       detailRows.push(`
         <tr>
+          <td>종일</td>
           <td>${escapeHtml(holiday)}</td>
           <td>—</td>
-          <td>종일</td>
           <td>공휴일</td>
         </tr>`);
     }
@@ -146,9 +326,9 @@ function buildMonthPrintHtml(opts: {
       for (const ev of dayEvents) {
         detailRows.push(`
           <tr>
-            <td>${escapeHtml(ev.title || '')}</td>
-            <td>${escapeHtml(String(ev.location || '').trim() || '—')}</td>
             <td>${escapeHtml(String(ev.time_text || '').trim() || '—')}</td>
+            <td>${formatTitlesHtml(ev.title || '')}</td>
+            <td>${escapeHtml(String(ev.location || '').trim() || '—')}</td>
             <td>${escapeHtml(String(ev.attendees || '').trim() || '—')}</td>
           </tr>`);
       }
@@ -162,9 +342,9 @@ function buildMonthPrintHtml(opts: {
           <table class="detail-table">
             <thead>
               <tr>
-                <th>내용</th>
-                <th>위치</th>
                 <th>시간</th>
+                <th>내용/프로젝트</th>
+                <th>위치</th>
                 <th>참석자</th>
               </tr>
             </thead>
@@ -222,9 +402,9 @@ function buildMonthPrintHtml(opts: {
       border-right: 1px solid #e2e8f0;
     }
     table.detail-table th:last-child { border-right: none; }
-    table.detail-table th:nth-child(1) { width: 38%; }
-    table.detail-table th:nth-child(2) { width: 22%; }
-    table.detail-table th:nth-child(3) { width: 14%; }
+    table.detail-table th:nth-child(1) { width: 14%; }
+    table.detail-table th:nth-child(2) { width: 38%; }
+    table.detail-table th:nth-child(3) { width: 22%; }
     table.detail-table th:nth-child(4) { width: 26%; }
     table.detail-table td {
       padding: 4px 6px;
@@ -232,6 +412,7 @@ function buildMonthPrintHtml(opts: {
       border-right: 1px solid #f1f5f9;
       word-break: break-word;
       min-height: 18px;
+      vertical-align: top;
     }
     table.detail-table td:last-child { border-right: none; }
     table.detail-table tr:last-child td { border-bottom: none; }
@@ -250,6 +431,397 @@ function buildMonthPrintHtml(opts: {
     <tbody>
       ${dayRows.join('')}
     </tbody>
+  </table>
+</body>
+</html>`;
+}
+
+function resolvePurposeForPrint(
+  ev: CalEvent,
+  purposes: ColorPurpose[]
+): { label: string; color: string | null; isShared: boolean } {
+  const id = String(ev.color_purpose_id || '').trim();
+  if (!id) {
+    return { label: '개인', color: ev.color || null, isShared: false };
+  }
+  const found = purposes.find((p) => p.id === id);
+  if (!found) {
+    return { label: '부서공용', color: ev.color || null, isShared: true };
+  }
+  return { label: found.label, color: found.color || ev.color || null, isShared: true };
+}
+
+/** 선택일 일정 엑셀 다운로드 */
+async function downloadDayScheduleExcel(opts: {
+  dateStr: string;
+  unitName: string;
+  events: CalEvent[];
+  purposes: ColorPurpose[];
+  holiday?: string | null;
+}) {
+  const { dateStr, unitName, events, purposes, holiday } = opts;
+  const parsed = parseYmd(dateStr);
+  const dow = parsed
+    ? WEEKDAYS[new Date(parsed.y, parsed.m - 1, parsed.d).getDay()]
+    : '';
+  const title = parsed
+    ? `${parsed.y}.${pad2(parsed.m)}.${pad2(parsed.d)}(${dow})`
+    : dateStr;
+  const dayEvents = events.filter((ev) => eventCoversDate(ev, dateStr));
+
+  const ExcelJS = (await import('exceljs')).default;
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet('일일정');
+
+  sheet.mergeCells(1, 1, 1, 5);
+  const titleCell = sheet.getCell(1, 1);
+  titleCell.value = `${title} 공유 일정${unitName ? ` / ${unitName}` : ''} · ${dayEvents.length}건`;
+  titleCell.font = { name: '맑은 고딕', size: 12, bold: true, color: { argb: 'FF0F172A' } };
+  titleCell.alignment = { vertical: 'middle', horizontal: 'left' };
+  sheet.getRow(1).height = 24;
+
+  const headers = ['시간', '용도', '내용/프로젝트', '위치', '참석자'];
+  sheet.addRow(headers);
+  const headerRow = sheet.getRow(2);
+  headerRow.height = 20;
+  const thin = { style: 'thin' as const, color: { argb: 'FFBFBFBF' } };
+  const border = { top: thin, left: thin, bottom: thin, right: thin };
+  headerRow.eachCell((cell) => {
+    cell.font = { name: '맑은 고딕', size: 9, bold: true, color: { argb: 'FF1E293B' } };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFDDEBF7' } };
+    cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+    cell.border = border;
+  });
+
+  const pushDataRow = (vals: string[]) => {
+    const row = sheet.addRow(vals);
+    row.eachCell((cell, col) => {
+      cell.font = { name: '맑은 고딕', size: 9, color: { argb: 'FF222222' } };
+      cell.border = border;
+      cell.alignment = {
+        vertical: 'middle',
+        horizontal: col === 1 || col === 2 ? 'center' : 'left',
+        wrapText: true,
+      };
+    });
+    const lines = Math.max(
+      1,
+      ...vals.map((v) => String(v || '').split(/\n/).length)
+    );
+    row.height = Math.max(18, lines * 14);
+  };
+
+  if (holiday) {
+    pushDataRow(['종일', '공휴일', holiday, '', '']);
+  }
+  if (dayEvents.length === 0 && !holiday) {
+    pushDataRow(['', '', '등록된 일정이 없습니다', '', '']);
+  } else {
+    for (const ev of dayEvents) {
+      const purpose = resolvePurposeForPrint(ev, purposes);
+      const titles = splitTitles(String(ev.title || ''))
+        .filter(Boolean)
+        .join('\n');
+      pushDataRow([
+        String(ev.time_text || '').trim(),
+        purpose.label,
+        titles,
+        String(ev.location || '').trim(),
+        String(ev.attendees || '').trim(),
+      ]);
+    }
+  }
+
+  sheet.getColumn(1).width = 14;
+  sheet.getColumn(2).width = 14;
+  sheet.getColumn(3).width = 32;
+  sheet.getColumn(4).width = 18;
+  sheet.getColumn(5).width = 28;
+
+  const buffer = await workbook.xlsx.writeBuffer();
+  const safeName = title.replace(/[\\/:*?"<>|]/g, '-');
+  saveAs(
+    new Blob([buffer], {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    }),
+    `공유일정_${safeName}.xlsx`
+  );
+}
+
+/** 월간 일정 엑셀 다운로드 */
+async function downloadMonthScheduleExcel(opts: {
+  year: number;
+  month: number;
+  unitName: string;
+  events: CalEvent[];
+  purposes: ColorPurpose[];
+  holidays: Map<string, string>;
+}) {
+  const { year, month, unitName, events, purposes, holidays } = opts;
+  const title = `${year}.${pad2(month)}`;
+  const lastDay = new Date(year, month, 0).getDate();
+
+  const ExcelJS = (await import('exceljs')).default;
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet('월일정');
+
+  let totalEvents = 0;
+  for (let d = 1; d <= lastDay; d++) {
+    totalEvents += events.filter((ev) =>
+      eventCoversDate(ev, ymd(year, month, d))
+    ).length;
+  }
+
+  sheet.mergeCells(1, 1, 1, 6);
+  const titleCell = sheet.getCell(1, 1);
+  titleCell.value = `${title} 공유 일정${unitName ? ` / ${unitName}` : ''} · ${totalEvents}건`;
+  titleCell.font = { name: '맑은 고딕', size: 12, bold: true, color: { argb: 'FF0F172A' } };
+  titleCell.alignment = { vertical: 'middle', horizontal: 'left' };
+  sheet.getRow(1).height = 24;
+
+  const headers = ['일자', '시간', '용도', '내용/프로젝트', '위치', '참석자'];
+  sheet.addRow(headers);
+  const headerRow = sheet.getRow(2);
+  headerRow.height = 20;
+  const thin = { style: 'thin' as const, color: { argb: 'FFBFBFBF' } };
+  const border = { top: thin, left: thin, bottom: thin, right: thin };
+  headerRow.eachCell((cell) => {
+    cell.font = { name: '맑은 고딕', size: 9, bold: true, color: { argb: 'FF1E293B' } };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFDDEBF7' } };
+    cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+    cell.border = border;
+  });
+
+  const pushDataRow = (vals: string[]) => {
+    const row = sheet.addRow(vals);
+    row.eachCell((cell, col) => {
+      cell.font = { name: '맑은 고딕', size: 9, color: { argb: 'FF222222' } };
+      cell.border = border;
+      cell.alignment = {
+        vertical: 'middle',
+        horizontal: col <= 3 ? 'center' : 'left',
+        wrapText: true,
+      };
+    });
+    const lines = Math.max(
+      1,
+      ...vals.map((v) => String(v || '').split(/\n/).length)
+    );
+    row.height = Math.max(18, lines * 14);
+  };
+
+  for (let d = 1; d <= lastDay; d++) {
+    const dateStr = ymd(year, month, d);
+    const dow = WEEKDAYS[new Date(year, month - 1, d).getDay()];
+    const dayLabel = `${d}(${dow})`;
+    const holiday = holidays.get(dateStr);
+    const dayEvents = events.filter((ev) => eventCoversDate(ev, dateStr));
+
+    if (holiday) {
+      pushDataRow([dayLabel, '종일', '공휴일', holiday, '', '']);
+    }
+    if (dayEvents.length === 0 && !holiday) {
+      // 인쇄물과 동일하게 빈 날짜도 한 줄 유지
+      pushDataRow([dayLabel, '', '', '', '', '']);
+      continue;
+    }
+
+    for (const ev of dayEvents) {
+      const purpose = resolvePurposeForPrint(ev, purposes);
+      const titles = splitTitles(String(ev.title || ''))
+        .filter(Boolean)
+        .join('\n');
+      pushDataRow([
+        dayLabel,
+        String(ev.time_text || '').trim(),
+        purpose.label,
+        titles,
+        String(ev.location || '').trim(),
+        String(ev.attendees || '').trim(),
+      ]);
+    }
+  }
+
+  sheet.getColumn(1).width = 10;
+  sheet.getColumn(2).width = 14;
+  sheet.getColumn(3).width = 14;
+  sheet.getColumn(4).width = 32;
+  sheet.getColumn(5).width = 18;
+  sheet.getColumn(6).width = 28;
+
+  const buffer = await workbook.xlsx.writeBuffer();
+  saveAs(
+    new Blob([buffer], {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    }),
+    `공유일정_${title}.xlsx`
+  );
+}
+
+/** 선택일 일정 인쇄/다운로드용 HTML (엑셀 표 느낌) */
+function buildDayPrintHtml(opts: {
+  dateStr: string;
+  unitName: string;
+  events: CalEvent[];
+  purposes: ColorPurpose[];
+  holiday?: string | null;
+}) {
+  const { dateStr, unitName, events, purposes, holiday } = opts;
+  const parsed = parseYmd(dateStr);
+  const dow = parsed
+    ? WEEKDAYS[new Date(parsed.y, parsed.m - 1, parsed.d).getDay()]
+    : '';
+  const title = parsed
+    ? `${parsed.y}.${pad2(parsed.m)}.${pad2(parsed.d)}(${dow})`
+    : dateStr;
+  const unitLabel = unitName ? ` / ${escapeHtml(unitName)}` : '';
+  const dayEvents = events.filter((ev) => eventCoversDate(ev, dateStr));
+
+  const detailRows: string[] = [];
+  if (holiday) {
+    detailRows.push(`
+      <tr>
+        <td class="time">종일</td>
+        <td class="purpose">공휴일</td>
+        <td>${escapeHtml(holiday)}</td>
+        <td></td>
+        <td class="attendees"></td>
+      </tr>`);
+  }
+  if (dayEvents.length === 0 && !holiday) {
+    detailRows.push(`
+      <tr>
+        <td colspan="5" class="empty">등록된 일정이 없습니다</td>
+      </tr>`);
+  } else {
+    for (const ev of dayEvents) {
+      const purpose = resolvePurposeForPrint(ev, purposes);
+      detailRows.push(`
+        <tr>
+          <td class="time">${escapeHtml(String(ev.time_text || '').trim() || '')}</td>
+          <td class="purpose">${escapeHtml(purpose.label)}</td>
+          <td>${formatTitlesHtml(ev.title || '')}</td>
+          <td>${escapeHtml(String(ev.location || '').trim() || '')}</td>
+          <td class="attendees">${formatAttendeesHtml(String(ev.attendees || ''))}</td>
+        </tr>`);
+    }
+  }
+
+  return `<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <title>공유 일정 ${escapeHtml(title)}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;700&display=swap" rel="stylesheet" />
+  <style>
+    @page { size: A4; margin: 10mm; }
+    * { box-sizing: border-box; }
+    body {
+      font-family: "Noto Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+      font-size: 8pt;
+      color: #222;
+      margin: 0;
+      padding: 0;
+      line-height: 1.35;
+    }
+    .header {
+      margin: 0 0 8px;
+      padding: 0 0 6px;
+      border-bottom: 1px solid #B4B4B4;
+    }
+    .header h1 {
+      margin: 0;
+      font-size: 10pt;
+      font-weight: 700;
+      font-family: "Noto Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+    }
+    .header p {
+      margin: 2px 0 0;
+      font-size: 8pt;
+      color: #444;
+      font-weight: 400;
+    }
+    table.detail-table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+      font-family: "Noto Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+      font-size: 8pt;
+    }
+    table.detail-table th,
+    table.detail-table td {
+      border: 1px solid #BFBFBF;
+      padding: 3px 4px;
+      vertical-align: middle;
+      text-align: left;
+      font-size: 8pt;
+      font-weight: 400;
+      color: #222;
+    }
+    table.detail-table th {
+      background: #DDEBF7;
+      font-weight: 700;
+      text-align: center;
+      color: #222;
+    }
+    table.detail-table col.c-time { width: 12%; }
+    table.detail-table col.c-purpose { width: 14%; }
+    table.detail-table col.c-title { width: 34%; }
+    table.detail-table col.c-loc { width: 14%; }
+    table.detail-table col.c-att { width: 26%; }
+    table.detail-table td.time {
+      white-space: nowrap;
+      word-break: keep-all;
+      text-align: center;
+    }
+    table.detail-table td.purpose {
+      word-break: keep-all;
+      overflow-wrap: break-word;
+      text-align: center;
+      line-height: 1.3;
+    }
+    table.detail-table td.attendees {
+      line-height: 1.35;
+    }
+    table.detail-table .att-line {
+      white-space: nowrap;
+      display: inline-block;
+    }
+    table.detail-table td.empty {
+      text-align: center;
+      color: #888;
+      padding: 12px 5px;
+    }
+    @media print {
+      body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>${escapeHtml(title)} 공유 일정</h1>
+    <p>일별${unitLabel} · ${dayEvents.length}건</p>
+  </div>
+  <table class="detail-table">
+    <colgroup>
+      <col class="c-time" />
+      <col class="c-purpose" />
+      <col class="c-title" />
+      <col class="c-loc" />
+      <col class="c-att" />
+    </colgroup>
+    <thead>
+      <tr>
+        <th>시간</th>
+        <th>용도</th>
+        <th>내용/프로젝트</th>
+        <th>위치</th>
+        <th>참석자</th>
+      </tr>
+    </thead>
+    <tbody>${detailRows.join('')}</tbody>
   </table>
 </body>
 </html>`;
@@ -295,12 +867,24 @@ function openMonthPrint(html: string) {
     }
   };
 
-  // 문서 로드 후 인쇄 (팝업 차단과 무관)
+  const runWhenReady = () => {
+    const fonts = doc.fonts;
+    if (fonts?.ready) {
+      // 웹폰트(Noto Sans KR) 로드 후 인쇄 — 실패해도 시스템 폰트로 진행
+      Promise.race([
+        fonts.ready,
+        new Promise<void>((resolve) => setTimeout(resolve, 1200)),
+      ]).then(() => setTimeout(triggerPrint, 50));
+      return;
+    }
+    setTimeout(triggerPrint, 200);
+  };
+
   if (doc.readyState === 'complete') {
-    setTimeout(triggerPrint, 100);
+    runWhenReady();
   } else {
-    iframe.onload = () => setTimeout(triggerPrint, 100);
-    setTimeout(triggerPrint, 400);
+    iframe.onload = () => runWhenReady();
+    setTimeout(runWhenReady, 500);
   }
 }
 
@@ -331,7 +915,7 @@ function layoutWeekLanes(
     if (startCol < 0) continue;
     items.push({
       key: `e-${ev.id}-${week[startCol]?.dateStr || startCol}`,
-      title: ev.title,
+      title: formatTitlesInline(ev.title) || ev.title || '—',
       color: ev.color || COLORS[0],
       startCol,
       endCol,
@@ -419,9 +1003,10 @@ type ModalState =
   | {
       mode: 'create' | 'edit';
       id?: string;
-      title: string;
+      titles: string[];
       location: string;
-      time_text: string;
+      start_time: string;
+      end_time: string;
       attendees: string;
       start_date: string;
       end_date: string;
@@ -538,6 +1123,37 @@ export default function DeptSharedCalendar() {
     [events, selectedDate]
   );
 
+  const { untimedEvents, timedSpans } = useMemo(
+    () => buildTimelineSpans(selectedDayEvents),
+    [selectedDayEvents]
+  );
+
+  const coveredSlotIndexes = useMemo(() => {
+    const set = new Set<number>();
+    for (const span of timedSpans) {
+      for (let i = span.startIdx; i < span.endIdx; i++) set.add(i);
+    }
+    return set;
+  }, [timedSpans]);
+
+  const timelineScrollRef = useRef<HTMLDivElement>(null);
+  const firstTimedSlot = useMemo(() => {
+    if (timedSpans.length === 0) return '09:00';
+    let bestIdx = timedSpans[0].startIdx;
+    for (const s of timedSpans) {
+      if (s.startIdx < bestIdx) bestIdx = s.startIdx;
+    }
+    return TIME_OPTIONS[bestIdx] || '09:00';
+  }, [timedSpans]);
+
+  useEffect(() => {
+    const root = timelineScrollRef.current;
+    if (!root) return;
+    const target = root.querySelector<HTMLElement>(`[data-time-slot="${firstTimedSlot}"]`);
+    if (!target) return;
+    root.scrollTop = Math.max(0, target.offsetTop - 8);
+  }, [selectedDate, firstTimedSlot]);
+
   const selectedHoliday = holidays.get(selectedDate) || null;
 
   const shiftMonth = (delta: number) => {
@@ -554,14 +1170,21 @@ export default function DeptSharedCalendar() {
     setViewMonth(m);
   };
 
-  const openCreate = (dateStr: string) => {
+  const openCreate = (dateStr: string, startTime = '') => {
     setSelectedDate(dateStr);
     const firstPurpose = purposes[0];
+    const start_time = startTime && TIME_OPTIONS.includes(startTime) ? startTime : '';
+    let end_time = '';
+    if (start_time) {
+      const idx = TIME_OPTIONS.indexOf(start_time);
+      end_time = idx >= 0 && idx + 1 < TIME_OPTIONS.length ? TIME_OPTIONS[idx + 1] : '';
+    }
     setModal({
       mode: 'create',
-      title: '',
+      titles: [''],
       location: '',
-      time_text: '',
+      start_time,
+      end_time,
       attendees: '',
       start_date: dateStr,
       end_date: dateStr,
@@ -574,12 +1197,14 @@ export default function DeptSharedCalendar() {
     setSelectedDate(ev.start_date);
     const purposeId = ev.color_purpose_id || null;
     const purpose = purposeId ? purposes.find((p) => p.id === purposeId) : null;
+    const times = parseTimeText(String(ev.time_text || ''));
     setModal({
       mode: 'edit',
       id: ev.id,
-      title: ev.title || '',
+      titles: splitTitles(ev.title || ''),
       location: String(ev.location || ''),
-      time_text: String(ev.time_text || ''),
+      start_time: times.start_time,
+      end_time: times.end_time,
       attendees: String(ev.attendees || ''),
       start_date: ev.start_date,
       end_date: ev.end_date || ev.start_date,
@@ -596,8 +1221,8 @@ export default function DeptSharedCalendar() {
 
   const saveModal = async () => {
     if (!modal) return;
-    const title = modal.title.trim();
-    if (!title) return alert('내용을 입력해 주세요.');
+    const title = joinTitles(modal.titles);
+    if (!title) return alert('내용/프로젝트를 입력해 주세요.');
     if (!parseYmd(modal.start_date)) return alert('시작일을 확인해 주세요.');
     setBusy(true);
     try {
@@ -605,7 +1230,7 @@ export default function DeptSharedCalendar() {
         id: modal.id,
         title,
         location: modal.location.trim(),
-        time_text: modal.time_text.trim(),
+        time_text: composeTimeText(modal.start_time, modal.end_time),
         attendees: modal.attendees.trim(),
         start_date: modal.start_date,
         end_date: modal.end_date || modal.start_date,
@@ -731,23 +1356,6 @@ export default function DeptSharedCalendar() {
         <div className="flex items-center gap-1.5 shrink-0">
           <button
             type="button"
-            title={`${viewYear}.${pad2(viewMonth)} 일정 인쇄·다운로드`}
-            onClick={() => {
-              const html = buildMonthPrintHtml({
-                year: viewYear,
-                month: viewMonth,
-                unitName,
-                events,
-                holidays,
-              });
-              openMonthPrint(html);
-            }}
-            className="h-7 px-2.5 rounded-md border border-slate-200 bg-white text-slate-700 text-[10px] font-medium hover:bg-slate-50 hover:border-slate-300"
-          >
-            ⬇ 다운
-          </button>
-          <button
-            type="button"
             onClick={() => shiftMonth(-1)}
             className="w-7 h-7 rounded-md border border-slate-200 text-slate-600 font-normal hover:bg-slate-50 text-sm"
             aria-label="이전 달"
@@ -776,20 +1384,45 @@ export default function DeptSharedCalendar() {
           >
             오늘
           </button>
-          <button
-            type="button"
-            onClick={() => setManageOpen(true)}
-            className="h-7 px-2.5 rounded-md border border-slate-200 bg-white text-slate-700 text-[10px] font-medium hover:bg-slate-50"
-          >
-            색상 관리
-          </button>
-          <button
-            type="button"
-            onClick={() => openCreate(selectedDate || today)}
-            className="h-7 px-2.5 rounded-md bg-indigo-600 text-white text-[10px] font-medium hover:bg-indigo-700"
-          >
-            + 일정
-          </button>
+          <div className="inline-flex items-stretch rounded-lg border border-slate-200 overflow-hidden shadow-sm">
+            <button
+              type="button"
+              title={`${viewYear}.${pad2(viewMonth)} 인쇄·PDF 다운`}
+              onClick={() => {
+                const html = buildMonthPrintHtml({
+                  year: viewYear,
+                  month: viewMonth,
+                  unitName,
+                  events,
+                  holidays,
+                });
+                openMonthPrint(html);
+              }}
+              className="h-7 px-2.5 bg-sky-50 text-sky-700 text-[10px] font-medium hover:bg-sky-100 border-r border-slate-200"
+            >
+              ⬇ 월·일정
+            </button>
+            <button
+              type="button"
+              title={`${viewYear}.${pad2(viewMonth)} 엑셀 다운`}
+              onClick={() => {
+                void downloadMonthScheduleExcel({
+                  year: viewYear,
+                  month: viewMonth,
+                  unitName,
+                  events,
+                  purposes,
+                  holidays,
+                }).catch((err) => {
+                  console.error('[schedule month excel]', err);
+                  alert('엑셀 다운로드에 실패했습니다.');
+                });
+              }}
+              className="h-7 px-2.5 bg-emerald-50 text-emerald-700 text-[10px] font-medium hover:bg-emerald-100"
+            >
+              엑셀
+            </button>
+          </div>
         </div>
       </div>
 
@@ -812,6 +1445,13 @@ export default function DeptSharedCalendar() {
             </span>
           ))
         )}
+        <button
+          type="button"
+          onClick={() => setManageOpen(true)}
+          className="ml-auto h-7 px-2.5 rounded-md border border-slate-200 bg-white text-slate-700 text-[10px] font-medium hover:bg-slate-50 shrink-0"
+        >
+          색상 관리
+        </button>
       </div>
 
       {error && (
@@ -993,7 +1633,7 @@ export default function DeptSharedCalendar() {
       </div>
       </div>
 
-      {/* Detail — 내용 / 위치 / 시간 / 참석자 가로 칸 */}
+      {/* Detail — 시간 타임라인 */}
       <div className="min-w-0 min-h-0 bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden flex flex-col">
         <div className="px-3 py-2.5 border-b border-slate-100 flex flex-wrap items-center justify-between gap-2 shrink-0">
           <div className="min-w-0 flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
@@ -1010,90 +1650,223 @@ export default function DeptSharedCalendar() {
               {selectedDayEvents.length}건
             </span>
           </div>
-          <button
-            type="button"
-            onClick={() => openCreate(selectedDate)}
-            className="h-7 px-2.5 rounded-md bg-indigo-600 text-white text-[11px] font-medium hover:bg-indigo-700 shrink-0"
-          >
-            + 일정
-          </button>
+          <div className="flex items-center gap-2 shrink-0">
+            <div className="inline-flex items-stretch rounded-lg border border-slate-200 overflow-hidden shadow-sm">
+              <button
+                type="button"
+                title={`${formatDotDate(selectedDate)} 인쇄·PDF 다운`}
+                onClick={() => {
+                  const html = buildDayPrintHtml({
+                    dateStr: selectedDate,
+                    unitName,
+                    events,
+                    purposes,
+                    holiday: selectedHoliday,
+                  });
+                  openMonthPrint(html);
+                }}
+                className="h-7 px-2.5 bg-sky-50 text-sky-700 text-[10px] font-medium hover:bg-sky-100 border-r border-slate-200"
+              >
+                ⬇ 일·일정
+              </button>
+              <button
+                type="button"
+                title={`${formatDotDate(selectedDate)} 엑셀 다운`}
+                onClick={() => {
+                  void downloadDayScheduleExcel({
+                    dateStr: selectedDate,
+                    unitName,
+                    events,
+                    purposes,
+                    holiday: selectedHoliday,
+                  }).catch((err) => {
+                    console.error('[schedule day excel]', err);
+                    alert('엑셀 다운로드에 실패했습니다.');
+                  });
+                }}
+                className="h-7 px-2.5 bg-emerald-50 text-emerald-700 text-[10px] font-medium hover:bg-emerald-100"
+              >
+                엑셀
+              </button>
+            </div>
+            <button
+              type="button"
+              onClick={() => openCreate(selectedDate)}
+              className="h-7 px-2.5 rounded-md bg-indigo-600 text-white text-[11px] font-medium hover:bg-indigo-700"
+            >
+              + 일정
+            </button>
+          </div>
         </div>
 
-        <div className="flex-1 overflow-auto">
-          <div className="min-w-[420px]">
-            <div className="grid grid-cols-[minmax(0,2.2fr)_minmax(0,0.95fr)_minmax(0,0.55fr)_minmax(0,1.3fr)] gap-0 sticky top-0 z-10 border-b border-slate-100 bg-slate-50 text-[10px] font-medium text-slate-500 tracking-tight">
-              <div className="px-2 py-2">내용</div>
-              <div className="px-2 py-2 border-l border-slate-100">위치</div>
-              <div className="px-2 py-2 border-l border-slate-100">시간</div>
-              <div className="px-2 py-2 border-l border-slate-100">참석자</div>
-            </div>
-
-            {selectedHoliday && (
-              <div className="grid grid-cols-[minmax(0,2.2fr)_minmax(0,0.95fr)_minmax(0,0.55fr)_minmax(0,1.3fr)] gap-0 border-b border-rose-100 bg-rose-50/60 text-[11px]">
-                <div className="px-2 py-2 flex items-center gap-1 min-w-0">
+        <div ref={timelineScrollRef} className="flex-1 overflow-auto">
+          {(selectedHoliday || untimedEvents.length > 0) && (
+            <div className="border-b border-slate-100 bg-slate-50/80 px-3 py-2 space-y-1.5">
+              <p className="text-[10px] font-medium text-slate-500">종일 · 시간 미정</p>
+              {selectedHoliday && (
+                <div className="flex items-start gap-2 rounded-lg border border-rose-100 bg-rose-50/70 px-2.5 py-2 text-[11px]">
                   <span
-                    className="w-1.5 h-1.5 rounded-full shrink-0"
+                    className="mt-1 w-2 h-2 rounded-full shrink-0"
                     style={{ backgroundColor: KR_HOLIDAY_COLOR }}
                   />
-                  <span className="font-medium text-rose-700 truncate">{selectedHoliday}</span>
+                  <div className="min-w-0">
+                    <p className="font-medium text-rose-700 truncate">{selectedHoliday}</p>
+                    <p className="text-[10px] text-rose-400 mt-0.5">공휴일 · 종일</p>
+                  </div>
                 </div>
-                <div className="px-2 py-2 border-l border-rose-100 text-rose-400">—</div>
-                <div className="px-2 py-2 border-l border-rose-100 text-rose-400">종일</div>
-                <div className="px-2 py-2 border-l border-rose-100 text-rose-400">공휴일</div>
-              </div>
-            )}
-
-            {selectedDayEvents.length === 0 && !selectedHoliday ? (
-              <div className="px-4 py-10 text-center">
-                <p className="text-[12px] font-normal text-slate-400 mb-3">
-                  등록된 일정이 없습니다
-                </p>
-                <button
-                  type="button"
-                  onClick={() => openCreate(selectedDate)}
-                  className="h-8 px-3 rounded-md bg-indigo-600 text-white text-[11px] font-medium hover:bg-indigo-700"
-                >
-                  + 새 일정
-                </button>
-              </div>
-            ) : (
-              selectedDayEvents.map((ev) => (
+              )}
+              {untimedEvents.map((ev) => (
                 <button
                   key={ev.id}
                   type="button"
                   onClick={() => openEdit(ev)}
-                  className="w-full grid grid-cols-[minmax(0,2.2fr)_minmax(0,0.95fr)_minmax(0,0.55fr)_minmax(0,1.3fr)] gap-0 border-b border-slate-100 last:border-b-0 text-left hover:bg-indigo-50/40 transition-colors text-[11px]"
+                  className="w-full text-left flex items-start gap-2 rounded-lg border border-slate-200 bg-white px-2.5 py-2 hover:border-indigo-200 hover:bg-indigo-50/40 transition-colors"
                 >
-                  <div className="px-2 py-2 flex items-center gap-1 min-w-0">
-                    <span
-                      className="w-1.5 h-1.5 rounded-full shrink-0"
-                      style={{ backgroundColor: ev.color || COLORS[0] }}
-                    />
-                    <span className="font-medium text-slate-800 truncate" title={ev.title}>
-                      {ev.title || '—'}
-                    </span>
-                  </div>
-                  <div
-                    className="px-2 py-2 border-l border-slate-100 text-slate-600 truncate"
-                    title={ev.location || ''}
-                  >
-                    {ev.location?.trim() || '—'}
-                  </div>
-                  <div
-                    className="px-2 py-2 border-l border-slate-100 text-slate-600 truncate tabular-nums"
-                    title={ev.time_text || ''}
-                  >
-                    {ev.time_text?.trim() || '—'}
-                  </div>
-                  <div
-                    className="px-2 py-2 border-l border-slate-100 text-slate-600 truncate"
-                    title={ev.attendees || ''}
-                  >
-                    {ev.attendees?.trim() || '—'}
+                  <span
+                    className="mt-1 w-2 h-2 rounded-full shrink-0"
+                    style={{ backgroundColor: ev.color || COLORS[0] }}
+                  />
+                  <div className="min-w-0 flex-1">
+                    <p
+                      className="text-[11px] font-medium text-slate-800 truncate"
+                      title={formatTitlesInline(ev.title) || ev.title}
+                    >
+                      {formatTitlesInline(ev.title) || '—'}
+                    </p>
+                    <p className="text-[10px] text-slate-500 mt-0.5 truncate">
+                      {[ev.location?.trim(), ev.attendees?.trim()].filter(Boolean).join(' · ') ||
+                        '시간 미정'}
+                    </p>
                   </div>
                 </button>
-              ))
-            )}
+              ))}
+            </div>
+          )}
+
+          {selectedDayEvents.length === 0 && !selectedHoliday && untimedEvents.length === 0 ? (
+            <p className="px-3 py-2 text-[11px] text-slate-400 border-b border-slate-100">
+              시간을 클릭하면 새 일정을 등록할 수 있습니다
+            </p>
+          ) : null}
+
+          <div
+            className="relative pl-0 pr-2 py-1"
+            style={{ height: TIME_OPTIONS.length * TIMELINE_SLOT_H + 8 }}
+          >
+            {TIME_OPTIONS.map((slot, idx) => {
+              const isHour = slot.endsWith(':00');
+              const covered = coveredSlotIndexes.has(idx);
+              return (
+                <button
+                  key={slot}
+                  type="button"
+                  data-time-slot={slot}
+                  onClick={() => openCreate(selectedDate, slot)}
+                  title={`${slot} 일정 등록`}
+                  className={`absolute left-0 right-0 grid grid-cols-[52px_minmax(0,1fr)] gap-0 border-t text-left hover:bg-indigo-50/50 transition-colors ${
+                    isHour ? 'border-slate-200' : 'border-slate-100'
+                  }`}
+                  style={{ top: idx * TIMELINE_SLOT_H, height: TIMELINE_SLOT_H }}
+                >
+                  <div
+                    className={`pt-1 pr-2 text-right tabular-nums leading-none ${
+                      isHour
+                        ? 'text-[11px] font-medium text-slate-600'
+                        : 'text-[9px] font-normal text-slate-300'
+                    }`}
+                  >
+                    {slot}
+                  </div>
+                  <div className="relative border-l border-slate-200">
+                    <span
+                      className={`absolute -left-[3.5px] top-1.5 w-1.5 h-1.5 rounded-full ${
+                        covered
+                          ? 'bg-indigo-500'
+                          : isHour
+                            ? 'bg-slate-300'
+                            : 'bg-slate-200'
+                      }`}
+                    />
+                  </div>
+                </button>
+              );
+            })}
+
+            <div className="absolute top-0 bottom-0 left-[52px] right-2 pointer-events-none">
+              {timedSpans.map((span) => {
+                const top = span.startIdx * TIMELINE_SLOT_H + 2;
+                const height = Math.max(
+                  TIMELINE_SLOT_H - 4,
+                  (span.endIdx - span.startIdx) * TIMELINE_SLOT_H - 4
+                );
+                const widthPct = 100 / span.lanes;
+                const leftPct = span.lane * widthPct;
+                const color = span.ev.color || COLORS[0];
+                return (
+                  <button
+                    key={span.ev.id}
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      openEdit(span.ev);
+                    }}
+                    className="absolute pointer-events-auto text-left rounded-md border border-slate-200 bg-white/95 px-2 py-1 hover:border-indigo-300 hover:bg-indigo-50/50 transition-colors shadow-sm overflow-hidden z-[1]"
+                    style={{
+                      top,
+                      height,
+                      left: `calc(${leftPct}% + 6px)`,
+                      width: `calc(${widthPct}% - 8px)`,
+                      borderLeftWidth: 3,
+                      borderLeftColor: color,
+                      backgroundColor: `${color}18`,
+                    }}
+                    title={[
+                      formatTitlesInline(span.ev.title),
+                      span.rangeLabel,
+                      span.ev.location,
+                      span.ev.attendees,
+                    ]
+                      .filter(Boolean)
+                      .join(' · ')}
+                  >
+                    <div className="flex items-baseline justify-between gap-1 min-w-0">
+                      <div className="min-w-0 flex-1">
+                        {height >= TIMELINE_SLOT_H * 1.6 &&
+                        splitTitles(span.ev.title).filter(Boolean).length > 1 ? (
+                          splitTitles(span.ev.title)
+                            .filter(Boolean)
+                            .map((name, i) => (
+                              <p
+                                key={`${span.ev.id}-t-${i}`}
+                                className="text-[11px] font-medium text-slate-800 truncate leading-tight"
+                              >
+                                {name}
+                              </p>
+                            ))
+                        ) : (
+                          <p className="text-[11px] font-medium text-slate-800 truncate">
+                            {formatTitlesInline(span.ev.title) || '—'}
+                          </p>
+                        )}
+                      </div>
+                      {span.rangeLabel ? (
+                        <span className="text-[9px] tabular-nums text-slate-500 shrink-0">
+                          {span.rangeLabel}
+                        </span>
+                      ) : null}
+                    </div>
+                    {height >= TIMELINE_SLOT_H * 1.2 &&
+                      (span.ev.location?.trim() || span.ev.attendees?.trim()) && (
+                        <p className="text-[10px] text-slate-600 mt-0.5 truncate">
+                          {[span.ev.location?.trim(), span.ev.attendees?.trim()]
+                            .filter(Boolean)
+                            .join(' · ')}
+                        </p>
+                      )}
+                  </button>
+                );
+              })}
+            </div>
           </div>
         </div>
       </div>
@@ -1112,16 +1885,56 @@ export default function DeptSharedCalendar() {
             </div>
             <div className="p-5 space-y-3">
               <div>
-                <label className="text-[10px] font-medium text-slate-500 block mb-1">내용</label>
-                <input
-                  type="text"
-                  value={modal.title}
-                  maxLength={120}
-                  onChange={(e) => setModal({ ...modal, title: e.target.value })}
-                  placeholder="예: 고객사 미팅, 현장 점검"
-                  className="w-full h-10 px-3 rounded-xl border border-slate-200 text-sm font-normal outline-none focus:ring-2 focus:ring-indigo-200"
-                  autoFocus
-                />
+                <div className="flex items-center justify-between gap-2 mb-1">
+                  <label className="text-[10px] font-medium text-slate-500">
+                    내용/프로젝트
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setModal({ ...modal, titles: [...modal.titles, ''] })
+                    }
+                    className="h-6 px-2 rounded-md text-[10px] font-medium text-indigo-600 bg-indigo-50 border border-indigo-100 hover:bg-indigo-100"
+                  >
+                    + 추가
+                  </button>
+                </div>
+                <div className="space-y-1.5">
+                  {modal.titles.map((t, idx) => (
+                    <div key={`title-${idx}`} className="flex items-center gap-1.5">
+                      <input
+                        type="text"
+                        value={t}
+                        maxLength={120}
+                        onChange={(e) => {
+                          const next = [...modal.titles];
+                          next[idx] = e.target.value;
+                          setModal({ ...modal, titles: next });
+                        }}
+                        placeholder={
+                          idx === 0 ? '예: 프로젝트명 등' : `프로젝트명 ${idx + 1}`
+                        }
+                        className="flex-1 min-w-0 h-10 px-3 rounded-xl border border-slate-200 text-sm font-normal outline-none focus:ring-2 focus:ring-indigo-200"
+                        autoFocus={idx === 0}
+                      />
+                      {modal.titles.length > 1 ? (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setModal({
+                              ...modal,
+                              titles: modal.titles.filter((_, i) => i !== idx),
+                            })
+                          }
+                          className="h-10 w-9 shrink-0 rounded-xl border border-slate-200 text-slate-400 hover:text-red-500 hover:border-red-200 hover:bg-red-50 text-sm"
+                          aria-label="항목 삭제"
+                        >
+                          ×
+                        </button>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
               </div>
               <div>
                 <label className="text-[10px] font-medium text-slate-500 block mb-1">위치</label>
@@ -1130,18 +1943,7 @@ export default function DeptSharedCalendar() {
                   value={modal.location}
                   maxLength={200}
                   onChange={(e) => setModal({ ...modal, location: e.target.value })}
-                  placeholder="예: 본사 회의실 A, 현장"
-                  className="w-full h-10 px-3 rounded-xl border border-slate-200 text-sm font-normal outline-none focus:ring-2 focus:ring-indigo-200"
-                />
-              </div>
-              <div>
-                <label className="text-[10px] font-medium text-slate-500 block mb-1">시간</label>
-                <input
-                  type="text"
-                  value={modal.time_text}
-                  maxLength={80}
-                  onChange={(e) => setModal({ ...modal, time_text: e.target.value })}
-                  placeholder="예: 14:00~16:00 / 오전 종일"
+                  placeholder="예: 1회의실, 서울시 00구, 경기도 00시 등"
                   className="w-full h-10 px-3 rounded-xl border border-slate-200 text-sm font-normal outline-none focus:ring-2 focus:ring-indigo-200"
                 />
               </div>
@@ -1174,6 +1976,25 @@ export default function DeptSharedCalendar() {
                       }
                       className="w-full h-10 px-3 rounded-xl border border-slate-200 text-sm font-normal outline-none focus:ring-2 focus:ring-indigo-200"
                     />
+                    <label className="text-[10px] font-medium text-slate-500 block mb-1 mt-2">
+                      시작 시간
+                    </label>
+                    <select
+                      value={modal.start_time}
+                      onChange={(e) => setModal({ ...modal, start_time: e.target.value })}
+                      className="w-full h-10 px-3 rounded-xl border border-slate-200 text-sm font-normal outline-none focus:ring-2 focus:ring-indigo-200 bg-white"
+                    >
+                      <option value="">선택 안 함</option>
+                      {modal.start_time &&
+                        !TIME_OPTIONS.includes(modal.start_time) && (
+                          <option value={modal.start_time}>{modal.start_time}</option>
+                        )}
+                      {TIME_OPTIONS.map((t) => (
+                        <option key={`start-${t}`} value={t}>
+                          {t}
+                        </option>
+                      ))}
+                    </select>
                   </div>
                   <div>
                     <label className="text-[10px] font-medium text-slate-500 block mb-1">종료일</label>
@@ -1184,6 +2005,24 @@ export default function DeptSharedCalendar() {
                       onChange={(e) => setModal({ ...modal, end_date: e.target.value })}
                       className="w-full h-10 px-3 rounded-xl border border-slate-200 text-sm font-normal outline-none focus:ring-2 focus:ring-indigo-200"
                     />
+                    <label className="text-[10px] font-medium text-slate-500 block mb-1 mt-2">
+                      종료 시간
+                    </label>
+                    <select
+                      value={modal.end_time}
+                      onChange={(e) => setModal({ ...modal, end_time: e.target.value })}
+                      className="w-full h-10 px-3 rounded-xl border border-slate-200 text-sm font-normal outline-none focus:ring-2 focus:ring-indigo-200 bg-white"
+                    >
+                      <option value="">선택 안 함</option>
+                      {modal.end_time && !TIME_OPTIONS.includes(modal.end_time) && (
+                        <option value={modal.end_time}>{modal.end_time}</option>
+                      )}
+                      {TIME_OPTIONS.map((t) => (
+                        <option key={`end-${t}`} value={t}>
+                          {t}
+                        </option>
+                      ))}
+                    </select>
                   </div>
                 </div>
                 <div className="mt-3 space-y-3">
@@ -1291,7 +2130,7 @@ export default function DeptSharedCalendar() {
                   </button>
                   <button
                     type="button"
-                    disabled={busy || !modal.title.trim()}
+                    disabled={busy || !modal.titles.some((t) => t.trim())}
                     onClick={() => void saveModal()}
                     className="px-3.5 py-2 rounded-xl text-[11px] font-medium bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-40"
                   >
@@ -1415,7 +2254,7 @@ export default function DeptSharedCalendar() {
                   onChange={(e) =>
                     setPurposeEdit({ ...purposeEdit, label: e.target.value })
                   }
-                  placeholder="예: 출장, 내부회의"
+                  placeholder="예: 현장실사/외부심사, 심의"
                   maxLength={40}
                   className="w-full h-9 px-3 rounded-lg border border-slate-200 bg-white text-[13px] outline-none focus:ring-2 focus:ring-indigo-200"
                 />

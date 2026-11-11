@@ -10,7 +10,8 @@ import { generateItAssetQrDataUrls } from '@/utils/equipmentQr';
 import LoadingState from '@/components/common/LoadingState';
 import WindowedPagination from '@/components/common/WindowedPagination';
 import ItMasterPageBanner from '@/components/equipment/it/ItMasterPageBanner';
-import { resolveInterfaceEditState } from '@/lib/permission-utils';
+import { writeItMasterExcelBuffer } from '@/lib/it-personal-excel';
+import { isSystemLv1User, resolveInterfaceEditState } from '@/lib/permission-utils';
 import {
   getCompletedAuditLabel,
   getDisplayFieldValue,
@@ -24,6 +25,7 @@ import { applyIdentityToAssetPayload, assetMatchesIdentity, toItIdentity } from 
 import {
   computeItAssetReplaceSchedule,
   computeItAssetTurnDisplay,
+  resolveItReplaceCycleMonths,
 } from '@/utils/itAssetSchedule';
 import { assetInAuditTarget as assetMatchesAuditTarget } from '@/utils/itAuditTarget';
 import { rowMatchesOrgUnit } from '@/lib/org-unit-match';
@@ -585,12 +587,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
     const currentIds = new Set(collectThreadMessages(current, requests).map((m) => String(m.id)));
     return threads.filter((t) => t.closed && !t.msgs.some((m) => currentIds.has(String(m.id))));
   }, [editingReq, adminComposeAsset, requests]);
-  const isLV1 = useMemo(
-    () =>
-      !!currentUser?.roles?.some((r: any) => String(r).includes('LV_1')) ||
-      currentUser?.permissionLevel === 'LV_1',
-    [currentUser]
-  );
+  const isLV1 = useMemo(() => isSystemLv1User(currentUser), [currentUser]);
   const alertNoEditPermission = () => alert('편집 권한이 없습니다.');
      
   const formatNumber = (val: any) => val?.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",") || '0';
@@ -708,12 +705,22 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
       }
   
       if (field === 'rental_months' || field === 'in_date') {
-        const months = field === 'rental_months' ? Number(value) : Number(updated.rental_months);
+        const rawMonths = field === 'rental_months' ? Number(value) : Number(updated.rental_months);
+        const rentalMonths = Number.isFinite(rawMonths) && rawMonths > 0 ? rawMonths : 0;
         const startDate = field === 'in_date' ? value : updated.in_date;
-  
-        if (months > 0 && startDate) {
-          updated.end_date = addMonthsToKSTDateOnly(String(startDate), months) || updated.end_date;
+
+        if (rentalMonths > 0 && startDate) {
+          updated.end_date = addMonthsToKSTDateOnly(String(startDate), rentalMonths) || updated.end_date;
+          updated.cycle = rentalMonths;
         }
+
+        // 교체예정일·D-day를 즉시 재계산해 표시/저장 payload와 맞춤
+        const schedule = computeItAssetReplaceSchedule({
+          in_date: startDate,
+          rental_months: rentalMonths,
+        });
+        updated.replace_due_date = schedule.replace_due_date;
+        updated.replace_dday = schedule.replace_dday;
       }
       return updated;
     }));
@@ -1232,8 +1239,12 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
   }, [assets]);
   
   const getAssetLogic = (a: any) => {
-    // 마스터: 단일 util로 계산 (편집 중 미리보기 포함)
-    const schedule = computeItAssetReplaceSchedule(a);
+    // 마스터: 렌탈/구독기간(M) > 0 이면 그 개월, 아니면 기본 48개월 (편집 중 즉시 반영)
+    const schedule = computeItAssetReplaceSchedule({
+      in_date: a.in_date,
+      rental_months: a.rental_months,
+    });
+    const scheduleMonths = resolveItReplaceCycleMonths(a.rental_months);
 
     let turnDisplay = '-';
     const rentalMonths = parseInt(String(a.rental_months ?? ''), 10) || 0;
@@ -1241,9 +1252,15 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
       turnDisplay = computeItAssetTurnDisplay(a);
     }
 
-    const repDate = schedule.replace_due_date || '-';
+    const inDateMatch = String(a.in_date || '').trim().match(/^(\d{4}-\d{2}-\d{2})/);
+    const computedRep = inDateMatch
+      ? addMonthsToKSTDateOnly(inDateMatch[1], scheduleMonths)
+      : '';
+    const repDate = computedRep || schedule.replace_due_date || '-';
     const deferred = a.replace_deferred === true;
-    const dday = deferred ? null : schedule.replace_dday;
+    const dday = deferred
+      ? null
+      : (computedRep ? getKSTDaysUntil(computedRep) : schedule.replace_dday);
     let ddayText = '';
     let ddayColor = '';
     let showDdayBadge = false;
@@ -1592,36 +1609,49 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
   const pageSelected =
     paginatedAssets.length > 0 && paginatedAssets.every((a) => selectedIds.has(a.id));
   
-  const handleExcelDownload = () => {
-    const targetAssets = selectedIds.size > 0 ? filteredAssets.filter(a => selectedIds.has(a.id)) : filteredAssets;
+  const handleExcelDownload = async () => {
+    const targetAssets =
+      selectedIds.size > 0
+        ? filteredAssets.filter((a) => selectedIds.has(a.id))
+        : filteredAssets;
     if (targetAssets.length === 0) return alert('엑셀 다운로드할 대상을 선택해 주세요.');
-    const excelData = targetAssets.map((a, index) => {
-      const logic = getAssetLogic(a);
-      return {
-        'NO': index + 1,
-        '부서': a.dept || '-',
-        '사용자': a.user || '-',
-        '이메일': emailLocalPart(a.user_email) || '-',
-        '범주': a.category || '-',
-        [itMasterLabel]: a.it_type || '-',
-        '자산번호': a.code || '-',
-        '모델명': a.model || '-',
-        'S/N': a.sn || '-',
-        '제조사': a.brand || '-',
-        '기본 사양': a.spec || '-',
-        '조달유형': a.is_rental || '-',
-        '구매/월렌탈/구독(원)': combinedProcureFee(a) || '-',
-        '입고일': a.in_date || '-',
-        '렌탈/구독기간(M)': a.rental_months || '-',
-        '교체예정일': logic.repDate || '-',
-        '관리메모': a.memo || '-',
-        '실사': logic.auditStatusText || '-',
-        '의견/요청': logic.commStatusText || '-',
-        '정보수정': logic.infoEditText || '-',
-      };
-    });
-    const ws = XLSX.utils.json_to_sheet(excelData); const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "ITAssets"); XLSX.writeFile(wb, `IT_Assets_Master.xlsx`);
+    try {
+      const rows = targetAssets.map((a) => {
+        const logic = getAssetLogic(a);
+        return {
+          dept: a.dept,
+          user: a.user,
+          user_email: a.user_email,
+          category: a.category,
+          it_type: a.it_type,
+          is_rental: a.is_rental,
+          code: a.code,
+          model: a.model,
+          sn: a.sn,
+          brand: a.brand,
+          spec: a.spec,
+          procureFee: combinedProcureFee(a),
+          in_date: a.in_date,
+          rental_months: a.rental_months,
+          replaceDate: logic.repDate,
+          memo: a.memo,
+        };
+      });
+      const buffer = await writeItMasterExcelBuffer(rows, {
+        sheetName: '전사업무자산',
+      });
+      const blob = new Blob([buffer], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'IT_Assets_Master.xlsx';
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      alert('엑셀 다운로드에 실패했습니다.');
+    }
   };
   
   const openBulkQRPrint = () => {
@@ -2609,7 +2639,7 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
       </div>
   
       {/* 전사 IT·업무자산 목록 */}
-      <div className={`bg-white border border-slate-200 rounded-[2.5rem] shadow-sm animate-in fade-in slide-in-from-top-4 duration-300 ${orgMenuOpen ? 'overflow-visible' : 'overflow-hidden'}`}>
+      <div className={`bg-white border border-slate-200 rounded-lg shadow-sm animate-in fade-in slide-in-from-top-4 duration-300 ${orgMenuOpen ? 'overflow-visible' : 'overflow-hidden'}`}>
         <div className="p-4 px-6 bg-slate-200/70 border-b border-slate-300 flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-2 flex-wrap min-w-0">
             <div className="w-2.5 h-2.5 rounded-full bg-blue-600 shrink-0" />
@@ -2946,11 +2976,17 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                   </span>
                 </th>
                 <th className="h-11 text-center text-black bg-blue-50/50 px-0.5">입고일</th>
-                <th className="h-11 text-center text-black bg-blue-50/50 px-0.5 whitespace-nowrap">렌탈/구독기간(M)</th>
+                <th className="h-11 text-center text-black bg-blue-50/50 px-0.5 whitespace-nowrap relative group cursor-help">
+                  <span>렌탈/구독기간(M)</span>
+                  <span className="pointer-events-none absolute left-1/2 top-full z-40 mt-1.5 -translate-x-1/2 whitespace-nowrap rounded-lg bg-slate-900 px-2.5 py-1.5 text-[10px] font-medium text-white opacity-0 shadow-lg transition-opacity group-hover:opacity-100">
+                    미설정 시 교체예정 48개월
+                    <span className="absolute -top-1 left-1/2 h-2 w-2 -translate-x-1/2 rotate-45 bg-slate-900" />
+                  </span>
+                </th>
                 <th className="h-11 text-center text-black bg-blue-50/50 px-0.5 relative group cursor-help">
                   <span>교체예정일</span>
                   <span className="pointer-events-none absolute left-1/2 top-full z-40 mt-1.5 -translate-x-1/2 whitespace-nowrap rounded-lg bg-slate-900 px-2.5 py-1.5 text-[10px] font-medium text-white opacity-0 shadow-lg transition-opacity group-hover:opacity-100">
-                    입고일 기준 4년 후 자동산정
+                    렌탈/구독기간(M)미설정 시, 입고일+48개월
                     <span className="absolute -top-1 left-1/2 h-2 w-2 -translate-x-1/2 rotate-45 bg-slate-900" />
                   </span>
                 </th>
@@ -3223,7 +3259,10 @@ function MasterDashboardContent({ moduleTitle, moduleDescription }: DashboardPro
                       ) : (a.rental_months || '-')}
                     </td>
                     <td className="px-0.5 text-center bg-blue-50/10">
-                      <div className="flex flex-col items-center justify-center gap-0.5 min-w-0">
+                      <div
+                        key={`rep-${a.id}-${a.in_date ?? ''}-${a.rental_months ?? 0}`}
+                        className="flex flex-col items-center justify-center gap-0.5 min-w-0"
+                      >
                         <span className="text-black truncate w-full text-center">{logic.repDate}</span>
                         {logic.showDdayBadge && (
                           <span className={`px-1 py-0.5 rounded text-[9px] font-medium animate-pulse ${logic.ddayColor}`}>

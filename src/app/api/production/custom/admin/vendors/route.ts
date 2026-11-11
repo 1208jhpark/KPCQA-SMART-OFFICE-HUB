@@ -175,8 +175,8 @@ export async function POST(req: Request) {
 
 export async function PUT(req: Request) {
   try {
-    // 부서 공정(발주/원문검수 등) Access면 수정 가능 — Edit 미사용
-    await authorizeAnyMenuPaths(READ_PATHS);
+    // 수정: UI 수정(Edit)과 동일 — Access path 중 Edit 필요 (신규 등록 POST는 Access)
+    await authorizeAnyMenuPaths(READ_PATHS, { requireEditor: true });
     const body = await req.json();
     const id = String(body.id || '').trim();
     if (!id) return NextResponse.json({ message: '업체 ID가 필요합니다.' }, { status: 400 });

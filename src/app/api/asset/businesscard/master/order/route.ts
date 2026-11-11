@@ -24,7 +24,11 @@ export async function GET(req: Request) {
 
     const batches = await prisma.businessCardOrderBatch.findMany({
       where: whereCondition,
-      include: { items: true },
+      include: {
+        items: {
+          orderBy: [{ applyDate: 'asc' }, { postNumber: 'asc' }],
+        },
+      },
       orderBy: { id: 'desc' },
     });
 
@@ -44,31 +48,63 @@ export async function GET(req: Request) {
       string,
       {
         proofFileName: string | null;
+        proofMailReviewedAt: Date | null;
+        proofMailReviewedBy: string | null;
         proofConfirmedAt: Date | null;
         proofConfirmedBy: string | null;
       }
     >();
     if (itemIds.length > 0) {
       const placeholders = itemIds.map((_, i) => `$${i + 1}`).join(', ');
-      const proofRows = await prisma.$queryRawUnsafe<
-        Array<{
-          id: string;
-          proofFileName: string | null;
-          proofConfirmedAt: Date | null;
-          proofConfirmedBy: string | null;
-        }>
-      >(
-        `SELECT id, "proofFileName", "proofConfirmedAt", "proofConfirmedBy"
-         FROM "BusinessCardRequest"
-         WHERE id IN (${placeholders})`,
-        ...itemIds
-      );
-      for (const r of proofRows) {
-        proofMap.set(r.id, {
-          proofFileName: r.proofFileName,
-          proofConfirmedAt: r.proofConfirmedAt,
-          proofConfirmedBy: r.proofConfirmedBy,
-        });
+      try {
+        const proofRows = await prisma.$queryRawUnsafe<
+          Array<{
+            id: string;
+            proofFileName: string | null;
+            proofMailReviewedAt: Date | null;
+            proofMailReviewedBy: string | null;
+            proofConfirmedAt: Date | null;
+            proofConfirmedBy: string | null;
+          }>
+        >(
+          `SELECT id, "proofFileName", "proofMailReviewedAt", "proofMailReviewedBy",
+                  "proofConfirmedAt", "proofConfirmedBy"
+           FROM "BusinessCardRequest"
+           WHERE id IN (${placeholders})`,
+          ...itemIds
+        );
+        for (const r of proofRows) {
+          proofMap.set(r.id, {
+            proofFileName: r.proofFileName,
+            proofMailReviewedAt: r.proofMailReviewedAt,
+            proofMailReviewedBy: r.proofMailReviewedBy,
+            proofConfirmedAt: r.proofConfirmedAt,
+            proofConfirmedBy: r.proofConfirmedBy,
+          });
+        }
+      } catch {
+        const proofRows = await prisma.$queryRawUnsafe<
+          Array<{
+            id: string;
+            proofFileName: string | null;
+            proofConfirmedAt: Date | null;
+            proofConfirmedBy: string | null;
+          }>
+        >(
+          `SELECT id, "proofFileName", "proofConfirmedAt", "proofConfirmedBy"
+           FROM "BusinessCardRequest"
+           WHERE id IN (${placeholders})`,
+          ...itemIds
+        );
+        for (const r of proofRows) {
+          proofMap.set(r.id, {
+            proofFileName: r.proofFileName,
+            proofMailReviewedAt: null,
+            proofMailReviewedBy: null,
+            proofConfirmedAt: r.proofConfirmedAt,
+            proofConfirmedBy: r.proofConfirmedBy,
+          });
+        }
       }
     }
 
@@ -76,26 +112,41 @@ export async function GET(req: Request) {
       ...b,
       dispatchedDate: dispatchMap.get(b.id) ?? (b as { dispatchedDate?: string | null }).dispatchedDate ?? null,
       inspectStatus: b.inspectStatus || 'idle',
-      items: (b.items || []).map((item) => {
-        const proof = proofMap.get(item.id);
-        return {
-          ...item,
-          applicantType: item.applicantType || '본인',
-          applicantName: item.applicantName || null,
-          proofFileName:
-            proof?.proofFileName ??
-            (item as { proofFileName?: string | null }).proofFileName ??
-            null,
-          proofConfirmedAt:
-            proof?.proofConfirmedAt ??
-            (item as { proofConfirmedAt?: Date | null }).proofConfirmedAt ??
-            null,
-          proofConfirmedBy:
-            proof?.proofConfirmedBy ??
-            (item as { proofConfirmedBy?: string | null }).proofConfirmedBy ??
-            null,
-        };
-      }),
+      items: (b.items || [])
+        .map((item) => {
+          const proof = proofMap.get(item.id);
+          return {
+            ...item,
+            applicantType: item.applicantType || '본인',
+            applicantName: item.applicantName || null,
+            proofFileName:
+              proof?.proofFileName ??
+              (item as { proofFileName?: string | null }).proofFileName ??
+              null,
+            proofMailReviewedAt:
+              proof?.proofMailReviewedAt ??
+              (item as { proofMailReviewedAt?: Date | null }).proofMailReviewedAt ??
+              null,
+            proofMailReviewedBy:
+              proof?.proofMailReviewedBy ??
+              (item as { proofMailReviewedBy?: string | null }).proofMailReviewedBy ??
+              null,
+            proofConfirmedAt:
+              proof?.proofConfirmedAt ??
+              (item as { proofConfirmedAt?: Date | null }).proofConfirmedAt ??
+              null,
+            proofConfirmedBy:
+              proof?.proofConfirmedBy ??
+              (item as { proofConfirmedBy?: string | null }).proofConfirmedBy ??
+              null,
+          };
+        })
+        .sort((a, b) => {
+          const da = String(a.applyDate || '');
+          const db = String(b.applyDate || '');
+          if (da !== db) return da.localeCompare(db);
+          return String(a.postNumber || '').localeCompare(String(b.postNumber || ''));
+        }),
     }));
 
     return NextResponse.json(merged, {

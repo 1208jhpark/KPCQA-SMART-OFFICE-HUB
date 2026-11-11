@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import jwt from 'jsonwebtoken';
 import prisma from '@/lib/prisma';
-import { checkMenuPermission } from './permission-utils';
+import { checkMenuPermission, pickWidestPermissionScope } from './permission-utils';
 import {
   resolveTopOrgName,
   canEditTopOrgMarketingAsset,
@@ -548,11 +548,17 @@ function normalizeOrgUnitRef(
  */
 export function assertCanEditEquipmentDepartment(
   auth: Awaited<ReturnType<typeof authorizeEquipmentApi>>,
-  departmentOrRef: string | null | undefined | OrgUnitRef
+  departmentOrRef: string | null | undefined | OrgUnitRef,
+  options?: { requireEditor?: boolean }
 ) {
   const { user, permission, unitsList, systemConfig } = auth;
   if (permission.isMaster || permission.myRole === 'LV_1') return;
-  if (!permission.isEditor) throw new Error('FORBIDDEN_EDIT');
+  const needEditor = options?.requireEditor !== false;
+  if (needEditor) {
+    if (!permission.isEditor) throw new Error('FORBIDDEN_EDIT');
+  } else if (!permission.hasAccess && !permission.isEditor) {
+    throw new Error('FORBIDDEN');
+  }
 
   const { unitId, deptName: dept } = normalizeOrgUnitRef(departmentOrRef);
   const myDept = user.unit?.unit_name || '';
@@ -585,7 +591,12 @@ export function assertCanEditEquipmentDepartment(
     throw new Error('FORBIDDEN_EDIT');
   }
 
-  const scope = String(permission.editScope || 'NONE').toUpperCase();
+  const scope = permission.isEditor
+    ? String(permission.editScope || 'NONE').toUpperCase()
+    : pickWidestPermissionScope([
+        String((permission as { viewScope?: string }).viewScope || 'NONE'),
+        String(permission.editScope || 'NONE'),
+      ]);
   // 레거시 미지정(빈 department·unit_id) — TOTAL만 정리 허용
   if (!unitId && !dept) {
     if (scope === 'TOTAL') return;

@@ -1,12 +1,12 @@
 'use client';
      
 import React, { useState, useMemo, useEffect } from 'react';
-import * as XLSX from 'xlsx'; 
 import { getKSTDateString, getKSTDaysUntil } from '@/utils/dateUtils';
 import LoadingState from '@/components/common/LoadingState';
 import WindowedPagination from '@/components/common/WindowedPagination';
 import { resolveTopOrgName, isGlobalMgmtOrgMember } from '@/utils/orgUnits';
 import { resolveInterfaceEditState, isSystemLv1User } from '@/lib/permission-utils';
+import { writeItDeptExcelBuffer } from '@/lib/it-personal-excel';
 import {
   buildInfoCorrectionPending,
   getCompletedAuditLabel,
@@ -533,26 +533,28 @@ export default function DeptModule() {
   const allFilteredSelected =
     filteredAssets.length > 0 && filteredAssets.every((a) => selectedIds.has(a.id));
   
-  const handleExcelDownload = () => {
-    const targetAssets = selectedIds.size > 0 ? filteredAssets.filter(a => selectedIds.has(a.id)) : filteredAssets;
+  const handleExcelDownload = async () => {
+    const targetAssets =
+      selectedIds.size > 0
+        ? filteredAssets.filter((a) => selectedIds.has(a.id))
+        : filteredAssets;
     if (targetAssets.length === 0) return alert('다운로드할 데이터가 없습니다.');
-    const excelData = targetAssets.map((a, index) => ({
-        'NO': targetAssets.length - index,
-        '조직': a.dept || '-',
-        '사용자': a.user || '-',
-        '이메일': emailLocalPart(a.user_email) || '-',
-        '범주': a.category,
-        '자산 분류': a.it_type,
-        '조달유형': a.is_rental || '-',
-        '자산번호': a.code,
-        '모델명': a.model,
-        'S/N': a.sn,
-        '제조사': a.brand || '-',
-        '기본 사양': a.spec,
-        '최근실사일': a.last_audit_date || '-',
-    }));
-    const ws = XLSX.utils.json_to_sheet(excelData); const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Dept_Assets"); XLSX.writeFile(wb, `부서업무자산현황_${currentUser?.dept || 'dept'}.xlsx`);
+    try {
+      const buffer = await writeItDeptExcelBuffer(targetAssets, {
+        sheetName: '부서업무자산',
+      });
+      const blob = new Blob([buffer], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `부서업무자산현황_${currentUser?.dept || 'dept'}.xlsx`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      alert('엑셀 다운로드에 실패했습니다.');
+    }
   };
 
   const openInfoCorrectionModal = (asset: any) => {
@@ -735,13 +737,13 @@ export default function DeptModule() {
         <div className="absolute right-0 top-0 w-64 h-64 bg-indigo-500/12 rounded-full blur-3xl -translate-y-1/3 translate-x-1/4 pointer-events-none" />
         <div className="absolute left-1/4 bottom-0 w-48 h-48 bg-slate-500/10 rounded-full blur-3xl translate-y-1/2 pointer-events-none" />
         <div className="relative z-10">
-          <h3 className="text-[10px] font-medium text-indigo-400 mb-2.5">
+          <h3 className="text-[10px] font-medium uppercase tracking-widest text-indigo-400 mb-2.5">
             IT ASSET DEPARTMENT DESK
           </h3>
-          <h1 className="text-2xl font-medium tracking-tight leading-none">
-            <span className="text-indigo-400">{currentUser?.dept || '-'}</span>
-            <span className="text-white/30 mx-2.5">|</span>
-            <span className="text-white">부서 IT·업무자산 현황</span>
+          <h1 className="text-2xl tracking-tight leading-none">
+            <span className="text-indigo-400 font-normal">{currentUser?.dept || '-'}</span>
+            <span className="text-white/30 font-normal mx-2.5">|</span>
+            <span className="text-white font-medium">부서 IT·업무자산 현황</span>
           </h1>
           <p className="text-slate-400 text-xs mt-3 leading-relaxed">
             본인 소속 자산과 실사 현황을 조회합니다. (설정 시 최상위 조직 자산 포함)
@@ -869,35 +871,42 @@ export default function DeptModule() {
             )}
           </div>
           <div className="flex-1 mt-3 flex flex-col justify-center gap-3">
-            <div className="flex items-center justify-between gap-2">
-              {isAuditActive ? (
-                <span className="px-3 py-1.5 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-lg font-medium text-[11px] animate-pulse">
-                  🟢 실사 진행 중{myRunningAudits.length > 1 ? ` · ${myRunningAudits.length}건` : ''}
-                </span>
-              ) : (
-                <span className="px-3 py-1.5 bg-slate-100 text-slate-600 border border-slate-200 rounded-lg font-medium text-[11px]">
-                  ⚪ 실사 미진행
-                </span>
-              )}
-              {isAuditActive && auditDaysLeft !== null && (
-                <div className="text-right">
-                  <p className="text-xl font-medium text-indigo-600 tracking-tighter leading-none tabular-nums">
-                    {auditDaysLeft >= 0 ? `D-${auditDaysLeft}` : `D+${Math.abs(auditDaysLeft)}`}
-                  </p>
-                  <p className="text-[9px] font-medium text-slate-400 mt-0.5">남은 기간</p>
+            {isAuditActive ? (
+              <>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="px-3 py-1.5 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-lg font-medium text-[11px] animate-pulse">
+                    🟢 실사 진행 중
+                    {myRunningAudits.length > 1 ? ` · ${myRunningAudits.length}건` : ''}
+                  </span>
+                  {auditDaysLeft !== null && (
+                    <div className="text-right">
+                      <p className="text-xl font-medium text-indigo-600 tracking-tighter leading-none tabular-nums">
+                        {auditDaysLeft >= 0
+                          ? `D-${auditDaysLeft}`
+                          : `D+${Math.abs(auditDaysLeft)}`}
+                      </p>
+                      <p className="text-[9px] font-medium text-slate-400 mt-0.5">남은 기간</p>
+                    </div>
+                  )}
                 </div>
-              )}
-            </div>
-            {isAuditActive && focusedAudit && (
-              <div className="rounded-xl bg-slate-50 border border-slate-100 px-3.5 py-2.5">
-                <p className="text-[9px] font-medium text-slate-400">
-                  현재 실사 운영 기간
-                </p>
-                <p className="mt-1 text-[13px] font-medium tracking-tight text-indigo-700">
-                  {focusedAudit.startDate} ~ {focusedAudit.endDate}
-                </p>
-                <p className="mt-1 text-[10px] font-medium text-slate-400 tabular-nums">
-                  마감 {(focusedAudit.endTime || '23:59').trim() || '23:59'}
+                {focusedAudit && (
+                  <div className="rounded-xl bg-slate-50 border border-slate-100 px-3.5 py-2.5">
+                    <p className="text-[9px] font-medium text-slate-400">
+                      현재 실사 운영 기간
+                    </p>
+                    <p className="mt-1 text-[13px] font-medium tracking-tight text-indigo-700">
+                      {focusedAudit.startDate} ~ {focusedAudit.endDate}
+                    </p>
+                    <p className="mt-1 text-[10px] font-medium text-slate-400 tabular-nums">
+                      마감 {(focusedAudit.endTime || '23:59').trim() || '23:59'}
+                    </p>
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="flex-1 min-h-[7.5rem] flex flex-col items-center justify-center rounded-lg border border-dashed border-slate-200 bg-slate-50/70 px-4 py-5 text-center">
+                <p className="text-[10px] font-medium text-slate-600 leading-relaxed">
+                  진행 중인 실사가 없습니다
                 </p>
               </div>
             )}
@@ -1023,7 +1032,7 @@ export default function DeptModule() {
         </div>
       </div>
 
-      <div className="bg-white border border-slate-200 rounded-[2.5rem] shadow-sm overflow-hidden animate-in fade-in duration-300 slide-in-from-top-4">
+      <div className="bg-white border border-slate-200 rounded-lg shadow-sm overflow-hidden animate-in fade-in duration-300 slide-in-from-top-4">
         <div className={`p-4 px-6 bg-slate-200/70 flex flex-wrap items-center justify-between gap-4 ${assetListOpen ? 'border-b border-slate-300' : ''}`}>
           <div className="flex items-center gap-2 flex-wrap min-w-0 flex-1">
             <button

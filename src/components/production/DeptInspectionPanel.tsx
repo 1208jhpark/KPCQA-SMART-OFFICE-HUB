@@ -2,6 +2,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { useSearchParams } from 'next/navigation';
 import * as XLSX from 'xlsx';
 import { getKSTDateString, getKSTNowYearMonth, getKSTYearMonthParts } from '@/utils/dateUtils';
 import LoadingState from '@/components/common/LoadingState';
@@ -16,10 +17,10 @@ import {
 } from '@/lib/production-category-theme';
 import { PRODUCTION_STATUS, productionStatusLabel, productionStatusTextClass } from '@/lib/production-status';
 import {
-  buildJebonOrderExcelRows,
   buildOfficeSuppliesOrderExcelRows,
-  buildPrintOrderExcelRows,
-  buildSignOrderExcelRows,
+  writeJebonOrderExcelBuffer,
+  writePrintOrderExcelBuffer,
+  writeSignOrderExcelBuffer,
 } from '@/lib/production-sign-excel';
 import {
   appendShippingAddressIfNeeded,
@@ -28,6 +29,7 @@ import {
   DEFAULT_PROD_MAIL_SHORTCUT_URL,
   DEFAULT_PROD_MAIL_SUBJECT,
   PROD_MAIL_PLACEHOLDERS,
+  prodMailCategoryLabel,
   resolveProdMailBodyTemplate,
   resolveProdMailShortcutUrl,
   resolveProdMailSubjectTemplate,
@@ -174,6 +176,12 @@ function formatBatchNo(id: string) {
   return id.replace(/^BATCH-/, '');
 }
 
+function sortBatchItemsByAppliedAsc<T extends { createdAt?: string | Date }>(items: T[]): T[] {
+  return [...items].sort(
+    (a, b) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime()
+  );
+}
+
 function getBatchLabelKind(
   batch: OrderBatch,
   activeCategory: string
@@ -198,7 +206,7 @@ function formatBatchExcelBaseName(
   const no = formatBatchNo(batchId);
   if (opts?.sign) return `현판_발주서_${no}`;
   if (opts?.jebon) return `제본_발주서_${no}`;
-  if (opts?.print) return `제작물_${no}`;
+  if (opts?.print) return `기타제작_발주서_${no}`;
   if (opts?.office) return `사무문구류_${no}`;
   return `제작물_${no}`;
 }
@@ -272,7 +280,12 @@ export default function DeptInspectionPanel() {
   const [selectedMonth, setSelectedMonth] = useState('ALL');
   const [searchUserQuery, setSearchUserQuery] = useState('');
   const [searchTitleQuery, setSearchTitleQuery] = useState('');
-  const [activeCategory, setActiveCategory] = useState('SIGN');
+  const searchParams = useSearchParams();
+  const [activeCategory, setActiveCategory] = useState(() => {
+    const cat = String(searchParams?.get('category') || '').trim().toUpperCase();
+    if (HISTORY_CATEGORIES.some((c) => c.id === cat)) return cat;
+    return 'SIGN';
+  });
   const [actionMenu, setActionMenu] = useState<{ id: string; top: number; left: number } | null>(
     null
   );
@@ -365,6 +378,14 @@ export default function DeptInspectionPanel() {
     fetchVendors();
     fetchMailSettings();
   }, [fetchData, fetchVendors, fetchMailSettings]);
+
+  /** 발주 화면에서 ?category= 로 넘어오면 해당 분류 칩을 연다 */
+  useEffect(() => {
+    const cat = String(searchParams?.get('category') || '').trim().toUpperCase();
+    if (HISTORY_CATEGORIES.some((c) => c.id === cat) && cat !== activeCategory) {
+      setActiveCategory(cat);
+    }
+  }, [searchParams]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const availableYears = useMemo(() => {
     const years = batches
@@ -497,10 +518,11 @@ export default function DeptInspectionPanel() {
   };
 
   const handleOfficeQuoteDownload = async (batch: OrderBatch) => {
-    const items =
+    const items = sortBatchItemsByAppliedAsc(
       activeCategory === 'ALL'
         ? batch.items || []
-        : (batch.items || []).filter((i) => i.category === activeCategory);
+        : (batch.items || []).filter((i) => i.category === activeCategory)
+    );
     const baseName = formatBatchExcelBaseName(batch.id, { office: true });
     setFileBundleBusyId(batch.id);
     try {
@@ -525,11 +547,12 @@ export default function DeptInspectionPanel() {
     }
   };
 
-  const handleBatchExcel = (batch: OrderBatch) => {
-    const exportItems =
+  const handleBatchExcel = async (batch: OrderBatch) => {
+    const exportItems = sortBatchItemsByAppliedAsc(
       activeCategory === 'ALL'
         ? batch.items
-        : batch.items.filter((i) => i.category === activeCategory);
+        : batch.items.filter((i) => i.category === activeCategory)
+    );
 
     if (exportItems.length === 0) {
       return alert('다운로드할 데이터가 없습니다.');
@@ -542,48 +565,81 @@ export default function DeptInspectionPanel() {
       `${formatBatchExcelBaseName(batch.id, batchLabelOpts(kind))}.xlsx`;
 
     if (allSign || activeCategory === 'SIGN') {
-      const signRows = buildSignOrderExcelRows(
-        exportItems.map((r) => ({
+      const signItems = exportItems
+        .filter((r) => r.category === 'SIGN')
+        .map((r) => ({
           ...r,
           batchId: batch.id,
-        }))
-      );
-      if (signRows.length === 0) {
+        }));
+      if (signItems.length === 0) {
         return alert('다운로드할 현판(SIGN) 데이터가 없습니다.');
       }
-      const ws = XLSX.utils.json_to_sheet(signRows);
-      const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, '현판상세');
-      XLSX.writeFile(wb, downloadName('sign'));
+      try {
+        const buffer = await writeSignOrderExcelBuffer(signItems);
+        const blob = new Blob([buffer], {
+          type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = downloadName('sign');
+        a.click();
+        URL.revokeObjectURL(url);
+      } catch (err) {
+        console.error(err);
+        alert('현판 발주서 다운로드에 실패했습니다.');
+      }
       return;
     }
 
     if (allJebon || activeCategory === 'JEBON') {
-      const jebonRows = buildJebonOrderExcelRows(
-        exportItems.map((r) => ({ ...r, batchId: batch.id }))
-      );
-      if (jebonRows.length === 0) {
+      const jebonItems = exportItems
+        .filter((r) => r.category === 'JEBON')
+        .map((r) => ({ ...r, batchId: batch.id }));
+      if (jebonItems.length === 0) {
         return alert('다운로드할 제본(JEBON) 데이터가 없습니다.');
       }
-      const ws = XLSX.utils.json_to_sheet(jebonRows);
-      const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, '제본발주');
-      XLSX.writeFile(wb, downloadName('jebon'));
+      try {
+        const buffer = await writeJebonOrderExcelBuffer(jebonItems);
+        const blob = new Blob([buffer], {
+          type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = downloadName('jebon');
+        a.click();
+        URL.revokeObjectURL(url);
+      } catch (err) {
+        console.error(err);
+        alert('제본 발주서 다운로드에 실패했습니다.');
+      }
       return;
     }
 
     const allPrint = exportItems.every((i) => i.category === 'PRINT');
     if (allPrint || activeCategory === 'PRINT') {
-      const printRows = buildPrintOrderExcelRows(
-        exportItems.map((r) => ({ ...r, batchId: batch.id }))
-      );
-      if (printRows.length === 0) {
+      const printItems = exportItems
+        .filter((r) => r.category === 'PRINT')
+        .map((r) => ({ ...r, batchId: batch.id }));
+      if (printItems.length === 0) {
         return alert('다운로드할 기타 제작물(PRINT) 데이터가 없습니다.');
       }
-      const ws = XLSX.utils.json_to_sheet(printRows);
-      const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, '기타제작발주');
-      XLSX.writeFile(wb, downloadName('print'));
+      try {
+        const buffer = await writePrintOrderExcelBuffer(printItems);
+        const blob = new Blob([buffer], {
+          type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = downloadName('print');
+        a.click();
+        URL.revokeObjectURL(url);
+      } catch (err) {
+        console.error(err);
+        alert('기타 제작물 발주서 다운로드에 실패했습니다.');
+      }
       return;
     }
 
@@ -1030,42 +1086,43 @@ export default function DeptInspectionPanel() {
     [vendors, selectedVendorId]
   );
 
+  const emailBatchKind = emailBatch
+    ? getBatchLabelKind(emailBatch, activeCategory)
+    : 'other';
   const emailBatchLabel = emailBatch
-    ? formatBatchExcelBaseName(
-        emailBatch.id,
-        batchLabelOpts(getBatchLabelKind(emailBatch, activeCategory))
-      )
+    ? formatBatchExcelBaseName(emailBatch.id, batchLabelOpts(emailBatchKind))
     : '';
 
   const emailBatchShipping = emailBatch ? formatBatchShippingForMail(emailBatch) : '';
-  const emailBatchIsOffice =
-    !!emailBatch && getBatchLabelKind(emailBatch, activeCategory) === 'office';
+  const emailBatchIsOffice = emailBatchKind === 'office';
+  const emailTemplateVars = {
+    batchNo: emailBatchLabel,
+    count: emailBatch?.totalCount ?? '',
+    vendorName: activeVendor?.label,
+    vendorManager: activeVendor?.managerName,
+    shippingAddress:
+      emailBatchShipping || (emailBatchIsOffice ? '(배송지 미입력)' : ''),
+    deptName: String(currentUser?.unit?.unit_name || currentUser?.dept_name || '').trim(),
+    senderName: String(currentUser?.name || '').trim(),
+    category: prodMailCategoryLabel(emailBatchKind),
+  };
+
+  const emailBodyTemplate = resolveProdMailBodyTemplate(
+    mailSettings.bodyTemplate,
+    emailBatchIsOffice ? 'OFFICE_SUPPLIES' : undefined
+  );
 
   const emailSubject = emailBatch
-    ? applyProdMailTemplate(mailSettings.subjectTemplate, {
-        batchNo: emailBatchLabel,
-        count: emailBatch.totalCount,
-        vendorName: activeVendor?.label,
-        vendorManager: activeVendor?.managerName,
-        shippingAddress: emailBatchShipping,
-      })
+    ? applyProdMailTemplate(mailSettings.subjectTemplate, emailTemplateVars)
     : '';
 
   const emailBody = emailBatch
     ? appendShippingAddressIfNeeded(
-        applyProdMailTemplate(mailSettings.bodyTemplate, {
-          batchNo: emailBatchLabel,
-          count: emailBatch.totalCount,
-          vendorName: activeVendor?.label,
-          vendorManager: activeVendor?.managerName,
-          shippingAddress:
-            emailBatchShipping ||
-            (emailBatchIsOffice ? '(배송지 미입력)' : ''),
-        }),
+        applyProdMailTemplate(emailBodyTemplate, emailTemplateVars),
         {
           shippingAddress: emailBatchShipping,
-          forceAppend: emailBatchIsOffice,
-          templateHasPlaceholder: mailSettings.bodyTemplate.includes(
+          forceAppend: false,
+          templateHasPlaceholder: emailBodyTemplate.includes(
             PROD_MAIL_PLACEHOLDERS.SHIPPING_ADDRESS
           ),
         }
@@ -1410,7 +1467,33 @@ export default function DeptInspectionPanel() {
           {loading ? (
             <LoadingState />
           ) : (
-            <table className="w-full text-left border-collapse">
+            <table className="w-full table-fixed text-left border-collapse">
+              <colgroup>
+                <col className="w-[4%]" />
+                <col className="w-[16%]" />
+                <col className="w-[7%]" />
+                <col className="w-[23%]" />
+                {showGroupwareStep ? (
+                  <>
+                    <col className="w-[8.5%]" />
+                    <col className="w-[7.1%]" />
+                    <col className="w-[7.1%]" />
+                    <col className="w-[7.8%]" />
+                    <col className="w-[8.5%]" />
+                    <col className="w-[7.8%]" />
+                    <col className="w-[3.2%]" />
+                  </>
+                ) : (
+                  <>
+                    <col className="w-[9.9%]" />
+                    <col className="w-[8.3%]" />
+                    <col className="w-[9.1%]" />
+                    <col className="w-[9.9%]" />
+                    <col className="w-[9.1%]" />
+                    <col className="w-[3.7%]" />
+                  </>
+                )}
+              </colgroup>
               <thead className="text-indigo-900 text-[10px] font-medium border-b border-indigo-200">
                 <tr>
                   <th
@@ -1420,40 +1503,28 @@ export default function DeptInspectionPanel() {
                     신청/기본정보
                   </th>
                   <th
-                    colSpan={quotePrepColSpan}
-                    className="bg-yellow-50 text-amber-800 border-b border-r border-slate-300 font-medium text-center text-xs py-1.5 normal-case tracking-normal"
+                    colSpan={orderProgressColSpan}
+                    className="bg-blue-50 text-blue-700 border-b border-r border-blue-200 font-medium text-center text-xs py-1.5 normal-case tracking-normal"
                   >
                     <div className="flex flex-col items-center gap-1 px-2">
-                      <span>{showGroupwareStep ? '발주서 확인 · 결재 진행' : '발주서 확인'}</span>
+                      <span>
+                        {showGroupwareStep
+                          ? '발주서 확인 · 결재 · 발주 진행'
+                          : '발주서 확인 · 발주 진행'}
+                      </span>
                       <div
                         className="flex w-full max-w-full items-center"
-                        title="발주서 확인·결재 진행 방향"
+                        title="발주서 확인·발주 진행 방향"
                         aria-hidden
                       >
-                        <div className="h-2.5 flex-1 rounded-l-full bg-amber-300/80" />
-                        <div className="h-0 w-0 shrink-0 border-y-[10px] border-y-transparent border-l-[16px] border-l-amber-300/80" />
-                      </div>
-                    </div>
-                  </th>
-                  <th
-                    colSpan={orderDispatchColSpan}
-                    className="bg-amber-50 text-amber-700 border-b border-r border-slate-300 font-medium text-center text-xs py-1.5 normal-case tracking-normal"
-                  >
-                    <div className="flex flex-col items-center gap-1 px-2">
-                      <span>발주 진행</span>
-                      <div
-                        className="flex w-full max-w-full items-center"
-                        title="발주 진행 방향"
-                        aria-hidden
-                      >
-                        <div className="h-2.5 flex-1 rounded-l-full bg-amber-400/80" />
-                        <div className="h-0 w-0 shrink-0 border-y-[10px] border-y-transparent border-l-[16px] border-l-amber-400/80" />
+                        <div className="h-2.5 flex-1 rounded-l-full bg-blue-500/80" />
+                        <div className="h-0 w-0 shrink-0 border-y-[10px] border-y-transparent border-l-[16px] border-l-blue-500/80" />
                       </div>
                     </div>
                   </th>
                   <th
                     colSpan={2}
-                    className="bg-amber-100 text-amber-800 border-b border-r border-slate-300 font-medium text-center text-xs py-1.5 normal-case tracking-normal"
+                    className="bg-emerald-50 text-emerald-800 border-b border-r border-emerald-200 font-medium text-center text-xs py-1.5 normal-case tracking-normal"
                   >
                     <div className="flex flex-col items-center gap-1 px-2">
                       <span>수령 및 이관</span>
@@ -1462,8 +1533,8 @@ export default function DeptInspectionPanel() {
                         title="수령·명세대조 진행 방향"
                         aria-hidden
                       >
-                        <div className="h-2.5 flex-1 rounded-l-full bg-amber-500/80" />
-                        <div className="h-0 w-0 shrink-0 border-y-[10px] border-y-transparent border-l-[16px] border-l-amber-500/80" />
+                        <div className="h-2.5 flex-1 rounded-l-full bg-emerald-500/80" />
+                        <div className="h-0 w-0 shrink-0 border-y-[10px] border-y-transparent border-l-[16px] border-l-emerald-500/80" />
                       </div>
                     </div>
                   </th>
@@ -1476,13 +1547,13 @@ export default function DeptInspectionPanel() {
                 </tr>
                 <tr className="bg-indigo-100">
                   <th className="h-12 px-1 text-center w-[40px]">NO</th>
-                  <th className="h-12 px-2 text-left whitespace-nowrap w-[160px]">발주번호</th>
-                  <th className="h-12 px-2 text-center whitespace-nowrap w-[100px]">발주 생성일</th>
-                  <th className="h-12 px-2 text-left whitespace-nowrap border-r border-slate-300 w-[180px]">
+                  <th className="h-12 px-2 text-left whitespace-nowrap">발주번호</th>
+                  <th className="h-12 px-2 text-left whitespace-nowrap">발주 생성일</th>
+                  <th className="h-12 px-2 text-left whitespace-nowrap border-r border-slate-300">
                     신청 상세
                   </th>
                   <th
-                    className={`h-12 px-1 text-center whitespace-nowrap w-[120px]${
+                    className={`h-12 px-1 text-center whitespace-nowrap${
                       showGroupwareStep ? '' : ' border-r border-slate-300'
                     }`}
                   >
@@ -1495,7 +1566,7 @@ export default function DeptInspectionPanel() {
                     </div>
                   </th>
                   {showGroupwareStep ? (
-                    <th className="h-12 px-1 text-center w-[100px] border-r border-slate-300">
+                    <th className="h-12 px-1 text-center border-r border-slate-300">
                       <div className="flex flex-col items-center justify-center gap-0.5 leading-tight">
                         <span className="inline-flex items-center justify-center gap-0.5 whitespace-nowrap">
                           결재
@@ -1515,7 +1586,7 @@ export default function DeptInspectionPanel() {
                       </div>
                     </th>
                   ) : null}
-                  <th className="h-12 px-1 text-center w-[100px]">
+                  <th className="h-12 px-1 text-center">
                     <div className="flex flex-col items-center justify-center gap-0.5 leading-tight">
                       <span className="whitespace-nowrap">메일 바로가기</span>
                       <span className="text-[10px] font-medium text-indigo-700/80 normal-case tracking-normal whitespace-nowrap">
@@ -1523,7 +1594,7 @@ export default function DeptInspectionPanel() {
                       </span>
                     </div>
                   </th>
-                  <th className="h-12 px-1 text-center border-r border-slate-300 w-[110px]">
+                  <th className="h-12 px-1 text-center border-r border-slate-300">
                     <div className="flex flex-col items-center justify-center gap-0.5 leading-tight">
                       <span className="whitespace-nowrap">발주확정일</span>
                       <span className="text-[10px] font-medium text-indigo-700/80 normal-case tracking-normal whitespace-nowrap">
@@ -1531,7 +1602,7 @@ export default function DeptInspectionPanel() {
                       </span>
                     </div>
                   </th>
-                  <th className="h-12 px-1 text-center w-[120px]">
+                  <th className="h-12 px-1 text-center">
                     <div className="flex flex-col items-center justify-center gap-0.5 leading-tight">
                       <span className="whitespace-nowrap">수령 검수</span>
                       <span className="text-[10px] font-medium text-indigo-700/80 normal-case tracking-normal whitespace-nowrap">
@@ -1539,7 +1610,7 @@ export default function DeptInspectionPanel() {
                       </span>
                     </div>
                   </th>
-                  <th className="h-12 px-1 text-center border-r border-slate-300 w-[110px]">
+                  <th className="h-12 px-1 text-center border-r border-slate-300">
                     <div className="flex flex-col items-center justify-center gap-0.5 leading-tight">
                       <span className="whitespace-nowrap">명세대조 이동</span>
                       <span className="text-[10px] font-medium text-indigo-700/80 normal-case tracking-normal whitespace-nowrap">
@@ -1547,7 +1618,7 @@ export default function DeptInspectionPanel() {
                       </span>
                     </div>
                   </th>
-                  <th className="h-12 px-1 text-center w-[44px]" title="보조 관리 액션">
+                  <th className="h-12 px-1 text-center" title="보조 관리 액션">
                     <span className="sr-only">관리 메뉴</span>
                   </th>
                 </tr>
@@ -1580,7 +1651,7 @@ export default function DeptInspectionPanel() {
                           {rowNo}
                         </td>
                         <td
-                          className="px-2 text-left text-slate-800 cursor-pointer whitespace-nowrap truncate overflow-hidden"
+                          className="px-2 text-left text-slate-800 cursor-pointer whitespace-nowrap truncate"
                           title={formatBatchExcelBaseName(
                             batch.id,
                             batchLabelOpts(getBatchLabelKind(batch, activeCategory))
@@ -1592,7 +1663,7 @@ export default function DeptInspectionPanel() {
                             batchLabelOpts(getBatchLabelKind(batch, activeCategory))
                           )}
                         </td>
-                        <td className="px-4 text-center text-slate-800 whitespace-nowrap">
+                        <td className="px-2 text-left text-slate-800 whitespace-nowrap">
                           {batch.orderedAt ? getKSTDateString(batch.orderedAt) : '-'}
                         </td>
                         <td
@@ -1636,38 +1707,24 @@ export default function DeptInspectionPanel() {
                                   title="묶음 안 PDF는 합본, 엑셀은 이름별 탭 + 1번째 취합 시트로 받습니다."
                                   className={`${rowActionBtnBase} ${prepActionBtnClass}`}
                                 >
-                                  <span className={allDispatched ? 'text-slate-500' : 'text-red-600'}>
-                                    {busy ? '취합 중…' : '취합 견적서↓'}
-                                  </span>
+                                  {busy ? '취합 중…' : '📥 견적서 다운'}
                                 </button>
                               );
                             }
-                            const attachHint = isJebon
-                              ? { label: '(+제본PDF별첨 필수)', title: '제본 관련 PDF 별첨 필수' }
-                              : null;
                             return (
                               <button
                                 type="button"
                                 onClick={() => handleBatchExcel(batch)}
                                 title={
-                                  allDispatched
-                                    ? '발주완료 후에도 다시 받을 수 있습니다'
-                                    : attachHint
-                                      ? `${attachHint.title} — 엑셀과 함께 메일에 첨부`
+                                  isJebon
+                                    ? '제본 관련 PDF 별첨 필수 — 엑셀과 함께 메일에 첨부'
+                                    : allDispatched
+                                      ? '발주완료 후에도 다시 받을 수 있습니다'
                                       : '발주서 엑셀 다운로드'
                                 }
                                 className={`${rowActionBtnBase} ${prepActionBtnClass}`}
                               >
-                                {attachHint ? (
-                                  <>
-                                    발주서↓
-                                    <span className={allDispatched ? 'text-slate-500' : 'text-red-600'}>
-                                      {attachHint.label}
-                                    </span>
-                                  </>
-                                ) : (
-                                  '발주서↓'
-                                )}
+                                📥 발주서 다운
                               </button>
                             );
                           })()}
@@ -1707,7 +1764,7 @@ export default function DeptInspectionPanel() {
                         </td>
                         <td className="px-2 text-center border-r border-slate-300">
                           {allDispatched ? (
-                            <span className="font-medium text-slate-500 whitespace-nowrap">
+                            <span className="font-medium text-slate-800 whitespace-nowrap">
                               {batch.dispatchedAt
                                 ? getKSTDateString(batch.dispatchedAt)
                                 : '-'}
@@ -1738,18 +1795,18 @@ export default function DeptInspectionPanel() {
                             if (sum.total === 0 || !allDispatched) {
                               return <span className="text-slate-300">-</span>;
                             }
-                            const doneCls = 'font-medium text-slate-500 whitespace-nowrap';
+                            const doneCls = 'font-medium text-slate-800 whitespace-nowrap';
                             const pendingNormal =
                               sum.normalTotal > 0 &&
                               sum.normalReceived < sum.normalTotal;
 
                             const receiveNode = pendingNormal ? (
-                              <button
-                                type="button"
-                                className={`${rowActionBtnBase} bg-amber-500 hover:bg-amber-600 text-white`}
-                              >
+                              <span className="font-medium text-red-600 whitespace-nowrap">
                                 수령 {sum.normalReceived}/{sum.normalTotal}
-                              </button>
+                                {sum.normalTotal - sum.normalReceived > 0
+                                  ? ` · 대기 ${sum.normalTotal - sum.normalReceived}`
+                                  : null}
+                              </span>
                             ) : sum.normalTotal > 0 ? (
                               <span className={doneCls}>
                                 수령완료 {sum.normalReceived}/{sum.normalTotal}
@@ -1850,11 +1907,12 @@ export default function DeptInspectionPanel() {
                               NO
                             </td>
                             <td className="h-11 px-2 text-left whitespace-nowrap">관리번호</td>
-                            <td className="h-11 px-2 text-left whitespace-nowrap">
-                              관리용 제목 · 원문확인
-                            </td>
-                            <td className="h-11 px-2 text-left border-r border-slate-300 whitespace-nowrap">
-                              신청일 / 부서·이름
+                            <td className="h-11 px-2 text-left whitespace-nowrap">신청일</td>
+                            <td className="h-11 px-2 text-left border-r border-slate-300">
+                              <div className="flex items-center justify-between gap-2 min-w-0">
+                                <span className="whitespace-nowrap">관리용 제목</span>
+                                <span className="whitespace-nowrap">신청자</span>
+                              </div>
                             </td>
                             <td
                               colSpan={orderProgressColSpan}
@@ -1862,8 +1920,7 @@ export default function DeptInspectionPanel() {
                             >
                               견적 품목 (외주견적서~발주확정)
                             </td>
-                            <td className="h-11 px-1 text-center whitespace-nowrap">수령검수</td>
-                            <td className="h-11 px-1 py-1 text-center align-middle border-r border-slate-300">
+                            <td className="h-11 px-1 py-1 text-center align-middle">
                               {(() => {
                                 const receivable = getBatchReceivableOfficeItems(batch);
                                 const canBulk =
@@ -1877,7 +1934,7 @@ export default function DeptInspectionPanel() {
                                         ? '발주확정을 먼저 해 주세요'
                                         : receivable.length === 0
                                           ? '수령 대기 품목이 없습니다'
-                                          : `미수령 ${receivable.length}건 총 물품 수령 확정`
+                                          : `미수령 ${receivable.length}건 일괄 수령확정`
                                     }
                                     onClick={(e) => {
                                       e.stopPropagation();
@@ -1889,11 +1946,14 @@ export default function DeptInspectionPanel() {
                                         : DISABLED_ACTION_BTN
                                     }`}
                                   >
-                                    총 물품 수령 확정
+                                    일괄 수령확정
                                     {receivable.length > 0 ? `(${receivable.length})` : ''}
                                   </button>
                                 );
                               })()}
+                            </td>
+                            <td className="h-11 px-1 text-center text-slate-400 border-r border-slate-300">
+                              —
                             </td>
                             <td className="h-11 px-2 text-center text-slate-400">—</td>
                           </tr>
@@ -1903,9 +1963,12 @@ export default function DeptInspectionPanel() {
                               NO
                             </td>
                             <td className="h-9 px-2 text-left whitespace-nowrap">관리번호</td>
-                            <td className="h-9 px-2 text-left whitespace-nowrap">관리용 제목</td>
-                            <td className="h-9 px-2 text-left border-r border-slate-300 whitespace-nowrap">
-                              신청일 / 부서·이름
+                            <td className="h-9 px-2 text-left whitespace-nowrap">신청일</td>
+                            <td className="h-9 px-2 text-left border-r border-slate-300">
+                              <div className="flex items-center justify-between gap-2 min-w-0">
+                                <span className="whitespace-nowrap">관리용 제목</span>
+                                <span className="whitespace-nowrap">신청자</span>
+                              </div>
                             </td>
                             <td className="h-9 px-2 text-center whitespace-nowrap border-r border-slate-300">
                               원문확인
@@ -1957,7 +2020,7 @@ export default function DeptInspectionPanel() {
                         ))}
 
                       {expandedBatchIds.has(batch.id) &&
-                        (batch.items || []).flatMap((item, itemIdx) => {
+                        sortBatchItemsByAppliedAsc(batch.items || []).flatMap((item, itemIdx) => {
                           const officeStats =
                             item.category === 'OFFICE_SUPPLIES'
                               ? getOfficeQuoteReceiveStats(item)
@@ -1998,43 +2061,28 @@ export default function DeptInspectionPanel() {
                                   </span>
                                 </td>
                                 <td
-                                  className="px-2 text-left font-mono text-slate-900 tabular-nums truncate bg-slate-50/80"
+                                  className="px-2 text-left font-mono text-slate-900 tabular-nums whitespace-nowrap truncate bg-slate-50/80"
                                   title={item.postNumber}
                                 >
                                   {item.postNumber}
                                 </td>
-                                <td
-                                  className="px-2 text-left bg-slate-50/80"
-                                  title={item.title || ''}
-                                >
-                                  <div className="flex items-center gap-2 min-w-0">
-                                    <span className="truncate flex-1 font-medium text-slate-800">
-                                      {item.title || '-'}
-                                    </span>
-                                    <button
-                                      type="button"
-                                      onClick={() => setDetailItem(item)}
-                                      className="shrink-0 px-2 py-1 text-[10px] font-medium rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200"
-                                    >
-                                      원문확인
-                                    </button>
-                                  </div>
+                                <td className="px-2 text-left text-slate-800 whitespace-nowrap bg-slate-50/80">
+                                  {getKSTDateString(item.createdAt)}
                                 </td>
                                 <td
                                   className="px-2 text-left min-w-0 border-r border-slate-200 bg-slate-50/80"
-                                  title={[item.deptName, item.userName]
+                                  title={[item.title, item.userName]
                                     .filter(Boolean)
                                     .join(' / ')}
                                 >
-                                  <span className="text-[10px] font-medium text-slate-500 block tabular-nums">
-                                    {getKSTDateString(item.createdAt)}
-                                  </span>
-                                  <span className="text-[10px] font-medium text-slate-500 block truncate">
-                                    {item.deptName || '-'}
-                                  </span>
-                                  <span className="text-slate-800 block truncate">
-                                    {item.userName || '-'}
-                                  </span>
+                                  <div className="flex items-center justify-between gap-2 min-w-0">
+                                    <span className="truncate min-w-0 flex-1 font-medium text-slate-800">
+                                      {item.title || '-'}
+                                    </span>
+                                    <span className="min-w-0 max-w-[4.5rem] text-right truncate text-slate-800">
+                                      {item.userName || '-'}
+                                    </span>
+                                  </div>
                                 </td>
                                 <td
                                   colSpan={orderProgressColSpan}
@@ -2052,11 +2100,11 @@ export default function DeptInspectionPanel() {
                                       -
                                     </span>
                                   ) : officeStats?.allReceived ? (
-                                    <span className="text-[10px] font-medium text-slate-500 whitespace-nowrap">
+                                    <span className="text-[10px] font-medium text-slate-800 whitespace-nowrap">
                                       수령완료
                                     </span>
                                   ) : (
-                                    <span className="text-[10px] font-medium text-amber-600 whitespace-nowrap">
+                                    <span className="text-[10px] font-medium text-red-600 whitespace-nowrap">
                                       수령 {officeStats?.receivedCount || 0}/
                                       {officeStats?.lines.length || 0}
                                     </span>
@@ -2360,7 +2408,7 @@ export default function DeptInspectionPanel() {
                                             </button>
                                           </>
                                         ) : officeStats?.allReceived ? (
-                                          <span className="text-[10px] font-medium text-slate-500">
+                                          <span className="text-[10px] font-medium text-slate-800">
                                             견적 {officeStats.lines.length}품목 수령완료
                                             {item.status === PRODUCTION_STATUS.VERIFIED
                                               ? ' · 신청건 수령확정됨'
@@ -2392,33 +2440,31 @@ export default function DeptInspectionPanel() {
                                 </span>
                               </td>
                               <td
-                                className="px-2 text-left font-mono text-slate-900 tabular-nums truncate bg-slate-50/80"
+                                className="px-2 text-left font-mono text-slate-900 tabular-nums whitespace-nowrap truncate bg-slate-50/80"
                                 title={item.postNumber}
                               >
                                 {item.postNumber}
                               </td>
-                              <td
-                                className="px-2 text-left truncate bg-slate-50/80"
-                                title={item.title || ''}
-                              >
-                                {item.title || '-'}
+                              <td className="px-2 text-left text-slate-800 whitespace-nowrap bg-slate-50/80">
+                                {getKSTDateString(item.createdAt)}
                               </td>
                               <td
                                 className="px-2 text-left min-w-0 border-r border-slate-200 bg-slate-50/80"
-                                title={[item.deptName, item.userName].filter(Boolean).join(' / ')}
+                                title={[item.title, item.userName]
+                                  .filter(Boolean)
+                                  .join(' / ')}
                               >
-                                <span className="text-[10px] font-medium text-slate-500 block tabular-nums">
-                                  {getKSTDateString(item.createdAt)}
-                                </span>
-                                <span className="text-[10px] font-medium text-slate-500 block truncate">
-                                  {item.deptName || '-'}
-                                </span>
-                                <span className="text-slate-800 block truncate">
-                                  {item.userName || '-'}
-                                </span>
+                                <div className="flex items-center justify-between gap-2 min-w-0">
+                                  <span className="truncate min-w-0 flex-1 font-medium text-slate-800">
+                                    {item.title || '-'}
+                                  </span>
+                                  <span className="min-w-0 max-w-[4.5rem] text-right truncate text-slate-800">
+                                    {item.userName || '-'}
+                                  </span>
+                                </div>
                               </td>
-                              <td className="px-2 text-center bg-slate-50/80">
-                                <div className="inline-flex flex-col items-center gap-0.5">
+                              <td className="px-2 text-center bg-slate-50/80 border-r border-slate-300">
+                                <div className="inline-flex items-center justify-center gap-1">
                                   <button
                                     type="button"
                                     onClick={() => setDetailItem(item)}
@@ -2426,7 +2472,7 @@ export default function DeptInspectionPanel() {
                                   >
                                     원문확인
                                   </button>
-                                  <span className="text-[9px] font-medium text-slate-400 tabular-nums">
+                                  <span className="text-[9px] font-medium text-slate-400 tabular-nums whitespace-nowrap">
                                     {item.quantity}
                                     {formatQuantityUnit(item)}
                                   </span>
@@ -2447,7 +2493,7 @@ export default function DeptInspectionPanel() {
                                   }
                                   if (item.status === PRODUCTION_STATUS.VERIFIED) {
                                     return (
-                                      <span className="text-[10px] font-medium text-slate-500 whitespace-nowrap">
+                                      <span className="text-[10px] font-medium text-slate-800 whitespace-nowrap">
                                         수령완료
                                       </span>
                                     );
@@ -2465,9 +2511,9 @@ export default function DeptInspectionPanel() {
                                       disabled={!canAct}
                                       title={undefined}
                                       onClick={() => handleConfirmReceive(item)}
-                                      className={`px-2.5 py-1 text-[10px] font-medium rounded-lg whitespace-nowrap ${
+                                      className={`px-2.5 py-1 text-[10px] font-medium rounded-lg whitespace-nowrap transition-colors ${
                                         canAct
-                                          ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                                          ? 'bg-emerald-50/80 text-emerald-700 border border-emerald-400 hover:bg-emerald-100'
                                           : DISABLED_ACTION_BTN
                                       }`}
                                     >
@@ -2962,7 +3008,11 @@ export default function DeptInspectionPanel() {
                 제목·본문 양식은 로그인 계정별로 저장됩니다. 플레이스홀더:{' '}
                 {'{{BATCH_NO}}'}(묶음번호), {'{{COUNT}}'}(건수),{' '}
                 {'{{VENDOR_NAME}}'}(업체명), {'{{VENDOR_MANAGER}}'}(담당자),{' '}
-                {'{{SHIPPING_ADDRESS}}'}(실배송지 · 사무문구는 미사용 시 본문 하단에 자동 추가)
+                {'{{DEPT_NAME}}'}(로그인 부서), {'{{SENDER_NAME}}'}(로그인 이름),{' '}
+                {'{{CATEGORY}}'}(현판/제본/제작물),{' '}
+                {'{{SHIPPING_ADDRESS}}'}(실배송지)
+                <br />
+                사무문구류는 견적서 전용 기본 본문을 사용합니다.
               </p>
             </div>
             <div>

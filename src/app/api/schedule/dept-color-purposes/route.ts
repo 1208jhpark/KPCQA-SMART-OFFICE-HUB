@@ -24,12 +24,17 @@ type PurposeRow = {
 
 const HEX_RE = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
 
-/** 출장은 공휴일(#e57373)과 겹치지 않도록 보라 계열 */
+/** 현장실사/외부심사는 공휴일(#e57373)과 겹치지 않도록 보라 계열 */
 const DEFAULT_PURPOSES: Array<{ label: string; color: string }> = [
-  { label: '출장', color: '#b39ddb' },
-  { label: '내부회의', color: '#7baaf7' },
+  { label: '현장실사/외부심사', color: '#b39ddb' },
+  { label: '심의', color: '#7baaf7' },
   { label: '외부미팅', color: '#81c995' },
 ];
+
+const LEGACY_INTERNAL_MEETING_LABEL = '내부회의';
+const DEFAULT_REVIEW_LABEL = '심의';
+const LEGACY_TRIP_LABEL = '출장';
+const DEFAULT_FIELD_LABEL = '현장실사/외부심사';
 
 const LEGACY_TRIP_COLOR = '#e57373';
 const DEFAULT_TRIP_COLOR = '#b39ddb';
@@ -137,19 +142,23 @@ async function dedupePurposes(
   );
 }
 
-/** 예전에 휴일과 같던 출장 기본색(#e57373) → 보라로 교정 */
-async function migrateLegacyTripColor(
-  tx: { $executeRawUnsafe: (q: string, ...args: unknown[]) => Promise<unknown> },
-  unitId: string
-) {
+type TxClient = {
+  $executeRawUnsafe: (q: string, ...args: unknown[]) => Promise<unknown>;
+  $queryRawUnsafe: <T = unknown>(q: string, ...args: unknown[]) => Promise<T>;
+};
+
+/** 예전에 휴일과 같던 기본색(#e57373) → 보라로 교정 */
+async function migrateLegacyTripColor(tx: TxClient, unitId: string) {
   await tx.$executeRawUnsafe(
     `UPDATE "ScheduleDeptColorPurpose"
      SET color = $2, "updatedAt" = NOW()
-     WHERE unit_id = $1 AND label = '출장'
+     WHERE unit_id = $1 AND label IN ($4, $5)
        AND lower(color) = lower($3)`,
     unitId,
     DEFAULT_TRIP_COLOR,
-    LEGACY_TRIP_COLOR
+    LEGACY_TRIP_COLOR,
+    LEGACY_TRIP_LABEL,
+    DEFAULT_FIELD_LABEL
   );
   await tx.$executeRawUnsafe(
     `UPDATE "MarketingDeptCalendarEvent" e
@@ -158,11 +167,60 @@ async function migrateLegacyTripColor(
      WHERE e.unit_id = $1
        AND e.color_purpose_id = p.id
        AND p.unit_id = $1
-       AND p.label = '출장'
+       AND p.label IN ($4, $5)
        AND lower(e.color) = lower($3)`,
     unitId,
     DEFAULT_TRIP_COLOR,
-    LEGACY_TRIP_COLOR
+    LEGACY_TRIP_COLOR,
+    LEGACY_TRIP_LABEL,
+    DEFAULT_FIELD_LABEL
+  );
+}
+
+/** 기본 용도 라벨 교체 (새 라벨이 있으면 구 라벨만 정리) */
+async function migratePurposeLabel(
+  tx: TxClient,
+  unitId: string,
+  fromLabel: string,
+  toLabel: string
+) {
+  const existing = await tx.$queryRawUnsafe<{ id: string }[]>(
+    `SELECT id FROM "ScheduleDeptColorPurpose" WHERE unit_id = $1 AND label = $2 LIMIT 1`,
+    unitId,
+    toLabel
+  );
+
+  if (existing.length > 0) {
+    await tx.$executeRawUnsafe(
+      `UPDATE "MarketingDeptCalendarEvent" e
+       SET color_purpose_id = keep.id
+       FROM "ScheduleDeptColorPurpose" legacy
+       JOIN "ScheduleDeptColorPurpose" keep
+         ON keep.unit_id = legacy.unit_id AND keep.label = $2
+       WHERE e.unit_id = $1
+         AND e.color_purpose_id = legacy.id
+         AND legacy.unit_id = $1
+         AND legacy.label = $3`,
+      unitId,
+      toLabel,
+      fromLabel
+    );
+    await tx.$executeRawUnsafe(
+      `DELETE FROM "ScheduleDeptColorPurpose"
+       WHERE unit_id = $1 AND label = $2`,
+      unitId,
+      fromLabel
+    );
+    return;
+  }
+
+  await tx.$executeRawUnsafe(
+    `UPDATE "ScheduleDeptColorPurpose"
+     SET label = $2, "updatedAt" = NOW()
+     WHERE unit_id = $1 AND label = $3`,
+    unitId,
+    toLabel,
+    fromLabel
   );
 }
 
@@ -175,7 +233,15 @@ async function seedDefaultsIfEmpty(
   await prisma.$transaction(async (tx) => {
     await tx.$executeRawUnsafe(`SELECT pg_advisory_xact_lock(hashtext($1::text))`, unitId);
     await dedupePurposes(tx, unitId);
-    await migrateLegacyTripColor(tx, unitId);
+    const txClient = tx as TxClient;
+    await migrateLegacyTripColor(txClient, unitId);
+    await migratePurposeLabel(txClient, unitId, LEGACY_TRIP_LABEL, DEFAULT_FIELD_LABEL);
+    await migratePurposeLabel(
+      txClient,
+      unitId,
+      LEGACY_INTERNAL_MEETING_LABEL,
+      DEFAULT_REVIEW_LABEL
+    );
 
     const existing = await tx.$queryRawUnsafe<PurposeRow[]>(
       `SELECT id FROM "ScheduleDeptColorPurpose" WHERE unit_id = $1 LIMIT 1`,

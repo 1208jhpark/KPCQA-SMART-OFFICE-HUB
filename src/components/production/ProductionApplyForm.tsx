@@ -2048,7 +2048,7 @@ return (
           <h1 className="text-2xl tracking-tight leading-none">
             <span className="text-blue-200 font-normal">{currentUser?.name || signData.manager || '임직원'} 님</span>
             <span className="text-white/30 font-normal mx-2.5">|</span>
-            <span className="text-white font-extrabold">외주 제작 신청</span>
+            <span className="text-white font-medium">외주 제작 신청</span>
           </h1>
           <p className="text-white/70 text-xs mt-3 leading-relaxed max-w-xl">
             외주 요청을 같은 양식으로 신청하여, 부서 발주 대장에 모읍니다.
@@ -2237,7 +2237,7 @@ return (
                     </div>
 
                     <div className="min-w-0">
-                      <label className="block text-sm font-semibold text-slate-900 mb-2">2. 인증 등급/종류 설정 <span className="text-red-500">*</span></label>
+                      <label className="block text-sm font-semibold text-slate-900 mb-2">2. 인증 등급/범주 설정 <span className="text-red-500">*</span></label>
 
                       {useMultiGradeField ? (
                         <div className="relative" ref={gradeMultiRef}>
@@ -3683,7 +3683,13 @@ return (
                 <h3 className="text-xs font-medium tracking-widest text-blue-400 uppercase">Vendor Management Settings</h3>
                 <div className="flex items-center gap-2 mt-0.5 flex-wrap">
                   <h2 className="text-xl font-medium">외주 업체(VENDOR) 관리 설정</h2>
-                  <DeptAssigneeLine editorNames={editorNames} />
+                  <DeptAssigneeLine
+                    editorNames={editorNames}
+                    label="👤 편집 권한자"
+                    popupLabel="편집 권한자"
+                    showIcon={false}
+                    onColor
+                  />
                 </div>
               </div>
               <button type="button" onClick={() => setIsVendorModalOpen(false)} className="bg-slate-800 hover:bg-slate-700 text-white font-medium px-4 py-2 rounded-xl text-xs transition-all active:scale-95">닫기 ✕</button>
@@ -4047,7 +4053,16 @@ return (
                 <h3 className="text-xs font-medium tracking-widest text-fuchsia-400 uppercase">
                   Print / Consumable Item Master
                 </h3>
-                <h2 className="text-xl font-medium mt-0.5">기타제작 주문물품 설정</h2>
+                <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                  <h2 className="text-xl font-medium">기타제작 주문물품 설정</h2>
+                  <DeptAssigneeLine
+                    editorNames={editorNames}
+                    label="👤 편집 권한자"
+                    popupLabel="편집 권한자"
+                    showIcon={false}
+                    onColor
+                  />
+                </div>
               </div>
               <button
                 type="button"
@@ -4492,7 +4507,13 @@ return (
                 <h3 className="text-xs font-medium tracking-widest text-emerald-400 uppercase">Signage Specs & Pricing Settings</h3>
                 <div className="flex items-center gap-2 mt-0.5 flex-wrap">
                   <h2 className="text-xl font-medium">현판 품목별 규격 및 단가 설정</h2>
-                  <DeptAssigneeLine editorNames={editorNames} />
+                  <DeptAssigneeLine
+                    editorNames={editorNames}
+                    label="👤 편집 권한자"
+                    popupLabel="편집 권한자"
+                    showIcon={false}
+                    onColor
+                  />
                 </div>
               </div>
               <button type="button" onClick={() => setIsPlateModalOpen(false)} className="bg-slate-800 hover:bg-slate-700 text-white font-medium px-4 py-2 rounded-xl text-xs transition-all active:scale-95">닫기 ✕</button>
@@ -4654,7 +4675,13 @@ return (
                       ? '인증별 현판 서식 기준 설정'
                       : '인증별 제본 서식 기준 설정'}
                   </h2>
-                  <DeptAssigneeLine editorNames={editorNames} />
+                  <DeptAssigneeLine
+                    editorNames={editorNames}
+                    label="👤 편집 권한자"
+                    popupLabel="편집 권한자"
+                    showIcon={false}
+                    onColor
+                  />
                 </div>
               </div>
               <button type="button" onClick={() => setIsCertModalOpen(false)} className="bg-slate-800 hover:bg-slate-700 text-white font-medium px-4 py-2 rounded-xl text-xs transition-all active:scale-95">닫기 ✕</button>
@@ -5545,7 +5572,7 @@ return (
                   <div className="border-b border-slate-800 pb-3">
                     <div className="text-[10px] font-medium text-blue-400 uppercase tracking-wider">GRADE INTERACTION PANEL</div>
                     <h4 className="text-sm font-medium text-slate-200 mt-0.5">
-                      👑 [{signCertMasterList.find(c => c.id === selectedMasterCertId)?.label || '선택 없음'}] 인증 등급/종류 설정
+                      👑 [{signCertMasterList.find(c => c.id === selectedMasterCertId)?.label || '선택 없음'}] 인증 등급/범주 설정
                     </h4>
                     {!canEdit && (
                       <p className="text-[10px] text-amber-400/90 mt-1.5 font-medium">
@@ -5612,7 +5639,7 @@ return (
                           </button>
                         </div>
                         <p className="text-[9px] text-slate-500 font-medium leading-relaxed">
-                          클릭 즉시 저장됩니다. 신청서 「2. 인증 등급/종류 설정」 UI에 반영됩니다.
+                          클릭 즉시 저장됩니다. 신청서 「2. 인증 등급/범주 설정」 UI에 반영됩니다.
                         </p>
                       </div>
                     );

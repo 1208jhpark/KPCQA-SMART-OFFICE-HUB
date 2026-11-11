@@ -400,7 +400,7 @@ const handleSaveDraft = () => {
   <div className="absolute right-[-10px] top-[-10px] w-24 h-24 bg-white/10 rounded-full blur-2xl group-hover:scale-150 transition-transform duration-700"></div>
   
   <div>
-    <p className="text-[10px] font-black uppercase tracking-widest opacity-80 mb-1 text-emerald-200">
+    <p className="text-[10px] font-medium uppercase tracking-widest opacity-80 mb-1 text-emerald-200">
       My Delivery Mission
     </p>
     <div className="flex items-end gap-2 mt-1">

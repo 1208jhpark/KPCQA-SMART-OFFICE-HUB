@@ -474,13 +474,13 @@ export default function DeliveryMySubmissions() {
         <div className="absolute right-0 top-0 w-64 h-64 bg-indigo-500/12 rounded-full blur-3xl -translate-y-1/3 translate-x-1/4 pointer-events-none" />
         <div className="absolute left-1/4 bottom-0 w-48 h-48 bg-slate-500/10 rounded-full blur-3xl translate-y-1/2 pointer-events-none" />
         <div className="relative z-10">
-          <h3 className="text-[10px] font-black uppercase tracking-widest text-indigo-400 mb-2.5">
+          <h3 className="text-[10px] font-medium uppercase tracking-widest text-indigo-400 mb-2.5">
             MY DELIVERY SURVEYS & HISTORY
           </h3>
           <h1 className="text-2xl tracking-tight leading-none">
             <span className="text-indigo-400 font-normal">{currentUser?.name || '임직원'} 님</span>
             <span className="text-white/30 font-normal mx-2.5">|</span>
-            <span className="text-white font-extrabold">나의 참여 이력</span>
+            <span className="text-white font-medium">나의 참여 이력</span>
           </h1>
           <p className="text-slate-400 text-xs mt-3 leading-relaxed">
             접수한 배송내역 확인 및 관리자 출고 승인 대기 목록을 조회합니다.

@@ -16,7 +16,7 @@ const PAGE_HINT_BY_PATH: Record<string, React.ReactNode> = {
   '/production/custom/dept-master/order':
     '부서원의 발주 신청건을 검수, 접수하여 발주로 이관 관리합니다.',
   '/production/custom/dept-master/history':
-    '연계 조직 신청을 분류철별로 모아 봅니다. 공정상태는 나의 신청 이력과 동일하게 표기됩니다.',
+    '연계 조직 신청을 공정상태·분류철로 조회합니다.',
   '/production/custom/dept-master/inspection':
     '진행 중인 외주 발주 묶음의 상태를 추적하고, 물품 수령 및 검수 작업을 처리하는 관리 대장입니다.',
   '/production/custom/dept-master/settlement':
@@ -57,11 +57,15 @@ export default function ProductionDeptShell({ children, pageHint }: ProductionDe
 
   useEffect(() => {
     const ts = Date.now();
+    // LV_1 권한 칩은 현재 탭(L4) path 기준 — 마스터 셸과 동일
+    const summaryPath = pathname.startsWith('/production/custom/dept-master/')
+      ? pathname
+      : MENU_PATH;
     Promise.all([
       fetch(`/api/auth/me?t=${ts}`, { cache: 'no-store' })
         .then((res) => (res.ok ? res.json() : null))
         .catch(() => null),
-      fetch(`/api/admin/interface/summary?path=${encodeURIComponent(MENU_PATH)}&t=${ts}`, {
+      fetch(`/api/admin/interface/summary?path=${encodeURIComponent(summaryPath)}&t=${ts}`, {
         cache: 'no-store',
       })
         .then((res) => (res.ok ? res.json() : null))
@@ -76,7 +80,7 @@ export default function ProductionDeptShell({ children, pageHint }: ProductionDe
       setMenusReady(true);
       setUserReady(true);
     });
-  }, []);
+  }, [pathname]);
 
   const tabs = useMemo(
     () =>
@@ -116,7 +120,7 @@ export default function ProductionDeptShell({ children, pageHint }: ProductionDe
         <div className="absolute right-0 top-0 w-64 h-64 bg-indigo-500/12 rounded-full blur-3xl -translate-y-1/3 translate-x-1/4 pointer-events-none" />
         <div className="absolute left-1/4 bottom-0 w-48 h-48 bg-slate-500/10 rounded-full blur-3xl translate-y-1/2 pointer-events-none" />
         <div className="relative z-10">
-          <h3 className="text-[10px] font-black uppercase tracking-widest text-indigo-400 mb-2.5">
+          <h3 className="text-[10px] font-medium uppercase tracking-widest text-indigo-400 mb-2.5">
             PRODUCTION DEPT ORDER CONTROL
           </h3>
           <h1 className="text-2xl tracking-tight leading-none">
@@ -128,16 +132,16 @@ export default function ProductionDeptShell({ children, pageHint }: ProductionDe
               )}
             </span>
             <span className="text-white/30 font-normal mx-2.5">|</span>
-            <span className="text-white font-extrabold">{bannerTitle}</span>
+            <span className="text-white font-medium">{bannerTitle}</span>
           </h1>
           <p className="text-slate-400 text-xs mt-3 leading-relaxed">{resolvedHint}</p>
           {permissionSummary && isSystemLv1User(currentUser) && (
             <div className="flex flex-wrap items-center gap-2 mt-4 pt-3 border-t border-white/15">
-              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-white/10 border-white/25 text-slate-50 shadow-sm">
+              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-medium border tracking-tight bg-white/10 border-white/25 text-slate-50 shadow-sm">
                 <span>👑 Master 책임자:</span>
                 <span>{permissionSummary.masterName}</span>
               </div>
-              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-purple-500/20 border-purple-300/40 text-purple-100 shadow-sm">
+              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-medium border tracking-tight bg-purple-500/20 border-purple-300/40 text-purple-100 shadow-sm">
                 <span>👁️ Access:</span>
                 <span>{permissionSummary.accessDesignate}</span>
                 <span className="opacity-50">|</span>
@@ -145,7 +149,7 @@ export default function ProductionDeptShell({ children, pageHint }: ProductionDe
                 <span className="opacity-50">|</span>
                 <span>Level: {permissionSummary.accessLevel}</span>
               </div>
-              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-emerald-400/20 border-emerald-300/40 text-emerald-100 shadow-sm">
+              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-medium border tracking-tight bg-emerald-400/20 border-emerald-300/40 text-emerald-100 shadow-sm">
                 <span>✍️ Edit:</span>
                 <span>{permissionSummary.editDesignate}</span>
                 <span className="opacity-50">|</span>

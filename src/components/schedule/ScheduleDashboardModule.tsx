@@ -64,9 +64,18 @@ export default function ScheduleDashboardModule() {
               Board Members
             </p>
             <p className="text-[11px] font-medium text-slate-800">
-              이 보드를 공유하는 사람
+              공유일정
+              <span className="mx-1.5 inline-block text-slate-300 select-none" aria-hidden>
+                ·
+              </span>
+              워크보드를 공유하는 사람
               {unitName ? (
-                <span className="text-slate-500 font-normal"> · {unitName}</span>
+                <span className="text-slate-500 font-normal">
+                  <span className="mx-1.5 inline-block text-slate-300 select-none" aria-hidden>
+                    ·
+                  </span>
+                  {unitName}
+                </span>
               ) : null}
             </p>
             {!membersLoading && members.length > 0 && (

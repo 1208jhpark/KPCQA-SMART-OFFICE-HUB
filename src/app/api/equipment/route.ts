@@ -485,13 +485,13 @@ export async function POST(req: Request) {
 
     let auth;
     try {
-      auth = await authorizeEquipmentApi({ requireEditor: true, categoryCode: category });
+      // 신규 등록: Access만으로 허용 (수정·폐기는 PATCH에서 Edit 유지)
+      auth = await authorizeEquipmentApi({ categoryCode: category });
     } catch (first) {
       // 현재 화면 범주에서 다른(조회 불가) 범주로 등록하는 이관 허용
       if (menuCategory && menuCategory !== category) {
         try {
           auth = await authorizeEquipmentApi({
-            requireEditor: true,
             categoryCode: menuCategory,
           });
         } catch (e) {
@@ -504,7 +504,11 @@ export async function POST(req: Request) {
 
     const department = body.department || '';
     const unit_id = resolveEquipmentUnitId(body, auth.unitsList);
-    assertCanEditEquipmentDepartment(auth, { unitId: unit_id, deptName: department });
+    assertCanEditEquipmentDepartment(
+      auth,
+      { unitId: unit_id, deptName: department },
+      { requireEditor: false }
+    );
 
     for (const f of EQUIPMENT_FILE_FIELDS) {
       const err = assertFileFieldWithinLimit(f, body[f]);

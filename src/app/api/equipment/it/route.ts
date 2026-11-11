@@ -6,7 +6,7 @@ import {
   authErrorToResponse,
   tryGetSessionUser,
 } from '@/lib/server-auth-guard';
-import { checkMenuPermission } from '@/lib/permission-utils';
+import { checkMenuPermission, isSystemLv1User } from '@/lib/permission-utils';
 import { getChildUnitNames, resolveTopOrgName, isGlobalMgmtOrgMember } from '@/utils/orgUnits';
 import {
   assetMatchesIdentity,
@@ -54,8 +54,7 @@ const IT_PERSONAL_PATH = '/equipment/it/personal';
 const IT_DEPT_PATH = '/equipment/it/dept';
 
 function isLv1(user: any) {
-  const roles = Array.isArray(user?.roles) ? user.roles : [];
-  return roles.some((r: any) => String(r).includes('LV_1')) || user?.permissionLevel === 'LV_1';
+  return isSystemLv1User(user);
 }
 
 function hasMenuAccess(auth: any, path: string) {

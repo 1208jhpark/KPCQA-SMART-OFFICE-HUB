@@ -83,10 +83,10 @@ export async function GET(req: Request) {
   }
 }
 
-/** [POST] { category, published: boolean } — 마스터 Access */
+/** [POST] { category, published: boolean } — 마스터 Edit */
 export async function POST(req: Request) {
   try {
-    const auth = await authorizeApi(MASTER_PATH);
+    const auth = await authorizeApi(MASTER_PATH, { requireEditor: true });
     const body = await req.json().catch(() => ({}));
     const category = String(body.category || '').trim().toUpperCase();
     const published = body.published === true;

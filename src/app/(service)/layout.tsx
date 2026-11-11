@@ -175,12 +175,21 @@ export default function ServiceLayout({ children }: { children: React.ReactNode 
     }
 
     const cleanPathname = pathname.replace(/\/$/, '').toLowerCase();
-    const currentMenu = [...menus]
-      .sort((a: any, b: any) => (b.path?.length || 0) - (a.path?.length || 0))
-      .find(
-        (m) =>
-          cleanPathname.startsWith(String(m.path || '').toLowerCase()) && m.path !== '/home'
-      );
+    // L4 exact path 우선 — URL 직접 진입 시 상위 메뉴 Access만으로 하위가 열리지 않게
+    const exactMenu = menus.find(
+      (m: any) =>
+        String(m.path || '').replace(/\/$/, '').toLowerCase() === cleanPathname &&
+        m.path !== '/home'
+    );
+    const currentMenu =
+      exactMenu ||
+      [...menus]
+        .sort((a: any, b: any) => (b.path?.length || 0) - (a.path?.length || 0))
+        .find(
+          (m) =>
+            cleanPathname.startsWith(String(m.path || '').replace(/\/$/, '').toLowerCase()) &&
+            m.path !== '/home'
+        );
 
     if (!currentMenu) return;
 

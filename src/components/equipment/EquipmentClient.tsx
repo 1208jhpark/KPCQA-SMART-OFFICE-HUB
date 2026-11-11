@@ -1,10 +1,10 @@
 'use client';
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { useRouter, useSearchParams } from 'next/navigation'; // 🚀 중복 임포트 원천 제거 완료
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
-import * as XLSX from 'xlsx';
 import { getKSTDateString, getKSTDaysUntil, getKSTNowYearMonth, getKSTYearMonthParts } from '@/utils/dateUtils';
 import { buildEquipmentImagePayload } from '@/utils/equipmentImage';
 import LoadingState from '@/components/common/LoadingState';
@@ -22,6 +22,13 @@ import { getChildUnitNames, getChildUnitIds, resolveTopOrgName, canEditTopOrgMar
 import { rowMatchesOrgUnit } from '@/lib/org-unit-match';
 import { parseEquipmentArchiveMemo, unwrapEquipmentEtcMemo } from '@/utils/equipmentMemo';
 import { isActiveEquipmentRow, isArchivedEquipmentRow } from '@/utils/equipmentActive';
+import {
+  writeEquipmentArchiveExcelBuffer,
+  writeEquipmentDetailExcelBuffer,
+  writeEquipmentMainExcelBuffer,
+} from '@/lib/equipment-main-excel';
+import { pickWidestPermissionScope } from '@/lib/permission-utils';
+import DeptAssigneeLine, { useDeptAssignees } from '@/components/common/DeptAssigneeLine';
 
 /** 검교정 결과상태 — 레거시 합격/불합격 → 적합/부적합 */
 const CALIB_RESULT_LABEL: Record<string, string> = {
@@ -47,6 +54,7 @@ export default function EquipmentClient({
 }: any) {
   const router = useRouter();
   const searchParams = useSearchParams(); // 🚀 대시보드 꼬리표 링크 캐치 훅
+  const menuPath = `/equipment/main/${categoryId}`;
   
   // =========================================================================
   // 💡 Data States & Logic
@@ -104,15 +112,22 @@ export default function EquipmentClient({
   const [archiveFormData, setArchiveFormData] = useState({ qty: 1, reason: '', status: '폐기' });
   const [archiveYear, setArchiveYear] = useState('ALL'); 
   const [archiveDeptFilter, setArchiveDeptFilter] = useState('ALL');
+  const [archiveActionMenu, setArchiveActionMenu] = useState<{
+    id: string;
+    top: number;
+    left: number;
+  } | null>(null);
+  const archiveActionMenuRef = useRef<HTMLDivElement | null>(null);
 
-  // 🚀 어드민 거버넌스 룰에 맞춘 아이템 레벨 정밀 편집 권한 체커
-  const canAssignDepartment = (
+  /** 장비관리소속 매칭 (Edit 여부 무관) — scope: TOTAL/DEPT */
+  const matchesEquipmentDepartment = (
     deptRaw: string | null | undefined,
-    unitIdRaw?: string | null
+    unitIdRaw: string | null | undefined,
+    scopeRaw: string | null | undefined
   ) => {
-    if (!permission?.isEditor) return false;
-    if (permission.isMaster || permission.myRole === 'LV_1') return true;
+    if (permission?.isMaster || permission?.myRole === 'LV_1') return true;
 
+    const scope = String(scopeRaw || 'NONE').toUpperCase();
     const myName = currentUser?.unit?.unit_name;
     const myHq = currentUser?.unit?.parent?.unit_name;
     const myId = String(currentUser?.unit?.id || currentUser?.unit_id || currentUser?.dept_id || '').trim();
@@ -140,14 +155,14 @@ export default function EquipmentClient({
       });
     }
 
-    // 레거시 미지정(빈 department·unit_id) — TOTAL/마스터만
+    // 레거시 미지정(빈 department·unit_id) — TOTAL만
     if (!unitId && !dept) {
-      return permission.editScope === 'TOTAL';
+      return scope === 'TOTAL';
     }
 
-    if (permission.editScope === 'TOTAL') return true;
+    if (scope === 'TOTAL') return true;
 
-    if (permission.editScope === 'DEPT') {
+    if (scope === 'DEPT') {
       if (unitId) {
         if (myId && unitId === myId) return true;
         return getChildUnitIds(myId || null, units).includes(unitId);
@@ -160,25 +175,78 @@ export default function EquipmentClient({
     return false;
   };
 
+  // 🚀 소속 배정: Edit→editScope / Access만→viewScope (신규 등록용)
+  const canAssignDepartment = (
+    deptRaw: string | null | undefined,
+    unitIdRaw?: string | null
+  ) => {
+    if (permission?.isMaster || permission?.myRole === 'LV_1') {
+      return matchesEquipmentDepartment(deptRaw, unitIdRaw, 'TOTAL');
+    }
+    if (permission?.isEditor) {
+      return matchesEquipmentDepartment(deptRaw, unitIdRaw, permission.editScope);
+    }
+    if (permission?.hasAccess) {
+      return matchesEquipmentDepartment(deptRaw, unitIdRaw, permission.viewScope);
+    }
+    return false;
+  };
+
   const checkItemCanEdit = (eq: any) => {
+    // 신규 등록 초안: Access만으로 작성·저장 가능
+    if (eq?.id?.startsWith('NEW-')) return !!permission?.hasAccess;
     if (!permission?.isEditor) return false;
-    if (eq?.id?.startsWith('NEW-')) return true;
     if (permission.isMaster || permission.myRole === 'LV_1') return true;
     return canAssignDepartment(eq?.department, eq?.unit_id);
   };
 
-  const canEditGeneral = permission?.isEditor; // 상단 '+ 신규 등록' 단추 통제용
-  const canEditCurrent = selectedEq ? checkItemCanEdit(selectedEq) : false; // 팝업 내부의 모든 CRUD 기능 통제용
+  /** 상세 EXCEL: 장비관리소속만 (Edit 불필요). Access viewScope ∪ Edit editScope */
+  const checkItemCanDownloadDetail = (eq: any) => {
+    if (!eq || String(eq.id || '').startsWith('NEW-')) return false;
+    if (permission?.isMaster || permission?.myRole === 'LV_1') return true;
+    const scope = pickWidestPermissionScope([
+      String(permission?.viewScope || 'NONE'),
+      String(permission?.editScope || 'NONE'),
+    ]);
+    return matchesEquipmentDepartment(eq?.department, eq?.unit_id, scope);
+  };
+
+  const canCreateEquipment = !!permission?.hasAccess; // '+ 신규 등록' — Access만
+  const canEditGeneral = permission?.isEditor; // 폐기함 엑셀 등 Edit 전용
+  const canEditCurrent = selectedEq ? checkItemCanEdit(selectedEq) : false; // 정보수정·폐기/반납·신규초안
+  const canDownloadDetailExcel = selectedEq ? checkItemCanDownloadDetail(selectedEq) : false;
   const isLv1 = permission?.myRole === 'LV_1';
   const isArchivedView =
     !!selectedEq &&
     selectedEq.status !== '정상' &&
     !String(selectedEq.id || '').startsWith('NEW-');
-  /** 폐기/보관 상세는 조회 전용 — 수정·폐기·이력 CRUD 불가 */
+  /** 폐기/보관 상세는 조회 전용 — 수정·폐기·이력 CRUD 불가 (Edit+소속) */
   const canMutateDetail = canEditCurrent && !isArchivedView;
   
   useEffect(() => { fetchData(); }, [categoryId, tabId]);
-  useEffect(() => { setArchivePage(1); setSelectedArchiveIds(new Set()); }, [archiveYear, archiveDeptFilter]);
+  useEffect(() => {
+    setArchivePage(1);
+    setSelectedArchiveIds(new Set());
+    setArchiveActionMenu(null);
+  }, [archiveYear, archiveDeptFilter]);
+
+  useEffect(() => {
+    if (!archiveActionMenu) return;
+    const onDoc = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (archiveActionMenuRef.current?.contains(t)) return;
+      setArchiveActionMenu(null);
+    };
+    const onWin = () => setArchiveActionMenu(null);
+    document.addEventListener('mousedown', onDoc);
+    window.addEventListener('scroll', onWin, true);
+    window.addEventListener('resize', onWin);
+    return () => {
+      document.removeEventListener('mousedown', onDoc);
+      window.removeEventListener('scroll', onWin, true);
+      window.removeEventListener('resize', onWin);
+    };
+  }, [archiveActionMenu]);
 
   // 🚀 대시보드(관제탑)에서 바로가기로 유입 시 상세 팝업을 원스텝으로 개방하는 가드
   useEffect(() => {
@@ -294,9 +362,9 @@ export default function EquipmentClient({
     const ymd = toCalibYmd(targetDate);
     if (!ymd) return null;
     const diffDays = getKSTDaysUntil(ymd);
-    if (diffDays === 0) return <span className="text-red-500 font-black px-1.5 py-0.5 rounded bg-red-50 ml-1.5">D-Day</span>;
-    if (diffDays > 0) return <span className="text-blue-600 font-black px-1.5 py-0.5 rounded bg-blue-50 ml-1.5">D-{diffDays}</span>;
-    return <span className="text-red-600 font-black px-1.5 py-0.5 rounded bg-red-50 ml-1.5">D+{Math.abs(diffDays)}</span>;
+    if (diffDays === 0) return <span className="text-red-500 font-medium px-1.5 py-0.5 rounded bg-red-50 ml-1.5 text-[9px]">D-Day</span>;
+    if (diffDays > 0) return <span className="text-blue-600 font-medium px-1.5 py-0.5 rounded bg-blue-50 ml-1.5 text-[9px]">D-{diffDays}</span>;
+    return <span className="text-red-600 font-medium px-1.5 py-0.5 rounded bg-red-50 ml-1.5 text-[9px]">D+{Math.abs(diffDays)}</span>;
   };
   
   const addMonthsToDateStr = (dateStr: string | null | undefined, months: number | null | undefined) =>
@@ -358,181 +426,197 @@ export default function EquipmentClient({
     }
   };
   
-  const handleExportExcel = () => {
+  const handleExportExcel = async () => {
     const targetAssets =
       selectedMainIds.size > 0
         ? filteredEquipments.filter((a) => selectedMainIds.has(a.id))
         : filteredEquipments;
     if (targetAssets.length === 0) return alert('다운로드할 데이터가 없습니다.');
-    const exportData = targetAssets.map((a, idx) => {
-      const { nCalib, applicable } = resolveCalibSchedule(a);
-      return {
-        'NO': targetAssets.length - idx,
-        '자산번호': displayAssetNo(a.asset_no), 
-        '품목명': a.name, 
-        '제조사': a.brand || '-', 
-        '모델번호': a.model_name || '-',
-        '시리얼번호': a.serial_no || '-',
-        '보유개수': a.qty,
-        '단위': resolveQtyUnitLabel(a.qty_unit),
-        '제품사양': a.spec_summary || '-', 
-        '구매일': a.purchase_date ? a.purchase_date.split('T')[0] : '-', // 🚀 구입일 항목 추가
-        '검교정예정일': !applicable ? '대상 아님' : nCalib ? nCalib : '-', 
-        '장비관리소속': a.department || '-'
-      };
-    });
-    const ws = XLSX.utils.json_to_sheet(exportData);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "활성장비목록");
-    XLSX.writeFile(wb, `장비목록_${categoryId}_${getKSTDateString()}.xlsx`);
+    try {
+      const rows = targetAssets.map((a) => {
+        const { nCalib, applicable } = resolveCalibSchedule(a);
+        return {
+          asset_no: displayAssetNo(a.asset_no),
+          name: a.name,
+          brand: a.brand,
+          model_name: a.model_name,
+          serial_no: a.serial_no,
+          qty: a.qty,
+          purchase_date: a.purchase_date ? String(a.purchase_date).split('T')[0] : null,
+          calibDue: !applicable ? '대상 아님' : nCalib || null,
+          department: a.department,
+        };
+      });
+      const buffer = await writeEquipmentMainExcelBuffer(rows, { sheetName: '활성장비목록' });
+      const blob = new Blob([buffer], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `장비목록_${categoryId}_${getKSTDateString()}.xlsx`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      alert('엑셀 다운로드에 실패했습니다.');
+    }
   };
 
-  const handleExportDetailExcel = () => {
-    if (!checkItemCanEdit(isEditingDetail ? editFormData : selectedEq)) {
-      return alert('해당 소속 장비에 대한 엑셀 다운로드 권한이 없습니다.\n(admin/interface Edit 권한 확인)');
+  const handleExportDetailExcel = async () => {
+    if (!checkItemCanDownloadDetail(isEditingDetail ? editFormData : selectedEq)) {
+      return alert('해당 장비관리소속 장비에 대한 엑셀 다운로드 권한이 없습니다.');
     }
     const eq = isEditingDetail ? editFormData : selectedEq;
     if (!eq || String(eq.id || '').startsWith('NEW-')) {
       return alert('저장되지 않은 신규 장비는 다운로드할 수 없습니다.');
     }
-    const categoryLabel =
-      (categoryOptions as { code: string; label: string }[]).find(
-        (c) => c.code === (eq.category || categoryId)
-      )?.label || eq.category || categoryId || '-';
-    const hist = pickLatestCalibHistory(eq?.histories);
-    const latestReq = toCalibYmd(hist?.calib_request_date as string | Date | null | undefined) || '-';
-    const latestDone = toCalibYmd(hist?.calib_date as string | Date | null | undefined) || '-';
-    const { nCalib, applicable: calibApplicableExport } = resolveCalibSchedule(eq);
+    try {
+      const categoryLabel =
+        (categoryOptions as { code: string; label: string }[]).find(
+          (c) => c.code === (eq.category || categoryId)
+        )?.label || eq.category || categoryId || '-';
+      const hist = pickLatestCalibHistory(eq?.histories);
+      const latestReq = toCalibYmd(hist?.calib_request_date as string | Date | null | undefined) || '-';
+      const latestDone = toCalibYmd(hist?.calib_date as string | Date | null | undefined) || '-';
+      const { nCalib, applicable: calibApplicableExport } = resolveCalibSchedule(eq);
 
-    const ymd = (raw: unknown) => {
-      if (!raw) return '-';
-      return String(raw).split('T')[0] || '-';
-    };
+      const ymd = (raw: unknown) => {
+        if (!raw) return '-';
+        return String(raw).split('T')[0] || '-';
+      };
 
-    const sortByDateDesc = (a: any, b: any, dateKey: string) => {
-      const d = new Date(b[dateKey]).getTime() - new Date(a[dateKey]).getTime();
-      if (d !== 0) return d;
-      return new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime();
-    };
+      const sortByDateDesc = (a: any, b: any, dateKey: string) => {
+        const d = new Date(b[dateKey]).getTime() - new Date(a[dateKey]).getTime();
+        if (d !== 0) return d;
+        return new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime();
+      };
 
-    const purchaseLinked =
-      toCalibYmd(
-        [...(eq.maintenance_histories || [])]
-          .filter((h: any) => String(h.type || '').trim() === '구매')
-          .sort((a: any, b: any) => sortByDateDesc(a, b, 'date'))[0]?.date
-      ) || ymd(eq.purchase_date);
-    const replaceLinked =
-      toCalibYmd(
-        [...(eq.maintenance_histories || [])]
-          .filter((h: any) => {
-            const t = String(h.type || '').trim();
-            return t === '소모품교체' || t === '수리';
-          })
-          .sort((a: any, b: any) => sortByDateDesc(a, b, 'date'))[0]?.date
-      ) || ymd(eq.last_replace_date);
-    const replaceApplicableExport = isReplaceApplicable(eq);
-    const replaceNext = replaceApplicableExport
-      ? addMonthsToDateStr(purchaseLinked !== '-' ? purchaseLinked : null, eq.replace_cycle_mo)
-      : null;
+      const purchaseLinked =
+        toCalibYmd(
+          [...(eq.maintenance_histories || [])]
+            .filter((h: any) => String(h.type || '').trim() === '구매')
+            .sort((a: any, b: any) => sortByDateDesc(a, b, 'date'))[0]?.date
+        ) || ymd(eq.purchase_date);
+      const replaceLinked =
+        toCalibYmd(
+          [...(eq.maintenance_histories || [])]
+            .filter((h: any) => {
+              const t = String(h.type || '').trim();
+              return t === '소모품교체' || t === '수리';
+            })
+            .sort((a: any, b: any) => sortByDateDesc(a, b, 'date'))[0]?.date
+        ) || ymd(eq.last_replace_date);
+      const replaceApplicableExport = isReplaceApplicable(eq);
+      const replaceNext = replaceApplicableExport
+        ? addMonthsToDateStr(purchaseLinked !== '-' ? purchaseLinked : null, eq.replace_cycle_mo)
+        : null;
 
-    /** 고정 헤더 시트 — 데이터 없어도 헤더만 유지 (붙여쓰기용 포맷 일정) */
-    const sheetFromRows = (headers: string[], rows: Record<string, unknown>[]) => {
-      const aoa = [headers, ...rows.map((r) => headers.map((h) => (r[h] != null && r[h] !== '' ? r[h] : '')))];
-      return XLSX.utils.aoa_to_sheet(aoa);
-    };
+      const qtyLabel =
+        eq.status && eq.status !== '정상'
+          ? `${eq.qty ?? '-'} ${resolveQtyUnitLabel(eq.qty_unit)}`.trim()
+          : `${eq.qty ?? '-'} ${resolveQtyUnitLabel(eq.qty_unit)}`.trim();
 
-    const summaryRow = {
-      '자산번호': displayAssetNo(eq.asset_no),
-      '품목명(장비 명칭)': eq.name || '-',
-      '장비 종류 범주': categoryLabel,
-      '장비관리소속': eq.department || '-',
-      '제조사': eq.brand || '-',
-      '모델번호': eq.model_name || '-',
-      '시리얼번호': eq.serial_no || '-',
-      ...(eq.status && eq.status !== '정상'
-        ? { '폐기/반납개수': eq.qty ?? '-', '단위': resolveQtyUnitLabel(eq.qty_unit) }
-        : { '보유개수': eq.qty ?? '-', '단위': resolveQtyUnitLabel(eq.qty_unit) }),
-      '제품사양 요약': eq.spec_summary || '-',
-      '구매일': purchaseLinked,
-      '최근 소모품교체/수리일': replaceLinked,
-      '교체주기(개월)': !replaceApplicableExport ? '대상 아님' : eq.replace_cycle_mo ?? '-',
-      '자동산정 교체예정일': !replaceApplicableExport ? '대상 아님' : replaceNext || '-',
-      '최근 검교정요청일': latestReq,
-      '최근 검교정확정일': latestDone,
-      '검교정주기(개월)': !calibApplicableExport ? '대상 아님' : eq.calib_cycle_mo ?? '-',
-      '자동산정 검교정예정일': !calibApplicableExport ? '대상 아님' : nCalib || '-',
-    };
-    const summaryHeaders = Object.keys(summaryRow);
+      const calibRows = [...(eq.histories || [])]
+        .sort((a: any, b: any) => sortByDateDesc(a, b, 'calib_date'))
+        .map((h: any, idx: number, arr: any[]) => ({
+          NO: arr.length - idx,
+          검교정요청일: h.calib_request_date ? String(h.calib_request_date).split('T')[0] : '-',
+          검교정확정일: h.calib_date ? String(h.calib_date).split('T')[0] : '-',
+          검교정내용: h.content || h.memo || '-',
+          결과상태: normalizeCalibResult(h.result) || '-',
+          교정기관: h.agency || '-',
+          발생비용: h.cost != null ? Number(h.cost) : '-',
+          등록자: h.creator_name || '-',
+          등록자소속: h.creator_dept || '-',
+          등록일: h.createdAt ? getKSTDateString(h.createdAt) || '-' : '-',
+        }));
 
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(
-      wb,
-      sheetFromRows(summaryHeaders, [summaryRow]),
-      '장비상세'
-    );
+      const maintRows = [...(eq.maintenance_histories || [])]
+        .sort((a: any, b: any) => sortByDateDesc(a, b, 'date'))
+        .map((h: any, idx: number, arr: any[]) => ({
+          NO: arr.length - idx,
+          처리일자: h.date ? String(h.date).split('T')[0] : '-',
+          구분: h.type || '-',
+          상세내용: h.content || h.memo || '-',
+          업체명: h.vendor || '-',
+          발생비용: h.cost != null ? Number(h.cost) : '-',
+          등록자: h.creator_name || '-',
+          등록자소속: h.creator_dept || '-',
+          등록일: h.createdAt ? getKSTDateString(h.createdAt) || '-' : '-',
+        }));
 
-    const calibHeaders = [
-      'NO',
-      '검교정요청일',
-      '검교정확정일',
-      '검교정내용',
-      '결과상태',
-      '교정기관',
-      '발생비용',
-      '등록자',
-      '등록자소속',
-      '등록일',
-    ];
-    const calibRows = [...(eq.histories || [])]
-      .sort((a: any, b: any) => sortByDateDesc(a, b, 'calib_date'))
-      .map((h: any, idx: number, arr: any[]) => ({
-        NO: arr.length - idx,
-        검교정요청일: h.calib_request_date ? String(h.calib_request_date).split('T')[0] : '',
-        검교정확정일: h.calib_date ? String(h.calib_date).split('T')[0] : '',
-        검교정내용: h.content || h.memo || '',
-        결과상태: normalizeCalibResult(h.result) || '',
-        교정기관: h.agency || '',
-        발생비용: h.cost != null ? Number(h.cost) : '',
-        등록자: h.creator_name || '',
-        등록자소속: h.creator_dept || '',
-        등록일: h.createdAt ? getKSTDateString(h.createdAt) : '',
-      }));
-    XLSX.utils.book_append_sheet(wb, sheetFromRows(calibHeaders, calibRows), '검교정이력');
+      const isArchivedEq = isArchivedEquipmentRow(eq);
+      const archiveMemo = isArchivedEq ? parseEquipmentArchiveMemo(eq.etc_memo) : null;
+      const disposeSummary = isArchivedEq
+        ? {
+            '폐기/반납개수': `${eq.qty ?? '-'} ${resolveQtyUnitLabel(eq.qty_unit)}`.trim(),
+            사유: archiveMemo?.archiveReason || archiveMemo?.displayText || '-',
+            처리자:
+              [
+                eq.archived_by_name || '',
+                eq.archived_by_dept ? `(${eq.archived_by_dept})` : '',
+              ]
+                .filter(Boolean)
+                .join(' ')
+                .trim() || '-',
+            일자:
+              getKSTDateString(eq.archived_at || eq.last_replace_date || eq.updatedAt) ||
+              ymd(eq.archived_at || eq.last_replace_date || eq.updatedAt),
+          }
+        : {};
 
-    const maintHeaders = [
-      'NO',
-      '처리일자',
-      '구분',
-      '상세내용',
-      '업체명',
-      '발생비용',
-      '등록자',
-      '등록자소속',
-      '등록일',
-    ];
-    const maintRows = [...(eq.maintenance_histories || [])]
-      .sort((a: any, b: any) => sortByDateDesc(a, b, 'date'))
-      .map((h: any, idx: number, arr: any[]) => ({
-        NO: arr.length - idx,
-        처리일자: h.date ? String(h.date).split('T')[0] : '',
-        구분: h.type || '',
-        상세내용: h.content || h.memo || '',
-        업체명: h.vendor || '',
-        발생비용: h.cost != null ? Number(h.cost) : '',
-        등록자: h.creator_name || '',
-        등록자소속: h.creator_dept || '',
-        등록일: h.createdAt ? getKSTDateString(h.createdAt) : '',
-      }));
-    XLSX.utils.book_append_sheet(wb, sheetFromRows(maintHeaders, maintRows), '구매유지보수');
+      const buffer = await writeEquipmentDetailExcelBuffer(
+        {
+          summary: {
+            NO: 1,
+            자산번호: displayAssetNo(eq.asset_no),
+            품목명: eq.name || '-',
+            장비종류범주: categoryLabel,
+            장비관리소속: eq.department || '-',
+            제조사: eq.brand || '-',
+            모델번호: eq.model_name || '-',
+            시리얼번호: eq.serial_no || '-',
+            보유개수: qtyLabel || '-',
+            제품사양:
+              String(eq.spec_summary || '')
+                .replace(/\r\n/g, '\n')
+                .replace(/\r/g, '\n')
+                .split('\n')
+                .map((line: string) => line.trim())
+                .filter(Boolean)
+                .join('\n') || '-',
+            구매일: purchaseLinked,
+            '최근교체/수리일': replaceLinked,
+            '교체주기(M)': !replaceApplicableExport ? '대상 아님' : eq.replace_cycle_mo ?? '-',
+            교체예정일: !replaceApplicableExport ? '대상 아님' : replaceNext || '-',
+            최근검교정요청일: latestReq,
+            최근검교정확정일: latestDone,
+            '검교정주기(M)': !calibApplicableExport ? '대상 아님' : eq.calib_cycle_mo ?? '-',
+            검교정예정일: !calibApplicableExport ? '대상 아님' : nCalib || '-',
+            ...disposeSummary,
+          },
+          calibRows,
+          maintRows,
+        },
+        { includeDisposeFields: isArchivedEq }
+      );
 
-    const safeName = String(eq.name || '장비').replace(/[\\/:*?"<>|]/g, '_').slice(0, 40);
-    XLSX.writeFile(
-      wb,
-      `장비상세_${displayAssetNo(eq.asset_no)}_${safeName}_${getKSTDateString()}.xlsx`
-    );
+      const safeName = String(eq.name || '장비').replace(/[\\/:*?"<>|]/g, '_').slice(0, 40);
+      const blob = new Blob([buffer], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `장비상세_${displayAssetNo(eq.asset_no)}_${safeName}_${getKSTDateString()}.xlsx`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      alert('엑셀 다운로드에 실패했습니다.');
+    }
   };
   
-  const handleExportArchiveExcel = () => {
+  const handleExportArchiveExcel = async () => {
     if (!permission?.isEditor) {
       return alert('폐기/반납함 엑셀 다운로드 권한이 없습니다.\n(admin/interface Edit 권한 확인)');
     }
@@ -541,19 +625,36 @@ export default function EquipmentClient({
         ? filteredArchives.filter((a) => selectedArchiveIds.has(a.id))
         : filteredArchives;
     if (targetArchives.length === 0) return alert('다운로드할 폐기/반납함 데이터가 없습니다.');
-    const exportData = targetArchives.map((arc, idx) => {
-      const reasonText = parseEquipmentArchiveMemo(arc.etc_memo).displayText || '-';
-      return {
-        'NO': targetArchives.length - idx,
-        '처리일자': arc.last_replace_date ? arc.last_replace_date.split('T')[0] : arc.updatedAt?.split('T')[0],
-        '자산번호': displayAssetNo(arc.asset_no),
-        '품목명': arc.name, '폐기/반납개수': arc.qty, '단위': resolveQtyUnitLabel(arc.qty_unit), '사유': reasonText, '관리소속': arc.department || '-', '상태': arc.status
-      };
-    });
-    const ws = XLSX.utils.json_to_sheet(exportData);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "장비폐기반납함");
-    XLSX.writeFile(wb, `장비폐기반납함_${categoryId}_${archiveYear}_${getKSTDateString()}.xlsx`);
+    try {
+      const rows = targetArchives.map((arc) => {
+        const raw = arc.last_replace_date || arc.archived_at || arc.updatedAt;
+        const processedAt = raw
+          ? getKSTDateString(raw) || String(raw).split('T')[0]
+          : null;
+        return {
+          processedAt,
+          asset_no: displayAssetNo(arc.asset_no),
+          name: arc.name,
+          qty: arc.qty,
+          department: arc.department,
+          status: arc.status,
+        };
+      });
+      const buffer = await writeEquipmentArchiveExcelBuffer(rows, {
+        sheetName: '장비폐기반납함',
+      });
+      const blob = new Blob([buffer], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `장비폐기반납함_${categoryId}_${archiveYear}_${getKSTDateString()}.xlsx`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      alert('엑셀 다운로드에 실패했습니다.');
+    }
   };
   
   const handleAddEq = () => {
@@ -719,11 +820,17 @@ export default function EquipmentClient({
   };
   
   const handleOpenArchiveModal = () => {
+    if (!selectedEq || !checkItemCanEdit(selectedEq) || isArchivedEquipmentRow(selectedEq)) {
+      return alert('해당 소속 장비에 대한 폐기/반납 권한이 없습니다.\n(admin/interface Edit 권한 확인)');
+    }
     setArchiveFormData({ qty: selectedEq.qty, reason: '', status: '폐기' });
     setShowArchiveModal(true);
   };
   
   const executeArchive = async () => {
+    if (!selectedEq || !checkItemCanEdit(selectedEq) || isArchivedEquipmentRow(selectedEq)) {
+      return alert('해당 소속 장비에 대한 폐기/반납 권한이 없습니다.\n(admin/interface Edit 권한 확인)');
+    }
     if (!archiveFormData.reason.trim()) return alert('사유를 입력해 주세요.');
     if (archiveFormData.qty <= 0 || archiveFormData.qty > selectedEq.qty) return alert('수량이 올바르지 않습니다.');
     try {
@@ -786,23 +893,42 @@ export default function EquipmentClient({
     }
   };
   
-  const handlePermanentDelete = async (id: string) => {
+  /** Archive 선택 이력 일괄 영구삭제 — LV_1 전용 */
+  const handleDeleteSelectedArchives = async () => {
     if (!isLv1) return alert('영구 삭제 권한이 없습니다. (LV_1 전용)');
-    if (!confirm('경고: 선택한 장비를 영구 삭제하시겠습니까?\n이 작업은 데이터베이스 파기 처리이며 복구할 수 없습니다.')) return;
+    if (selectedArchiveIds.size === 0) {
+      return alert('삭제할 이력을 체크박스로 선택해 주세요.');
+    }
+    if (
+      !confirm(
+        `경고: 선택한 장비 ${selectedArchiveIds.size}건을 영구 삭제하시겠습니까?\n이 작업은 데이터베이스 파기 처리이며 복구할 수 없습니다.`
+      )
+    ) {
+      return;
+    }
     try {
-      const res = await fetch(`/api/equipment?id=${id}`, { method: 'DELETE' });
-      if (res.ok) {
-        alert('시스템에서 해당 장비가 완전히 영구 삭제되었습니다.');
-        fetchData();
-      } else {
-        let msg = '삭제 실패';
-        try {
-          const b = await res.json();
-          if (b?.error) msg = b.error;
-        } catch {}
-        alert(msg);
+      const ids = Array.from(selectedArchiveIds);
+      let ok = 0;
+      let failMsg = '';
+      for (const id of ids) {
+        const res = await fetch(`/api/equipment?id=${encodeURIComponent(id)}`, {
+          method: 'DELETE',
+        });
+        if (res.ok) {
+          ok += 1;
+        } else {
+          const b = await res.json().catch(() => null);
+          failMsg = b?.error || '삭제 실패';
+        }
       }
-    } catch (e) {
+      setSelectedArchiveIds(new Set());
+      await fetchData();
+      if (ok === ids.length) {
+        alert(`✅ ${ok}건이 영구 삭제되었습니다.`);
+      } else {
+        alert(`⚠️ ${ok}/${ids.length}건 삭제됨${failMsg ? `\n${failMsg}` : ''}`);
+      }
+    } catch {
       alert('오류 발생');
     }
   };
@@ -1237,6 +1363,24 @@ export default function EquipmentClient({
   
   const totalArchivePages = Math.max(1, Math.ceil(filteredArchives.length / itemsPerPage));
   const paginatedArchives = filteredArchives.slice((archivePage - 1) * itemsPerPage, archivePage * itemsPerPage);
+
+  /** 상세 팝업 — 해당 장비 관리소속의 Edit 담당자 (loading early return 이전에 고정) */
+  const detailAssigneeUnitId = useMemo(() => {
+    const eq = selectedEq;
+    if (!eq || String(eq.id || '').startsWith('NEW-')) return '';
+    const uid = String(eq.unit_id || '').trim();
+    if (uid) return uid;
+    const dept = String(eq.department || '').trim();
+    if (!dept) return '';
+    return String(
+      units.find((u: any) => String(u.unit_name || '').trim() === dept)?.id || ''
+    ).trim();
+  }, [selectedEq, units]);
+
+  const { editorNames: detailEditorNames } = useDeptAssignees(
+    selectedEq && !String(selectedEq.id || '').startsWith('NEW-') ? menuPath : '',
+    detailAssigneeUnitId || null
+  );
   
   if (loading) return <LoadingState />;
 
@@ -1321,11 +1465,11 @@ export default function EquipmentClient({
         <div className="absolute left-1/4 bottom-0 w-48 h-48 bg-cyan-900/25 rounded-full blur-3xl translate-y-1/2 pointer-events-none" />
         <div className="relative z-10 flex flex-col md:flex-row md:items-end md:justify-between gap-4">
           <div className="min-w-0">
-            <h3 className="text-[10px] font-black uppercase tracking-widest text-sky-100 mb-2.5">
+            <h3 className="text-[10px] font-medium uppercase tracking-widest text-sky-100 mb-2.5">
               ASSET MANAGEMENT / {categoryId.toUpperCase()}
             </h3>
-            <h1 className="text-2xl font-extrabold tracking-tight text-white leading-none">
-              개별 장비 자산 인벤토리
+            <h1 className="text-2xl tracking-tight leading-none">
+              <span className="text-white font-medium">개별 장비 자산 인벤토리</span>
             </h1>
             <p className="text-sky-100/90 text-xs mt-3 leading-relaxed">
               카테고리별 장비 수량, 보유 현황, 상세 규격문서 및 검교정 이력을 체계적으로 관리합니다.
@@ -1333,9 +1477,9 @@ export default function EquipmentClient({
           </div>
           <div className="shrink-0 self-start md:self-end inline-flex items-center gap-2.5 px-4 py-2.5 rounded-xl bg-white/15 border border-white/25 shadow-sm">
             <span className="w-2 h-2 rounded-full bg-sky-200 animate-pulse" />
-            <span className="text-xs font-bold text-sky-50">카테고리 총 등록 자산</span>
-            <span className="text-lg font-black font-mono text-white leading-none">{equipments.length}</span>
-            <span className="text-[10px] font-bold text-sky-100/80">EA</span>
+            <span className="text-xs font-medium text-sky-50">카테고리 총 등록 자산</span>
+            <span className="text-lg font-medium font-mono text-white leading-none">{equipments.length}</span>
+            <span className="text-[10px] font-medium text-sky-100/80">EA</span>
           </div>
         </div>
       </div>
@@ -1378,28 +1522,28 @@ export default function EquipmentClient({
           </button>
         </div>
 
-        <p className="text-[10px] text-slate-400 font-bold px-3 hidden sm:block">
+        <p className="text-[10px] text-slate-400 font-medium px-3 hidden sm:block">
           ※ 탭을 클릭하여 활성 장비와 폐기/반납 장비 내역을 전환합니다.
         </p>
       </div>
 
       {/* INVENTORY VIEW */}
       {tabId === 'inventory' && (
-        <div className="mt-6 bg-white border border-slate-200 rounded-[2.5rem] shadow-sm overflow-hidden">
+        <div className="mt-6 bg-white border border-slate-200 rounded-lg shadow-sm overflow-hidden">
           <div className="p-4 px-6 bg-slate-200/70 border-b border-slate-300 flex flex-wrap items-center justify-between gap-4">
-            <div className="flex items-center gap-2">
-              <div className="w-2.5 h-2.5 rounded-full bg-blue-600"></div>
+            <div className="flex items-center gap-2 flex-wrap min-w-0">
+              <div className="w-2.5 h-2.5 rounded-full bg-blue-600 shrink-0"></div>
               <h2 className="text-sm font-black text-slate-800 tracking-tight">활성 장비 목록</h2>
               <span className="text-[11px] font-bold bg-slate-300/80 text-slate-700 px-2 py-0.5 rounded-md">{filteredEquipments.length}건</span>
             </div>
 
             <div className="flex items-center gap-2 flex-wrap">
               <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm">
-                <span className="text-[10px] font-black text-slate-400 uppercase">관리소속</span>
+                <span className="text-[10px] font-medium text-slate-400 uppercase">관리소속</span>
                 <select
                   value={inventoryDeptFilter}
                   onChange={(e) => setInventoryDeptFilter(e.target.value)}
-                  className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent max-w-[160px]"
+                  className="text-[11px] font-medium text-slate-800 outline-none cursor-pointer bg-transparent max-w-[160px]"
                 >
                   <option value="ALL">전체</option>
                   {availableInventoryDepts.map((dept) => (
@@ -1410,7 +1554,7 @@ export default function EquipmentClient({
               <button
                 type="button"
                 onClick={handleExportExcel}
-                className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-[10px] font-black shadow-sm hover:bg-emerald-700 transition-all whitespace-nowrap"
+                className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-[10px] font-medium shadow-sm hover:bg-emerald-700 transition-all whitespace-nowrap"
               >
                 {selectedMainIds.size > 0
                   ? `선택 EXCEL 다운로드(${selectedMainIds.size})`
@@ -1418,23 +1562,23 @@ export default function EquipmentClient({
               </button>
               <button
                 type="button"
-                disabled={!canEditGeneral}
+                disabled={!canCreateEquipment}
                 onClick={() => {
-                  if (!canEditGeneral) return;
+                  if (!canCreateEquipment) return;
                   handleAddEq();
                 }}
                 title={
-                  canEditGeneral
+                  canCreateEquipment
                     ? '신규 장비 등록'
-                    : '등록 권한이 없습니다. (Edit 필요)'
+                    : '등록 권한이 없습니다. (Access 필요)'
                 }
-                className={`px-3 py-1.5 rounded-lg text-[10px] font-black shadow-sm transition-all whitespace-nowrap ${
-                  canEditGeneral
+                className={`px-3 py-1.5 rounded-lg text-[10px] font-medium shadow-sm transition-all whitespace-nowrap ${
+                  canCreateEquipment
                     ? 'bg-blue-600 hover:bg-blue-700 text-white cursor-pointer'
                     : 'bg-slate-200 text-slate-400 cursor-not-allowed'
                 }`}
               >
-                + 신규 등록(Edit)
+                + 신규 등록
               </button>
             </div>
           </div>
@@ -1466,7 +1610,7 @@ export default function EquipmentClient({
                   <th className="h-12 pr-6 w-28 text-center whitespace-nowrap">액션</th>
                 </tr>
               </thead>
-              <tbody className="bg-white divide-y divide-slate-100 text-xs font-bold text-slate-700">
+              <tbody className="bg-white divide-y divide-slate-100 text-[11px] font-medium font-sans text-slate-700">
                 {paginatedEquipments.length === 0 ? (
                   <tr><td colSpan={14} className="h-24 text-center text-slate-400 italic">등록된 장비 데이터가 없습니다.</td></tr>
                 ) : paginatedEquipments.map((eq, idx) => {
@@ -1487,7 +1631,7 @@ export default function EquipmentClient({
                           className="accent-indigo-600 cursor-pointer w-3.5 h-3.5"
                         />
                       </td>
-                      <td className="px-3 text-center text-slate-400 font-mono text-[10px] tabular-nums">{filteredEquipments.length - ((currentPage - 1) * itemsPerPage + idx)}</td>
+                      <td className="px-3 text-center text-slate-400 tabular-nums">{filteredEquipments.length - ((currentPage - 1) * itemsPerPage + idx)}</td>
                       <td className="text-center">
                         {resolveImageSrc(eq.thumbnail_url) ? (
                           <img src={resolveImageSrc(eq.thumbnail_url)!} alt="" className="w-10 h-10 object-cover rounded-md mx-auto border" />
@@ -1495,20 +1639,20 @@ export default function EquipmentClient({
                           <div className="w-10 h-10 bg-slate-100 rounded-md mx-auto flex items-center justify-center text-[8px] text-slate-300 border">NO</div>
                         )}
                       </td>
-                      <td className="px-3 text-left font-mono font-black text-slate-900">{displayAssetNo(eq.asset_no)}</td>
-                      <td className="px-3 text-left text-blue-700 max-w-[13rem]" title={eq.name || ''}>
+                      <td className="px-3 text-left text-slate-900">{displayAssetNo(eq.asset_no)}</td>
+                      <td className="px-3 text-left text-slate-700 max-w-[13rem]" title={eq.name || ''}>
                         <span className="line-clamp-1">{eq.name}</span>
                       </td>
                       <td className="px-2 text-left truncate max-w-[6rem]" title={eq.brand || ''}>{eq.brand || '-'}</td>
-                      <td className="px-2 text-left text-[10px] text-slate-500 truncate max-w-[7.5rem]" title={eq.model_name || ''}>{eq.model_name || '-'}</td>
-                      <td className="px-2 text-left text-[10px] font-mono text-slate-500 truncate max-w-[6.5rem]" title={eq.serial_no || ''}>{eq.serial_no || '-'}</td>
+                      <td className="px-2 text-left truncate max-w-[7.5rem]" title={eq.model_name || ''}>{eq.model_name || '-'}</td>
+                      <td className="px-2 text-left truncate max-w-[6.5rem]" title={eq.serial_no || ''}>{eq.serial_no || '-'}</td>
                       <td className="text-center tabular-nums">{eq.qty} {shortQtyUnitLabel(eq.qty_unit)}</td>
-                      <td className="text-center font-bold text-slate-700 tabular-nums">
-                        {eq.purchase_date ? eq.purchase_date.split('T')[0] : '-'}
+                      <td className="text-center tabular-nums">
+                        {eq.purchase_date ? String(eq.purchase_date).split('T')[0] : '-'}
                       </td>
-                      <td className="text-center font-black tabular-nums">
+                      <td className="text-center tabular-nums">
                         {!applicable ? (
-                          <span className="text-slate-400 font-bold">대상 아님</span>
+                          <span className="text-slate-400">대상 아님</span>
                         ) : nCalib ? (
                           <div className="inline-flex items-center justify-center flex-nowrap whitespace-nowrap">
                             <span className="text-slate-900">{nCalib}</span>
@@ -1517,25 +1661,38 @@ export default function EquipmentClient({
                         ) : <span className="text-slate-300">-</span>}
                       </td>
                       <td
-                        className="px-3 text-left text-slate-600 whitespace-nowrap"
+                        className="px-3 text-left whitespace-nowrap"
                         title={eq.department || ''}
                       >
                         {eq.department || '-'}
                       </td>
                       <td className="text-center">
-                        <button type="button" onClick={(e) => { e.stopPropagation(); setShowQrModal(eq); }} className="px-2 py-1 bg-white border border-sky-200 text-sky-600 rounded text-[10px] whitespace-nowrap hover:bg-sky-50 transition-colors shadow-sm">QR보기</button>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setShowQrModal(eq);
+                          }}
+                          title="QR 라벨 보기"
+                          className="inline-flex items-center justify-center text-slate-500 hover:text-slate-800 transition-colors"
+                        >
+                          <svg viewBox="0 0 20 20" className="w-4 h-4" fill="currentColor" aria-hidden>
+                            <path d="M2 2h6v6H2V2zm1.5 1.5v3h3v-3h-3zM12 2h6v6h-6V2zm1.5 1.5v3h3v-3h-3zM2 12h6v6H2v-6zm1.5 1.5v3h3v-3h-3z" />
+                            <path d="M12 12h2.5v2.5H12V12zm3.5 0H18v2.5h-2.5V12zM12 15.5h2.5V18H12v-2.5zm3.5 0H18V18h-2.5v-2.5z" />
+                          </svg>
+                        </button>
                       </td>
                       <td className="pr-6 pl-2 text-center whitespace-nowrap">
                         <button
                           type="button"
                           onClick={(e) => { e.stopPropagation(); handleOpenDetail(eq); }}
-                          className={`px-2.5 py-1.5 border rounded-lg text-[10px] font-black transition-colors shadow-sm whitespace-nowrap ${
+                          className={`px-2.5 py-1.5 border rounded-lg text-[11px] font-medium font-sans transition-colors shadow-sm whitespace-nowrap ${
                             isDue
                               ? 'bg-red-50 border-red-200 text-red-600 hover:bg-red-600 hover:text-white'
                               : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-800 hover:text-white'
                           }`}
                         >
-                          상세이동
+                          상세보기
                         </button>
                       </td>
                     </tr>
@@ -1557,21 +1714,21 @@ export default function EquipmentClient({
   
       {/* ARCHIVE VIEW */}
       {tabId === 'archive' && (
-        <div className="mt-6 bg-white border border-slate-200 rounded-[2.5rem] shadow-sm overflow-hidden animate-in fade-in">
+        <div className="mt-6 bg-white border border-slate-200 rounded-lg shadow-sm overflow-hidden animate-in fade-in">
           <div className="p-4 px-6 bg-slate-200/70 border-b border-slate-300 flex flex-wrap items-center justify-between gap-4">
-            <div className="flex items-center gap-2">
-              <div className="w-2.5 h-2.5 rounded-full bg-blue-600"></div>
+            <div className="flex items-center gap-2 flex-wrap min-w-0">
+              <div className="w-2.5 h-2.5 rounded-full bg-blue-600 shrink-0"></div>
               <h2 className="text-sm font-black text-slate-800 tracking-tight">장비 폐기 및 반납함</h2>
               <span className="text-[11px] font-bold bg-slate-300/80 text-slate-700 px-2 py-0.5 rounded-md">{filteredArchives.length}건</span>
             </div>
 
             <div className="flex items-center gap-2 flex-wrap">
               <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm">
-                <span className="text-[10px] font-black text-slate-400 uppercase">관리소속</span>
+                <span className="text-[10px] font-medium text-slate-400 uppercase">관리소속</span>
                 <select
                   value={archiveDeptFilter}
                   onChange={(e) => setArchiveDeptFilter(e.target.value)}
-                  className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent max-w-[160px]"
+                  className="text-[11px] font-medium text-slate-800 outline-none cursor-pointer bg-transparent max-w-[160px]"
                 >
                   <option value="ALL">전체</option>
                   {availableArchiveDepts.map((dept) => (
@@ -1580,11 +1737,11 @@ export default function EquipmentClient({
                 </select>
               </div>
               <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm">
-                <span className="text-[10px] font-black text-slate-400 uppercase">연도</span>
+                <span className="text-[10px] font-medium text-slate-400 uppercase">연도</span>
                 <select
                   value={archiveYear}
                   onChange={(e) => setArchiveYear(e.target.value)}
-                  className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent"
+                  className="text-[11px] font-medium text-slate-800 outline-none cursor-pointer bg-transparent"
                 >
                   <option value="ALL">전체</option>
                   {availableArchiveYears.map((year) => (
@@ -1598,7 +1755,7 @@ export default function EquipmentClient({
                 disabled={!canEditGeneral}
                 onClick={() => {
                   if (!canEditGeneral) return;
-                  handleExportArchiveExcel();
+                  void handleExportArchiveExcel();
                 }}
                 title={
                   canEditGeneral
@@ -1607,7 +1764,7 @@ export default function EquipmentClient({
                       : '화면 목록 EXCEL 다운로드'
                     : '엑셀 다운로드는 Edit 권한이 필요합니다.'
                 }
-                className={`px-3 py-1.5 rounded-lg text-[10px] font-black shadow-sm transition-all whitespace-nowrap ${
+                className={`px-3 py-1.5 rounded-lg text-[10px] font-medium shadow-sm transition-all whitespace-nowrap ${
                   canEditGeneral
                     ? 'bg-emerald-600 text-white hover:bg-emerald-700 cursor-pointer'
                     : 'bg-slate-200 text-slate-400 cursor-not-allowed'
@@ -1617,14 +1774,43 @@ export default function EquipmentClient({
                   ? `선택 EXCEL 다운로드(${selectedArchiveIds.size})`
                   : '화면 목록 EXCEL 다운로드'}
               </button>
+              {isLv1 && (
+                <button
+                  type="button"
+                  onClick={() => void handleDeleteSelectedArchives()}
+                  title="체크한 이력 영구 삭제 (LV_1)"
+                  disabled={selectedArchiveIds.size === 0}
+                  className={`px-3 py-1.5 rounded-lg text-[10px] font-medium border transition-colors whitespace-nowrap ${
+                    selectedArchiveIds.size > 0
+                      ? 'bg-white border-red-200 text-red-600 hover:bg-red-50'
+                      : 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'
+                  }`}
+                >
+                  {selectedArchiveIds.size > 0
+                    ? `삭제(LV_1)(${selectedArchiveIds.size})`
+                    : '삭제(LV_1)'}
+                </button>
+              )}
             </div>
           </div>
   
           <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse min-w-[1100px]">
+            <table className="w-full table-fixed text-left border-collapse">
+              <colgroup>
+                <col className="w-10" />
+                <col className="w-12" />
+                <col />
+                <col />
+                <col />
+                <col />
+                <col />
+                <col />
+                <col />
+                <col className="w-14" />
+              </colgroup>
               <thead className="bg-slate-100 text-slate-700 text-[10px] font-black uppercase tracking-widest border-b border-slate-200">
                 <tr>
-                  <th className="h-12 w-12 text-center pl-4">
+                  <th className="h-12 text-center pl-3">
                     <input
                       type="checkbox"
                       checked={paginatedArchives.length > 0 && paginatedArchives.every((a) => selectedArchiveIds.has(a.id))}
@@ -1639,29 +1825,26 @@ export default function EquipmentClient({
                       className="accent-indigo-600 cursor-pointer w-3.5 h-3.5"
                     />
                   </th>
-                  <th className="h-12 px-3 text-center w-16">NO</th>
-                  <th className="h-12 px-3 w-28 text-center">처리일자</th>
-                  <th className="h-12 px-3 w-32 text-left">자산번호</th>
-                  <th className="h-12 px-3 w-40 text-left">품목명(장비명칭)</th>
-                  <th className="h-12 px-3 w-24 text-center">폐기/반납개수</th>
-                  <th className="h-12 px-3 w-[250px] text-left">처리 사유</th>
-                  <th className="h-12 px-3 w-32 text-left">관리소속</th>
-                  <th className="h-12 px-3 w-20 text-center">상태</th>
-                  <th className="h-12 px-3 w-24 text-center">상세</th>
-                  <th className="h-12 px-3 w-24 text-center">관리액션</th>
-                  <th className="h-12 pr-6 w-28 text-center text-red-500">삭제(LV_1)</th>
+                  <th className="h-12 text-center">NO</th>
+                  <th className="h-12 px-2 text-center">처리일자</th>
+                  <th className="h-12 px-2 text-left">자산번호</th>
+                  <th className="h-12 px-2 text-left">품목명(장비명칭)</th>
+                  <th className="h-12 px-2 text-center">폐기/반납개수</th>
+                  <th className="h-12 px-2 text-left">관리소속</th>
+                  <th className="h-12 px-2 text-center">상태</th>
+                  <th className="h-12 px-2 text-center">상세보기</th>
+                  <th className="h-12 pr-3 text-center">관리액션</th>
                 </tr>
               </thead>
-              <tbody className="bg-white divide-y divide-slate-100 text-xs font-bold text-slate-700">
+              <tbody className="bg-white divide-y divide-slate-100 text-[11px] font-medium font-sans text-slate-700">
                 {paginatedArchives.length === 0 ? (
-                  <tr><td colSpan={12} className="h-24 text-center text-slate-400 italic">선택된 기간에 처리된 장비 내역이 없습니다.</td></tr>
+                  <tr><td colSpan={10} className="h-24 text-center text-slate-400 italic">선택된 기간에 처리된 장비 내역이 없습니다.</td></tr>
                 ) : paginatedArchives.map((arc, idx) => {
-                  const reasonText = parseEquipmentArchiveMemo(arc.etc_memo).displayText || '-';
                   const canRestore = checkItemCanEdit(arc);
   
                   return (
                     <tr key={arc.id} className="h-16 hover:bg-slate-50/50 transition-colors">
-                      <td className="pl-4 text-center">
+                      <td className="pl-3 text-center">
                         <input
                           type="checkbox"
                           checked={selectedArchiveIds.has(arc.id)}
@@ -1673,8 +1856,8 @@ export default function EquipmentClient({
                           className="accent-indigo-600 cursor-pointer w-3.5 h-3.5"
                         />
                       </td>
-                      <td className="px-3 text-center text-slate-400 font-mono text-[10px] tabular-nums">{filteredArchives.length - ((archivePage - 1) * itemsPerPage + idx)}</td>
-                      <td className="text-center font-black tabular-nums">
+                      <td className="text-center text-slate-400 tabular-nums">{filteredArchives.length - ((archivePage - 1) * itemsPerPage + idx)}</td>
+                      <td className="px-2 text-center tabular-nums">
                         {(() => {
                           const raw = arc.last_replace_date || arc.archived_at || arc.updatedAt;
                           if (!raw) return '-';
@@ -1682,64 +1865,62 @@ export default function EquipmentClient({
                           return ymd || String(raw).split('T')[0] || '-';
                         })()}
                       </td>
-                      <td className="px-3 text-left font-mono font-black text-slate-900">{displayAssetNo(arc.asset_no)}</td>
-                      <td className="px-3 text-left text-blue-700">{arc.name}</td>
-                      <td className="text-center tabular-nums">{arc.qty} {shortQtyUnitLabel(arc.qty_unit)}</td>
-                      <td className="px-3 text-left text-slate-500 font-medium truncate max-w-[250px]" title={reasonText}>"{reasonText}"</td>
-                      <td className="px-3 text-left text-slate-600">{arc.department || '-'}</td>
-                      <td className="text-center">
-                        <span className={`px-2.5 py-1 rounded-md text-[10px] font-black ${arc.status === '폐기' ? 'bg-red-50 text-red-600 border border-red-100' : 'bg-slate-200 text-slate-600'}`}>{arc.status}</span>
+                      <td className="px-2 text-left text-slate-900 truncate" title={displayAssetNo(arc.asset_no)}>{displayAssetNo(arc.asset_no)}</td>
+                      <td className="px-2 text-left text-slate-700 truncate" title={arc.name || ''}>{arc.name}</td>
+                      <td className="px-2 text-center tabular-nums whitespace-nowrap">{arc.qty} {shortQtyUnitLabel(arc.qty_unit)}</td>
+                      <td className="px-2 text-left truncate" title={arc.department || ''}>{arc.department || '-'}</td>
+                      <td className="px-2 text-center">
+                        <span className={`px-2.5 py-1 rounded-md text-[11px] font-medium ${arc.status === '폐기' ? 'bg-red-50 text-red-600 border border-red-100' : 'bg-slate-200 text-slate-600'}`}>{arc.status}</span>
                       </td>
-                      <td className="px-3 text-center">
+                      <td className="px-2 text-center">
                         <button
                           type="button"
                           onClick={() => handleOpenDetail(arc)}
-                          className="px-2.5 py-1 bg-white border border-slate-300 text-slate-700 rounded-lg text-[10px] font-bold shadow-sm hover:bg-slate-50 transition-colors"
+                          className="px-2.5 py-1 bg-white border border-slate-300 text-slate-700 rounded-lg text-[11px] font-medium font-sans shadow-sm hover:bg-slate-50 transition-colors whitespace-nowrap"
                         >
-                          상세
+                          상세보기
                         </button>
                       </td>
-                      <td className="px-3 text-center">
+                      <td className="pr-3 text-center">
                         <button
                           type="button"
-                          disabled={!canRestore}
-                          onClick={() => handleRestoreArchive(arc)}
                           title={
                             canRestore
-                              ? '활성 목록으로 복구'
+                              ? '관리 메뉴'
                               : '본인 소속(HQ는 직속 하위 포함) 또는 권한이 있는 장비만 복구할 수 있습니다.'
                           }
-                          className={`px-2 py-1 border rounded-lg text-[10px] font-bold shadow-sm transition-colors ${
+                          onClick={(e) => {
+                            if (!canRestore) return;
+                            const r = (e.currentTarget as HTMLButtonElement).getBoundingClientRect();
+                            const width = 148;
+                            setArchiveActionMenu((prev) =>
+                              prev?.id === arc.id
+                                ? null
+                                : {
+                                    id: arc.id,
+                                    top: r.bottom + 4,
+                                    left: Math.min(
+                                      Math.max(12, r.right - width),
+                                      window.innerWidth - width - 12
+                                    ),
+                                  }
+                            );
+                          }}
+                          className={`inline-flex items-center justify-center w-7 h-7 rounded-lg transition-colors ${
                             canRestore
-                              ? 'bg-white border-slate-300 text-slate-700 hover:bg-slate-50 cursor-pointer'
-                              : 'bg-slate-100 border-slate-200 text-slate-300 cursor-not-allowed'
+                              ? archiveActionMenu?.id === arc.id
+                                ? 'bg-slate-200 text-slate-800'
+                                : 'text-slate-500 hover:bg-slate-100 hover:text-slate-800'
+                              : 'text-slate-300 cursor-not-allowed'
                           }`}
                         >
-                          복구(Edit)
+                          <svg viewBox="0 0 20 20" className="w-4 h-4" fill="currentColor" aria-hidden>
+                            <circle cx="10" cy="4.5" r="1.6" />
+                            <circle cx="10" cy="10" r="1.6" />
+                            <circle cx="10" cy="15.5" r="1.6" />
+                          </svg>
                         </button>
                       </td>
-                      <td className="pr-6 text-center">
-                          <button
-                            type="button"
-                            disabled={!isLv1}
-                            onClick={() => {
-                              if (!isLv1) return;
-                              handlePermanentDelete(arc.id);
-                            }}
-                            title={
-                              isLv1
-                                ? '영구 삭제 (복구 불가)'
-                                : '영구 삭제는 LV_1만 가능합니다.'
-                            }
-                            className={`w-full max-w-[6.5rem] mx-auto py-1.5 rounded-lg transition-all font-black text-[9px] whitespace-nowrap shadow-sm border ${
-                              isLv1
-                                ? 'bg-white border-red-200 text-red-500 hover:bg-red-50 cursor-pointer'
-                                : 'bg-slate-100 border-slate-200 text-slate-300 cursor-not-allowed'
-                            }`}
-                          >
-                            🗑️ 삭제(LV_1)
-                          </button>
-                        </td>
                     </tr>
                   )
                 })}
@@ -1751,11 +1932,36 @@ export default function EquipmentClient({
             <WindowedPagination
               currentPage={archivePage}
               totalPages={totalArchivePages}
-              onPageChange={setArchivePage}
+              onPageChange={(page) => {
+                setArchiveActionMenu(null);
+                setArchivePage(page);
+              }}
             />
           )}
         </div>
       )}
+
+      {archiveActionMenu &&
+        createPortal(
+          <div
+            ref={archiveActionMenuRef}
+            style={{ top: archiveActionMenu.top, left: archiveActionMenu.left }}
+            className="fixed z-[500] w-[148px] rounded-xl border border-slate-200 bg-white shadow-lg py-1 text-left"
+          >
+            <button
+              type="button"
+              className="w-full px-3 py-2 text-left text-[11px] font-medium text-slate-700 hover:bg-slate-50"
+              onClick={() => {
+                const arc = archives.find((x) => x.id === archiveActionMenu.id);
+                setArchiveActionMenu(null);
+                if (arc) void handleRestoreArchive(arc);
+              }}
+            >
+              복구(Edit)
+            </button>
+          </div>,
+          document.body
+        )}
   
       {/* 장비 상세보기 팝업 */}
       {selectedEq && (
@@ -1764,7 +1970,7 @@ export default function EquipmentClient({
 
     <div className="p-5 px-8 bg-slate-800 border-b border-slate-900 flex justify-between items-center shrink-0">
   <div>
-    <p className="text-[10px] font-black uppercase tracking-widest mb-1.5 flex items-center gap-2">
+    <div className="text-[10px] font-black uppercase tracking-widest mb-1.5 flex items-center gap-2 flex-wrap">
       <span className="bg-emerald-500 text-white px-2.5 py-0.5 rounded-md shadow-sm">장비스팩 상세보기</span>
       {isArchivedView && (
         <span className="text-red-300 bg-red-900/40 border border-red-700/50 px-2 py-0.5 rounded-md">
@@ -1772,7 +1978,15 @@ export default function EquipmentClient({
         </span>
       )}
       {isEditingDetail && <span className="text-amber-500 bg-amber-900/30 border border-amber-700/50 px-2 py-0.5 rounded-md">[편집 모드]</span>}
-    </p>
+      {!String(selectedEq?.id || '').startsWith('NEW-') && (
+        <DeptAssigneeLine
+          editorNames={detailEditorNames}
+          onColor
+          label={`부서 담당자${currentEq?.department ? ` · ${currentEq.department}` : ''}`}
+          popupLabel={`${currentEq?.department || '해당 소속'} 편집 담당자`}
+        />
+      )}
+    </div>
     {/* 🚀 글자색을 text-white로 변경 */}
     <h3 className="font-black text-xl text-white">{currentEq.name || '신규 장비'} <span className="text-sm font-medium text-slate-400 ml-2">[{displayAssetNo(currentEq.asset_no) || '번호생성전'}]</span></h3>
   </div>
@@ -1781,72 +1995,75 @@ export default function EquipmentClient({
       <>
         <button
           type="button"
-          disabled={!canEditCurrent}
+          disabled={!canDownloadDetailExcel}
           onClick={() => {
-            if (!canEditCurrent) return;
+            if (!canDownloadDetailExcel) return;
             handleExportDetailExcel();
           }}
           title={
-            canEditCurrent
-              ? '상세 EXCEL 다운로드'
-              : '해당 소속 장비에 대한 엑셀 다운로드 권한이 없습니다.'
+            canDownloadDetailExcel
+              ? `상세 EXCEL 다운로드 (${selectedEq.department || '소속 미지정'})`
+              : '해당 장비관리소속 장비만 다운로드할 수 있습니다.'
           }
           className={`px-4 py-2 rounded-xl text-[11px] font-black transition-all shadow-sm ${
-            canEditCurrent
+            canDownloadDetailExcel
               ? 'bg-emerald-600 text-white hover:bg-emerald-500 cursor-pointer'
               : 'bg-slate-600/40 text-slate-400 cursor-not-allowed border border-slate-600'
           }`}
         >
           상세 EXCEL 다운로드
+          <span className="font-bold opacity-80 ml-1">
+            ({selectedEq.department || '소속 미지정'})
+          </span>
         </button>
-        <button
-          type="button"
-          disabled={!canMutateDetail}
-          onClick={() => {
-            if (!canMutateDetail) return;
-            setEditFormData({
-              ...selectedEq,
-              etc_memo: unwrapEquipmentEtcMemo(selectedEq?.etc_memo),
-            });
-            setIsEditingDetail(true);
-          }}
-          title={
-            isArchivedView
-              ? '폐기/반납 건은 조회만 가능합니다. 복구 후 수정하세요.'
-              : canEditCurrent
-                ? '정보 수정(Edit)'
-                : '해당 소속 장비에 대한 수정 권한이 없습니다.'
-          }
-          className={`px-4 py-2 rounded-xl text-[11px] font-black transition-all shadow-sm border ${
-            canMutateDetail
-              ? 'bg-slate-700 text-white hover:bg-slate-600 border-slate-600 cursor-pointer'
-              : 'bg-slate-700/40 text-slate-400 border-slate-600 cursor-not-allowed'
-          }`}
-        >
-          ✏️ 정보 수정(Edit)
-        </button>
-        <button
-          type="button"
-          disabled={!canMutateDetail}
-          onClick={() => {
-            if (!canMutateDetail) return;
-            handleOpenArchiveModal();
-          }}
-          title={
-            isArchivedView
-              ? '이미 폐기/반납된 장비입니다.'
-              : canEditCurrent
-                ? '폐기/반납'
-                : '해당 소속 장비에 대한 폐기 권한이 없습니다.'
-          }
-          className={`px-4 py-2 rounded-xl text-[11px] font-black transition-all shadow-sm border ${
-            canMutateDetail
-              ? 'bg-red-900/50 text-red-400 hover:bg-red-900/80 border-red-800/50 cursor-pointer'
-              : 'bg-slate-700/40 text-slate-400 border-slate-600 cursor-not-allowed'
-          }`}
-        >
-          🗑️ 폐기/반납
-        </button>
+        {!isArchivedView && (
+          <>
+            <button
+              type="button"
+              disabled={!canMutateDetail}
+              onClick={() => {
+                if (!canMutateDetail) return;
+                setEditFormData({
+                  ...selectedEq,
+                  etc_memo: unwrapEquipmentEtcMemo(selectedEq?.etc_memo),
+                });
+                setIsEditingDetail(true);
+              }}
+              title={
+                canEditCurrent
+                  ? '정보 수정(Edit)'
+                  : '해당 소속 장비에 대한 수정 권한이 없습니다.'
+              }
+              className={`px-4 py-2 rounded-xl text-[11px] font-black transition-all shadow-sm border ${
+                canMutateDetail
+                  ? 'bg-slate-700 text-white hover:bg-slate-600 border-slate-600 cursor-pointer'
+                  : 'bg-slate-700/40 text-slate-400 border-slate-600 cursor-not-allowed'
+              }`}
+            >
+              ✏️ 정보 수정(Edit)
+            </button>
+            <button
+              type="button"
+              disabled={!canMutateDetail}
+              onClick={() => {
+                if (!canMutateDetail) return;
+                handleOpenArchiveModal();
+              }}
+              title={
+                canEditCurrent
+                  ? '폐기/반납(Edit)'
+                  : '해당 소속 장비에 대한 폐기/반납 권한이 없습니다. (Edit 필요)'
+              }
+              className={`px-4 py-2 rounded-xl text-[11px] font-black transition-all shadow-sm border ${
+                canMutateDetail
+                  ? 'bg-red-900/50 text-red-400 hover:bg-red-900/80 border-red-800/50 cursor-pointer'
+                  : 'bg-slate-700/40 text-slate-400 border-slate-600 cursor-not-allowed'
+              }`}
+            >
+              🗑️ 폐기/반납(Edit)
+            </button>
+          </>
+        )}
       </>
     )}
     {canMutateDetail && isEditingDetail && (
@@ -1868,7 +2085,11 @@ export default function EquipmentClient({
                     {selectedEq.status} 건 · 조회 전용
                     {String(selectedEq.asset_no || '').includes('_ARC_') ? ' (부분 폐기 분리 건)' : ''}
                   </p>
-                  <p className="text-red-700/90 whitespace-pre-wrap">
+                  <p className="text-red-700/90">
+                    폐기/반납개수:{' '}
+                    {selectedEq.qty ?? '-'} {shortQtyUnitLabel(selectedEq.qty_unit)}
+                  </p>
+                  <p className="text-red-700/90 whitespace-pre-wrap mt-1">
                     처리 사유:{' '}
                     {parseEquipmentArchiveMemo(selectedEq.etc_memo).archiveReason ||
                       parseEquipmentArchiveMemo(selectedEq.etc_memo).displayText ||
@@ -2074,9 +2295,7 @@ export default function EquipmentClient({
                       )}
                     </div>
                     <div className="space-y-1">
-                      <p className="font-black text-slate-400 uppercase">
-                        {isArchivedView ? '폐기/반납개수' : '보유개수'}
-                      </p>
+                      <p className="font-black text-slate-400 uppercase">보유개수(잔여개수)</p>
                       {isEditingDetail ? (
                         <div className="flex gap-2">
                           <input
@@ -2859,7 +3078,7 @@ export default function EquipmentClient({
             </div>
             <div className="flex gap-3 mt-8">
               <button type="button" onClick={() => setShowArchiveModal(false)} className="flex-1 py-3.5 bg-slate-100 text-slate-500 rounded-xl text-[11px] uppercase tracking-widest hover:bg-slate-200 transition-colors font-black">취소</button>
-              <button type="button" onClick={executeArchive} className="flex-[2] py-3.5 bg-red-600 text-white rounded-xl shadow-md hover:bg-red-700 transition-all text-[11px] uppercase tracking-widest font-black active:scale-95">폐기/반납함으로 이동</button>
+              <button type="button" onClick={executeArchive} className="flex-[2] py-3.5 bg-red-600 text-white rounded-xl shadow-md hover:bg-red-700 transition-all text-[11px] uppercase tracking-widest font-black active:scale-95">폐기/반납함으로 이동(Edit)</button>
             </div>
           </div>
         </div>

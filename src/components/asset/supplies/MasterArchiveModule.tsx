@@ -1,16 +1,20 @@
 'use client';
 import React, { useState, useEffect, useMemo, Suspense } from 'react';
-import * as XLSX from 'xlsx';
 import { usePathname } from 'next/navigation';
 import Link from 'next/link';
 import { getKSTDateString, getKSTNowYearMonth, getKSTYearMonthParts } from '@/utils/dateUtils';
 import LoadingState from '@/components/common/LoadingState';
 import WindowedPagination from '@/components/common/WindowedPagination';
+import DeptAssigneeLine, { useDeptAssignees } from '@/components/common/DeptAssigneeLine';
 import { resolveInterfaceEditState, isSystemLv1User } from '@/lib/permission-utils';
 import {
   SUPPLIES_MASTER_TABS,
   useInterfaceStepTabs,
 } from '@/lib/interface-step-tabs';
+import {
+  downloadExcelJsBuffer,
+  writeSuppliesArchiveExcelBuffer,
+} from '@/lib/supplies-request-excel';
 
 const MENU_PATH = '/asset/supplies/master/archive';
 
@@ -19,6 +23,7 @@ const MENU_PATH = '/asset/supplies/master/archive';
 function MasterArchiveContent() {
   const pathname = usePathname();
   const tabs = useInterfaceStepTabs(SUPPLIES_MASTER_TABS, '/asset/supplies/master');
+  const { editorNames } = useDeptAssignees(MENU_PATH);
   const [items, setItems] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [currentUser, setCurrentUser] = useState<any>(null);
@@ -107,7 +112,7 @@ function MasterArchiveContent() {
 
   const alertNoEditPermission = () => alert('편집 권한이 없습니다.');
   const disabledActionBtn =
-    'px-1.5 py-1.5 bg-slate-100 text-slate-400 border border-slate-200 rounded-md text-[10px] font-medium cursor-not-allowed whitespace-nowrap opacity-70';
+    'px-1.5 py-1.5 bg-slate-100 text-slate-400 border border-slate-200 rounded-md text-[11px] font-medium cursor-not-allowed whitespace-nowrap opacity-70';
      
   // 🚀 아이템 리스트에 파싱된 데이터를 미리 매핑해두기 (필터링 및 엑셀 다운로드를 위해)
   const parsedItems = useMemo(() => {
@@ -201,28 +206,33 @@ function MasterArchiveContent() {
     } catch (e) { alert("삭제 중 통신 오류 발생"); }
   };
 
-  // 🚀 엑셀 다운로드 추가
-  const handleDownloadExcel = () => {
-    const targetList = selectedIds.size > 0 ? filteredItems.filter(i => selectedIds.has(i.id)) : filteredItems;
-    if (targetList.length === 0) return alert("다운로드할 데이터가 없습니다.");
-    
-    const exportData = targetList.map((item, idx) => {
-      return {
-        'NO': targetList.length - idx,
-        '폐기 처리일': item.ext.disposal_date ? item.ext.disposal_date.substring(0, 10) : '-',
-        '물품명': item.name || '-',
-        '최종 재고': item.current_stock || 0,
+  const handleDownloadExcel = async () => {
+    const targetList =
+      selectedIds.size > 0 ? filteredItems.filter((i) => selectedIds.has(i.id)) : filteredItems;
+    if (targetList.length === 0) return alert('다운로드할 데이터가 없습니다.');
+
+    try {
+      const rows = targetList.map((item, idx) => ({
+        NO: idx + 1,
+        '폐기 처리일': item.ext.disposal_date
+          ? String(item.ext.disposal_date).substring(0, 10)
+          : '-',
+        물품명: item.name || '-',
+        '최종 재고': Number(item.current_stock) || 0,
         '폐기 사유 (비고)': item.ext.disposal_reason || '-',
         '처리자 이름': item.ext.disposer_name || '관리자',
         '처리자 부서': item.ext.disposer_dept || '-',
+      }));
 
-      };
-    });
-    
-    const ws = XLSX.utils.json_to_sheet(exportData);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "폐기자산_목록");
-    XLSX.writeFile(wb, `소모품_폐기자산_아카이브_${getKSTDateString()}.xlsx`);
+      const buffer = await writeSuppliesArchiveExcelBuffer(rows, { sheetName: '폐기자산_목록' });
+      await downloadExcelJsBuffer(
+        buffer,
+        `소모품_폐기자산_아카이브_${getKSTDateString()}.xlsx`
+      );
+    } catch (err) {
+      console.error(err);
+      alert('엑셀 다운로드에 실패했습니다.');
+    }
   };
      
   if (loading) return <LoadingState />;
@@ -235,22 +245,22 @@ function MasterArchiveContent() {
   <div className="absolute right-0 top-0 w-64 h-64 bg-emerald-400/15 rounded-full blur-3xl -translate-y-1/3 translate-x-1/4 pointer-events-none" />
   <div className="absolute left-1/4 bottom-0 w-48 h-48 bg-teal-800/20 rounded-full blur-3xl translate-y-1/2 pointer-events-none" />
   <div className="relative z-10">
-    <h3 className="text-[10px] font-black uppercase tracking-widest text-emerald-400 mb-2.5">
+    <h3 className="text-[10px] font-medium uppercase tracking-widest text-emerald-400 mb-2.5">
       CENTRAL SUPPLIES CONTROL TOWER
     </h3>
-    <h1 className="text-2xl font-extrabold tracking-tight text-white leading-none">
-      소모품 마스터 관리 통제실
+    <h1 className="text-2xl tracking-tight leading-none">
+      <span className="text-white font-medium">소모품 마스터 관리 통제실</span>
     </h1>
     <p className="text-emerald-100/90 text-xs mt-3 leading-relaxed">
       더이상 지급하지 않는 소모품의 폐기 이력을 관리합니다.
     </p>
     {permissionSummary && isSystemLv1User(currentUser) && (
       <div className="flex flex-wrap items-center gap-2 mt-4 pt-3 border-t border-white/15">
-        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-white/10 border-white/25 text-emerald-50 shadow-sm">
+        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-medium border tracking-tight bg-white/10 border-white/25 text-emerald-50 shadow-sm">
           <span>👑 Master 책임자:</span>
           <span>{permissionSummary.masterName}</span>
         </div>
-        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-purple-500/20 border-purple-300/40 text-purple-100 shadow-sm">
+        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-medium border tracking-tight bg-purple-500/20 border-purple-300/40 text-purple-100 shadow-sm">
           <span>👁️ Access:</span>
           <span>{permissionSummary.accessDesignate}</span>
           <span className="opacity-50">|</span>
@@ -258,7 +268,7 @@ function MasterArchiveContent() {
           <span className="opacity-50">|</span>
           <span>Level: {permissionSummary.accessLevel}</span>
         </div>
-        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-emerald-400/20 border-emerald-300/40 text-emerald-100 shadow-sm">
+        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-medium border tracking-tight bg-emerald-400/20 border-emerald-300/40 text-emerald-100 shadow-sm">
           <span>✍️ Edit:</span>
           <span>{permissionSummary.editDesignate}</span>
           <span className="opacity-50">|</span>
@@ -301,12 +311,13 @@ function MasterArchiveContent() {
       </div>
      
       {isTableOpen && (
-        <section className="bg-white rounded-[2.5rem] border border-slate-200 shadow-sm overflow-hidden animate-in fade-in duration-300 slide-in-from-top-4 mt-6">
+        <section className="bg-white rounded-lg border border-slate-200 shadow-sm overflow-hidden animate-in fade-in duration-300 slide-in-from-top-4 mt-6">
           <div className="p-4 px-6 bg-slate-200/70 border-b border-slate-300 flex flex-wrap items-center justify-between gap-4">
             <div className="flex items-center gap-2 flex-wrap min-w-0">
               <div className="w-2.5 h-2.5 rounded-full bg-slate-600 shrink-0"></div>
               <h2 className="text-sm font-black text-slate-800 tracking-tight">폐기자산 아카이브 장부</h2>
               <span className="text-[11px] font-bold bg-slate-300/80 text-slate-700 px-2 py-0.5 rounded-md">{filteredItems.length}건</span>
+              <DeptAssigneeLine editorNames={editorNames} />
             </div>
             
             <div className="soh-filter-bar flex items-center gap-2 flex-wrap">
@@ -348,30 +359,34 @@ function MasterArchiveContent() {
                 <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-[10px]">🔍</span>
                 <input type="text" placeholder="물품, 사유, 처리자 검색..." value={searchQuery} onChange={e => { setSearchQuery(e.target.value); setCurrentPage(1); }} className="w-full pl-7 pr-3 py-1.5 bg-white border border-slate-200 rounded-lg text-[11px] font-medium outline-none focus:border-indigo-500 shadow-sm transition-colors placeholder:font-medium" />
               </div>
-              <button onClick={handleDownloadExcel} className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-[10px] font-medium shadow-sm hover:bg-emerald-700 transition-all whitespace-nowrap">
+              <button
+                type="button"
+                onClick={() => void handleDownloadExcel()}
+                className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-[11px] font-medium shadow-sm hover:bg-emerald-700 transition-all whitespace-nowrap"
+              >
                 {selectedIds.size > 0 ? `선택 EXCEL 다운로드(${selectedIds.size})` : '화면 목록 EXCEL 다운로드'}
               </button>
             </div>
           </div>
      
           <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse table-fixed min-w-[1240px]">
+            <table className="w-full text-left border-collapse table-fixed">
               <colgroup>
-                <col className="w-[40px]" />
-                <col className="w-[48px]" />
-                <col className="w-[96px]" />
-                <col className="w-[180px]" />
-                <col className="w-[88px]" />
+                <col className="w-10" />
+                <col className="w-12" />
                 <col />
-                <col className="w-[200px]" />
-                <col className="w-[140px]" />
+                <col />
+                <col />
+                <col />
+                <col />
+                <col />
               </colgroup>
-              <thead className="bg-slate-100 text-slate-700 text-[10px] font-black uppercase tracking-widest border-b border-slate-200">
+              <thead className="bg-slate-100 text-slate-700 text-[11px] font-medium border-b border-slate-200">
                 <tr>
-                  <th className="h-12 pl-4 text-center">
+                  <th className="h-12 pl-3 text-left">
                     <input type="checkbox" checked={paginatedItems.length > 0 && paginatedItems.every(p => selectedIds.has(p.id))} onChange={toggleSelectAll} className="w-3 h-3 accent-indigo-600 cursor-pointer" />
                   </th>
-                  <th className="h-12 px-2 text-center">NO</th>
+                  <th className="h-12 pr-2 text-left">NO</th>
                   <th className="h-12 px-2 text-center whitespace-nowrap">폐기 처리일</th>
                   <th className="h-12 px-2 text-left">물품명</th>
                   <th className="h-12 px-2 text-center whitespace-nowrap">최종 재고</th>
@@ -380,9 +395,9 @@ function MasterArchiveContent() {
                   <th className="h-12 px-2 text-center whitespace-nowrap border-l border-slate-200">관리액션(Edit)</th>
                 </tr>
               </thead>
-              <tbody className="bg-white divide-y divide-slate-100 text-[11px] font-bold text-slate-700">
+              <tbody className="bg-white divide-y divide-slate-100 text-[11px] font-medium text-slate-700">
                 {paginatedItems.length === 0 ? (
-                  <tr><td colSpan={8} className="p-16 text-center text-slate-400 text-xs">조건에 맞는 아카이브 내역이 없습니다.</td></tr>
+                  <tr><td colSpan={8} className="p-16 text-center text-slate-400 text-[11px]">조건에 맞는 아카이브 내역이 없습니다.</td></tr>
                 ) : paginatedItems.map((item, i) => {
                   let displayDate = '-';
                   if (item.ext.disposal_date) {
@@ -394,22 +409,22 @@ function MasterArchiveContent() {
      
                   return (
                     <tr key={item.id} className={`hover:bg-slate-50/50 h-12 transition-colors ${isSelected ? 'bg-indigo-50/50' : ''}`}>
-                      <td className="pl-4 text-center" onClick={(e) => e.stopPropagation()}>
+                      <td className="pl-3 text-left" onClick={(e) => e.stopPropagation()}>
                         <input type="checkbox" checked={isSelected} onChange={() => { const next = new Set(selectedIds); isSelected ? next.delete(item.id) : next.add(item.id); setSelectedIds(next); }} className="w-3 h-3 accent-indigo-600 cursor-pointer" />
                       </td>
-                      <td className="px-2 text-center font-mono text-slate-500 tabular-nums">{rowNo}</td>
+                      <td className="pr-2 text-left font-mono text-slate-500 tabular-nums">{rowNo}</td>
                       <td className="px-2 text-center whitespace-nowrap tabular-nums text-slate-800">{displayDate}</td>
                       <td className="px-2 text-left text-slate-900 truncate" title={item.name}>{item.name}</td>
                       <td className="px-2 text-center font-mono whitespace-nowrap tabular-nums text-slate-900">
                         {Number(item.current_stock || 0).toLocaleString()}
-                        {sUnit && <span className="text-[9px] text-slate-400 font-bold ml-0.5">{sUnit}</span>}
+                        {sUnit && <span className="text-[11px] text-slate-400 font-medium ml-0.5">{sUnit}</span>}
                       </td>
                       <td className="px-2 text-left text-slate-600 truncate" title={item.ext.disposal_reason || ''}>
                         {item.ext.disposal_reason || '-'}
                       </td>
                       <td className="px-2 text-left border-l border-slate-200">
                         <div className="truncate">
-                          <span className="text-[10px] text-slate-500 block truncate">{item.ext.disposer_dept || '-'}</span>
+                          <span className="text-[11px] text-slate-500 block truncate">{item.ext.disposer_dept || '-'}</span>
                           <span className="text-slate-800 truncate">{item.ext.disposer_name || '관리자'}</span>
                         </div>
                       </td>
@@ -421,7 +436,7 @@ function MasterArchiveContent() {
                           title={canEdit ? '대시보드 복구' : '편집 권한 필요'}
                           className={
                             canEdit
-                              ? 'px-1.5 py-1.5 bg-indigo-50 text-indigo-600 border border-indigo-200 rounded-md text-[10px] font-medium hover:bg-indigo-100 shadow-sm whitespace-nowrap'
+                              ? 'px-1.5 py-1.5 bg-indigo-50 text-indigo-600 border border-indigo-200 rounded-md text-[11px] font-medium hover:bg-indigo-100 shadow-sm whitespace-nowrap'
                               : disabledActionBtn
                           }
                         >

@@ -14,12 +14,13 @@ import {
 } from '@/utils/supplyRequestStatus';
 import LoadingState from '@/components/common/LoadingState';
 import WindowedPagination from '@/components/common/WindowedPagination';
+import DeptAssigneeLine, { useDeptAssignees } from '@/components/common/DeptAssigneeLine';
 import { resolveInterfaceEditState, isSystemLv1User } from '@/lib/permission-utils';
 import {
   SUPPLIES_MASTER_TABS,
   useInterfaceStepTabs,
 } from '@/lib/interface-step-tabs';
-import * as XLSX from 'xlsx';
+import { writeSuppliesCompletedRequestExcelBuffer } from '@/lib/supplies-request-excel';
 import {
   BarChart,
   Bar,
@@ -162,6 +163,7 @@ function getKSTYearMonthParts(dateInput: Date | string | number | null | undefin
 function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) {
   const pathname = usePathname();
   const tabs = useInterfaceStepTabs(SUPPLIES_MASTER_TABS, '/asset/supplies/master');
+  const { editorNames } = useDeptAssignees(MENU_PATH);
   
   // 데이터 상태 관리
   const [requests, setRequests] = useState<any[]>([]);
@@ -524,7 +526,7 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
   useEffect(() => {
     // 서류철 전환 시 장부(표)용 상태칩·월별만 조정
     // 접수 대기: 상태 ALL · 월 ALL (차트 연·월은 유지)
-    // 처리 완료: 접속월(KST) + 차트도 동일 기간으로 맞춤
+    // 처리 완료: 월 ALL + 차트도 동일 기간으로 맞춤
     if (activeFolder === 'ACTIVE') {
       if (selectedStatus !== 'ALL') setSelectedStatus('ALL');
       setSelectedMonth('ALL');
@@ -536,10 +538,9 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
     ) {
       setSelectedStatus('ALL');
     }
-    const m = String(getKSTNowYearMonth().month).padStart(2, '0');
-    setSelectedMonth(m);
+    setSelectedMonth('ALL');
     setChartYear(selectedYear);
-    setChartMonth(m);
+    setChartMonth('ALL');
   }, [activeFolder]);
 
   // 처리완료 장부에서 연·월을 수동 변경할 때 차트 동기화 (접수대기에서는 차트 유지)
@@ -559,47 +560,58 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
     setSelectedIds(next);
   };
 
-  const handleExportExcel = () => {
-    const target = selectedIds.size > 0
-      ? filteredRequests.filter((r) => selectedIds.has(r.id))
-      : filteredRequests;
+  const handleExportExcel = async () => {
+    if (activeFolder !== 'COMPLETED') return;
+    const target =
+      selectedIds.size > 0
+        ? filteredRequests.filter((r) => selectedIds.has(r.id))
+        : filteredRequests;
     if (target.length === 0) return alert('다운로드할 데이터가 없습니다.');
 
-    const exportData = target.map((r, idx) => {
-      let sUnit = '';
-      try {
-        const itemExt = r.item?.description ? JSON.parse(r.item.description) : {};
-        sUnit = r.unit || itemExt.s_unit || itemExt.r_unit || '';
-      } catch (e) {}
+    try {
+      const rows = target.map((r, idx) => {
+        let sUnit = '';
+        try {
+          const itemExt = r.item?.description ? JSON.parse(r.item.description) : {};
+          sUnit = r.unit || itemExt.s_unit || itemExt.r_unit || '';
+        } catch (e) {}
 
-      const itemName = r.item_name || r.item?.name || '';
-      const statusKo = supplyRequestStatusLabel(r.status);
-      return {
-        NO: target.length - idx,
-        신청일시: formatKSTDateTime(r.createdAt),
-        소속조직: r.dept_name || '',
-        신청자: r.user_name || '',
-        물품명: itemName,
-        신청수량: sUnit ? `${r.qty} ${sUnit}` : r.qty,
-        '신청자 특이요청 사항': r.note || '',
-        처리자: r.admin_name || '',
-        처리일시: r.processedAt ? formatKSTDateTime(r.processedAt) : '',
-        상태: statusKo,
-        취소사유: r.admin_opinion || '',
-      };
-    });
+        const itemName = r.item_name || r.item?.name || '';
+        const statusKo = supplyRequestStatusLabel(r.status);
+        return {
+          NO: idx + 1,
+          신청일시: formatKSTDateTime(r.createdAt) || '-',
+          소속조직: r.dept_name || '-',
+          신청자: r.user_name || '-',
+          물품명: itemName || '-',
+          신청수량: sUnit ? `${r.qty} ${sUnit}` : Number(r.qty) || 0,
+          '신청자 특이요청 사항': r.note || '-',
+          처리자: r.admin_name || '-',
+          처리일시: r.processedAt ? formatKSTDateTime(r.processedAt) || '-' : '-',
+          상태: statusKo || '-',
+          취소사유: r.admin_opinion || '-',
+        };
+      });
 
-    const ws = XLSX.utils.json_to_sheet(exportData);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, '사용자신청내역');
-
-    const monthStr = selectedMonth !== 'ALL' ? `_${selectedMonth}월` : '';
-    const deptStr = !isOrgWideFilter && selectedDept ? `_${selectedDept}` : '';
-    const statusStr = selectedStatus !== 'ALL' ? `_${selectedStatus}` : '';
-    XLSX.writeFile(
-      wb,
-      `소모품_사용자신청현황_${selectedYear === 'ALL' ? '전체' : selectedYear}년${monthStr}${deptStr}${statusStr}.xlsx`
-    );
+      const buffer = await writeSuppliesCompletedRequestExcelBuffer(rows, {
+        sheetName: '처리완료내역',
+      });
+      const blob = new Blob([buffer], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const monthStr = selectedMonth !== 'ALL' ? `_${selectedMonth}월` : '';
+      const deptStr = !isOrgWideFilter && selectedDept ? `_${selectedDept}` : '';
+      const statusStr = selectedStatus !== 'ALL' ? `_${selectedStatus}` : '';
+      a.download = `소모품_처리완료내역_${selectedYear === 'ALL' ? '전체' : selectedYear}년${monthStr}${deptStr}${statusStr}.xlsx`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error(err);
+      alert('엑셀 다운로드에 실패했습니다.');
+    }
   };
      
   // 상태 변경 — 재고 복구/재차감은 서버가 이전 status 기준으로 처리
@@ -753,22 +765,22 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
   <div className="absolute right-0 top-0 w-64 h-64 bg-emerald-400/15 rounded-full blur-3xl -translate-y-1/3 translate-x-1/4 pointer-events-none" />
   <div className="absolute left-1/4 bottom-0 w-48 h-48 bg-teal-800/20 rounded-full blur-3xl translate-y-1/2 pointer-events-none" />
   <div className="relative z-10">
-    <h3 className="text-[10px] font-black uppercase tracking-widest text-emerald-400 mb-2.5">
+    <h3 className="text-[10px] font-medium uppercase tracking-widest text-emerald-400 mb-2.5">
       CENTRAL SUPPLIES CONTROL TOWER
     </h3>
-    <h1 className="text-2xl font-extrabold tracking-tight text-white leading-none">
-      소모품 마스터 관리 통제실
+    <h1 className="text-2xl tracking-tight leading-none">
+      <span className="text-white font-medium">소모품 마스터 관리 통제실</span>
     </h1>
     <p className="text-emerald-100/90 text-xs mt-3 leading-relaxed">
       임직원의 소모품 신청내역을 검토하고 지급승인·취소 등 관리합니다.
     </p>
     {permissionSummary && isSystemLv1User(currentUser) && (
       <div className="flex flex-wrap items-center gap-2 mt-4 pt-3 border-t border-white/15">
-        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-white/10 border-white/25 text-emerald-50 shadow-sm">
+        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-medium border tracking-tight bg-white/10 border-white/25 text-emerald-50 shadow-sm">
           <span>👑 Master 책임자:</span>
           <span>{permissionSummary.masterName}</span>
         </div>
-        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-purple-500/20 border-purple-300/40 text-purple-100 shadow-sm">
+        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-medium border tracking-tight bg-purple-500/20 border-purple-300/40 text-purple-100 shadow-sm">
           <span>👁️ Access:</span>
           <span>{permissionSummary.accessDesignate}</span>
           <span className="opacity-50">|</span>
@@ -776,7 +788,7 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
           <span className="opacity-50">|</span>
           <span>Level: {permissionSummary.accessLevel}</span>
         </div>
-        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-tight bg-emerald-400/20 border-emerald-300/40 text-emerald-100 shadow-sm">
+        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-medium border tracking-tight bg-emerald-400/20 border-emerald-300/40 text-emerald-100 shadow-sm">
           <span>✍️ Edit:</span>
           <span>{permissionSummary.editDesignate}</span>
           <span className="opacity-50">|</span>
@@ -1050,7 +1062,7 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
                   setActiveFolder(tab.id);
                   setSelectedStatus('ALL');
                 }}
-                className={`relative flex items-center gap-1.5 px-4 py-2.5 text-xs font-black tracking-tight transition-colors rounded-t-lg border ${
+                className={`relative flex items-center gap-1.5 px-4 py-2.5 text-xs font-medium tracking-tight transition-colors rounded-t-lg border ${
                   active ? tab.activeClass : FOLDER_TAB_IDLE
                 }`}
               >
@@ -1068,7 +1080,7 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
           })}
         </div>
 
-      <section className={`bg-white border border-t-0 border-slate-200 rounded-b-[2.5rem] rounded-tr-2xl shadow-sm animate-in fade-in duration-300 ${orgMenuOpen ? 'overflow-visible' : 'overflow-hidden'}`}>
+      <section className={`bg-white border border-t-0 border-slate-200 rounded-b-lg rounded-tr-lg shadow-sm animate-in fade-in duration-300 ${orgMenuOpen ? 'overflow-visible' : 'overflow-hidden'}`}>
           
           <div className={`p-4 px-6 bg-slate-200/70 border-b border-slate-300 flex flex-wrap items-center justify-between gap-4 relative ${orgMenuOpen ? 'z-[80] overflow-visible' : ''}`}>
             <div className="flex items-center gap-2 flex-wrap min-w-0">
@@ -1082,12 +1094,13 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
                       : '처리 완료 내역'
                   : '접수 대기'}
               </h2>
+              <DeptAssigneeLine editorNames={editorNames} />
               {activeFolder === 'COMPLETED' && (
               <div className="flex items-center gap-1 ml-1">
                 <button
                   type="button"
                   onClick={() => setSelectedStatus('ALL')}
-                  className={`px-2.5 py-1 rounded-md text-[10px] font-black transition-colors ${
+                  className={`px-2.5 py-1 rounded-md text-[10px] font-medium transition-colors ${
                     selectedStatus === 'ALL'
                       ? 'bg-slate-800 text-white'
                       : 'bg-white text-slate-500 border border-slate-200 hover:bg-slate-50'
@@ -1098,7 +1111,7 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
                 <button
                   type="button"
                   onClick={() => setSelectedStatus((prev) => (prev === 'COMPLETED' ? 'ALL' : 'COMPLETED'))}
-                  className={`px-2.5 py-1 rounded-md text-[10px] font-black transition-colors ${
+                  className={`px-2.5 py-1 rounded-md text-[10px] font-medium transition-colors ${
                     selectedStatus === 'COMPLETED'
                       ? 'bg-emerald-600 text-white'
                       : 'bg-emerald-50 text-emerald-700 border border-emerald-100 hover:bg-emerald-100'
@@ -1109,7 +1122,7 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
                 <button
                   type="button"
                   onClick={() => setSelectedStatus((prev) => (prev === 'REJECTED' ? 'ALL' : 'REJECTED'))}
-                  className={`px-2.5 py-1 rounded-md text-[10px] font-black transition-colors ${
+                  className={`px-2.5 py-1 rounded-md text-[10px] font-medium transition-colors ${
                     selectedStatus === 'REJECTED'
                       ? 'bg-red-500 text-white'
                       : 'bg-red-50 text-red-600 border border-red-100 hover:bg-red-100'
@@ -1230,15 +1243,17 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
                 </div>
               </div>
 
-              <button
-                type="button"
-                onClick={handleExportExcel}
-                className="h-7 px-3 bg-emerald-600 text-white rounded-lg text-[10px] font-medium shadow-sm hover:bg-emerald-700 transition-all whitespace-nowrap leading-none"
-              >
-                {selectedIds.size > 0
-                  ? `선택 EXCEL 다운로드(${selectedIds.size})`
-                  : '화면 목록 EXCEL 다운로드'}
-              </button>
+              {activeFolder === 'COMPLETED' && (
+                <button
+                  type="button"
+                  onClick={() => void handleExportExcel()}
+                  className="h-7 px-3 bg-emerald-600 text-white rounded-lg text-[11px] font-medium shadow-sm hover:bg-emerald-700 transition-all whitespace-nowrap leading-none"
+                >
+                  {selectedIds.size > 0
+                    ? `선택 EXCEL 다운로드(${selectedIds.size})`
+                    : '화면 목록 EXCEL 다운로드'}
+                </button>
+              )}
             </div>
           </div>
      
@@ -1264,7 +1279,7 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
               )}
               <col className="w-[130px]" />
             </colgroup>
-              <thead className="bg-slate-100 text-slate-700 text-[10px] font-black uppercase tracking-widest border-b border-slate-200">
+              <thead className="bg-slate-100 text-slate-700 text-[11px] font-medium border-b border-slate-200">
                 <tr>
                   <th className="h-12 pl-4 text-center"><input type="checkbox" checked={paginatedRequests.length > 0 && paginatedRequests.every(r => selectedIds.has(r.id))} onChange={toggleSelectAll} className="w-3 h-3 accent-indigo-600 cursor-pointer" /></th>
                   <th className="h-12 px-2 text-center">NO</th>
@@ -1284,12 +1299,12 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
                   </th>
                 </tr>
               </thead>
-              <tbody className="bg-white divide-y divide-slate-100 text-[11px] font-bold text-slate-700">
+              <tbody className="bg-white divide-y divide-slate-100 text-[11px] font-medium text-slate-700">
                 {paginatedRequests.length === 0 ? (
                   <tr>
                     <td
                       colSpan={activeFolder === 'COMPLETED' ? 10 : 8}
-                      className="p-16 text-center text-slate-400 text-xs"
+                      className="p-16 text-center text-slate-400 text-[11px]"
                     >
                       조건에 맞는 내역이 없습니다.
                     </td>
@@ -1329,20 +1344,20 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
                       <td className="px-2 text-center font-mono tabular-nums !text-slate-500 !no-underline" style={isRejected ? { textDecoration: 'none' } : undefined}>{rowNo}</td>
                       <td className={`px-2 text-center whitespace-nowrap tabular-nums ${isRejected ? '' : 'text-slate-800'}`}>{createdDate}</td>
                       <td className="px-2 text-left truncate">
-                        <span className={`text-[10px] block truncate ${isRejected ? '' : 'text-slate-500'}`}>{req.dept_name || '-'}</span>
+                        <span className={`text-[11px] block truncate ${isRejected ? '' : 'text-slate-500'}`}>{req.dept_name || '-'}</span>
                         <span className={`truncate ${isRejected ? '' : 'text-slate-800'}`}>{req.user_name || '-'}</span>
                       </td>
                       <td className={`px-2 text-left truncate ${isRejected ? '' : 'text-slate-800'}`} title={itemName}>{itemName}</td>
                       <td className={`px-2 text-center font-mono whitespace-nowrap tabular-nums ${isRejected ? '' : 'text-slate-800'}`}>
                         {req.qty}
-                        <span className={`text-[10px] font-sans ml-0.5 ${isRejected ? '' : 'text-slate-500'}`}>{sUnit}</span>
+                        <span className={`text-[11px] font-sans ml-0.5 ${isRejected ? '' : 'text-slate-500'}`}>{sUnit}</span>
                       </td>
                       <td className={`px-2 text-left truncate ${isRejected ? '' : 'text-slate-700'}`} title={req.note}>{req.note ? `"${req.note}"` : '-'}</td>
                       {activeFolder === 'COMPLETED' && (
                         <>
                           <td className="px-2 text-left border-l border-slate-200">
                             <div className="truncate">
-                              <span className={`text-[10px] block truncate ${isRejected ? '' : 'text-slate-500'}`}>{req.admin_dept || '-'}</span>
+                              <span className={`text-[11px] block truncate ${isRejected ? '' : 'text-slate-500'}`}>{req.admin_dept || '-'}</span>
                               <span className={`truncate ${isRejected ? '' : 'text-slate-800'}`}>{req.admin_name || '관리자'}</span>
                             </div>
                           </td>
@@ -1354,57 +1369,57 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
      
                       <td className="px-1 text-center border-l border-slate-200 !no-underline" style={isRejected ? { textDecoration: 'none' } : undefined}>
                         {isPending ? (
-                          <div className="inline-flex items-center justify-center gap-0.5 whitespace-nowrap">
-                            <button
-                              type="button"
-                              onClick={() => openCancelModal(req)}
-                              title={canEdit ? '취소 (사유 선택)' : '편집 권한 필요'}
-                              className={
-                                canEdit
-                                  ? 'inline-block border px-1.5 py-0.5 rounded text-[10px] font-bold whitespace-nowrap bg-red-50 text-red-500 border-red-100 hover:bg-red-500 hover:text-white transition-colors shadow-sm'
-                                  : 'inline-block border px-1.5 py-0.5 rounded text-[10px] font-bold whitespace-nowrap bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed opacity-70'
-                              }
-                            >
-                              취소
-                            </button>
+                          <div className="inline-flex items-center justify-center gap-2 whitespace-nowrap">
                             <button
                               type="button"
                               onClick={() => handleProcessRequest(req, 'COMPLETED')}
                               title={canEdit ? '지급승인 → 지급완료' : '편집 권한 필요'}
                               className={
                                 canEdit
-                                  ? 'inline-block border px-1.5 py-0.5 rounded text-[10px] font-bold whitespace-nowrap bg-indigo-600 text-white border-indigo-700 shadow-sm hover:bg-indigo-700'
-                                  : 'inline-block border px-1.5 py-0.5 rounded text-[10px] font-bold whitespace-nowrap bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed opacity-70'
+                                  ? 'inline-block border px-1.5 py-0.5 rounded text-[11px] font-medium whitespace-nowrap bg-indigo-600 text-white border-indigo-700 shadow-sm hover:bg-indigo-700'
+                                  : 'inline-block border px-1.5 py-0.5 rounded text-[11px] font-medium whitespace-nowrap bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed opacity-70'
                               }
                             >
                               지급승인
                             </button>
-                          </div>
-                        ) : isReady ? (
-                          <div className="inline-flex items-center justify-center gap-0.5 whitespace-nowrap">
                             <button
                               type="button"
                               onClick={() => openCancelModal(req)}
                               title={canEdit ? '취소 (사유 선택)' : '편집 권한 필요'}
                               className={
                                 canEdit
-                                  ? 'inline-block border px-1.5 py-0.5 rounded text-[10px] font-bold whitespace-nowrap bg-red-50 text-red-500 border-red-100 hover:bg-red-500 hover:text-white transition-colors shadow-sm'
-                                  : 'inline-block border px-1.5 py-0.5 rounded text-[10px] font-bold whitespace-nowrap bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed opacity-70'
+                                  ? 'inline-block border px-1.5 py-0.5 rounded text-[11px] font-medium whitespace-nowrap bg-red-50 text-red-500 border-red-100 hover:bg-red-500 hover:text-white transition-colors shadow-sm'
+                                  : 'inline-block border px-1.5 py-0.5 rounded text-[11px] font-medium whitespace-nowrap bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed opacity-70'
                               }
                             >
                               취소
                             </button>
+                          </div>
+                        ) : isReady ? (
+                          <div className="inline-flex items-center justify-center gap-2 whitespace-nowrap">
                             <button
                               type="button"
                               onClick={() => handleProcessRequest(req, 'COMPLETED')}
                               title={canEdit ? '지급완료 (레거시 READY 잔여)' : '편집 권한 필요'}
                               className={
                                 canEdit
-                                  ? 'inline-block border px-1.5 py-0.5 rounded text-[10px] font-bold whitespace-nowrap bg-emerald-600 text-white border-emerald-700 shadow-sm hover:bg-emerald-700'
-                                  : 'inline-block border px-1.5 py-0.5 rounded text-[10px] font-bold whitespace-nowrap bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed opacity-70'
+                                  ? 'inline-block border px-1.5 py-0.5 rounded text-[11px] font-medium whitespace-nowrap bg-emerald-600 text-white border-emerald-700 shadow-sm hover:bg-emerald-700'
+                                  : 'inline-block border px-1.5 py-0.5 rounded text-[11px] font-medium whitespace-nowrap bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed opacity-70'
                               }
                             >
                               지급완료
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => openCancelModal(req)}
+                              title={canEdit ? '취소 (사유 선택)' : '편집 권한 필요'}
+                              className={
+                                canEdit
+                                  ? 'inline-block border px-1.5 py-0.5 rounded text-[11px] font-medium whitespace-nowrap bg-red-50 text-red-500 border-red-100 hover:bg-red-500 hover:text-white transition-colors shadow-sm'
+                                  : 'inline-block border px-1.5 py-0.5 rounded text-[11px] font-medium whitespace-nowrap bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed opacity-70'
+                              }
+                            >
+                              취소
                             </button>
                           </div>
                         ) : isRejected ? (
@@ -1412,18 +1427,18 @@ function MasterRequestContent({ currentUser: propUser }: { currentUser?: any }) 
                             className="inline-flex flex-col items-center leading-tight"
                             title={req.admin_opinion || ''}
                           >
-                            <span className="text-[10px] font-medium tracking-normal whitespace-nowrap text-red-600">
+                            <span className="text-[11px] font-medium tracking-normal whitespace-nowrap text-red-600">
                               취소
                             </span>
                             {req.admin_opinion ? (
-                              <span className="text-[9px] font-medium text-red-400 truncate max-w-[88px] mt-0.5">
+                              <span className="text-[11px] font-medium text-red-400 truncate max-w-[88px] mt-0.5">
                                 {req.admin_opinion}
                               </span>
                             ) : null}
                           </span>
                         ) : (
                           <span
-                            className={`text-[10px] font-bold whitespace-nowrap ${
+                            className={`text-[11px] font-medium whitespace-nowrap ${
                               isCancelled
                                 ? 'text-slate-500'
                                 : isCompleted

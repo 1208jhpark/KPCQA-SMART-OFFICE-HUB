@@ -48,22 +48,44 @@ function proofPublicMeta(row: {
   proofFileSize: number | null;
   proofUploadedAt: Date | null;
   proofUploadedBy: string | null;
+  proofMailReviewedAt?: Date | null;
+  proofMailReviewedBy?: string | null;
   proofConfirmedAt: Date | null;
   proofConfirmedBy: string | null;
 }) {
+  const hasProof = Boolean(row.proofFileName && row.proofStoredFileName);
+  const hasMailReview = Boolean(row.proofMailReviewedAt);
   return {
     id: row.id,
-    hasProof: Boolean(row.proofFileName && row.proofStoredFileName),
+    hasProof,
+    hasMailReview,
+    proofReady: hasProof || hasMailReview,
     proofFileName: row.proofFileName,
     proofMimeType: row.proofMimeType,
     proofFileSize: row.proofFileSize,
     proofUploadedAt: row.proofUploadedAt,
     proofUploadedBy: row.proofUploadedBy,
+    proofMailReviewedAt: row.proofMailReviewedAt ?? null,
+    proofMailReviewedBy: row.proofMailReviewedBy ?? null,
     proofConfirmedAt: row.proofConfirmedAt,
     proofConfirmedBy: row.proofConfirmedBy,
     proofConfirmed: Boolean(row.proofConfirmedAt),
   };
 }
+
+const PROOF_SELECT = {
+  id: true,
+  proofFileName: true,
+  proofStoredFileName: true,
+  proofMimeType: true,
+  proofFileSize: true,
+  proofUploadedAt: true,
+  proofUploadedBy: true,
+  proofMailReviewedAt: true,
+  proofMailReviewedBy: true,
+  proofConfirmedAt: true,
+  proofConfirmedBy: true,
+} as const;
 
 /**
  * [GET] 시안 메타 또는 다운로드
@@ -84,14 +106,7 @@ export async function GET(req: Request) {
       select: {
         id: true,
         userEmail: true,
-        proofFileName: true,
-        proofStoredFileName: true,
-        proofMimeType: true,
-        proofFileSize: true,
-        proofUploadedAt: true,
-        proofUploadedBy: true,
-        proofConfirmedAt: true,
-        proofConfirmedBy: true,
+        ...PROOF_SELECT,
       },
     });
     if (!row) {
@@ -212,17 +227,7 @@ export async function POST(req: Request) {
         proofConfirmedAt: null,
         proofConfirmedBy: null,
       },
-      select: {
-        id: true,
-        proofFileName: true,
-        proofStoredFileName: true,
-        proofMimeType: true,
-        proofFileSize: true,
-        proofUploadedAt: true,
-        proofUploadedBy: true,
-        proofConfirmedAt: true,
-        proofConfirmedBy: true,
-      },
+      select: PROOF_SELECT,
     });
 
     return NextResponse.json({
@@ -242,16 +247,114 @@ export async function POST(req: Request) {
 }
 
 /**
- * [PATCH] 시안확정 { id }
- * - 신청자(my-page): 본인 건만
- * - 관리자(order/requests): 대행 확정 가능
+ * [PATCH] 시안 관련
+ * - { id, action: 'mail-review' }: 관리자 — 개별메일 확인 경로 기록 (파일 없이 확정 가능)
+ * - { id, action: 'reset' }: 관리자 — 시안 파일·메일확인·확정 전부 초기화
+ * - { id }: 시안확정 (파일 업로드 또는 개별메일확인 후)
+ *   · 신청자(my-page): 본인 건 + (파일 또는 개별메일확인)
+ *   · 관리자: 파일 또는 메일확인 후 대행 확정
  */
 export async function PATCH(req: Request) {
   try {
     const body = await req.json().catch(() => ({}));
     const id = String(body?.id || '').trim();
+    const action = String(body?.action || '').trim();
     if (!id) {
       return NextResponse.json({ message: '신청 ID가 필요합니다.' }, { status: 400 });
+    }
+
+    /** 시안 초기화 — 마스터만 */
+    if (action === 'reset') {
+      const masterAuth = await authorizeAnyMenuPaths(MASTER_PROOF_PATHS, {
+        requireEditor: true,
+      });
+      void masterAuth;
+      const row = await prisma.businessCardRequest.findUnique({
+        where: { id },
+        select: {
+          id: true,
+          proofStoredFileName: true,
+          proofFileName: true,
+          proofMailReviewedAt: true,
+          proofConfirmedAt: true,
+        },
+      });
+      if (!row) {
+        return NextResponse.json({ message: '신청 건을 찾을 수 없습니다.' }, { status: 404 });
+      }
+      const hasAnything =
+        Boolean(row.proofStoredFileName) ||
+        Boolean(row.proofFileName) ||
+        Boolean(row.proofMailReviewedAt) ||
+        Boolean(row.proofConfirmedAt);
+      if (!hasAnything) {
+        return NextResponse.json(
+          { message: '초기화할 시안·메일확인 내역이 없습니다.' },
+          { status: 400 }
+        );
+      }
+      if (row.proofStoredFileName) {
+        try {
+          await fs.unlink(path.join(UPLOAD_DIR, row.proofStoredFileName));
+        } catch {}
+      }
+      const updated = await prisma.businessCardRequest.update({
+        where: { id },
+        data: {
+          proofFileName: null,
+          proofStoredFileName: null,
+          proofMimeType: null,
+          proofFileSize: null,
+          proofUploadedAt: null,
+          proofUploadedBy: null,
+          proofMailReviewedAt: null,
+          proofMailReviewedBy: null,
+          proofConfirmedAt: null,
+          proofConfirmedBy: null,
+        },
+        select: PROOF_SELECT,
+      });
+      return NextResponse.json({
+        success: true,
+        message: '시안·메일확인·확정 상태를 초기화했습니다.',
+        ...proofPublicMeta(updated),
+      });
+    }
+
+    /** 개별메일확인 — 마스터만 */
+    if (action === 'mail-review') {
+      const masterAuth = await authorizeAnyMenuPaths(MASTER_PROOF_PATHS, {
+        requireEditor: true,
+      });
+      const row = await prisma.businessCardRequest.findUnique({
+        where: { id },
+        select: {
+          id: true,
+          proofConfirmedAt: true,
+          proofMailReviewedAt: true,
+        },
+      });
+      if (!row) {
+        return NextResponse.json({ message: '신청 건을 찾을 수 없습니다.' }, { status: 404 });
+      }
+      if (row.proofConfirmedAt) {
+        return NextResponse.json({ message: '이미 시안이 확정되었습니다.' }, { status: 400 });
+      }
+      const actorName =
+        masterAuth.user.name || masterAuth.user.email || '관리자';
+      const updated = await prisma.businessCardRequest.update({
+        where: { id },
+        data: {
+          proofMailReviewedAt: new Date(),
+          proofMailReviewedBy: `관리자·${actorName}`,
+        },
+        select: PROOF_SELECT,
+      });
+      return NextResponse.json({
+        success: true,
+        message: '메일확인요청으로 시안 검토 대기 처리했습니다. 확정할 수 있습니다.',
+        ...proofPublicMeta(updated),
+      });
     }
 
     let isMaster = false;
@@ -275,6 +378,7 @@ export async function PATCH(req: Request) {
         userEmail: true,
         proofFileName: true,
         proofStoredFileName: true,
+        proofMailReviewedAt: true,
         proofConfirmedAt: true,
       },
     });
@@ -286,14 +390,25 @@ export async function PATCH(req: Request) {
         return NextResponse.json({ message: '본인 신청 건만 확정할 수 있습니다.' }, { status: 403 });
       }
     }
-    if (!row.proofFileName || !row.proofStoredFileName) {
-      return NextResponse.json({ message: '업로드된 시안이 없습니다.' }, { status: 400 });
+
+    const hasFile = Boolean(row.proofFileName && row.proofStoredFileName);
+    const hasMail = Boolean(row.proofMailReviewedAt);
+    if (!hasFile && !hasMail) {
+      return NextResponse.json(
+        {
+          message: isMaster
+            ? '시안 파일을 업로드하거나, 메일확인요청 후 확정해 주세요.'
+            : '시안 파일 또는 메일확인요청이 도착한 뒤 확정해 주세요.',
+        },
+        { status: 400 }
+      );
     }
     if (row.proofConfirmedAt) {
       return NextResponse.json({ message: '이미 시안이 확정되었습니다.' }, { status: 400 });
     }
 
     const actorName = authUser.name || authUser.email || email || '사용자';
+    /** 확정 주체만 기록 — 메일/파일 경로는 구분하지 않음 */
     const confirmedBy = isMaster ? `관리자·${actorName}` : actorName;
 
     const updated = await prisma.businessCardRequest.update({
@@ -302,17 +417,7 @@ export async function PATCH(req: Request) {
         proofConfirmedAt: new Date(),
         proofConfirmedBy: confirmedBy,
       },
-      select: {
-        id: true,
-        proofFileName: true,
-        proofStoredFileName: true,
-        proofMimeType: true,
-        proofFileSize: true,
-        proofUploadedAt: true,
-        proofUploadedBy: true,
-        proofConfirmedAt: true,
-        proofConfirmedBy: true,
-      },
+      select: PROOF_SELECT,
     });
 
     return NextResponse.json({

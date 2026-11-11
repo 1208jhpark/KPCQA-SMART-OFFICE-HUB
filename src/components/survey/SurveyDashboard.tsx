@@ -170,13 +170,13 @@ export default function SurveyDashboard() {
       {/* 프리미엄 헤더 영역 (Dark) */}
       <div className="bg-slate-900 pt-16 pb-32 px-6">
         <div className="max-w-6xl mx-auto">
-          <p className="text-blue-400 font-black tracking-widest text-[11px] uppercase mb-4">
+          <p className="text-blue-400 font-medium tracking-widest text-[11px] uppercase mb-4">
             SURVEY &amp; REQUEST OPERATIONS
           </p>
-          <h1 className="text-4xl md:text-5xl font-extrabold text-white tracking-tight">
+          <h1 className="text-4xl md:text-5xl font-semibold text-white tracking-tight">
             전사 조사·설문 통합 관제 대시보드
           </h1>
-          <p className="text-slate-400 mt-4 font-medium leading-relaxed md:whitespace-nowrap">
+          <p className="text-slate-400 mt-4 font-normal leading-relaxed md:whitespace-nowrap">
             사내 의사결정 설문 데이터와 임직원 복지 배송 접수 현황을 실시간 관리합니다.
           </p>
         </div>
@@ -239,31 +239,31 @@ const WideHubPanel = ({ title, titleEn, desc, icon, theme, stats, statsLabel = '
         </div>
         <div>
           <div className="flex items-center gap-3 mb-2">
-            <h2 className="text-2xl font-black text-slate-900">{title}</h2>
-            <span className={`px-2 py-0.5 rounded text-[10px] font-black tracking-widest uppercase ${c.badge}`}>
+            <h2 className="text-2xl font-medium text-slate-900 tracking-tight">{title}</h2>
+            <span className={`px-2 py-0.5 rounded text-[10px] font-medium tracking-widest uppercase ${c.badge}`}>
               {titleEn}
             </span>
           </div>
-          <p className="text-sm text-slate-500 font-medium leading-relaxed">
+          <p className="text-sm text-slate-500 font-normal leading-relaxed">
             {desc}
           </p>
         </div>
       </div>
 
       <div className="w-full lg:w-auto shrink-0 border-y lg:border-y-0 lg:border-l border-slate-100 py-6 lg:py-0 lg:pl-10 lg:min-w-[9rem]">
-        <p className="text-[11px] font-black text-slate-400 uppercase tracking-widest mb-2">{statsLabel}</p>
+        <p className="text-[11px] font-medium text-slate-400 uppercase tracking-widest mb-2">{statsLabel}</p>
         <div className="flex items-baseline gap-1">
-          <span className="text-4xl font-black text-slate-800 tabular-nums leading-none">{stats.pending}</span>
-          <span className="text-sm font-bold text-slate-400">/</span>
-          <span className="text-xl font-black text-slate-500 tabular-nums">{stats.total}</span>
-          <span className="text-[11px] font-bold text-slate-400">건</span>
+          <span className="text-4xl font-medium text-slate-800 tabular-nums leading-none tracking-tighter">{stats.pending}</span>
+          <span className="text-sm font-medium text-slate-400">/</span>
+          <span className="text-xl font-medium text-slate-500 tabular-nums">{stats.total}</span>
+          <span className="text-[11px] font-medium text-slate-400">건</span>
         </div>
       </div>
 
       <div className="flex flex-col justify-center gap-3 w-full lg:w-48 shrink-0">
         <Link
           href={link}
-          className={`w-full flex items-center justify-center gap-2 py-5 rounded-xl font-black text-sm text-white shadow-lg transition-all active:scale-95 ${c.btnPrimary}`}
+          className={`w-full flex items-center justify-center gap-2 py-5 rounded-xl font-medium text-sm text-white shadow-lg transition-all active:scale-95 ${c.btnPrimary}`}
         >
           현황판 진입 <span className="text-lg leading-none">→</span>
         </Link>

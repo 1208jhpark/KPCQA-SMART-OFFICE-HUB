@@ -3,26 +3,21 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import * as XLSX from 'xlsx';
 import { getKSTDateString, getKSTNowYearMonth, getKSTYearMonthParts } from '@/utils/dateUtils';
 import LoadingState from '@/components/common/LoadingState';
 import WindowedPagination from '@/components/common/WindowedPagination';
 import ProductionRequestDetailModal from '@/components/production/ProductionRequestDetailModal';
 import {
-  buildSignDetailExcelRows,
-  buildJebonDetailExcelRows,
-  buildPrintDetailExcelRows,
-  buildOfficeSuppliesDetailExcelRows,
-} from '@/lib/production-sign-excel';
-import {
   getProductionCategoryTextClass,
   getProductionCategoryFolderTabClasses,
 } from '@/lib/production-category-theme';
 import {
+  PRODUCTION_STATUS,
   canEditProductionApplicantSource,
   productionStatusLabel,
   productionStatusTextClass,
 } from '@/lib/production-status';
+import { isCustomerDirectShip } from '@/lib/production-shipping';
 import {
   PRODUCTION_MY_ORDERS_TABS,
   useInterfaceStepTabs,
@@ -193,6 +188,10 @@ export default function ProductionApplyHistory() {
     const startIndex = (currentPage - 1) * ITEMS_PER_PAGE;
     return filteredHistories.slice(startIndex, startIndex + ITEMS_PER_PAGE);
   }, [filteredHistories, currentPage]);
+  /** 완료 이력 4탭은 재신청·취소 불가 — 관리액션 칼럼 숨김 */
+  const isProgressBoard = activeCategory === 'ALL';
+  const showManageAction = isProgressBoard;
+  const tableColSpan = showManageAction ? 13 : 12;
 
   useEffect(() => {
     if (currentPage > totalPages) setCurrentPage(totalPages);
@@ -312,7 +311,7 @@ export default function ProductionApplyHistory() {
     }
   };
 
-  const handleExcelDownload = () => {
+  const handleExcelDownload = async () => {
     const targetData =
       selectedIds.length > 0
         ? filteredHistories.filter((item) => selectedIds.includes(item.id))
@@ -320,116 +319,122 @@ export default function ProductionApplyHistory() {
 
     if (targetData.length === 0) return alert('다운로드할 데이터가 없습니다.');
 
-    const yearLabel = selectedYear === 'ALL' ? '전체' : `${selectedYear}년`;
-
-    if (activeCategory === 'SIGN') {
-      const rows = buildSignDetailExcelRows(targetData);
-      if (rows.length === 0) return alert('다운로드할 현판(SIGN) 데이터가 없습니다.');
-      const ws = XLSX.utils.json_to_sheet(rows);
-      const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, '현판상세');
-      XLSX.writeFile(
-        wb,
-        `현판_신청상세_${yearLabel}${selectedIds.length > 0 ? '_선택분' : ''}.xlsx`
-      );
-      return;
-    }
-
-    if (activeCategory === 'JEBON') {
-      const rows = buildJebonDetailExcelRows(targetData);
-      if (rows.length === 0) return alert('다운로드할 제본(JEBON) 데이터가 없습니다.');
-      const ws = XLSX.utils.json_to_sheet(rows);
-      const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, '제본상세');
-      XLSX.writeFile(
-        wb,
-        `제본_신청상세_${yearLabel}${selectedIds.length > 0 ? '_선택분' : ''}.xlsx`
-      );
-      return;
-    }
-
-    if (activeCategory === 'PRINT') {
-      const rows = buildPrintDetailExcelRows(targetData);
-      if (rows.length === 0) return alert('다운로드할 기타 제작물(PRINT) 데이터가 없습니다.');
-      const ws = XLSX.utils.json_to_sheet(rows);
-      const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, '기타제작상세');
-      XLSX.writeFile(
-        wb,
-        `기타제작_신청상세_${yearLabel}${selectedIds.length > 0 ? '_선택분' : ''}.xlsx`
-      );
-      return;
-    }
-
-    if (activeCategory === 'OFFICE_SUPPLIES') {
-      const rows = buildOfficeSuppliesDetailExcelRows(targetData);
-      if (rows.length === 0) return alert('다운로드할 사무문구류 데이터가 없습니다.');
-      const ws = XLSX.utils.json_to_sheet(rows);
-      const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, '사무문구류');
-      XLSX.writeFile(
-        wb,
-        `사무문구류_신청상세_${yearLabel}${selectedIds.length > 0 ? '_선택분' : ''}.xlsx`
-      );
-      return;
-    }
-
-    // 전체 — 통합 이력 CSV
+    const qtyHeader = activeCategory === 'OFFICE_SUPPLIES' ? '건' : '수량';
+    const sheetTitle = isProgressBoard ? '진행중내역' : '완료이력';
     const headers = [
+      'No',
       '관리번호',
-      '분류명',
-      '배정업체',
-      '신청일자',
-      '소속부서',
-      '담당자',
-      '신청수량',
-      '예상단가 합계',
-      '주요 제작물 명세 및 옵션',
-      '배송지 수령인',
-      '수령인 연락처',
-      '최종 배송지 주소',
+      '신청일',
+      '부서',
+      '신청자',
+      '분류',
+      '관리용 제목',
+      qtyHeader,
+      '외주업체',
+      '처리날짜',
+      '공정상태',
     ];
 
-    const rows = targetData.map((item) => {
-      const opt = item.options || {};
-      
-      // 카테고리별 옵션 명세 문자열 가공
-      let detailSpec = '';
-      if (item.category === 'SIGN') {
-        detailSpec = (() => {
-          const digits = String(opt.formattedValidPeriod || '').replace(/\D/g, '');
-          const period =
-            !digits || /^0+$/.test(digits) ? '해당없음' : opt.formattedValidPeriod;
-          return `사양: ${opt.plateMasterInfo?.label || ''}(${opt.plateMasterInfo?.size || ''}) / 인증: ${opt.certType || ''} / 등급: ${opt.certLevel || ''} / 유효기간: ${period}`;
-        })();
-      } else if (item.category === 'PRINT') {
-        detailSpec = `품목: ${opt.printCustomName || opt.printItemType || ''} / 인쇄문구1: ${opt.printItemDetails || ''} / 인쇄문구2: ${opt.printDeliveryDetails || ''}`;
-      } else if (item.category === 'OFFICE_SUPPLIES') {
-        detailSpec = `견적 텍스트 내역 존재`;
-      }
+    try {
+      const ExcelJS = (await import('exceljs')).default;
+      const workbook = new ExcelJS.Workbook();
+      const sheet = workbook.addWorksheet(sheetTitle);
+      sheet.addRow(headers);
 
-      return [
-        item.postNumber,
-        getCategoryLabel(item.category),
-        `"${(opt.vendor || '-').replace(/"/g, '""')}"`,
-        getKSTDateString(item.createdAt),
-        `"${(item.deptName || '').replace(/"/g, '""')}"`,
-        `"${(item.userName || '').replace(/"/g, '""')}"`,
-        item.quantity,
-        item.estimatedPrice,
-        `"${detailSpec.replace(/"/g, '""')}"`,
-        `"${(opt.receiverName || '-').replace(/"/g, '""')}"`,
-        `"${(opt.receiverPhone || '-').replace(/"/g, '""')}"`,
-        `"${(opt.shippingAddress || '-').replace(/"/g, '""')}"`,
-      ].join(',');
-    });
+      targetData.forEach((item: any) => {
+        const idx = filteredHistories.findIndex((h) => h.id === item.id);
+        const rowNo = idx >= 0 ? filteredHistories.length - idx : '';
+        const opts = (item.options || {}) as Record<string, unknown>;
+        sheet.addRow([
+          rowNo,
+          item.postNumber || '',
+          getKSTDateString(item.createdAt),
+          item.deptName || '-',
+          item.userName || '-',
+          getCategoryLabel(item.category),
+          item.title || '-',
+          `${item.quantity}${formatQuantityUnit(item)}`,
+          String(opts.vendor || '').trim() || '-',
+          item.statusChangedAt ? getKSTDateString(item.statusChangedAt) : '-',
+          productionStatusLabel(item.status, opts, 'applicant', item.category),
+        ]);
+      });
 
-    const csvContent = '\uFEFF' + headers.join(',') + '\n' + rows.join('\n');
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const link = document.createElement('a');
-    link.href = URL.createObjectURL(blob);
-    link.download = `나의_제작신청_이력대장_${selectedIds.length > 0 ? '선택분' : '전체분'}.csv`;
-    link.click();
+      const thin = { style: 'thin' as const, color: { argb: 'FFCBD5E1' } };
+      const border = { top: thin, left: thin, bottom: thin, right: thin };
+      const headerRow = sheet.getRow(1);
+      headerRow.height = 22;
+      headerRow.eachCell((cell) => {
+        cell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 10, name: '맑은 고딕' };
+        cell.fill = {
+          type: 'pattern',
+          pattern: 'solid',
+          fgColor: { argb: 'FF334155' },
+        };
+        cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+        cell.border = border;
+      });
+
+      const centerCols = new Set([1, 2, 3, 6, 8, 10, 11]);
+      sheet.eachRow((row, rowNumber) => {
+        if (rowNumber === 1) return;
+        row.height = 18;
+        row.eachCell((cell, colNumber) => {
+          cell.font = { size: 10, name: '맑은 고딕' };
+          cell.alignment = {
+            vertical: 'middle',
+            horizontal: centerCols.has(colNumber) ? 'center' : 'left',
+          };
+          cell.border = border;
+          if (rowNumber % 2 === 0) {
+            cell.fill = {
+              type: 'pattern',
+              pattern: 'solid',
+              fgColor: { argb: 'FFF8FAFC' },
+            };
+          }
+        });
+      });
+
+      const displayWidth = (v: unknown) => {
+        const s = v == null ? '' : String(v);
+        let w = 0;
+        for (const ch of s) w += ch.charCodeAt(0) > 127 ? 2 : 1;
+        return w;
+      };
+      sheet.columns.forEach((col) => {
+        let max = 8;
+        col.eachCell({ includeEmpty: true }, (cell) => {
+          const w = displayWidth(cell.value);
+          if (w > max) max = w;
+        });
+        col.width = Math.min(46, Math.max(12, max + 4));
+      });
+
+      const yearLabel = selectedYear === 'ALL' ? '전체' : `${selectedYear}년`;
+      const catLabel = (
+        isProgressBoard
+          ? progressCategoryFilter === 'ALL'
+            ? '진행중내역'
+            : `진행중내역_${getCategoryLabel(progressCategoryFilter)}`
+          : `${getCategoryLabel(activeCategory)}_완료이력`
+      ).replace(/\//g, '_');
+      const buffer = await workbook.xlsx.writeBuffer();
+      const blob = new Blob([buffer], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${catLabel}_${yearLabel}${
+        selectedIds.length > 0 ? '_선택분' : ''
+      }.xlsx`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error(err);
+      alert('엑셀 다운로드에 실패했습니다.');
+    }
   };
 
   return (
@@ -532,20 +537,46 @@ export default function ProductionApplyHistory() {
           })}
         </div>
 
-        <div className="bg-white border border-t-0 border-slate-200 rounded-b-[2.5rem] rounded-tr-2xl shadow-sm overflow-hidden -mt-px">
-        <div className="p-4 px-6 bg-slate-200/70 border-b border-slate-300 flex items-center justify-between flex-wrap gap-4">
+        <div className="bg-white border border-t-0 border-slate-200 rounded-b-sm rounded-tr-sm shadow-sm overflow-hidden">
+        <div
+          className={`p-4 px-6 border-b flex items-center justify-between flex-wrap gap-4 ${
+            isProgressBoard
+              ? 'bg-amber-500 border-amber-400'
+              : 'bg-slate-200/70 border-slate-300'
+          }`}
+        >
           <div className="flex items-center gap-2">
-            <div className="w-2.5 h-2.5 rounded-full bg-blue-600"></div>
-            <h2 className="text-sm font-medium text-slate-800 tracking-tight">
-              {activeCategory === 'ALL'
+            <div
+              className={`w-2.5 h-2.5 rounded-full ${
+                isProgressBoard ? 'bg-white' : 'bg-blue-600'
+              }`}
+            />
+            <h2
+              className={`text-sm font-medium tracking-tight ${
+                isProgressBoard ? 'text-white' : 'text-slate-800'
+              }`}
+            >
+              {isProgressBoard
                 ? '실시간 신청·진행 현황'
                 : `${getCategoryLabel(activeCategory)} 제작·수령 완료 이력`}
             </h2>
-            <span className="text-[11px] font-medium bg-slate-300/80 text-slate-700 px-2 py-0.5 rounded-md">
+            <span
+              className={`text-[11px] font-medium px-2 py-0.5 rounded-md ${
+                isProgressBoard
+                  ? 'bg-white/20 text-white'
+                  : 'bg-slate-300/80 text-slate-700'
+              }`}
+            >
               {filteredHistories.length}건
             </span>
             {selectedIds.length > 0 && (
-              <span className="text-[10px] font-medium text-blue-600 ml-2 bg-blue-50 px-2 py-0.5 rounded-md border border-blue-200">
+              <span
+                className={`text-[10px] font-medium ml-2 px-2 py-0.5 rounded-md border ${
+                  isProgressBoard
+                    ? 'text-white bg-white/20 border-white/40'
+                    : 'text-blue-600 bg-blue-50 border-blue-200'
+                }`}
+              >
                 {selectedIds.length}개 선택됨
               </span>
             )}
@@ -616,17 +647,15 @@ export default function ProductionApplyHistory() {
               </select>
             </div>
 
-            {activeCategory !== 'ALL' && (
-              <button
-                type="button"
-                onClick={handleExcelDownload}
-                className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-[10px] font-medium shadow-sm hover:bg-emerald-700 transition-all whitespace-nowrap"
-              >
-                {selectedIds.length > 0
-                  ? `선택 EXCEL 다운로드(${selectedIds.length})`
-                  : '화면 목록 EXCEL 다운로드'}
-              </button>
-            )}
+            <button
+              type="button"
+              onClick={handleExcelDownload}
+              className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-[10px] font-medium shadow-sm hover:bg-emerald-700 transition-all whitespace-nowrap"
+            >
+              {selectedIds.length > 0
+                ? `선택 EXCEL 다운로드(${selectedIds.length})`
+                : '화면 목록 EXCEL 다운로드'}
+            </button>
           </div>
         </div>
 
@@ -648,7 +677,7 @@ export default function ProductionApplyHistory() {
                 <col style={{ width: '9%' }} />
                 <col style={{ width: '6.5%' }} />
                 <col style={{ width: '5.5rem' }} />
-                <col style={{ width: '6rem' }} />
+                {showManageAction ? <col style={{ width: '6rem' }} /> : null}
               </colgroup>
               <thead className="bg-slate-100 text-slate-700 text-[10px] font-medium uppercase tracking-widest border-b border-slate-200">
                 <tr>
@@ -676,13 +705,15 @@ export default function ProductionApplyHistory() {
                   <th className="h-12 px-2 text-left whitespace-nowrap">외주업체</th>
                   <th className="h-12 px-2 text-center whitespace-nowrap">처리날짜</th>
                   <th className="h-12 px-2 text-center whitespace-nowrap">공정상태</th>
-                  <th className="h-12 px-2 text-center whitespace-nowrap">관리액션</th>
+                  {showManageAction ? (
+                    <th className="h-12 px-2 text-center whitespace-nowrap">관리액션</th>
+                  ) : null}
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-slate-100 text-[11px] font-medium text-slate-700">
                 {paginatedHistories.length === 0 ? (
                   <tr>
-                    <td colSpan={12} className="p-16 text-center text-slate-400 text-xs">
+                    <td colSpan={tableColSpan} className="p-16 text-center text-slate-400 text-xs">
                       신청 가드 범위 내에 해당하는 내역이 존재하지 않습니다.
                     </td>
                   </tr>
@@ -705,11 +736,21 @@ export default function ProductionApplyHistory() {
                       'applicant',
                       item.category
                     );
-                    const statusClass = `${productionStatusTextClass(
-                      item.status,
-                      opts,
-                      item.category
-                    )} font-medium`;
+                    const isDirectShipDone =
+                      item.status === PRODUCTION_STATUS.VERIFIED &&
+                      isCustomerDirectShip({
+                        category: item.category,
+                        options: opts,
+                      });
+                    const isHqReceivedDone =
+                      item.status === PRODUCTION_STATUS.VERIFIED && !isDirectShipDone;
+                    const statusClass = `${
+                      item.status === PRODUCTION_STATUS.ACCEPTED
+                        ? 'text-orange-600'
+                        : isDirectShipDone || isHqReceivedDone
+                          ? 'text-slate-800'
+                          : productionStatusTextClass(item.status, opts, item.category)
+                    } font-medium`;
                     return (
                     <tr
                       key={item.id}
@@ -822,12 +863,24 @@ export default function ProductionApplyHistory() {
                               </button>
                             );
                           })()
+                        ) : isDirectShipDone ? (
+                          <span
+                            className={`inline-flex flex-col items-center leading-tight ${statusClass}`}
+                          >
+                            <span className="text-[10px] font-medium whitespace-nowrap">
+                              발주전송
+                            </span>
+                            <span className="text-[9px] font-medium whitespace-nowrap normal-case tracking-normal">
+                              (고객사직발송)
+                            </span>
+                          </span>
                         ) : (
                           <span className={`text-[10px] font-medium whitespace-nowrap ${statusClass}`}>
                             {statusLabel}
                           </span>
                         )}
                       </td>
+                      {showManageAction ? (
                       <td className="px-2 text-center">
                         {isRejected ? (
                           <div className="inline-flex items-center justify-center gap-1">
@@ -872,6 +925,7 @@ export default function ProductionApplyHistory() {
                           </span>
                         )}
                       </td>
+                      ) : null}
                     </tr>
                     );
                   })
