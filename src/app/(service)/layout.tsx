@@ -58,12 +58,21 @@ export default function ServiceLayout({ children }: { children: React.ReactNode 
         fetch('/api/admin/units?active=true&t=' + ts, { cache: 'no-store' }).catch(() => null)
       ]);
      
-      const menuData = await menuRes.json();
+      const menuRaw = await menuRes.json().catch(() => null);
+      const menuData = Array.isArray(menuRaw)
+        ? menuRaw
+        : Array.isArray((menuRaw as { menus?: unknown })?.menus)
+          ? ((menuRaw as { menus: any[] }).menus)
+          : [];
+      if (!menuRes.ok || !Array.isArray(menuRaw)) {
+        console.error('메뉴 로드 실패:', menuRes.status, menuRaw);
+      }
       setMenus(menuData);
-     
-      const fetchedUnits = unitsRes && unitsRes.ok ? await unitsRes.json() : [];
+
+      const unitsRaw = unitsRes && unitsRes.ok ? await unitsRes.json().catch(() => []) : [];
+      const fetchedUnits = Array.isArray(unitsRaw) ? unitsRaw : [];
       setUnitsList(fetchedUnits);
-     
+
       if (userRes.ok) {
         const userData = await userRes.json();
         const myUnit = fetchedUnits.find((u: any) => u.id === userData.dept_id);
@@ -85,7 +94,7 @@ export default function ServiceLayout({ children }: { children: React.ReactNode 
   useLayoutEffect(() => {
     const cached = readServiceShellCache();
     if (cached?.user) {
-      setMenus(cached.menus);
+      setMenus(Array.isArray(cached.menus) ? cached.menus : []);
       setUser(cached.user);
       setUnitsList(Array.isArray(cached.units) ? cached.units : []);
       setLoading(false);
@@ -231,19 +240,20 @@ export default function ServiceLayout({ children }: { children: React.ReactNode 
     alert(`🚀 [${name}] 서비스는 현재 점검 중이거나 비활성화되었습니다.`);
   };
   
-  const l1Menus = menus.filter(m => m.level === 1 && m.is_visible);
+  const menuList = Array.isArray(menus) ? menus : [];
+  const l1Menus = menuList.filter(m => m.level === 1 && m.is_visible);
   const currentL1 = l1Menus.find(m => pathname.startsWith(m.path));
-  
-  const l2Menus = menus
+
+  const l2Menus = menuList
     .filter(m => m.level === 2 && m.parent_id === currentL1?.id && m.is_visible)
-    .filter(m => checkMenuPermission(user, m, menus, unitsList).hasAccess)
+    .filter(m => checkMenuPermission(user, m, menuList, unitsList).hasAccess)
     .sort((a, b) => a.sort_order - b.sort_order);
-    
+
   const currentL2 = l2Menus.find(m => pathname.startsWith(m.path));
-  
-  const l3Menus = menus
+
+  const l3Menus = menuList
     .filter(m => m.level === 3 && m.parent_id === currentL2?.id && m.is_visible)
-    .filter(m => checkMenuPermission(user, m, menus, unitsList).hasAccess)
+    .filter(m => checkMenuPermission(user, m, menuList, unitsList).hasAccess)
     .sort((a, b) => a.sort_order - b.sort_order);
   
   const isHomePage = pathname === '/home';
