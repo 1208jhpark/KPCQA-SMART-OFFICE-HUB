@@ -938,9 +938,13 @@ export default function AdminInterfacePage() {
                                 disabled={!isAllowedByParent}
                                 checked={isChecked && isAllowedByParent} 
                                 onChange={async (e) => {
+                                  // 상위 범위 밖 잔여값(예: 복구 시 남은 KPCQA)은 저장 전에 제거
+                                  const allowedCur = curOrgIds
+                                    .map(String)
+                                    .filter((id) => isOrgAllowedByParent(id, effectiveParentOrgs));
                                   const next = e.target.checked
-                                    ? [...curOrgIds, org.id]
-                                    : curOrgIds.filter((id: any) => id !== org.id);
+                                    ? Array.from(new Set([...allowedCur, org.id]))
+                                    : allowedCur.filter((id) => id !== org.id);
                                   if (next.length === 0) {
                                     alert('Org Guard는 최소 1개 부서를 선택해야 합니다.');
                                     return;

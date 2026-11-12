@@ -105,28 +105,32 @@ function isOrgUnderAllowedSet(
   return false;
 }
 
-async function assertOrgIdsWithinParentGuard(
+/**
+ * 상위 Org Guard 안쪽 조직만 남김.
+ * (메뉴 복구 후 하위에 남은 루트 KPCQA 등이 체크 저장을 가로막지 않도록)
+ */
+async function sanitizeOrgIdsWithinParentGuard(
   menuParentId: string | null,
   orgIds: string[]
-) {
+): Promise<string[]> {
   const allowed = await getAncestorMenuOrgGuard(menuParentId);
-  if (allowed.length === 0) return; // 상위 Org Guard 없으면 제한 없음
+  if (allowed.length === 0) return orgIds;
 
   const units = await prisma.orgUnit.findMany({
     where: { is_deleted: false },
     select: { id: true, parent_id: true, unit_name: true },
   });
   const parentById = new Map(units.map((u) => [u.id, u.parent_id]));
-  const nameById = new Map(units.map((u) => [u.id, u.unit_name]));
-
-  const invalid = orgIds.filter((id) => !isOrgUnderAllowedSet(id, allowed, parentById));
-  if (invalid.length > 0) {
-    const labels = invalid.map((id) => nameById.get(id) || id).join(', ');
+  const valid = orgIds.filter((id) => isOrgUnderAllowedSet(id, allowed, parentById));
+  if (valid.length === 0) {
+    const nameById = new Map(units.map((u) => [u.id, u.unit_name]));
+    const labels = orgIds.map((id) => nameById.get(id) || id).join(', ');
     throw Object.assign(
-      new Error(`상위 메뉴 Org Guard 범위를 벗어난 조직입니다: ${labels}`),
+      new Error(`상위 메뉴 Org Guard 범위 안에서 선택 가능한 조직이 없습니다: ${labels}`),
       { code: 'ORG_GUARD_PARENT' }
     );
   }
+  return valid;
 }
 
 // [GET] 메뉴 목록 — 로그인 필수 (서비스 전 페이지 공용, LV_1 잠금 금지)
@@ -163,12 +167,12 @@ export async function POST(req: Request) {
     if (exists) return badRequest('중복된 경로가 존재합니다.');
 
     const parent_id = body.parent_id ? String(body.parent_id) : null;
-    const org_ids =
+    let org_ids =
       Array.isArray(body.org_ids) && body.org_ids.filter(Boolean).length > 0
         ? body.org_ids.filter(Boolean).map(String)
         : await resolveDefaultOrgIds(parent_id);
 
-    await assertOrgIdsWithinParentGuard(parent_id, org_ids);
+    org_ids = await sanitizeOrgIdsWithinParentGuard(parent_id, org_ids);
 
     const view_role_ids =
       Array.isArray(body.view_role_ids) && body.view_role_ids.length > 0
@@ -297,7 +301,10 @@ export async function PATCH(req: Request) {
             : [];
 
       if (nextOrgIds.length > 0) {
-        await assertOrgIdsWithinParentGuard(nextParentId, nextOrgIds);
+        const sanitized = await sanitizeOrgIdsWithinParentGuard(nextParentId, nextOrgIds);
+        if ('org_ids' in updateData) {
+          updateData.org_ids = sanitized;
+        }
       }
     }
 
