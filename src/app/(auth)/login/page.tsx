@@ -121,11 +121,11 @@ function LoginForm() {
     <div className="min-h-screen flex items-center justify-center bg-[#F8FAFC] font-sans">
       <form onSubmit={handleLogin} className="p-12 bg-white rounded-[3rem] shadow-2xl w-full max-w-md border border-gray-100 animate-in fade-in zoom-in duration-300">
         <div className="text-center mb-10">
-          <h1 className="text-4xl font-black text-slate-900 tracking-tighter">
+          <h1 className="text-4xl font-bold text-slate-900 tracking-tighter">
             {branding.main_headline}
           </h1>
           {branding.sub_headline ? (
-            <p className="text-blue-500 text-[10px] font-black uppercase tracking-[0.3em] mt-2">
+            <p className="text-blue-500 text-[10px] font-bold uppercase tracking-[0.3em] mt-2">
               {branding.sub_headline}
             </p>
           ) : null}
