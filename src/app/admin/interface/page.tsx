@@ -941,10 +941,10 @@ export default function AdminInterfacePage() {
                                   // 상위 범위 밖 잔여값(예: 복구 시 남은 KPCQA)은 저장 전에 제거
                                   const allowedCur = curOrgIds
                                     .map(String)
-                                    .filter((id) => isOrgAllowedByParent(id, effectiveParentOrgs));
+                                    .filter((id: string) => isOrgAllowedByParent(id, effectiveParentOrgs));
                                   const next = e.target.checked
                                     ? Array.from(new Set([...allowedCur, org.id]))
-                                    : allowedCur.filter((id) => id !== org.id);
+                                    : allowedCur.filter((id: string) => id !== org.id);
                                   if (next.length === 0) {
                                     alert('Org Guard는 최소 1개 부서를 선택해야 합니다.');
                                     return;
