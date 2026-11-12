@@ -437,7 +437,7 @@ function ProductionAdminWideCard({
   href,
   buttonLabel,
   links,
-}: CardProps) {
+}: Omit<CardProps, 'theme'>) {
   const actions =
     links && links.length > 0
       ? links
