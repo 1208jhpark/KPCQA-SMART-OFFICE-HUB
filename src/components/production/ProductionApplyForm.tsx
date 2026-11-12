@@ -407,9 +407,14 @@ const [signData, setSignData] = useState({
   const [suppliesQuoteParseError, setSuppliesQuoteParseError] = useState('');
   const [suppliesQuoteParsing, setSuppliesQuoteParsing] = useState(false);
   const suppliesQuoteFileInputRef = useRef<HTMLInputElement>(null);
+  const suppliesQuoteKindRef = useRef<'excel' | 'pdf'>('excel');
 
   const isExcelQuoteFile = (file: File) => /\.(xls|xlsx)$/i.test(file.name);
   const isPdfQuoteFile = (file: File) => /\.pdf$/i.test(file.name);
+
+  const EXCEL_QUOTE_ACCEPT =
+    '.xls,.xlsx,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+  const PDF_QUOTE_ACCEPT = '.pdf,application/pdf';
 
   const applyParsedQuoteLines = (lines: OfficeQuoteLine[]) => {
     setSignData((prev) => ({
@@ -454,6 +459,7 @@ const [signData, setSignData] = useState({
   };
 
   const handleSuppliesQuoteKind = (kind: 'excel' | 'pdf') => {
+    suppliesQuoteKindRef.current = kind;
     setSuppliesQuoteKind(kind);
     const keep =
       suppliesQuoteFile &&
@@ -468,6 +474,11 @@ const [signData, setSignData] = useState({
       if (keep && suppliesQuoteFile) void parseExcelQuoteFile(suppliesQuoteFile);
     } else {
       setSignData((prev) => ({ ...prev, suppliesQuoteLines: [] }));
+    }
+    const input = suppliesQuoteFileInputRef.current;
+    if (input) {
+      input.accept = kind === 'pdf' ? PDF_QUOTE_ACCEPT : EXCEL_QUOTE_ACCEPT;
+      input.click();
     }
   };
 
@@ -3072,23 +3083,21 @@ return (
                       ref={suppliesQuoteFileInputRef}
                       type="file"
                       accept={
-                        suppliesQuoteKind === 'pdf'
-                          ? '.pdf,application/pdf'
-                          : '.xls,.xlsx,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+                        suppliesQuoteKind === 'pdf' ? PDF_QUOTE_ACCEPT : EXCEL_QUOTE_ACCEPT
                       }
                       className="hidden"
                       onChange={(e) => {
+                        const kind = suppliesQuoteKindRef.current;
                         const f = e.target.files?.[0] || null;
                         if (!f) {
                           setSuppliesQuoteFile(null);
                           clearParsedQuoteLines();
                           return;
                         }
-                        const ok =
-                          suppliesQuoteKind === 'pdf' ? isPdfQuoteFile(f) : isExcelQuoteFile(f);
+                        const ok = kind === 'pdf' ? isPdfQuoteFile(f) : isExcelQuoteFile(f);
                         if (!ok) {
                           alert(
-                            suppliesQuoteKind === 'pdf'
+                            kind === 'pdf'
                               ? 'PDF 파일만 첨부할 수 있습니다.'
                               : '엑셀 파일(.xls, .xlsx)만 첨부할 수 있습니다.'
                           );
@@ -3096,7 +3105,7 @@ return (
                           return;
                         }
                         setSuppliesQuoteFile(f);
-                        if (suppliesQuoteKind === 'excel') {
+                        if (kind === 'excel') {
                           void parseExcelQuoteFile(f);
                         } else {
                           setSuppliesQuoteParseError('');

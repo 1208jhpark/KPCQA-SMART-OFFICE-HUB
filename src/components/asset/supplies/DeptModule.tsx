@@ -1038,14 +1038,7 @@ function DeptContent() {
             </div>
             
             <div className="soh-filter-bar flex items-center gap-2 flex-wrap">
-              <div className="relative group/filter flex items-center gap-2 bg-white px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm">
-                <span
-                  role="tooltip"
-                  className="pointer-events-none absolute left-0 top-full mt-1.5 z-50 hidden group-hover/filter:block whitespace-nowrap rounded-lg bg-slate-800 px-2.5 py-1.5 text-[11px] font-medium text-white shadow-lg"
-                >
-                  연도 → 월 → 조직 · 연계필터
-                </span>
-
+              <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm">
                 <span className="text-[11px] font-medium text-slate-400 uppercase">연도</span>
                 <select
                   value={selectedYear}

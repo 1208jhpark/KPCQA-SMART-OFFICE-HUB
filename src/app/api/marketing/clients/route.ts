@@ -307,7 +307,25 @@ export async function GET(req: Request) {
 
     return NextResponse.json(withSummary);
   } catch (error) {
-    return NextResponse.json({ error: '고객사 로드 실패' }, { status: 500 });
+    console.error('[GET /api/marketing/clients]', error);
+    const detail =
+      error && typeof error === 'object' && 'code' in error
+        ? String((error as { code?: string }).code || '')
+        : '';
+    const meta =
+      error && typeof error === 'object' && 'meta' in error
+        ? (error as { meta?: { column?: string; modelName?: string } }).meta
+        : undefined;
+    const hint =
+      detail === 'P2022' && meta?.column
+        ? ` (DB 칼럼 누락: ${meta.column})`
+        : detail
+          ? ` (${detail})`
+          : '';
+    return NextResponse.json(
+      { error: `고객사 로드 실패${hint}` },
+      { status: 500 }
+    );
   }
 }
 

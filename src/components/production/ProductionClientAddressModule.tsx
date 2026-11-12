@@ -139,10 +139,22 @@ export default function ProductionClientAddressModule() {
       ]);
 
       const failed: string[] = [];
+      let clientsFailDetail = '';
       if (cRes.ok) setClients(await cRes.json());
       else {
         setClients([]);
         failed.push('고객사');
+        try {
+          const errBody = await cRes.json();
+          clientsFailDetail = String(errBody?.error || errBody?.message || '').trim();
+        } catch {
+          clientsFailDetail = '';
+        }
+        if (clientsFailDetail) {
+          clientsFailDetail = `${clientsFailDetail} [${cRes.status}]`;
+        } else {
+          clientsFailDetail = `HTTP ${cRes.status}`;
+        }
       }
       if (meRes.ok) setCurrentUser(await meRes.json());
       else failed.push('사용자');
@@ -185,7 +197,9 @@ export default function ProductionClientAddressModule() {
             ? '로그인 세션이 만료되었거나 권한이 없습니다.'
             : status === 403
               ? '고객사 주소 메뉴 접근 권한이 없습니다.'
-              : `일부 데이터를 불러오지 못했습니다. (${failed.join(', ')})`
+              : clientsFailDetail
+                ? `일부 데이터를 불러오지 못했습니다. (${failed.join(', ')}) — ${clientsFailDetail}`
+                : `일부 데이터를 불러오지 못했습니다. (${failed.join(', ')})`
         );
       }
     } catch (e) {
