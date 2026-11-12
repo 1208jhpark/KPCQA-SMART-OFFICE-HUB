@@ -293,7 +293,7 @@ export default function AdminSettingsPage() {
   return (
     <div className="p-6 space-y-6 animate-fade-in font-sans text-slate-800 bg-slate-50 min-h-screen pb-24">
       {loadError ? (
-        <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-bold text-rose-700 shrink-0">
+        <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-medium text-rose-700 shrink-0">
           {loadError}
           <button
             type="button"
@@ -308,7 +308,7 @@ export default function AdminSettingsPage() {
       <div className="bg-slate-900 p-8 rounded-[2rem] shadow-xl flex justify-between items-center text-white relative overflow-hidden">
         <div className="absolute top-[-50px] right-[-50px] w-64 h-64 bg-blue-600 rounded-full blur-3xl opacity-20"></div>
         <div className="relative z-10">
-          <h2 className="text-2xl font-black tracking-tight flex items-center gap-3 italic">
+          <h2 className="text-2xl font-medium tracking-tight flex items-center gap-3 italic">
             <span className="text-blue-400">05.</span> 시스템 환경 설정
           </h2>
           <p className="text-[11px] text-slate-400 mt-1 uppercase tracking-widest pl-10">
@@ -322,8 +322,8 @@ export default function AdminSettingsPage() {
           <div className="flex items-center gap-3">
             <span className="text-2xl">👑</span>
             <div>
-              <h3 className="text-sm font-black text-slate-800">통합 권한 및 제어 부서 설정</h3>
-              <p className="text-[10px] text-slate-400 font-bold uppercase">
+              <h3 className="text-sm font-medium text-slate-800">통합 권한 및 제어 부서 설정</h3>
+              <p className="text-[10px] text-slate-400 font-medium uppercase">
                 CRUD Governance & Department Logic
               </p>
             </div>
@@ -332,14 +332,14 @@ export default function AdminSettingsPage() {
             type="button"
             onClick={() => handleSaveGroup(['global_mgmt_dept'], '통합 권한 및 제어 부서')}
             disabled={!config}
-            className="px-4 py-1.5 bg-slate-800 text-white font-black text-[11px] rounded-xl hover:bg-slate-700 transition-all shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+            className="px-4 py-1.5 bg-slate-800 text-white font-medium text-[11px] rounded-xl hover:bg-slate-700 transition-all shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
           >
             💾 관리부서 저장
           </button>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-left text-[11px]">
-            <thead className="bg-slate-50 text-slate-400 font-black tracking-widest uppercase border-b border-slate-200">
+            <thead className="bg-slate-50 text-slate-400 font-medium tracking-widest uppercase border-b border-slate-200">
               <tr>
                 <th className="py-4 px-8 w-[350px]">적용 서비스 모듈</th>
                 <th className="py-4 px-5 w-[200px]">시스템 경로 (Path)</th>
@@ -347,13 +347,13 @@ export default function AdminSettingsPage() {
                 <th className="py-4 px-8">CRUD 총괄 관리 부서 지정</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-100 font-bold text-slate-700">
+            <tbody className="divide-y divide-slate-100 font-medium text-slate-700">
               <tr className="hover:bg-indigo-50/30 transition-colors align-top">
                 <td className="px-8 py-4 flex flex-col justify-center">
-                  <span className="text-slate-800 font-black text-[13px]">
+                  <span className="text-slate-800 font-medium text-[13px]">
                     전사(최상위 조직) 자산 총괄 부서 지정
                   </span>
-                  <span className="text-[10px] text-slate-500 font-bold mt-1 leading-relaxed">
+                  <span className="text-[10px] text-slate-500 font-medium mt-1 leading-relaxed">
                     최상위 Organization 자산의 입고·수정·폐기·지급승인 등 CRUD를 총괄하는 부서
                   </span>
                 </td>
@@ -364,7 +364,7 @@ export default function AdminSettingsPage() {
                   <div>/equipment/it/dept</div>
                 </td>
                 <td className="px-5 py-4 text-center">
-                  <span className="bg-indigo-100 text-indigo-700 px-3 py-1 rounded-full font-black tracking-widest text-[9px]">
+                  <span className="bg-indigo-100 text-indigo-700 px-3 py-1 rounded-full font-medium tracking-widest text-[9px]">
                     GLOBAL_MGMT
                   </span>
                 </td>
@@ -375,7 +375,7 @@ export default function AdminSettingsPage() {
                       setConfig((prev: any) => ({ ...prev, global_mgmt_dept: e.target.value }))
                     }
                     disabled={!config}
-                    className="w-full max-w-sm p-2.5 bg-white border border-slate-200 rounded-xl text-xs font-black text-indigo-700 outline-none focus:ring-2 ring-indigo-500 shadow-sm cursor-pointer disabled:opacity-50"
+                    className="w-full max-w-sm p-2.5 bg-white border border-slate-200 rounded-xl text-xs font-medium text-indigo-700 outline-none focus:ring-2 ring-indigo-500 shadow-sm cursor-pointer disabled:opacity-50"
                   >
                     <option value="">부서 선택 없음</option>
                     {units.map((u) => (
@@ -384,7 +384,7 @@ export default function AdminSettingsPage() {
                       </option>
                     ))}
                   </select>
-                  <p className="mt-2 text-[10px] text-slate-500 font-bold leading-relaxed max-w-sm">
+                  <p className="mt-2 text-[10px] text-slate-500 font-medium leading-relaxed max-w-sm">
                     HQ(본부)를 지정하면 그 하위 Center·조직에도 동일하게 총괄 권한이 적용됩니다.
                   </p>
                 </td>
@@ -398,10 +398,10 @@ export default function AdminSettingsPage() {
         <div className="px-4 flex items-center gap-3 mb-2">
           <span className="text-2xl">🔗</span>
           <div>
-            <h3 className="text-sm font-black text-slate-800">
+            <h3 className="text-sm font-medium text-slate-800">
               마스터 데이터 - UI 매핑 제어 (Select Group)
             </h3>
-            <p className="text-[10px] text-slate-500 font-bold uppercase">
+            <p className="text-[10px] text-slate-500 font-medium uppercase">
               Master-Data Group Mapping Engine
             </p>
           </div>
@@ -457,12 +457,12 @@ export default function AdminSettingsPage() {
               <div
                 className={`px-8 py-4 border-b border-slate-100 flex justify-between items-center ${headerBg}`}
               >
-                <h4 className={`text-[12px] font-black ${textTheme}`}>{grp.groupName}</h4>
+                <h4 className={`text-[12px] font-medium ${textTheme}`}>{grp.groupName}</h4>
                 <button
                   type="button"
                   onClick={() => handleSaveGroup(grp.fields, grp.groupName)}
                   disabled={!config}
-                  className={`px-4 py-1.5 text-white font-black text-[10px] rounded-xl shadow-md transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed ${btnBg}`}
+                  className={`px-4 py-1.5 text-white font-medium text-[10px] rounded-xl shadow-md transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed ${btnBg}`}
                 >
                   💾 현재 그룹 저장
                 </button>
@@ -470,25 +470,25 @@ export default function AdminSettingsPage() {
 
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-[11px]">
-                  <thead className="bg-slate-50 text-slate-400 font-black tracking-widest uppercase border-b border-slate-200">
+                  <thead className="bg-slate-50 text-slate-400 font-medium tracking-widest uppercase border-b border-slate-200">
                     <tr>
                       <th className="py-4 px-8 w-[350px]">적용 화면 (UI) 및 관리 경로</th>
                       <th className="py-4 px-5 w-[150px] text-center">데이터 성격 (코드 ID)</th>
                       <th className="py-4 px-8">연결할 마스터 그룹 선택</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-slate-100 font-bold text-slate-700">
+                  <tbody className="divide-y divide-slate-100 font-medium text-slate-700">
                     {grp.items.map((item) => (
                       <tr key={item.field} className="hover:bg-slate-50/50 transition-colors h-16">
                         <td className="px-8">
-                          <p className="text-slate-800 font-black text-[13px]">{item.label}</p>
+                          <p className="text-slate-800 font-medium text-[13px]">{item.label}</p>
                           <p className="text-[10px] text-slate-400 font-mono mt-0.5 tracking-tight flex items-center gap-1">
                             <span>📄</span> {item.path}
                           </p>
                         </td>
                         <td className="px-5 text-center">
                           <span
-                            className={`px-3 py-1 rounded-full font-black tracking-wide text-[9px] font-mono ${tagBg}`}
+                            className={`px-3 py-1 rounded-full font-medium tracking-wide text-[9px] font-mono ${tagBg}`}
                           >
                             {item.tag}
                           </span>
@@ -503,7 +503,7 @@ export default function AdminSettingsPage() {
                               }))
                             }
                             disabled={!config}
-                            className={`w-full max-w-md p-2.5 bg-white border border-slate-200 rounded-xl text-xs font-black text-slate-800 outline-none shadow-sm cursor-pointer transition-colors disabled:opacity-50 ${selectBorder}`}
+                            className={`w-full max-w-md p-2.5 bg-white border border-slate-200 rounded-xl text-xs font-medium text-slate-800 outline-none shadow-sm cursor-pointer transition-colors disabled:opacity-50 ${selectBorder}`}
                           >
                             <option value="">마스터 그룹 선택 안함</option>
                             {masterGroups.map((g) => (
@@ -535,13 +535,13 @@ export default function AdminSettingsPage() {
           <div className="flex items-center gap-3 min-w-0">
             <span className="text-2xl shrink-0">📊</span>
             <div className="min-w-0">
-              <h3 className="text-sm font-black text-slate-800 flex items-center gap-2">
+              <h3 className="text-sm font-medium text-slate-800 flex items-center gap-2">
                 페이지 접속 집계 (LV_1)
-                <span className="text-[10px] font-black text-indigo-600 bg-white border border-indigo-200 px-2 py-0.5 rounded-full">
+                <span className="text-[10px] font-medium text-indigo-600 bg-white border border-indigo-200 px-2 py-0.5 rounded-full">
                   {pvOpen ? '접기' : '닫힘 · 클릭하여 펼치기'}
                 </span>
               </h3>
-              <p className="text-[10px] text-slate-500 font-bold mt-0.5 leading-relaxed">
+              <p className="text-[10px] text-slate-500 font-medium mt-0.5 leading-relaxed">
                 {pvOpen
                   ? '조회수 = 페이지를 연 횟수(동일 경로 20초 내 중복은 1회) · 접속자 = 그 기간에 해당 경로를 연 사람 수(고유 계정, 서울 시각)'
                   : '평소에는 접혀 있습니다. 필요할 때 펼쳐 연·월·일 집계를 확인하세요.'}
@@ -549,7 +549,7 @@ export default function AdminSettingsPage() {
             </div>
           </div>
           <span
-            className={`text-indigo-700 font-black text-lg shrink-0 transition-transform ${
+            className={`text-indigo-700 font-medium text-lg shrink-0 transition-transform ${
               pvOpen ? 'rotate-180' : ''
             }`}
             aria-hidden
@@ -561,12 +561,12 @@ export default function AdminSettingsPage() {
         {pvOpen ? (
           <>
             <div className="px-8 py-3 border-b border-slate-100 bg-slate-50/80 flex flex-wrap justify-end items-center gap-2">
-              <label className="flex items-center gap-1.5 text-[10px] font-black text-slate-500">
+              <label className="flex items-center gap-1.5 text-[10px] font-medium text-slate-500">
                 년도
                 <select
                   value={pvYear}
                   onChange={(e) => setPvYear(Number(e.target.value))}
-                  className="px-2.5 py-1.5 bg-white border border-indigo-200 rounded-lg text-[11px] font-black text-slate-800 outline-none focus:ring-2 ring-indigo-300"
+                  className="px-2.5 py-1.5 bg-white border border-indigo-200 rounded-lg text-[11px] font-medium text-slate-800 outline-none focus:ring-2 ring-indigo-300"
                 >
                   {pvYears.map((y) => (
                     <option key={y} value={y}>
@@ -575,7 +575,7 @@ export default function AdminSettingsPage() {
                   ))}
                 </select>
               </label>
-              <label className="flex items-center gap-1.5 text-[10px] font-black text-slate-500">
+              <label className="flex items-center gap-1.5 text-[10px] font-medium text-slate-500">
                 월
                 <select
                   value={pvMonth === 'all' ? 'all' : String(pvMonth)}
@@ -584,7 +584,7 @@ export default function AdminSettingsPage() {
                     setPvMonth(v === 'all' ? 'all' : Number(v));
                     if (v === 'all') setPvDay('all');
                   }}
-                  className="px-2.5 py-1.5 bg-white border border-indigo-200 rounded-lg text-[11px] font-black text-slate-800 outline-none focus:ring-2 ring-indigo-300"
+                  className="px-2.5 py-1.5 bg-white border border-indigo-200 rounded-lg text-[11px] font-medium text-slate-800 outline-none focus:ring-2 ring-indigo-300"
                 >
                   <option value="all">전체</option>
                   {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => (
@@ -594,7 +594,7 @@ export default function AdminSettingsPage() {
                   ))}
                 </select>
               </label>
-              <label className="flex items-center gap-1.5 text-[10px] font-black text-slate-500">
+              <label className="flex items-center gap-1.5 text-[10px] font-medium text-slate-500">
                 일
                 <select
                   value={pvMonth === 'all' || pvDay === 'all' ? 'all' : String(pvDay)}
@@ -604,7 +604,7 @@ export default function AdminSettingsPage() {
                     const v = e.target.value;
                     setPvDay(v === 'all' ? 'all' : Number(v));
                   }}
-                  className="px-2.5 py-1.5 bg-white border border-indigo-200 rounded-lg text-[11px] font-black text-slate-800 outline-none focus:ring-2 ring-indigo-300 disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="px-2.5 py-1.5 bg-white border border-indigo-200 rounded-lg text-[11px] font-medium text-slate-800 outline-none focus:ring-2 ring-indigo-300 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   <option value="all">전체</option>
                   {pvMonth !== 'all' &&
@@ -619,7 +619,7 @@ export default function AdminSettingsPage() {
                 type="button"
                 onClick={() => fetchPageViews(pvYear, pvMonth, pvDay)}
                 disabled={pvLoading}
-                className="px-4 py-1.5 bg-white border border-indigo-200 text-indigo-700 font-black text-[11px] rounded-xl hover:bg-indigo-50 transition-all shadow-sm disabled:opacity-50"
+                className="px-4 py-1.5 bg-white border border-indigo-200 text-indigo-700 font-medium text-[11px] rounded-xl hover:bg-indigo-50 transition-all shadow-sm disabled:opacity-50"
               >
                 {pvLoading ? '집계 중…' : '새로고침'}
               </button>
@@ -627,28 +627,28 @@ export default function AdminSettingsPage() {
                 type="button"
                 onClick={downloadPageViewsExcel}
                 disabled={pvLoading || pvRows.length === 0}
-                className="px-4 py-1.5 bg-emerald-600 text-white font-black text-[11px] rounded-xl hover:bg-emerald-700 transition-all shadow-sm disabled:opacity-50"
+                className="px-4 py-1.5 bg-emerald-600 text-white font-medium text-[11px] rounded-xl hover:bg-emerald-700 transition-all shadow-sm disabled:opacity-50"
               >
                 엑셀 다운로드
               </button>
             </div>
 
-            <div className="px-8 py-3 border-b border-slate-100 bg-slate-50/80 flex flex-wrap items-center gap-4 text-[11px] font-bold text-slate-600">
+            <div className="px-8 py-3 border-b border-slate-100 bg-slate-50/80 flex flex-wrap items-center gap-4 text-[11px] font-medium text-slate-600">
               <span>
                 조회수 합계{' '}
-                <span className="text-indigo-700 font-black tabular-nums">
+                <span className="text-indigo-700 font-medium tabular-nums">
                   {pvTotalHits.toLocaleString()}
                 </span>
                 <span className="text-slate-400 font-medium ml-1">(열람 횟수)</span>
               </span>
               <span>
                 기간 내 접속자{' '}
-                <span className="text-indigo-700 font-black tabular-nums">
+                <span className="text-indigo-700 font-medium tabular-nums">
                   {pvTotalUsers.toLocaleString()}
                 </span>
                 <span className="text-slate-400 font-medium ml-1">(고유 계정 수)</span>
               </span>
-              <span className="ml-auto text-[10px] font-bold text-slate-400">
+              <span className="ml-auto text-[10px] font-medium text-slate-400">
                 ※ 동일 접속자는 1일 기준 1번만 카운팅됩니다.
               </span>
               {pvError ? <span className="text-rose-600 w-full">{pvError}</span> : null}
@@ -665,7 +665,7 @@ export default function AdminSettingsPage() {
                   <col className="w-[88px]" />
                   <col className="w-[88px]" />
                 </colgroup>
-                <thead className="bg-slate-50 text-slate-400 font-black tracking-widest uppercase border-b border-slate-200">
+                <thead className="bg-slate-50 text-slate-400 font-medium tracking-widest uppercase border-b border-slate-200">
                   <tr>
                     <th className="py-3 px-2">Step1</th>
                     <th className="py-3 px-2">Step2</th>
@@ -680,7 +680,7 @@ export default function AdminSettingsPage() {
                     </th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-slate-100 font-bold text-slate-700">
+                <tbody className="divide-y divide-slate-100 font-medium text-slate-700">
                   {pvLoading && pvRows.length === 0 ? (
                     <tr>
                       <td colSpan={7} className="px-8 py-10 text-center text-slate-400">
@@ -708,7 +708,7 @@ export default function AdminSettingsPage() {
                         >
                           <td className="px-2 py-2.5">
                             {showStep1 ? (
-                              <span className="text-[11px] font-black text-indigo-800 leading-snug break-keep">
+                              <span className="text-[11px] font-medium text-indigo-800 leading-snug break-keep">
                                 {r.step1}
                               </span>
                             ) : (
@@ -717,7 +717,7 @@ export default function AdminSettingsPage() {
                           </td>
                           <td className="px-2 py-2.5">
                             {showStep2 ? (
-                              <span className="text-[11px] font-black text-slate-700 leading-snug break-keep">
+                              <span className="text-[11px] font-medium text-slate-700 leading-snug break-keep">
                                 {r.step2}
                               </span>
                             ) : (
@@ -726,7 +726,7 @@ export default function AdminSettingsPage() {
                           </td>
                           <td className="px-2 py-2.5">
                             {showStep3 ? (
-                              <span className="text-[11px] font-bold text-slate-600 leading-snug break-keep">
+                              <span className="text-[11px] font-medium text-slate-600 leading-snug break-keep">
                                 {r.step3}
                               </span>
                             ) : (
@@ -734,7 +734,7 @@ export default function AdminSettingsPage() {
                             )}
                           </td>
                           <td className="px-2 py-2.5">
-                            <span className="text-[11px] font-bold text-slate-600 leading-snug break-keep">
+                            <span className="text-[11px] font-medium text-slate-600 leading-snug break-keep">
                               {r.step4}
                             </span>
                           </td>
@@ -743,15 +743,15 @@ export default function AdminSettingsPage() {
                               {r.path}
                             </span>
                             {!r.inMenu && r.step1 === '기타' ? (
-                              <span className="text-[9px] text-amber-600 font-sans font-bold">
+                              <span className="text-[9px] text-amber-600 font-sans font-medium">
                                 카탈로그 외 접속 경로
                               </span>
                             ) : null}
                           </td>
-                          <td className="px-3 py-2.5 text-right tabular-nums text-slate-900 font-black">
+                          <td className="px-3 py-2.5 text-right tabular-nums text-slate-900 font-medium">
                             {Number(r.hits || 0).toLocaleString()}
                           </td>
-                          <td className="px-3 py-2.5 text-right tabular-nums text-slate-800 font-black">
+                          <td className="px-3 py-2.5 text-right tabular-nums text-slate-800 font-medium">
                             {Number(r.users || 0).toLocaleString()}
                           </td>
                         </tr>
@@ -770,7 +770,7 @@ export default function AdminSettingsPage() {
           <div className="absolute left-0 top-0 bottom-0 w-2 bg-amber-500"></div>
           <div className="text-4xl">⚠️</div>
           <div>
-            <h4 className="font-black text-amber-400 text-[12px] uppercase tracking-widest mb-1">
+            <h4 className="font-medium text-amber-400 text-[12px] uppercase tracking-widest mb-1">
               Administrator Notice
             </h4>
             <p className="text-[11px] text-slate-300 leading-relaxed font-medium">

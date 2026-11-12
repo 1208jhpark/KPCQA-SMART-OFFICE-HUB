@@ -319,7 +319,7 @@ function orderExcelSheetName(kindLabel: string, deptName: string): string {
   return `${prefix}${dept.slice(0, maxDept)}${suffix}`;
 }
 
-async function createGroupedOrderWorkbook<H extends string>(opts: {
+export async function createGroupedOrderWorkbook<H extends string>(opts: {
   sheetName: string;
   headers: readonly H[];
   groups: OrderExcelGroup<H>[];

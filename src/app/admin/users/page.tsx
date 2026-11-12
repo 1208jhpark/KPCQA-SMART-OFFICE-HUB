@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
 import {
   DEFAULT_USER_DUTY_OPTIONS,
@@ -9,6 +9,14 @@ import {
   suggestGradeCode,
   type UserJobOption,
 } from '@/lib/user-job-options';
+import {
+  downloadAdminUserListExcel,
+  normalizeAdminUserUploadDuty,
+  normalizeAdminUserUploadGrade,
+  normalizeAdminUserUploadUnitName,
+  writeAdminUserListExcelBuffer,
+  writeAdminUserUploadTemplateBuffer,
+} from '@/lib/admin-users-excel';
 import { COMPANY_EMAIL_SUFFIX, extractEmailLocalPart } from '@/utils/companyEmail';
 import { getKSTDateString } from '@/utils/dateUtils';
 import LoadingState from '@/components/common/LoadingState';
@@ -76,6 +84,8 @@ export default function AdminUsersPage() {
   } | null>(null);
   const [meId, setMeId] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [excelBusy, setExcelBusy] = useState(false);
+  const uploadInputRef = useRef<HTMLInputElement>(null);
 
   // 데이터 실시간 로드 (사용자 + 조직)
   const fetchData = async () => {
@@ -283,6 +293,15 @@ export default function AdminUsersPage() {
       return;
     }
 
+    const fullEmail = `${emailLocal}${COMPANY_EMAIL_SUFFIX}`.toLowerCase();
+    const emailTaken = (data?.users || []).some(
+      (u: any) => String(u.email || '').trim().toLowerCase() === fullEmail
+    );
+    if (emailTaken) {
+      alert(`이미 등록된 이메일입니다.\n${fullEmail}`);
+      return;
+    }
+
     const dutyOpt = (data?.duties || []).find((d: any) => d.label === createForm.duty);
     const gradeOpt = (data?.grades || []).find((g: any) => g.label === createForm.grade);
 
@@ -440,46 +459,265 @@ export default function AdminUsersPage() {
     );
   });
 
-  const handleExportExcel = () => {
+  const handleExportExcel = async () => {
     if (filteredUsers.length === 0) {
       alert('내보낼 사용자가 없습니다.');
       return;
     }
-    const rows = filteredUsers.map((u: any, idx: number) => {
-      const roles = parseRoles(u.roles);
-      const unitName =
-        !u.unit_id || u.unit?.is_active === false
-          ? '조직 미지정'
-          : u.unit?.unit_name || '조직 미지정';
-      return {
-        No: idx + 1,
-        이메일: u.email || '',
-        '성명(한글)': u.name || '',
-        '성명(영문)': u.name_en || '',
-        사번: u.employee_no || '',
-        내선번호: u.extension || '',
-        '직책(한글)': u.duty || '',
-        '직책(영문)': u.duty_en || '',
-        '직급(한글)': u.grade || '',
-        '직급(영문)': u.grade_en || '',
-        소속: unitName,
-        권한: roles.join(', '),
-        상태: u.status || '',
-        '임시PW상태': u.must_reset_password ? 'Y' : 'N',
-        'PW초기화요청': u.password_reset_requested ? 'Y' : 'N',
-      };
-    });
-    const ws = XLSX.utils.json_to_sheet(rows);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, '사용자목록');
-    const filterTag = activeFilter === 'ALL' ? '전체' : activeFilter;
-    XLSX.writeFile(wb, `사용자목록_${filterTag}_${getKSTDateString()}.xlsx`);
+    try {
+      const items = filteredUsers.map((u: any) => {
+        const roles = parseRoles(u.roles);
+        const unitLabel =
+          !u.unit_id || u.unit?.is_active === false
+            ? '조직 미지정'
+            : u.unit?.unit_name || '조직 미지정';
+        return {
+          email: u.email,
+          name: u.name,
+          name_en: u.name_en,
+          employee_no: u.employee_no,
+          extension: u.extension,
+          unitLabel,
+          duty: u.duty,
+          duty_en: u.duty_en,
+          grade: u.grade,
+          grade_en: u.grade_en,
+          rolesLabel: roles.join(', '),
+          status: u.status,
+          mustResetPassword: !!u.must_reset_password,
+          passwordResetRequested: !!u.password_reset_requested,
+        };
+      });
+      const buffer = await writeAdminUserListExcelBuffer(items);
+      const filterTag = activeFilter === 'ALL' ? '전체' : activeFilter;
+      downloadAdminUserListExcel(buffer, `계정자목록_${filterTag}_${getKSTDateString()}.xlsx`);
+    } catch {
+      alert('엑셀 다운로드에 실패했습니다.');
+    }
+  };
+
+  const cellStr = (row: Record<string, unknown>, ...keys: string[]) => {
+    for (const k of keys) {
+      const v = row[k];
+      if (v != null && String(v).trim() !== '') return String(v).trim();
+    }
+    return '';
+  };
+
+  const accountSheetRows = (sheet: XLSX.WorkSheet): Record<string, unknown>[] => {
+    const aoa = XLSX.utils.sheet_to_json<unknown[]>(sheet, {
+      header: 1,
+      defval: '',
+      raw: false,
+    }) as unknown[][];
+    if (!aoa.length) return [];
+    const asText = (row: unknown[] | undefined) =>
+      (row || []).map((c) => String(c ?? '').trim());
+    const row0 = asText(aoa[0]);
+    const row1 = asText(aoa[1]);
+    const grouped =
+      row1.includes('성명(한글)') &&
+      (row0.includes('기본정보') || row0.includes('소속·권한') || row0.includes('NO'));
+    const headerRow = grouped ? row1 : row0;
+    const dataStart = grouped ? 2 : 1;
+    const keys = headerRow.map((h, i) => h || `col${i}`);
+    const out: Record<string, unknown>[] = [];
+    for (let r = dataStart; r < aoa.length; r += 1) {
+      const line = aoa[r] || [];
+      const rec: Record<string, unknown> = {};
+      keys.forEach((k, i) => {
+        rec[k] = line[i];
+      });
+      out.push(rec);
+    }
+    return out;
+  };
+
+  const handleDownloadUploadTemplate = async () => {
+    try {
+      setExcelBusy(true);
+      const buffer = await writeAdminUserUploadTemplateBuffer({
+        unitNames: units.map((u: any) => String(u.unit_name || '').trim()).filter(Boolean),
+        dutyLabels: (data.duties || []).map((d: any) => String(d.label || '').trim()).filter(Boolean),
+        gradeLabels: (data.grades || []).map((g: any) => String(g.label || '').trim()).filter(Boolean),
+      });
+      downloadAdminUserListExcel(buffer, `계정자_신규등록_양식_${getKSTDateString()}.xlsx`);
+    } catch (err) {
+      console.error(err);
+      alert('업로드 양식 생성에 실패했습니다.');
+    } finally {
+      setExcelBusy(false);
+    }
+  };
+
+  const handleExcelUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = async (evt) => {
+      try {
+        setExcelBusy(true);
+        const wb = XLSX.read(evt.target?.result, { type: 'array', cellDates: true });
+        const skipSheets = new Set([
+          '작성안내',
+          '소속목록',
+          '권한목록',
+          '직책목록',
+          '직급목록',
+          '상태목록',
+        ]);
+        const preferred =
+          wb.SheetNames.find((n) => n === '계정자등록') ||
+          wb.SheetNames.find((n) => !skipSheets.has(n)) ||
+          wb.SheetNames[0];
+        const rows = accountSheetRows(wb.Sheets[preferred]);
+        if (!rows.length) {
+          alert('엑셀에 업로드할 데이터가 없습니다.');
+          return;
+        }
+
+        const payloadUsers: Array<{
+          name: string;
+          name_en: string;
+          emailLocal: string;
+          employee_no: string;
+          extension: string;
+          unitName: string;
+          role: string;
+          duty: string;
+          grade: string;
+          status: string;
+        }> = [];
+        let skippedInvalid = 0;
+        let skippedExistingEmail = 0;
+        let skippedExcelDupEmail = 0;
+        const existingEmails = new Set(
+          (data?.users || []).map((u: any) => String(u.email || '').trim().toLowerCase()).filter(Boolean)
+        );
+        const seenEmailLocals = new Set<string>();
+
+        for (const row of rows) {
+          const name = cellStr(row, '성명(한글)');
+          const name_en = cellStr(row, '성명(영문)');
+          const emailLocal = extractEmailLocalPart(
+            cellStr(row, '사내메일앞자리', '사내메일', '이메일')
+          );
+          const employee_no = cellStr(row, '사번');
+          const extension = cellStr(row, '내선번호');
+          const unitName = normalizeAdminUserUploadUnitName(cellStr(row, '소속'));
+          const roleRaw = cellStr(row, '권한레벨', '권한');
+          const duty = normalizeAdminUserUploadDuty(cellStr(row, '직책', '직책(한글)'));
+          const grade = normalizeAdminUserUploadGrade(cellStr(row, '직급', '직급(한글)'));
+          const status = cellStr(row, '계정상태', '상태') || 'Active';
+
+          if (!name && !emailLocal && !employee_no && !extension && !unitName && !duty && !grade) {
+            continue;
+          }
+          // 양식 3행 예시 제외
+          if (name === '홍길동' && (emailLocal === 'honggd' || !emailLocal)) continue;
+
+          if (!name || !emailLocal) {
+            skippedInvalid += 1;
+            continue;
+          }
+
+          if (seenEmailLocals.has(emailLocal)) {
+            skippedExcelDupEmail += 1;
+            continue;
+          }
+
+          const fullEmail = `${emailLocal}${COMPANY_EMAIL_SUFFIX}`.toLowerCase();
+          if (existingEmails.has(fullEmail)) {
+            skippedExistingEmail += 1;
+            continue;
+          }
+
+          seenEmailLocals.add(emailLocal);
+          const role = ['LV_1', 'LV_2', 'LV_3'].includes(roleRaw) ? roleRaw : 'LV_3';
+          payloadUsers.push({
+            name,
+            name_en,
+            emailLocal,
+            employee_no,
+            extension,
+            unitName,
+            role,
+            duty,
+            grade,
+            status,
+          });
+        }
+
+        const skippedEmailTotal = skippedExistingEmail + skippedExcelDupEmail;
+        if (payloadUsers.length === 0) {
+          alert(
+            skippedEmailTotal > 0 || skippedInvalid > 0
+              ? `등록 가능한 행이 없습니다.\n(이미등록 ${skippedExistingEmail} · 엑셀중복 ${skippedExcelDupEmail} · 형식오류 ${skippedInvalid})`
+              : '등록할 행이 없습니다. 4행부터 입력했는지 확인해 주세요.'
+          );
+          return;
+        }
+
+        if (
+          !confirm(
+            `엑셀 ${payloadUsers.length}명을 신규 등록할까요?${
+              skippedEmailTotal > 0 || skippedInvalid > 0
+                ? `\n(이미등록 제외 ${skippedExistingEmail} · 엑셀중복 제외 ${skippedExcelDupEmail} · 형식오류 ${skippedInvalid})`
+                : ''
+            }`
+          )
+        ) {
+          return;
+        }
+
+        const res = await fetch('/api/admin/users', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'bulkCreate', users: payloadUsers }),
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          alert(body.message || '엑셀 일괄 등록에 실패했습니다.');
+          return;
+        }
+
+        await fetchData();
+        const created = Array.isArray(body.created) ? body.created : [];
+        const failed = Array.isArray(body.failed) ? body.failed : [];
+        const tempLines = created
+          .slice(0, 20)
+          .map((c: any) => `${c.name} <${c.email}> → ${c.tempPassword}`)
+          .join('\n');
+        const failLines = failed
+          .slice(0, 15)
+          .map((f: any) => `${f.row}행 ${f.email || ''} ${f.message}`)
+          .join('\n');
+
+        alert(
+          `계정자 엑셀 등록 완료\n성공 ${created.length}건 · 실패 ${failed.length}건${
+            skippedExistingEmail ? ` · 이미등록제외 ${skippedExistingEmail}건` : ''
+          }${skippedExcelDupEmail ? ` · 엑셀중복제외 ${skippedExcelDupEmail}건` : ''}${
+            skippedInvalid ? ` · 형식제외 ${skippedInvalid}건` : ''
+          }${created.length ? `\n\n[임시비밀번호]\n${tempLines}${created.length > 20 ? '\n…' : ''}` : ''}${
+            failed.length ? `\n\n[실패]\n${failLines}${failed.length > 15 ? '\n…' : ''}` : ''
+          }`
+        );
+      } catch (err) {
+        console.error(err);
+        alert('엑셀 업로드 중 오류가 발생했습니다.');
+      } finally {
+        setExcelBusy(false);
+      }
+    };
+    reader.readAsArrayBuffer(file);
   };
 
   return (
     <div className="p-8 space-y-8 min-h-screen bg-slate-50/50">
       {loadError ? (
-        <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-bold text-rose-700">
+        <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-medium text-rose-700">
           {loadError}
           <button
             type="button"
@@ -492,35 +730,58 @@ export default function AdminUsersPage() {
       ) : null}
       <div className="flex justify-between items-end gap-4 flex-wrap">
         <div>
-          <h2 className="text-3xl font-black text-slate-800 tracking-tight">사용자 및 권한 관리</h2>
+          <h2 className="text-3xl font-medium text-slate-800 tracking-tight">사용자 및 권한 관리</h2>
           <p className="text-sm text-gray-400 mt-1 font-medium italic">KPCQA ORGANIZATION 통합 인사 마스터 대시보드</p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           <button
             type="button"
-            onClick={handleExportExcel}
-            className="px-4 py-2.5 bg-emerald-600 text-white rounded-2xl text-xs font-black shadow-sm hover:bg-emerald-700 transition-colors"
+            onClick={() => void handleExportExcel()}
+            className="px-4 py-2.5 bg-emerald-600 text-white rounded-2xl text-xs font-medium shadow-sm hover:bg-emerald-700 transition-colors"
           >
-            엑셀 다운
+            계정자 엑셀 다운
           </button>
           <button
             type="button"
+            disabled={excelBusy}
+            onClick={() => void handleDownloadUploadTemplate()}
+            className="px-4 py-2.5 bg-white text-emerald-700 border border-emerald-200 rounded-2xl text-xs font-medium shadow-sm hover:bg-emerald-50 transition-colors disabled:opacity-50"
+          >
+            신규등록 양식 다운
+          </button>
+          <button
+            type="button"
+            disabled={excelBusy}
+            onClick={() => uploadInputRef.current?.click()}
+            className="px-4 py-2.5 bg-teal-600 text-white rounded-2xl text-xs font-medium shadow-sm hover:bg-teal-700 transition-colors disabled:opacity-50"
+          >
+            + 엑셀로 신규등록
+          </button>
+          <input
+            ref={uploadInputRef}
+            type="file"
+            accept=".xlsx,.xls"
+            className="hidden"
+            onChange={handleExcelUpload}
+          />
+          <button
+            type="button"
             onClick={openCreateModal}
-            className="px-4 py-2.5 bg-indigo-600 text-white rounded-2xl text-xs font-black shadow-sm hover:bg-indigo-700 transition-colors"
+            className="px-4 py-2.5 bg-indigo-600 text-white rounded-2xl text-xs font-medium shadow-sm hover:bg-indigo-700 transition-colors"
           >
             + 신규 인원 추가
           </button>
           <button
             type="button"
             onClick={openJobOptionsModal}
-            className="px-4 py-2.5 bg-slate-800 text-white rounded-2xl text-xs font-black shadow-sm hover:bg-slate-900 transition-colors"
+            className="px-4 py-2.5 bg-slate-800 text-white rounded-2xl text-xs font-medium shadow-sm hover:bg-slate-900 transition-colors"
           >
             직책·직급 옵션 설정
           </button>
           <input 
             type="text" 
             placeholder="성명/영문명/사번/내선/부서/직책/직급 검색..." 
-            className="p-3 border border-gray-200 rounded-2xl text-sm w-80 shadow-sm focus:ring-2 focus:ring-blue-500 outline-none bg-white transition-all font-bold"
+            className="p-3 border border-gray-200 rounded-2xl text-sm w-80 shadow-sm focus:ring-2 focus:ring-blue-500 outline-none bg-white transition-all font-medium"
             onChange={(e) => setSearchTerm(e.target.value)}
           />
         </div>
@@ -549,8 +810,8 @@ export default function AdminUsersPage() {
                   : 'bg-white border-gray-100 hover:shadow-sm hover:scale-[1.01]'
             }`}
           >
-            <p className={`text-[10px] font-black uppercase tracking-tighter ${card.id === 'PW_RESET' ? 'text-amber-600' : 'text-slate-400'}`}>{card.label}</p>
-            <h4 className={`text-2xl font-black mt-1 ${card.id === 'PW_RESET' && card.count > 0 ? 'text-amber-700' : 'text-slate-800'}`}>{card.count}명</h4>
+            <p className={`text-[10px] font-medium uppercase tracking-tighter ${card.id === 'PW_RESET' ? 'text-amber-600' : 'text-slate-400'}`}>{card.label}</p>
+            <h4 className={`text-2xl font-medium mt-1 ${card.id === 'PW_RESET' && card.count > 0 ? 'text-amber-700' : 'text-slate-800'}`}>{card.count}명</h4>
           </div>
         ))}
       </div>
@@ -559,7 +820,7 @@ export default function AdminUsersPage() {
       <div className="bg-white rounded-[2.5rem] shadow-sm border border-gray-100 overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-left text-sm min-w-[1200px]">
-            <thead className="bg-slate-50 border-b font-bold text-slate-400 text-[10px] tracking-widest uppercase">
+            <thead className="bg-slate-50 border-b font-medium text-slate-400 text-[10px] tracking-widest uppercase">
               <tr>
                 <th className="p-6 w-44">사용자 성명 (국/영)</th>
                 <th className="p-6 w-52">계정 정보 및 사번</th>
@@ -572,7 +833,7 @@ export default function AdminUsersPage() {
                 <th className="p-6 text-center w-40">관리 액션</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-100 text-xs font-bold text-slate-700 bg-white">
+            <tbody className="divide-y divide-slate-100 text-xs font-medium text-slate-700 bg-white">
               {filteredUsers.map((u: any) => {
                 const isEditing = editingUserId === u.id && !!editDraft;
                 return (
@@ -587,20 +848,20 @@ export default function AdminUsersPage() {
                             type="text"
                             value={editDraft.name}
                             onChange={(e) => setEditDraft({ ...editDraft, name: e.target.value })}
-                            className="bg-white border border-indigo-200 rounded-lg px-2 py-1 outline-none font-black text-slate-800 text-sm focus:border-indigo-400"
+                            className="bg-white border border-indigo-200 rounded-lg px-2 py-1 outline-none font-medium text-slate-800 text-sm focus:border-indigo-400"
                           />
                           <input
                             type="text"
                             placeholder="영문 성명"
                             value={editDraft.name_en}
                             onChange={(e) => setEditDraft({ ...editDraft, name_en: e.target.value })}
-                            className="bg-white border border-indigo-200 rounded-lg px-2 py-1 outline-none font-bold text-slate-500 text-[10px] focus:border-indigo-400"
+                            className="bg-white border border-indigo-200 rounded-lg px-2 py-1 outline-none font-medium text-slate-500 text-[10px] focus:border-indigo-400"
                           />
                         </>
                       ) : (
                         <>
-                          <div className="font-black text-slate-800 text-sm py-0.5">{u.name}</div>
-                          <div className="font-bold text-slate-400 text-[10px] py-0.5 min-h-[14px]">
+                          <div className="font-medium text-slate-800 text-sm py-0.5">{u.name}</div>
+                          <div className="font-medium text-slate-400 text-[10px] py-0.5 min-h-[14px]">
                             {u.name_en || '영문 미등록'}
                           </div>
                         </>
@@ -614,7 +875,7 @@ export default function AdminUsersPage() {
                       <div className="flex items-center gap-1.5 flex-wrap">
                         <div className="text-slate-500 font-mono text-[11px] font-medium">{u.email}</div>
                         {u.password_reset_requested && (
-                          <span className="px-1.5 py-0.5 bg-amber-100 text-amber-700 border border-amber-200 rounded text-[8px] font-black">
+                          <span className="px-1.5 py-0.5 bg-amber-100 text-amber-700 border border-amber-200 rounded text-[8px] font-medium">
                             비번요청
                           </span>
                         )}
@@ -667,7 +928,7 @@ export default function AdminUsersPage() {
                               duty_en: matched ? matched.value : '',
                             });
                           }}
-                          className="bg-white border border-indigo-200 text-slate-700 rounded-xl px-2 py-1.5 font-bold text-xs focus:outline-none cursor-pointer shadow-sm w-full"
+                          className="bg-white border border-indigo-200 text-slate-700 rounded-xl px-2 py-1.5 font-medium text-xs focus:outline-none cursor-pointer shadow-sm w-full"
                         >
                           <option value="">직책 없음</option>
                           {(data.duties || []).map((d: any) => (
@@ -678,7 +939,7 @@ export default function AdminUsersPage() {
                           )}
                         </select>
                       ) : (
-                        <div className="px-2 py-1.5 text-slate-700 font-bold text-xs">
+                        <div className="px-2 py-1.5 text-slate-700 font-medium text-xs">
                           {u.duty || '직책 없음'}
                         </div>
                       )}
@@ -703,7 +964,7 @@ export default function AdminUsersPage() {
                               grade_en: matched ? matched.value : '',
                             });
                           }}
-                          className="bg-white border border-indigo-200 text-slate-700 rounded-xl px-2 py-1.5 font-bold text-xs focus:outline-none cursor-pointer shadow-sm w-full"
+                          className="bg-white border border-indigo-200 text-slate-700 rounded-xl px-2 py-1.5 font-medium text-xs focus:outline-none cursor-pointer shadow-sm w-full"
                         >
                           <option value="">직급 미지정</option>
                           {(data.grades || []).map((g: any) => (
@@ -714,7 +975,7 @@ export default function AdminUsersPage() {
                           )}
                         </select>
                       ) : (
-                        <div className="px-2 py-1.5 text-slate-700 font-bold text-xs">
+                        <div className="px-2 py-1.5 text-slate-700 font-medium text-xs">
                           {u.grade || '직급 미지정'}
                         </div>
                       )}
@@ -730,7 +991,7 @@ export default function AdminUsersPage() {
                       <select
                         value={editDraft.unit_id}
                         onChange={(e) => setEditDraft({ ...editDraft, unit_id: e.target.value })}
-                        className={`p-2 border rounded-xl text-xs font-bold w-full max-w-[180px] outline-none cursor-pointer shadow-sm transition-all ${
+                        className={`p-2 border rounded-xl text-xs font-medium w-full max-w-[180px] outline-none cursor-pointer shadow-sm transition-all ${
                           !editDraft.unit_id
                             ? 'border-orange-200 text-orange-600 bg-orange-50/30'
                             : 'border-indigo-200 bg-white text-slate-700'
@@ -743,7 +1004,7 @@ export default function AdminUsersPage() {
                       </select>
                     ) : (
                       <div
-                        className={`px-2 py-1.5 rounded-xl text-xs font-bold max-w-[180px] ${
+                        className={`px-2 py-1.5 rounded-xl text-xs font-medium max-w-[180px] ${
                           isUnassigned(u)
                             ? 'text-orange-600 bg-orange-50/50'
                             : 'text-slate-700'
@@ -758,7 +1019,7 @@ export default function AdminUsersPage() {
                   <td className="p-4 text-center">
                     <div className="flex justify-center gap-1">
                       {parseRoles(u.roles).map((r: string) => (
-                        <span key={r} className="px-2 py-0.5 bg-blue-50 text-blue-600 rounded-md text-[9px] font-black border border-blue-100">{r}</span>
+                        <span key={r} className="px-2 py-0.5 bg-blue-50 text-blue-600 rounded-md text-[9px] font-medium border border-blue-100">{r}</span>
                       ))}
                     </div>
                   </td>
@@ -770,7 +1031,7 @@ export default function AdminUsersPage() {
                         const nextStatus = u.status?.toLowerCase() === 'active' ? 'Suspended' : 'Active';
                         handleUpdate(u.id, { status: nextStatus });
                       }}
-                      className={`px-3 py-1.5 rounded-full text-[10px] font-black transition-all ${
+                      className={`px-3 py-1.5 rounded-full text-[10px] font-medium transition-all ${
                         u.status?.toLowerCase() === 'active' 
                           ? 'bg-green-50 text-green-600 border border-green-200 hover:bg-green-100' 
                           : 'bg-rose-50 text-rose-600 border border-rose-200 hover:bg-rose-100'
@@ -788,7 +1049,7 @@ export default function AdminUsersPage() {
                           type="button"
                           disabled={editSaving}
                           onClick={saveEditUser}
-                          className="text-indigo-600 font-black text-xs hover:text-indigo-800 disabled:opacity-50"
+                          className="text-indigo-600 font-medium text-xs hover:text-indigo-800 disabled:opacity-50"
                         >
                           {editSaving ? '저장중' : '저장'}
                         </button>
@@ -796,7 +1057,7 @@ export default function AdminUsersPage() {
                           type="button"
                           disabled={editSaving}
                           onClick={cancelEditUser}
-                          className="text-slate-400 font-black text-xs hover:text-slate-600 disabled:opacity-50"
+                          className="text-slate-400 font-medium text-xs hover:text-slate-600 disabled:opacity-50"
                         >
                           취소
                         </button>
@@ -806,7 +1067,7 @@ export default function AdminUsersPage() {
                         <button
                           type="button"
                           onClick={() => startEditUser(u)}
-                          className="text-slate-700 font-black text-xs hover:text-indigo-600 transition-colors"
+                          className="text-slate-700 font-medium text-xs hover:text-indigo-600 transition-colors"
                         >
                           수정
                         </button>
@@ -819,11 +1080,11 @@ export default function AdminUsersPage() {
                             (roles[0] || 'LV_3');
                           setSelectedUser({ ...u, roles: [primary] });
                           setIsModalOpen(true);
-                        }} className="text-slate-500 font-black text-xs hover:text-blue-600 transition-colors">권한설정</button>
+                        }} className="text-slate-500 font-medium text-xs hover:text-blue-600 transition-colors">권한설정</button>
                         <button
                           type="button"
                           onClick={() => handleResetPassword(u)}
-                          className={`font-black text-xs transition-colors ${
+                          className={`font-medium text-xs transition-colors ${
                             u.must_reset_password
                               ? 'text-amber-500 hover:text-amber-700'
                               : 'text-amber-600 hover:text-amber-800'
@@ -840,7 +1101,7 @@ export default function AdminUsersPage() {
                           type="button"
                           onClick={() => handleDelete(u.id)}
                           disabled={!!meId && u.id === meId}
-                          className={`font-black text-xs transition-colors ${
+                          className={`font-medium text-xs transition-colors ${
                             meId && u.id === meId
                               ? 'text-slate-200 cursor-not-allowed'
                               : 'text-slate-300 hover:text-rose-600'
@@ -868,8 +1129,8 @@ export default function AdminUsersPage() {
       {isModalOpen && selectedUser && (
         <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-[100] p-4">
           <div className="bg-white p-8 rounded-[2.5rem] shadow-2xl w-full max-w-md animate-in fade-in zoom-in duration-200 border border-slate-100">
-            <h3 className="text-xl font-black text-slate-800 mb-2">{selectedUser.name} 님 권한 설정</h3>
-            <p className="text-[11px] font-bold text-slate-400 mb-5">권한 레벨은 하나만 선택할 수 있습니다.</p>
+            <h3 className="text-xl font-medium text-slate-800 mb-2">{selectedUser.name} 님 권한 설정</h3>
+            <p className="text-[11px] font-medium text-slate-400 mb-5">권한 레벨은 하나만 선택할 수 있습니다.</p>
             <div className="space-y-2.5 mb-6">
               {['LV_1', 'LV_2', 'LV_3'].map((role) => {
                 const selected = (selectedUser.roles?.[0] || 'LV_3') === role;
@@ -890,7 +1151,7 @@ export default function AdminUsersPage() {
                       onChange={() => setSelectedUser({ ...selectedUser, roles: [role] })}
                     />
                     <div>
-                      <span className="font-black text-slate-700 text-sm">{role}</span>
+                      <span className="font-medium text-slate-700 text-sm">{role}</span>
                       <p className="text-[10px] text-gray-400 mt-0.5">
                         {role === 'LV_1'
                           ? '[시스템 운영자]'
@@ -904,13 +1165,13 @@ export default function AdminUsersPage() {
               })}
             </div>
             <div className="flex gap-3">
-              <button onClick={() => setIsModalOpen(false)} className="flex-1 py-3 text-slate-400 font-bold text-sm hover:bg-slate-50 rounded-xl transition-colors">취소</button>
+              <button onClick={() => setIsModalOpen(false)} className="flex-1 py-3 text-slate-400 font-medium text-sm hover:bg-slate-50 rounded-xl transition-colors">취소</button>
               <button
                 onClick={() => {
                   const role = selectedUser.roles?.[0] || 'LV_3';
                   handleUpdate(selectedUser.id, { roles: [role] });
                 }}
-                className="flex-[2] py-3 bg-blue-600 text-white rounded-xl font-black shadow-lg shadow-blue-600/20 text-sm hover:bg-blue-700 transition-colors"
+                className="flex-[2] py-3 bg-blue-600 text-white rounded-xl font-medium shadow-lg shadow-blue-600/20 text-sm hover:bg-blue-700 transition-colors"
               >
                 설정 저장
               </button>
@@ -924,7 +1185,7 @@ export default function AdminUsersPage() {
         <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center z-[110] p-4">
           <div className="bg-white rounded-3xl shadow-2xl w-full max-w-2xl border border-slate-200/80 max-h-[92vh] overflow-hidden flex flex-col">
             <div className="px-8 pt-7 pb-5 border-b border-slate-100 shrink-0">
-              <h3 className="text-lg font-bold text-slate-900 tracking-tight">신규 인원 추가</h3>
+              <h3 className="text-lg font-medium text-slate-900 tracking-tight">신규 인원 추가</h3>
               <p className="text-sm text-slate-500 mt-1.5 leading-relaxed">
                 등록 후 임시 비밀번호가 발급됩니다. 사번을 넣으면 사번이 임시 비밀번호가 되고, 없으면 랜덤 임시 비밀번호가 발급됩니다. 다음 로그인 시 비밀번호 변경이 필요합니다.
               </p>
@@ -933,7 +1194,7 @@ export default function AdminUsersPage() {
             <div className="flex-1 overflow-y-auto px-8 py-6 space-y-5">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <label className="space-y-1.5">
-                  <span className="text-xs font-semibold text-slate-500">성명 (한글) *</span>
+                  <span className="text-xs font-medium text-slate-500">성명 (한글) *</span>
                   <input
                     type="text"
                     value={createForm.name}
@@ -943,7 +1204,7 @@ export default function AdminUsersPage() {
                   />
                 </label>
                 <label className="space-y-1.5">
-                  <span className="text-xs font-semibold text-slate-500">성명 (영문)</span>
+                  <span className="text-xs font-medium text-slate-500">성명 (영문)</span>
                   <input
                     type="text"
                     value={createForm.name_en}
@@ -955,7 +1216,7 @@ export default function AdminUsersPage() {
               </div>
 
               <label className="space-y-1.5 block">
-                <span className="text-xs font-semibold text-slate-500">사내메일 *</span>
+                <span className="text-xs font-medium text-slate-500">사내메일 *</span>
                 <div className="flex items-stretch overflow-hidden rounded-xl border border-slate-200 focus-within:border-indigo-400 focus-within:ring-2 focus-within:ring-indigo-100">
                   <input
                     type="text"
@@ -973,7 +1234,7 @@ export default function AdminUsersPage() {
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <label className="space-y-1.5">
-                  <span className="text-xs font-semibold text-slate-500">사번</span>
+                  <span className="text-xs font-medium text-slate-500">사번</span>
                   <input
                     type="text"
                     value={createForm.employee_no}
@@ -983,20 +1244,20 @@ export default function AdminUsersPage() {
                   />
                 </label>
                 <label className="space-y-1.5">
-                  <span className="text-xs font-semibold text-slate-500">내선번호</span>
+                  <span className="text-xs font-medium text-slate-500">내선번호</span>
                   <input
                     type="text"
                     value={createForm.extension}
                     onChange={(e) => setCreateForm({ ...createForm, extension: e.target.value })}
                     className="w-full px-3.5 py-2.5 border border-slate-200 rounded-xl text-sm font-mono outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100"
-                    placeholder="예: 1234"
+                    placeholder="예: 02-6973-0000"
                   />
                 </label>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <label className="space-y-1.5">
-                  <span className="text-xs font-semibold text-slate-500">소속</span>
+                  <span className="text-xs font-medium text-slate-500">소속</span>
                   <select
                     value={createForm.unit_id}
                     onChange={(e) => setCreateForm({ ...createForm, unit_id: e.target.value })}
@@ -1009,7 +1270,7 @@ export default function AdminUsersPage() {
                   </select>
                 </label>
                 <label className="space-y-1.5">
-                  <span className="text-xs font-semibold text-slate-500">권한 레벨</span>
+                  <span className="text-xs font-medium text-slate-500">권한 레벨</span>
                   <select
                     value={createForm.role}
                     onChange={(e) => setCreateForm({ ...createForm, role: e.target.value })}
@@ -1024,7 +1285,7 @@ export default function AdminUsersPage() {
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <label className="space-y-1.5">
-                  <span className="text-xs font-semibold text-slate-500">직책</span>
+                  <span className="text-xs font-medium text-slate-500">직책</span>
                   <select
                     value={createForm.duty}
                     onChange={(e) => setCreateForm({ ...createForm, duty: e.target.value })}
@@ -1037,7 +1298,7 @@ export default function AdminUsersPage() {
                   </select>
                 </label>
                 <label className="space-y-1.5">
-                  <span className="text-xs font-semibold text-slate-500">직급</span>
+                  <span className="text-xs font-medium text-slate-500">직급</span>
                   <select
                     value={createForm.grade}
                     onChange={(e) => setCreateForm({ ...createForm, grade: e.target.value })}
@@ -1052,7 +1313,7 @@ export default function AdminUsersPage() {
               </div>
 
               <label className="space-y-1.5 block max-w-xs">
-                <span className="text-xs font-semibold text-slate-500">계정 상태</span>
+                <span className="text-xs font-medium text-slate-500">계정 상태</span>
                 <select
                   value={createForm.status}
                   onChange={(e) => setCreateForm({ ...createForm, status: e.target.value })}
@@ -1069,7 +1330,7 @@ export default function AdminUsersPage() {
                 type="button"
                 disabled={createSaving}
                 onClick={() => setCreateModalOpen(false)}
-                className="px-5 py-2.5 rounded-xl border border-slate-200 bg-white text-sm font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+                className="px-5 py-2.5 rounded-xl border border-slate-200 bg-white text-sm font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-50"
               >
                 취소
               </button>
@@ -1077,7 +1338,7 @@ export default function AdminUsersPage() {
                 type="button"
                 disabled={createSaving}
                 onClick={handleCreateUser}
-                className="px-6 py-2.5 rounded-xl bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700 disabled:opacity-50 shadow-sm"
+                className="px-6 py-2.5 rounded-xl bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700 disabled:opacity-50 shadow-sm"
               >
                 {createSaving ? '등록 중…' : '등록'}
               </button>
@@ -1090,18 +1351,18 @@ export default function AdminUsersPage() {
       {tempPasswordModal && (
         <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center z-[110] p-4">
           <div className="bg-white p-8 rounded-[2.5rem] shadow-2xl w-full max-w-md border border-slate-100">
-            <h3 className="text-xl font-black text-slate-800 mb-2">임시 비밀번호 안내</h3>
-            <p className="text-xs font-bold text-slate-500 mb-5 leading-relaxed">
-              <span className="text-slate-800 font-black">{tempPasswordModal.name}</span>
+            <h3 className="text-xl font-medium text-slate-800 mb-2">임시 비밀번호 안내</h3>
+            <p className="text-xs font-medium text-slate-500 mb-5 leading-relaxed">
+              <span className="text-slate-800 font-medium">{tempPasswordModal.name}</span>
               {' '}({tempPasswordModal.email}) 님에게 아래 임시 비밀번호를 전달해 주세요.
               <br />
               로그인 후 반드시 새 비밀번호로 변경하도록 안내해 주세요.
             </p>
             <div className="bg-slate-50 border border-slate-200 rounded-2xl p-5 text-center mb-4">
-              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">
+              <p className="text-[10px] font-medium text-slate-400 uppercase tracking-widest mb-2">
                 Temporary Password
               </p>
-              <p className="text-2xl font-black font-mono tracking-wider text-indigo-700 select-all">
+              <p className="text-2xl font-medium font-mono tracking-wider text-indigo-700 select-all">
                 {tempPasswordModal.tempPassword}
               </p>
             </div>
@@ -1116,19 +1377,19 @@ export default function AdminUsersPage() {
                     alert('복사에 실패했습니다. 직접 선택해 복사해 주세요.');
                   }
                 }}
-                className="flex-1 py-3 bg-indigo-600 text-white rounded-xl font-black text-sm hover:bg-indigo-700 transition-colors"
+                className="flex-1 py-3 bg-indigo-600 text-white rounded-xl font-medium text-sm hover:bg-indigo-700 transition-colors"
               >
                 복사하기
               </button>
               <button
                 type="button"
                 onClick={() => setTempPasswordModal(null)}
-                className="flex-1 py-3 bg-slate-100 text-slate-600 rounded-xl font-black text-sm hover:bg-slate-200 transition-colors"
+                className="flex-1 py-3 bg-slate-100 text-slate-600 rounded-xl font-medium text-sm hover:bg-slate-200 transition-colors"
               >
                 닫기
               </button>
             </div>
-            <p className="text-[10px] font-bold text-rose-500 text-center mt-4">
+            <p className="text-[10px] font-medium text-rose-500 text-center mt-4">
               비번초기화 시 임시 비밀번호는 사번과 동일합니다. 안내 후 창을 닫아 주세요.
             </p>
           </div>
@@ -1140,10 +1401,10 @@ export default function AdminUsersPage() {
         <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center z-[110] p-4 sm:p-6">
           <div className="bg-white rounded-3xl shadow-2xl w-full max-w-6xl border border-slate-200/80 max-h-[92vh] overflow-hidden flex flex-col">
             <div className="px-8 pt-7 pb-5 border-b border-slate-100 shrink-0">
-              <h3 className="text-lg font-bold text-slate-900 tracking-tight">직책·직급 옵션 설정</h3>
+              <h3 className="text-lg font-medium text-slate-900 tracking-tight">직책·직급 옵션 설정</h3>
               <p className="text-sm text-slate-500 mt-1.5 leading-relaxed">
-                직책·직급 옵션입니다. 코드는 한글 입력 시 자동 채워지고, 한글명을 바꿔 저장하면
-                이미 등록된 사용자 직책/직급도 코드 기준으로 함께 갱신됩니다.
+                한글·영문만 수정하세요. 코드는 시스템 식별키라 수정할 수 없습니다.
+                (한글명을 바꿔 저장하면 같은 코드의 기존 사용자 직책/직급도 함께 갱신됩니다.)
               </p>
             </div>
 
@@ -1153,8 +1414,8 @@ export default function AdminUsersPage() {
                 <div className="lg:pr-8 space-y-4 pb-8 lg:pb-0 border-b border-slate-200 lg:border-b-0">
                   <div className="flex items-center justify-between gap-3">
                     <div>
-                      <h4 className="text-sm font-bold text-slate-800">직책</h4>
-                      <p className="text-xs text-slate-400 mt-0.5">코드 / 한글 / 영문</p>
+                      <h4 className="text-sm font-medium text-slate-800">직책</h4>
+                      <p className="text-xs text-slate-400 mt-0.5">코드(잠금) / 한글 / 영문(명함반영)</p>
                     </div>
                     <button
                       type="button"
@@ -1164,16 +1425,16 @@ export default function AdminUsersPage() {
                           duties: [...jobOptionsModal.duties, { code: '', label: '', value: '' }],
                         })
                       }
-                      className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-xs font-semibold text-slate-700 hover:bg-slate-50 hover:border-slate-300 transition-colors"
+                      className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-xs font-medium text-slate-700 hover:bg-slate-50 hover:border-slate-300 transition-colors"
                     >
                       + 추가
                     </button>
                   </div>
 
                   <div className="grid grid-cols-[7.5rem_1fr_1fr_2.5rem] gap-2 px-1">
-                    <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">코드</span>
-                    <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">한글</span>
-                    <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">영문</span>
+                    <span className="text-[11px] font-medium text-slate-400 uppercase tracking-wider">코드</span>
+                    <span className="text-[11px] font-medium text-slate-400 uppercase tracking-wider">한글</span>
+                    <span className="text-[11px] font-medium text-slate-400 tracking-wider">영문(명함반영)</span>
                     <span />
                   </div>
 
@@ -1182,15 +1443,12 @@ export default function AdminUsersPage() {
                       <div key={`duty-${idx}`} className="grid grid-cols-[7.5rem_1fr_1fr_2.5rem] gap-2 items-center">
                         <input
                           type="text"
+                          readOnly
+                          tabIndex={-1}
                           placeholder="자동"
                           value={row.code || ''}
-                          onChange={(e) => {
-                            const next = [...jobOptionsModal.duties];
-                            next[idx] = { ...next[idx], code: e.target.value };
-                            setJobOptionsModal({ ...jobOptionsModal, duties: next });
-                          }}
-                          className="w-full px-2.5 py-2.5 border border-slate-200 rounded-xl text-xs text-slate-700 font-mono bg-slate-50/50 outline-none focus:bg-white focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 transition-colors"
-                          title="한글 입력 시 자동 채움 · 필요 시만 직접 수정"
+                          className="w-full px-2.5 py-2.5 border border-slate-100 rounded-xl text-xs text-slate-400 font-mono bg-slate-100/80 outline-none cursor-default select-all"
+                          title="시스템 식별 코드 · 수정 불가"
                         />
                         <input
                           type="text"
@@ -1200,16 +1458,13 @@ export default function AdminUsersPage() {
                             const label = e.target.value;
                             const next = [...jobOptionsModal.duties];
                             const prev = next[idx];
-                            const prevAuto = suggestDutyCode(prev.label);
-                            // 코드가 비었거나, 이전 한글에서 자동 채운 값이면 새 한글에 맞춰 갱신
-                            const codeStillAuto =
-                              !String(prev.code || '').trim() ||
-                              String(prev.code || '').trim() === prevAuto;
+                            // 신규(코드 없음)일 때만 한글→코드 자동 부여. 기존 코드는 절대 바꾸지 않음
+                            const hadCode = !!String(prev.code || '').trim();
                             const suggested = suggestDutyCode(label);
                             next[idx] = {
                               ...prev,
                               label,
-                              code: codeStillAuto && suggested ? suggested : prev.code,
+                              code: hadCode ? prev.code : suggested || prev.code,
                             };
                             setJobOptionsModal({ ...jobOptionsModal, duties: next });
                           }}
@@ -1254,8 +1509,8 @@ export default function AdminUsersPage() {
                 <div className="lg:pl-8 space-y-4 pt-8 lg:pt-0">
                   <div className="flex items-center justify-between gap-3">
                     <div>
-                      <h4 className="text-sm font-bold text-slate-800">직급</h4>
-                      <p className="text-xs text-slate-400 mt-0.5">코드 / 한글 / 영문</p>
+                      <h4 className="text-sm font-medium text-slate-800">직급</h4>
+                      <p className="text-xs text-slate-400 mt-0.5">코드(잠금) / 한글 / 영문(명함반영)</p>
                     </div>
                     <button
                       type="button"
@@ -1265,16 +1520,16 @@ export default function AdminUsersPage() {
                           grades: [...jobOptionsModal.grades, { code: '', label: '', value: '' }],
                         })
                       }
-                      className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-xs font-semibold text-slate-700 hover:bg-slate-50 hover:border-slate-300 transition-colors"
+                      className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-xs font-medium text-slate-700 hover:bg-slate-50 hover:border-slate-300 transition-colors"
                     >
                       + 추가
                     </button>
                   </div>
 
                   <div className="grid grid-cols-[7.5rem_1fr_1fr_2.5rem] gap-2 px-1">
-                    <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">코드</span>
-                    <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">한글</span>
-                    <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">영문</span>
+                    <span className="text-[11px] font-medium text-slate-400 uppercase tracking-wider">코드</span>
+                    <span className="text-[11px] font-medium text-slate-400 uppercase tracking-wider">한글</span>
+                    <span className="text-[11px] font-medium text-slate-400 tracking-wider">영문(명함반영)</span>
                     <span />
                   </div>
 
@@ -1283,15 +1538,12 @@ export default function AdminUsersPage() {
                       <div key={`grade-${idx}`} className="grid grid-cols-[7.5rem_1fr_1fr_2.5rem] gap-2 items-center">
                         <input
                           type="text"
+                          readOnly
+                          tabIndex={-1}
                           placeholder="자동"
                           value={row.code || ''}
-                          onChange={(e) => {
-                            const next = [...jobOptionsModal.grades];
-                            next[idx] = { ...next[idx], code: e.target.value };
-                            setJobOptionsModal({ ...jobOptionsModal, grades: next });
-                          }}
-                          className="w-full px-2.5 py-2.5 border border-slate-200 rounded-xl text-xs text-slate-700 font-mono bg-slate-50/50 outline-none focus:bg-white focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 transition-colors"
-                          title="한글 입력 시 자동 채움 · 필요 시만 직접 수정"
+                          className="w-full px-2.5 py-2.5 border border-slate-100 rounded-xl text-xs text-slate-400 font-mono bg-slate-100/80 outline-none cursor-default select-all"
+                          title="시스템 식별 코드 · 수정 불가"
                         />
                         <input
                           type="text"
@@ -1301,15 +1553,12 @@ export default function AdminUsersPage() {
                             const label = e.target.value;
                             const next = [...jobOptionsModal.grades];
                             const prev = next[idx];
-                            const prevAuto = suggestGradeCode(prev.label);
-                            const codeStillAuto =
-                              !String(prev.code || '').trim() ||
-                              String(prev.code || '').trim() === prevAuto;
+                            const hadCode = !!String(prev.code || '').trim();
                             const suggested = suggestGradeCode(label);
                             next[idx] = {
                               ...prev,
                               label,
-                              code: codeStillAuto && suggested ? suggested : prev.code,
+                              code: hadCode ? prev.code : suggested || prev.code,
                             };
                             setJobOptionsModal({ ...jobOptionsModal, grades: next });
                           }}
@@ -1357,7 +1606,7 @@ export default function AdminUsersPage() {
                 type="button"
                 disabled={jobOptionsSaving}
                 onClick={handleRestoreJobOptions}
-                className="px-4 py-2.5 rounded-xl border border-slate-200 bg-white text-sm font-semibold text-slate-600 hover:bg-slate-50 hover:border-slate-300 disabled:opacity-50 transition-colors"
+                className="px-4 py-2.5 rounded-xl border border-slate-200 bg-white text-sm font-medium text-slate-600 hover:bg-slate-50 hover:border-slate-300 disabled:opacity-50 transition-colors"
               >
                 시드 기본값 복구
               </button>
@@ -1366,7 +1615,7 @@ export default function AdminUsersPage() {
                   type="button"
                   disabled={jobOptionsSaving}
                   onClick={() => setJobOptionsModal(null)}
-                  className="px-5 py-2.5 rounded-xl border border-slate-200 bg-white text-sm font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-50 transition-colors"
+                  className="px-5 py-2.5 rounded-xl border border-slate-200 bg-white text-sm font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-50 transition-colors"
                 >
                   취소
                 </button>
@@ -1374,7 +1623,7 @@ export default function AdminUsersPage() {
                   type="button"
                   disabled={jobOptionsSaving}
                   onClick={handleSaveJobOptions}
-                  className="px-6 py-2.5 rounded-xl bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700 disabled:opacity-50 shadow-sm transition-colors"
+                  className="px-6 py-2.5 rounded-xl bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700 disabled:opacity-50 shadow-sm transition-colors"
                 >
                   {jobOptionsSaving ? '저장 중…' : '저장'}
                 </button>

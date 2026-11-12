@@ -5,6 +5,10 @@ import bcrypt from 'bcrypt';
 import prisma from '@/lib/prisma';
 import { parseKSTDeadline } from '@/utils/dateUtils';
 import { authorizeAnyMenuPaths, authorizeApi } from '@/lib/server-auth-guard';
+import {
+  autoPauseExpiredDeliverySurveys,
+  autoPauseDeliverySurveyIfExpired,
+} from '@/lib/survey-auto-pause';
 
 import { JWT_SECRET } from '@/lib/jwt';
 import { buildInterfacePermissionSummary } from '@/lib/interface-permission-summary';
@@ -223,8 +227,11 @@ export async function GET() {
       return NextResponse.json({ error: '로그인 후 이용할 수 있습니다.' }, { status: 401 });
     }
 
+    // 기간 종료된 진행중 공고 → 자동 내리기(기간종료)
+    await autoPauseExpiredDeliverySurveys();
+
     const surveys = await prisma.deliverySurvey.findMany({
-      orderBy: { postNumber: 'asc' },
+      orderBy: { code: 'asc' },
     });
 
     const deliveryManager = auth.isAdmin ? true : !!(await tryDeliveryManagerAuth(false));
@@ -506,13 +513,15 @@ if (action === 'SUBMIT_RESPONSE') {
   
   const survey = await prisma.deliverySurvey.findUnique({ where: { id: surveyId } });
   if (!survey) return NextResponse.json({ error: '존재하지 않는 설문입니다.' }, { status: 404 });
-  if (survey.status !== '진행중') {
-    return NextResponse.json({ error: '진행 중인 공고만 제출할 수 있습니다.' }, { status: 403 });
-  }
-  
+
   const deadline = parseKSTDeadline(survey.endDate, survey.endTime);
   if (Number.isNaN(deadline.getTime()) || Date.now() > deadline.getTime()) {
+    await autoPauseDeliverySurveyIfExpired(survey);
     return NextResponse.json({ error: '제출 기한이 만료되었습니다.' }, { status: 403 });
+  }
+
+  if (survey.status !== '진행중') {
+    return NextResponse.json({ error: '진행 중인 공고만 제출할 수 있습니다.' }, { status: 403 });
   }
 
   if (!auth.isAdmin) {
@@ -709,7 +718,30 @@ const isNew = typeof id === 'string' && id.startsWith('D_');
 const cleaned = stripControlFields(rest);
 const sanitizedQuestions = cleaned.questions 
   ? (typeof cleaned.questions === 'string' ? JSON.parse(cleaned.questions) : cleaned.questions) 
-  : undefined; 
+  : undefined;
+
+// 진행중 유지 업데이트 차단 · 종료처리(완료)는 내리기(게시중단/기간종료) 후에만 허용
+if (!isNew && id) {
+  const existing = await prisma.deliverySurvey.findUnique({
+    where: { id: String(id) },
+    select: { status: true },
+  });
+  if (existing?.status === '진행중') {
+    const nextStatus = cleaned.status != null ? String(cleaned.status) : '진행중';
+    if (nextStatus === '진행중') {
+      return NextResponse.json(
+        { error: '진행 중에는 기본 정보·문항을 수정할 수 없습니다. 게시 내리기 후 수정해 주세요.' },
+        { status: 403 }
+      );
+    }
+    if (nextStatus === '완료') {
+      return NextResponse.json(
+        { error: '종료처리는 게시를 내린 후에만 가능합니다.' },
+        { status: 403 }
+      );
+    }
+  }
+}
   
 const updateData: any = { ...cleaned };
 if (sanitizedQuestions !== undefined) updateData.questions = sanitizedQuestions;
@@ -745,14 +777,17 @@ return NextResponse.json(resultSurvey);
   }
 }
 
-// 🔴 [DELETE] 배달 공고 영구 삭제 (최고 관리자 전용)
+// 🔴 [DELETE] 배달 공고 영구 삭제 (LV_1 또는 해당 메뉴 Edit)
 export async function DELETE(req: NextRequest) {
   try {
     const auth = await getAuth();
-    if (!auth.isAdmin) return NextResponse.json({ error: '권한이 없습니다.' }, { status: 403 });
-
     const { searchParams } = new URL(req.url);
     const id = searchParams.get('id');
+    const menuPath = searchParams.get('menuPath');
+    const editorOk = !!(await tryDeliveryEditorOnPath(menuPath));
+    if (!auth.isAdmin && !editorOk) {
+      return NextResponse.json({ error: '권한이 없습니다.' }, { status: 403 });
+    }
     if (!id) return NextResponse.json({ error: 'ID 파라미터 누락' }, { status: 400 });
       
     await prisma.deliverySurvey.delete({ where: { id: id } });

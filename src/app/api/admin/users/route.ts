@@ -117,6 +117,47 @@ async function writeJobOptions(duties: UserJobOption[], grades: UserJobOption[])
   );
 }
 
+/**
+ * 이미 저장된 옵션 코드는 클라이언트가 바꿔 보내도 유지.
+ * (한글 라벨이 같으면 이전 코드로 복구, 같은 코드면 표기만 정규화)
+ */
+function lockExistingJobOptionCodes(
+  incoming: UserJobOption[],
+  previous: UserJobOption[],
+  normalizeCode: (c: unknown) => string
+): UserJobOption[] {
+  const prevByCode = new Map(
+    previous
+      .map((p) => {
+        const code = normalizeCode(p.code);
+        return code ? ([code, String(p.code || '').trim()] as const) : null;
+      })
+      .filter((x): x is readonly [string, string] => !!x)
+  );
+  const prevByLabel = new Map(
+    previous
+      .map((p) => {
+        const label = String(p.label || '').trim();
+        const code = normalizeCode(p.code);
+        return label && code ? ([label, String(p.code || '').trim()] as const) : null;
+      })
+      .filter((x): x is readonly [string, string] => !!x)
+  );
+
+  return incoming.map((row) => {
+    const label = String(row.label || '').trim();
+    const codeKey = normalizeCode(row.code);
+    if (codeKey && prevByCode.has(codeKey)) {
+      return { ...row, code: prevByCode.get(codeKey)! };
+    }
+    const byLabel = label ? prevByLabel.get(label) : undefined;
+    if (byLabel) {
+      return { ...row, code: byLabel };
+    }
+    return row;
+  });
+}
+
 /** 시드 코드가 빠졌으면 기본값으로 보강 (한글·영문은 요청값이 있으면 유지) */
 function ensureSeedJobOptions(
   list: UserJobOption[],
@@ -254,71 +295,109 @@ export async function GET() {
   }
 }
 
-// [POST] 관리자 신규 인원 등록
-export async function POST(req: Request) {
+type CreateUserInput = {
+  name: string;
+  name_en?: string;
+  employee_no?: string;
+  extension?: string;
+  email?: string | null;
+  emailLocal?: string | null;
+  unit_id?: string | null;
+  unitName?: string | null;
+  duty?: string;
+  duty_en?: string;
+  grade?: string;
+  grade_en?: string;
+  role?: string;
+  roles?: unknown;
+  status?: string;
+};
+
+async function createOneAdminUser(
+  body: CreateUserInput,
+  opts?: {
+    unitsByName?: Map<string, string>;
+    duties?: UserJobOption[];
+    grades?: UserJobOption[];
+  }
+) {
+  const name = String(body.name ?? '').trim();
+  const name_en = String(body.name_en ?? '').trim();
+  const employee_no = String(body.employee_no ?? '').trim();
+  const extension = String(body.extension ?? '').trim();
+  const email = resolveCompanyEmail(body.email ?? body.emailLocal);
+
+  let unit_id = body.unit_id ? String(body.unit_id) : null;
+  if (!unit_id && body.unitName) {
+    const key = String(body.unitName).trim();
+    unit_id = opts?.unitsByName?.get(key) || null;
+    if (key && !unit_id) {
+      return { ok: false as const, status: 400, message: `조직을 찾을 수 없습니다: ${key}` };
+    }
+  }
+
+  let duty = String(body.duty ?? '').trim();
+  let duty_en = String(body.duty_en ?? '').trim();
+  let grade = String(body.grade ?? '').trim();
+  let grade_en = String(body.grade_en ?? '').trim();
+
+  if (duty && !duty_en && opts?.duties) {
+    duty_en = opts.duties.find((d) => d.label === duty)?.value || '';
+  }
+  if (grade && !grade_en && opts?.grades) {
+    grade_en = opts.grades.find((g) => g.label === grade)?.value || '';
+  }
+
+  const role = normalizeRolesInput(
+    Array.isArray(body.roles) ? body.roles : body.role || body.roles
+  )[0];
+
+  const statusRaw = String(body.status ?? 'Active').trim();
+  const status = statusRaw.toLowerCase() === 'suspended' ? 'Suspended' : 'Active';
+
+  if (!name || !email) {
+    return {
+      ok: false as const,
+      status: 400,
+      message: `성명과 사내메일(${COMPANY_EMAIL_SUFFIX})은 필수입니다.`,
+    };
+  }
+
+  const existing = await prisma.user.findFirst({
+    where: { email: { equals: email, mode: 'insensitive' } },
+  });
+  if (existing) {
+    return { ok: false as const, status: 409, message: '이미 등록된 이메일입니다.', email };
+  }
+
   try {
-    await authorizeAdminApi();
-
-    const body = await req.json();
-    const name = String(body.name ?? '').trim();
-    const name_en = String(body.name_en ?? '').trim();
-    const employee_no = String(body.employee_no ?? '').trim();
-    const extension = String(body.extension ?? '').trim();
-    const email = resolveCompanyEmail(body.email ?? body.emailLocal);
-    const unit_id = body.unit_id ? String(body.unit_id) : null;
-    const duty = String(body.duty ?? '').trim();
-    const duty_en = String(body.duty_en ?? '').trim();
-    const grade = String(body.grade ?? '').trim();
-    const grade_en = String(body.grade_en ?? '').trim();
-
-    const role = normalizeRolesInput(
-      Array.isArray(body.roles) ? body.roles : body.role || body.roles
-    )[0];
-
-    const statusRaw = String(body.status ?? 'Active').trim();
-    const status =
-      statusRaw.toLowerCase() === 'suspended' ? 'Suspended' : 'Active';
-
-    if (!name || !email) {
-      return NextResponse.json(
-        { message: `성명과 사내메일(${COMPANY_EMAIL_SUFFIX})은 필수입니다.` },
-        { status: 400 }
-      );
+    await assertEmployeeNoAvailable(employee_no);
+  } catch (e: any) {
+    if (e?.message === 'EMPLOYEE_NO_DUP') {
+      return {
+        ok: false as const,
+        status: 409,
+        message: `이미 사용 중인 사번입니다.${e.clashName ? ` (${e.clashName})` : ''}`,
+        email,
+      };
     }
+    throw e;
+  }
 
-    const existing = await prisma.user.findFirst({
-      where: { email: { equals: email, mode: 'insensitive' } },
+  if (unit_id) {
+    const unit = await prisma.orgUnit.findFirst({
+      where: { id: unit_id, is_deleted: false },
+      select: { id: true },
     });
-    if (existing) {
-      return NextResponse.json({ message: '이미 등록된 이메일입니다.' }, { status: 409 });
+    if (!unit) {
+      return { ok: false as const, status: 400, message: '선택한 조직을 찾을 수 없습니다.', email };
     }
+  }
 
-    try {
-      await assertEmployeeNoAvailable(employee_no);
-    } catch (e: any) {
-      if (e?.message === 'EMPLOYEE_NO_DUP') {
-        return NextResponse.json(
-          { message: `이미 사용 중인 사번입니다.${e.clashName ? ` (${e.clashName})` : ''}` },
-          { status: 409 }
-        );
-      }
-      throw e;
-    }
+  const tempPassword = employee_no || generateTempPassword(10);
+  const hashed = await bcrypt.hash(tempPassword, 10);
 
-    if (unit_id) {
-      const unit = await prisma.orgUnit.findFirst({
-        where: { id: unit_id, is_deleted: false },
-        select: { id: true },
-      });
-      if (!unit) {
-        return NextResponse.json({ message: '선택한 조직을 찾을 수 없습니다.' }, { status: 400 });
-      }
-    }
-
-    // 임시 비밀번호: 사번 우선, 없으면 랜덤 · 다음 로그인 강제 변경
-    const tempPassword = employee_no || generateTempPassword(10);
-    const hashed = await bcrypt.hash(tempPassword, 10);
-
+  try {
     const user = await prisma.user.create({
       data: {
         email,
@@ -341,10 +420,125 @@ export async function POST(req: Request) {
       },
     });
 
-    return NextResponse.json({
-      message: '신규 인원이 등록되었습니다.',
+    return {
+      ok: true as const,
       user,
       tempPassword,
+      email,
+    };
+  } catch (e: any) {
+    // 동시 등록·레이스 시 unique 제약
+    if (e?.code === 'P2002') {
+      const targets = Array.isArray(e?.meta?.target) ? e.meta.target.map(String) : [];
+      if (targets.some((t: string) => t.toLowerCase().includes('email'))) {
+        return { ok: false as const, status: 409, message: '이미 등록된 이메일입니다.', email };
+      }
+      if (targets.some((t: string) => t.toLowerCase().includes('employee'))) {
+        return { ok: false as const, status: 409, message: '이미 사용 중인 사번입니다.', email };
+      }
+      return { ok: false as const, status: 409, message: '이미 등록된 이메일입니다.', email };
+    }
+    throw e;
+  }
+}
+
+// [POST] 관리자 신규 인원 등록 / 엑셀 일괄 등록
+export async function POST(req: Request) {
+  try {
+    await authorizeAdminApi();
+
+    const body = await req.json();
+
+    if (body?.action === 'bulkCreate') {
+      const rows = Array.isArray(body.users) ? body.users : [];
+      if (rows.length === 0) {
+        return NextResponse.json({ message: '등록할 행이 없습니다.' }, { status: 400 });
+      }
+      if (rows.length > 200) {
+        return NextResponse.json({ message: '한 번에 200명까지 등록할 수 있습니다.' }, { status: 400 });
+      }
+
+      const [units, jobOptions] = await Promise.all([
+        prisma.orgUnit.findMany({
+          where: { is_deleted: false, is_active: true },
+          select: { id: true, unit_name: true },
+        }),
+        readJobOptions(),
+      ]);
+      const unitsByName = new Map(
+        units
+          .map((u) => [String(u.unit_name || '').trim(), u.id] as const)
+          .filter(([name]) => !!name)
+      );
+
+      const created: Array<{ email: string; name: string; tempPassword: string }> = [];
+      const failed: Array<{ row: number; email?: string; message: string }> = [];
+      const skippedDuplicate: Array<{ row: number; email: string; reason: string }> = [];
+      const seenEmails = new Set<string>();
+
+      for (let i = 0; i < rows.length; i += 1) {
+        const row = rows[i] || {};
+        const emailKey = resolveCompanyEmail(row.email ?? row.emailLocal)?.toLowerCase() || '';
+        if (emailKey && seenEmails.has(emailKey)) {
+          skippedDuplicate.push({
+            row: i + 1,
+            email: emailKey,
+            reason: '엑셀 내 중복 이메일',
+          });
+          failed.push({
+            row: i + 1,
+            email: emailKey,
+            message: '엑셀 내 중복 이메일이라 건너뛰었습니다.',
+          });
+          continue;
+        }
+
+        const result = await createOneAdminUser(row, {
+          unitsByName,
+          duties: jobOptions.duties,
+          grades: jobOptions.grades,
+        });
+        if (!result.ok) {
+          if (result.status === 409 && result.message.includes('이메일')) {
+            skippedDuplicate.push({
+              row: i + 1,
+              email: result.email || emailKey,
+              reason: '이미 등록된 이메일',
+            });
+          }
+          failed.push({
+            row: i + 1,
+            email: result.email,
+            message: result.message,
+          });
+          continue;
+        }
+        if (result.email) seenEmails.add(String(result.email).toLowerCase());
+        else if (emailKey) seenEmails.add(emailKey);
+        created.push({
+          email: result.email || result.user.email,
+          name: result.user.name,
+          tempPassword: result.tempPassword,
+        });
+      }
+
+      return NextResponse.json({
+        message: `일괄 등록 완료 (성공 ${created.length} · 실패 ${failed.length} · 이메일중복제외 ${skippedDuplicate.length})`,
+        created,
+        failed,
+        skippedDuplicate,
+      });
+    }
+
+    const result = await createOneAdminUser(body);
+    if (!result.ok) {
+      return NextResponse.json({ message: result.message }, { status: result.status });
+    }
+
+    return NextResponse.json({
+      message: '신규 인원이 등록되었습니다.',
+      user: result.user,
+      tempPassword: result.tempPassword,
       kind: 'reset',
     });
   } catch (error) {
@@ -367,8 +561,17 @@ export async function PATCH(req: Request) {
 
     // 직책·직급 옵션 저장 (/admin/users 전용)
     if (action === 'saveJobOptions') {
-      const duties = normalizeUserDutyOptions(body.duties);
-      const grades = normalizeUserGradeOptions(body.grades);
+      const prev = await readJobOptions();
+      const duties = lockExistingJobOptionCodes(
+        normalizeUserDutyOptions(body.duties),
+        prev.duties,
+        normalizeDutyCode
+      );
+      const grades = lockExistingJobOptionCodes(
+        normalizeUserGradeOptions(body.grades),
+        prev.grades,
+        normalizeGradeCode
+      );
       if (duties.length === 0 && grades.length === 0) {
         return NextResponse.json({ message: '직책/직급 옵션이 비어 있습니다.' }, { status: 400 });
       }
@@ -382,7 +585,6 @@ export async function PATCH(req: Request) {
         DEFAULT_USER_GRADE_OPTIONS,
         normalizeGradeCode
       );
-      const prev = await readJobOptions();
       const synced = await syncUsersToJobOptions(prev, nextDuties, nextGrades);
       await writeJobOptions(nextDuties, nextGrades);
       const saved = await readJobOptions();

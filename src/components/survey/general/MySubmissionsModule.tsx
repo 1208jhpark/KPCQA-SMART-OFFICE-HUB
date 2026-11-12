@@ -16,11 +16,11 @@ import { normalizeGeneralResponsesPayload } from '@/utils/surveyGeneralResponses
      
 // 🚀 [UI 표준 지침] 전사 공통 Header 컴포넌트 분리 선언
 const HeaderLight = ({ title, count, children }: { title: string, count: number, children?: React.ReactNode }) => (
-  <div className="p-4 px-6 bg-slate-200/70 border-b border-slate-300 flex flex-wrap items-center justify-between gap-4">
+  <div className="p-4 px-6 bg-gradient-to-r from-blue-700 to-indigo-800 border-b border-blue-800/60 flex flex-wrap items-center justify-between gap-4">
     <div className="flex items-center gap-2">
-      <div className="w-2.5 h-2.5 rounded-full bg-blue-600"></div>
-      <h2 className="text-xs font-black text-slate-800 tracking-tight">{title}</h2>
-      <span className="text-[11px] font-bold bg-slate-300/80 text-slate-700 px-2 py-0.5 rounded-md">{count}건</span>
+      <span className="text-sky-300 text-[10px] leading-none">●</span>
+      <h2 className="text-sm font-medium text-white tracking-tight">{title}</h2>
+      <span className="text-[11px] font-medium bg-white/15 text-blue-100 px-2.5 py-0.5 rounded-full border border-white/20">{count}건</span>
     </div>
     {children}
   </div>
@@ -217,7 +217,7 @@ export default function MySubmissionsModule() {
         const myRes = myResponses[s.id];
         if (!myRes) return false;
         if (myRes.isApproved) return true;
-        if (s.status === '진행중' || s.status === '게시중단') return false;
+        if (s.status === '진행중' || s.status === '게시중단' || s.status === '기간종료') return false;
         // 관리자가 명시적으로 마감(완료/보관됨) 처리한 것만 보관함으로 이동
         return s.status === '완료' || s.status === '보관됨';
       })
@@ -556,11 +556,11 @@ const handlePrevSection = () => {
         </div>
       </div>
   
-      <div className="bg-white border border-slate-200 rounded-[2.5rem] shadow-sm overflow-hidden mt-6">
+      <div className="bg-white border border-slate-200 rounded-lg shadow-sm overflow-hidden mt-6">
         <HeaderLight title="내가 제출한 설문 리스트" count={eligibleSurveys.length} />
   
         <div className="overflow-x-auto">
-          <table className="w-full table-fixed text-left border-collapse text-[11px] font-bold text-slate-700">
+          <table className="w-full table-fixed text-left border-collapse text-[11px] font-medium text-slate-700">
             <colgroup>
               <col className="w-[4%]" />
               <col className="w-[8%]" />
@@ -572,10 +572,10 @@ const handlePrevSection = () => {
               <col className="w-[18%]" />
               <col className="w-[14%]" />
             </colgroup>
-            <thead className="bg-slate-100 text-slate-700 text-[11px] font-bold border-b border-slate-200">
+            <thead className="bg-slate-100 text-slate-700 text-[11px] font-medium border-b border-slate-200">
               <tr>
                 <th className="py-3 pl-4 text-center">NO</th>
-                <th className="py-3 px-2 text-center">게시번호</th>
+                <th className="py-3 px-2 text-center">식별코드</th>
                 <th className="py-3 px-2 text-center">게시일</th>
                 <th className="py-3 px-3 text-left">게시명</th>
                 <th className="py-3 px-2 text-center">익명여부</th>
@@ -606,13 +606,13 @@ const handlePrevSection = () => {
                 return (
                   <tr key={survey.id} className={`transition-colors h-14 ${isTimeOver ? 'bg-slate-50/70 opacity-60 grayscale' : 'hover:bg-slate-50/50'}`}>
                     <td className="text-center text-slate-400 pl-4">{eligibleSurveys.length - ((eligiblePage - 1) * eligibleItemsPerPage + index)}</td>
-                    <td className="text-center text-slate-500">{survey.postNumber || '-'}</td>
+                    <td className="text-center font-mono text-slate-500 whitespace-nowrap">{survey.code || '-'}</td>
                     <td className="text-center text-slate-500 whitespace-nowrap">{survey.postDate}</td>
                     <td className="px-3">
                       <div className="flex items-center gap-2 min-w-0">
                         <span className={`truncate ${isTimeOver ? 'text-slate-500' : 'text-slate-900'}`}>{survey.title}</span>
                         {dDayText && (
-                          <span className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded font-bold animate-pulse ${
+                          <span className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded font-medium animate-pulse ${
                             dDayText === 'D-Day' 
                               ? 'bg-red-600 text-white' 
                               : 'bg-amber-400 text-amber-950'
@@ -620,7 +620,7 @@ const handlePrevSection = () => {
                             {dDayText}
                           </span>
                         )}
-                        {isTimeOver && <span className="shrink-0 bg-slate-500 text-white text-[10px] px-1.5 py-0.5 rounded font-bold">종료됨</span>}
+                        {isTimeOver && <span className="shrink-0 bg-slate-500 text-white text-[10px] px-1.5 py-0.5 rounded font-medium">종료됨</span>}
                       </div>
                     </td>
                     <td className="text-center">
@@ -640,11 +640,11 @@ const handlePrevSection = () => {
                     </td>
                     <td className="text-center pr-4">
                       {isTimeOver ? (
-                        <button disabled className="w-full py-1.5 rounded-lg text-[11px] font-bold shadow-sm border bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed">
+                        <button disabled className="w-full py-1.5 rounded-lg text-[11px] font-medium shadow-sm border bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed">
                           기간종료 (수정불가)
                         </button>
                       ) : (
-                        <button onClick={() => handleOpenSurvey(survey, true)} disabled={isAnonymousAndSubmitted} className={`w-full py-1.5 rounded-lg text-[11px] font-bold transition-all shadow-sm border ${isAnonymousAndSubmitted ? 'bg-slate-50 border-slate-200 text-slate-300 cursor-not-allowed line-through' : 'bg-white border-blue-200 text-blue-600 hover:bg-blue-50'}`}>
+                        <button onClick={() => handleOpenSurvey(survey, true)} disabled={isAnonymousAndSubmitted} className={`w-full py-1.5 rounded-lg text-[11px] font-medium transition-all shadow-sm border ${isAnonymousAndSubmitted ? 'bg-slate-50 border-slate-200 text-slate-300 cursor-not-allowed line-through' : 'bg-white border-blue-200 text-blue-600 hover:bg-blue-50'}`}>
                           {isAnonymousAndSubmitted ? '익명 서식 변경 불가' : '답변 내역 수정'}
                         </button>
                       )}
@@ -665,194 +665,240 @@ const handlePrevSection = () => {
         )}
       </div>
      
-{/* 📁 참여 이력 보관함 — 토글 헤더 + 본문을 한 카드로 연결 */}
-<div className="mt-8 rounded-2xl border border-slate-400 shadow-sm overflow-hidden">
-<div 
-  onClick={() => setIsHistoryOpen(!isHistoryOpen)} 
-  className={`w-full bg-slate-200 p-4 px-7 cursor-pointer hover:bg-slate-200/70 active:scale-[0.995] transition-all select-none flex items-center justify-between gap-6 ${isHistoryOpen ? 'border-b border-slate-300' : ''}`}
->
-  <div className="flex items-center gap-4 flex-1 min-w-0">
-    {/* 🎯 타이틀 & 펼치기 상태 뱃지 (기본 다크 그레이 text-slate-800 적용) */}
-    <h2 className="text-base font-black tracking-tight text-slate-800 flex items-center gap-2.5 shrink-0">
-      📁 나의 참여 이력 보관함
-      <span className="text-[10px] bg-slate-200 text-slate-600 px-2 py-0.5 rounded-md font-bold border border-slate-300">
-        {isHistoryOpen ? '▲ 접기' : '▼ 펼치기'}
-      </span>
-    </h2>
-    
-    {/* 💡 구역 구분용 얇은 버티컬 라인 */}
-    <div className="w-px h-3.5 bg-slate-300 shrink-0 hidden md:block" />
-    
-    {/* 📝 서브 설명 (기본 slate-500으로 처음부터 또렷하게 노출) */}
-    <p className="text-slate-500 text-xs font-semibold opacity-90 truncate hidden md:block">
-      공고 기한이 최종 마감되어 보관 처리된 설문/조사 결과 열람 전용 내역
-    </p>
-  </div>
+{/* 📁 참여 이력 보관함 — 소모품 지급요청 내역과 동일 톤 */}
+      <div className="mt-6 bg-white border border-slate-200 rounded-lg shadow-sm overflow-hidden animate-in fade-in duration-300 slide-in-from-top-4">
+        <div
+          className={`p-4 px-6 bg-slate-200/70 flex flex-wrap items-center justify-between gap-4 ${
+            isHistoryOpen ? 'border-b border-slate-300' : ''
+          }`}
+        >
+          <div className="flex items-center gap-2 flex-wrap min-w-0">
+            <button
+              type="button"
+              onClick={() => setIsHistoryOpen((v) => !v)}
+              className="inline-flex items-center gap-2 min-w-0 rounded-lg hover:bg-white/50 px-1.5 py-1 -ml-1.5 transition-colors"
+              aria-expanded={isHistoryOpen}
+              title={isHistoryOpen ? '내역 접기' : '내역 펼치기'}
+            >
+              <span
+                className={`text-slate-500 text-[10px] font-medium transition-transform ${
+                  isHistoryOpen ? 'rotate-90' : ''
+                }`}
+                aria-hidden
+              >
+                ▶
+              </span>
+              <span className="w-2.5 h-2.5 rounded-full bg-blue-600 shrink-0" />
+              <h2 className="text-sm font-medium text-slate-800 tracking-tight">
+                나의 참여 이력 보관함
+              </h2>
+            </button>
+            <span className="inline-flex items-center h-6 text-[11px] font-medium px-2.5 rounded-md bg-slate-300/80 text-slate-700 border border-transparent leading-none">
+              {filteredHistory.length}건
+            </span>
+            {!isHistoryOpen && (
+              <button
+                type="button"
+                onClick={() => setIsHistoryOpen(true)}
+                className="text-[11px] font-medium text-indigo-600 hover:underline"
+              >
+                펼치기
+              </button>
+            )}
+          </div>
 
-  {/* 🚀 우측 영역 영문 라벨 */}
-  <p className="text-[9px] font-black uppercase tracking-widest text-slate-400 shrink-0 hidden sm:block">
-    Archive Repository
-  </p>
-</div>
-     
-      {isHistoryOpen && (
-        <div className="bg-white animate-in fade-in slide-in-from-top-2 duration-200">
-          <HeaderLight title="과거 완료 설문 명세 대장" count={filteredHistory.length}>
-            <div className="flex items-center gap-2 flex-wrap">
-              <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm">
-                <span className="text-[10px] font-black text-slate-400 uppercase">연도</span>
-                <select
-                  value={historyYear}
-                  onChange={(e) => setHistoryYear(e.target.value)}
-                  className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent"
-                >
-                  <option value="ALL">전체</option>
-                  {availableYears.map((year) => (
-                    <option key={year} value={year}>{year}년</option>
-                  ))}
-                </select>
+          <div className="soh-filter-bar flex items-center gap-2 flex-wrap">
+            {isHistoryOpen && (
+              <>
+                <div className="relative group/filter flex items-center gap-2 bg-white px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm">
+                  <span className="text-[11px] font-medium text-slate-400 uppercase">연도</span>
+                  <select
+                    value={historyYear}
+                    onChange={(e) => setHistoryYear(e.target.value)}
+                    className="text-[11px] font-medium text-slate-800 outline-none cursor-pointer bg-transparent"
+                  >
+                    <option value="ALL">전체</option>
+                    {availableYears.map((year) => (
+                      <option key={year} value={year}>
+                        {year}년
+                      </option>
+                    ))}
+                  </select>
+                  <div className="w-px h-3.5 bg-slate-300 mx-0.5" />
+                  <span className="text-[11px] font-medium text-slate-400 uppercase">월별</span>
+                  <select
+                    value={historyMonth}
+                    onChange={(e) => setHistoryMonth(e.target.value)}
+                    className="text-[11px] font-medium text-slate-800 outline-none cursor-pointer bg-transparent"
+                  >
+                    <option value="ALL">전체</option>
+                    {availableMonths.map((month) => (
+                      <option key={month} value={month}>
+                        {month}월
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="relative w-44">
+                  <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-[11px]">
+                    🔍
+                  </span>
+                  <input
+                    type="text"
+                    placeholder="게시명 검색..."
+                    value={historyTitleQuery}
+                    onChange={(e) => setHistoryTitleQuery(e.target.value)}
+                    className="w-full pl-7 pr-3 py-1.5 bg-white border border-slate-200 rounded-lg text-[11px] font-medium outline-none focus:border-indigo-500 shadow-sm transition-colors placeholder:font-medium"
+                  />
+                </div>
+              </>
+            )}
+          </div>
+        </div>
 
-                <div className="w-px h-3.5 bg-slate-300 mx-0.5"></div>
-
-                <span className="text-[10px] font-black text-slate-400 uppercase">월별</span>
-                <select
-                  value={historyMonth}
-                  onChange={(e) => setHistoryMonth(e.target.value)}
-                  className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent"
-                >
-                  <option value="ALL">전체</option>
-                  {availableMonths.map((month) => (
-                    <option key={month} value={month}>{month}월</option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="relative w-44">
-                <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-[10px]">🔍</span>
-                <input
-                  type="text"
-                  placeholder="게시명 검색..."
-                  value={historyTitleQuery}
-                  onChange={(e) => setHistoryTitleQuery(e.target.value)}
-                  className="w-full pl-7 pr-3 py-1.5 bg-white border border-slate-200 rounded-lg text-[11px] font-bold outline-none focus:border-indigo-500 shadow-sm transition-colors"
-                />
-              </div>
-            </div>
-          </HeaderLight>
-     
-          <div className="overflow-x-auto">
-            <table className="w-full table-fixed text-left border-collapse text-[11px] font-bold text-slate-700">
-              <colgroup>
-                <col className="w-[4%]" />
-                <col className="w-[8%]" />
-                <col className="w-[9%]" />
-                <col className="w-[18%]" />
-                <col className="w-[7%]" />
-                <col className="w-[8%]" />
-                <col className="w-[14%]" />
-                <col className="w-[18%]" />
-                <col className="w-[14%]" />
-              </colgroup>
-              <thead className="bg-slate-100 text-slate-700 text-[11px] font-bold border-b border-slate-200">
-                <tr>
-                  <th className="py-3 pl-4 text-center">NO</th>
-                  <th className="py-3 px-2 text-center">게시번호</th>
-                  <th className="py-3 px-2 text-center">게시일</th>
-                  <th className="py-3 px-3 text-left">게시명</th>
-                  <th className="py-3 px-2 text-center">익명여부</th>
-                  <th className="py-3 px-2 text-center">대상</th>
-                  <th className="py-3 px-2 text-center">나의 제출 일시</th>
-                  <th className="py-3 px-2 text-center">기간</th>
-                  <th className="py-3 pr-4 text-center">결과 열람</th>
-                </tr>
-              </thead>
-              <tbody className="bg-white divide-y divide-slate-100">
-                {paginatedHistory.map((survey: any, index: number) => {
-                  return (
-                    <tr key={survey.id} className="hover:bg-slate-50/50 transition-colors h-14">
-                      <td className="text-center text-slate-400 pl-4">
-                        {filteredHistory.length - ((historyPage - 1) * historyItemsPerPage + index)}
-                      </td>
-                      <td className="text-center text-slate-500">{survey.postNumber || '-'}</td>
-                      <td className="text-center text-slate-500 whitespace-nowrap">{survey.postDate}</td>
-                      <td className="px-3">
-                        <div className="text-slate-800 truncate" title={survey.title}>
-                          {survey.title}
-                        </div>
-                      </td>
-                      <td className="text-center">
-                        <span className={`inline-block px-2 py-0.5 border rounded text-[11px] ${survey.isAnonymous ? 'bg-slate-700 text-white border-slate-900' : 'text-slate-400 border-slate-200'}`}>
-                          {survey.isAnonymous ? '익명' : '기명'}
-                        </span>
-                      </td>
-                      <td className="text-center text-slate-500 px-2 truncate">{survey.target}</td>
-                      <td className="text-center text-slate-700 px-2 whitespace-nowrap">
-                        {survey.submittedAt}
-                      </td>
-                      <td className="text-center text-slate-600 whitespace-nowrap px-2">
-                        {survey.startDate} ~ {survey.endDate} ({survey.endTime || '23:59'})
-                      </td>
-                      <td className="text-center pr-4">
-                        {survey.isAnonymous ? (
-                          <button
-                            type="button"
-                            disabled
-                            title="익명 설문은 제출 후 본인에게도 명세 열람이 불가합니다."
-                            className="w-full py-1.5 rounded-lg text-[11px] font-bold shadow-sm border bg-slate-50 border-slate-200 text-slate-300 cursor-not-allowed"
+        {isHistoryOpen && (
+          <div className="bg-white animate-in fade-in slide-in-from-top-2 duration-200">
+            <div className="overflow-x-auto">
+              <table className="w-full table-fixed text-left border-collapse min-w-[960px]">
+                <colgroup>
+                  <col className="w-[48px]" />
+                  <col className="w-[90px]" />
+                  <col className="w-[100px]" />
+                  <col />
+                  <col className="w-[72px]" />
+                  <col className="w-[100px]" />
+                  <col className="w-[140px]" />
+                  <col className="w-[180px]" />
+                  <col className="w-[120px]" />
+                </colgroup>
+                <thead className="bg-slate-100 text-[11px] font-semibold text-[#333333] border-b border-slate-200">
+                  <tr>
+                    <th className="h-12 pl-4 text-center">NO</th>
+                    <th className="h-12 px-2 text-center whitespace-nowrap">식별코드</th>
+                    <th className="h-12 px-2 text-center whitespace-nowrap">게시일</th>
+                    <th className="h-12 px-2 text-left">게시명</th>
+                    <th className="h-12 px-2 text-center">익명여부</th>
+                    <th className="h-12 px-2 text-center">대상</th>
+                    <th className="h-12 px-2 text-center whitespace-nowrap">나의 제출 일시</th>
+                    <th className="h-12 px-2 text-center whitespace-nowrap">기간</th>
+                    <th className="h-12 pr-4 text-center">결과 열람</th>
+                  </tr>
+                </thead>
+                <tbody className="bg-white divide-y divide-slate-100 text-[11px] font-normal text-[#333333]">
+                  {paginatedHistory.map((survey: any, index: number) => {
+                    return (
+                      <tr
+                        key={survey.id}
+                        className="h-12 hover:bg-slate-50/50 transition-colors"
+                      >
+                        <td className="pl-4 text-center tabular-nums text-slate-500">
+                          {filteredHistory.length -
+                            ((historyPage - 1) * historyItemsPerPage + index)}
+                        </td>
+                        <td className="px-2 text-center font-mono text-slate-500 whitespace-nowrap">
+                          {survey.code || '-'}
+                        </td>
+                        <td className="px-2 text-center whitespace-nowrap tabular-nums">
+                          {survey.postDate}
+                        </td>
+                        <td className="px-2 text-left min-w-0">
+                          <span className="font-medium block truncate" title={survey.title}>
+                            {survey.title}
+                          </span>
+                        </td>
+                        <td className="px-2 text-center">
+                          <span
+                            className={`inline-block px-2 py-0.5 border rounded text-[11px] font-medium ${
+                              survey.isAnonymous
+                                ? 'bg-slate-700 text-white border-slate-900'
+                                : 'text-slate-400 border-slate-200'
+                            }`}
                           >
-                            익명 열람 불가
-                          </button>
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              let builderQuestions = [];
-                              try {
-                                builderQuestions = typeof survey.questions === 'string' ? JSON.parse(survey.questions) : (survey.questions || []);
-                              } catch (e) { console.error("문항 파싱 오류:", e); }
-                              setViewSurveyHistory({ ...survey, questions: builderQuestions });
-                            }}
-                            className="w-full py-1.5 bg-white border border-slate-200 rounded-lg text-[11px] font-bold text-slate-600 hover:bg-slate-50 shadow-sm transition-all"
-                          >
-                            명세 기록 열람
-                          </button>
-                        )}
+                            {survey.isAnonymous ? '익명' : '기명'}
+                          </span>
+                        </td>
+                        <td className="px-2 text-center text-slate-500 truncate">
+                          {survey.target}
+                        </td>
+                        <td className="px-2 text-center whitespace-nowrap tabular-nums">
+                          {survey.submittedAt}
+                        </td>
+                        <td className="px-2 text-center whitespace-nowrap text-slate-600">
+                          {survey.startDate} ~ {survey.endDate} (
+                          {survey.endTime || '23:59'})
+                        </td>
+                        <td className="px-2 pr-4 text-center">
+                          {survey.isAnonymous ? (
+                            <button
+                              type="button"
+                              disabled
+                              title="익명 설문은 제출 후 본인에게도 명세 열람이 불가합니다."
+                              className="inline-block px-2 py-0.5 rounded text-[11px] font-medium border bg-slate-50 border-slate-200 text-slate-300 cursor-not-allowed"
+                            >
+                              익명 열람 불가
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                let builderQuestions = [];
+                                try {
+                                  builderQuestions =
+                                    typeof survey.questions === 'string'
+                                      ? JSON.parse(survey.questions)
+                                      : survey.questions || [];
+                                } catch (e) {
+                                  console.error('문항 파싱 오류:', e);
+                                }
+                                setViewSurveyHistory({
+                                  ...survey,
+                                  questions: builderQuestions,
+                                });
+                              }}
+                              className="inline-block px-2 py-0.5 rounded text-[11px] font-medium border bg-white border-slate-200 text-slate-600 hover:bg-slate-50 transition-colors"
+                            >
+                              명세 기록 열람
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {filteredHistory.length === 0 && (
+                    <tr>
+                      <td
+                        colSpan={9}
+                        className="p-16 text-center text-slate-400 text-[11px]"
+                      >
+                        보관 처리된 완료 내역이 없습니다.
                       </td>
                     </tr>
-                  );
-                })}
-                {filteredHistory.length === 0 && (
-                  <tr>
-                    <td colSpan={9} className="py-16 text-center text-slate-400 bg-slate-50/30">
-                      보관 처리된 완료 내역이 없습니다.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
+                  )}
+                </tbody>
+              </table>
+            </div>
+            {filteredHistory.length > 0 && (
+              <WindowedPagination
+                currentPage={historyPage}
+                totalPages={totalHistoryPages}
+                onPageChange={setHistoryPage}
+              />
+            )}
           </div>
-          {filteredHistory.length > 0 && (
-            <WindowedPagination
-              currentPage={historyPage}
-              totalPages={totalHistoryPages}
-              onPageChange={setHistoryPage}
-            />
-          )}
-        </div>
-      )}
-</div>
+        )}
+      </div>
      
       {/* 설문 수정 풀스크린 에디터 */}
       {activeFullScreenSurvey && (
         <div className="fixed inset-0 bg-slate-50 z-[500] overflow-y-auto flex flex-col text-[11px] animate-in slide-in-from-bottom-8 duration-300">
           <div className="sticky top-0 bg-white border-b border-slate-200 px-6 py-4 flex justify-between items-center shadow-sm z-10">
             <div className="flex items-center gap-4">
-              <button onClick={() => { if(confirm('작성을 중단하고 나가시겠습니까?')) setActiveFullScreenSurvey(null); }} className="px-4 py-2 bg-slate-100 hover:bg-slate-200 rounded-xl font-black text-xs text-slate-600">⬅️ 나가기</button>
+              <button onClick={() => { if(confirm('작성을 중단하고 나가시겠습니까?')) setActiveFullScreenSurvey(null); }} className="px-4 py-2 bg-slate-100 hover:bg-slate-200 rounded-xl font-medium text-xs text-slate-600">⬅️ 나가기</button>
               <div className="h-6 w-px bg-slate-200 mx-1"></div>
-              <h1 className="text-base font-black text-slate-800">{activeFullScreenSurvey.title}</h1>
+              <h1 className="text-base font-medium text-slate-800">{activeFullScreenSurvey.title}</h1>
             </div>
             <div className="flex items-center gap-3">
-              <button onClick={handleSaveDraft} className="px-5 py-2.5 bg-slate-800 text-white rounded-xl text-xs font-black shadow-sm">💾 중간 저장</button>
+              <button onClick={handleSaveDraft} className="px-5 py-2.5 bg-slate-800 text-white rounded-xl text-xs font-medium shadow-sm">💾 중간 저장</button>
             </div>
           </div>
           <div className="flex-1 w-full max-w-[800px] mx-auto py-10 px-4 pb-32 space-y-6 relative">
@@ -860,7 +906,7 @@ const handlePrevSection = () => {
               <div className="fixed inset-0 z-[600] flex items-center justify-center bg-slate-900/90 backdrop-blur-sm p-4 cursor-zoom-out animate-in fade-in duration-200" onClick={() => setZoomedImage(null)}>
                 <div className="relative max-w-5xl max-h-[90vh] flex items-center justify-center">
                   <img src={zoomedImage} alt="Zoomed Area" className="max-w-full max-h-[85vh] object-contain rounded-2xl shadow-2xl cursor-default" onClick={(e) => e.stopPropagation()} />
-                  <button className="absolute -top-12 right-0 text-white font-black text-lg bg-black/40 hover:bg-black/80 w-9 h-9 rounded-full flex items-center justify-center transition-colors" onClick={() => setZoomedImage(null)}>✕</button>
+                  <button className="absolute -top-12 right-0 text-white font-medium text-lg bg-black/40 hover:bg-black/80 w-9 h-9 rounded-full flex items-center justify-center transition-colors" onClick={() => setZoomedImage(null)}>✕</button>
                 </div>
               </div>
             )}
@@ -868,16 +914,16 @@ const handlePrevSection = () => {
             {renderedQuestions.map((q: any) => {
               if (q.type === 'SECTION') return (
                 <div key={q.id} className="bg-blue-900 text-white p-5 rounded-2xl shadow-sm border border-blue-950 mb-2">
-                  <h3 className="text-sm font-black flex items-center gap-1.5">🔖 {q.title}</h3>
+                  <h3 className="text-sm font-medium flex items-center gap-1.5">🔖 {q.title}</h3>
                   {q.description && <p className="text-[10px] text-blue-200 mt-2 font-medium whitespace-pre-wrap">{q.description}</p>}
                 </div>
               );
               return (
                 <div key={q.id} className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
                   <div>
-                    <h4 className="font-black text-slate-800 text-xs flex items-center gap-1">{q.title} {q.isRequired && <span className="text-red-500 font-extrabold">*</span>}</h4>
-                    {q.description && <p className="text-[10px] text-slate-400 mt-1 font-bold whitespace-pre-wrap">💡 {q.description}</p>}
-                    {q.referenceLink && <a href={q.referenceLink} target="_blank" rel="noopener noreferrer" className="mt-2 inline-block px-2.5 py-1 bg-blue-50 text-blue-600 rounded text-[9px] font-black border border-blue-100 hover:bg-blue-100">🔗 관련 참고 링크 열기</a>}
+                    <h4 className="font-medium text-slate-800 text-xs flex items-center gap-1">{q.title} {q.isRequired && <span className="text-red-500 font-medium">*</span>}</h4>
+                    {q.description && <p className="text-[10px] text-slate-400 mt-1 font-medium whitespace-pre-wrap">💡 {q.description}</p>}
+                    {q.referenceLink && <a href={q.referenceLink} target="_blank" rel="noopener noreferrer" className="mt-2 inline-block px-2.5 py-1 bg-blue-50 text-blue-600 rounded text-[9px] font-medium border border-blue-100 hover:bg-blue-100">🔗 관련 참고 링크 열기</a>}
                     {q.questionImageUrl && <img src={q.questionImageUrl} alt="guide" onClick={() => setZoomedImage(q.questionImageUrl)} className="mt-3 max-h-40 rounded-xl object-contain border cursor-pointer hover:ring-2 hover:ring-blue-500 transition-all hover:scale-[1.01]" />}
                   </div>
      
@@ -909,11 +955,11 @@ const handlePrevSection = () => {
                               handleInputChange(q.id, opt.label); // 다음 단계 클릭 시 분기 연산 처리하도록 이관
                             }} className="w-3.5 h-3.5 accent-blue-600" />
                             <div className="flex flex-col flex-1">
-                              <span className={`font-bold ${isOutOfStock ? 'text-slate-400 line-through' : 'text-slate-700'}`}>{opt.label}</span>
+                              <span className={`font-medium ${isOutOfStock ? 'text-slate-400 line-through' : 'text-slate-700'}`}>{opt.label}</span>
                               {isOutOfStock ? (
-                                <span className="text-[10px] w-fit mt-1 font-black bg-red-100 text-red-600 border border-red-200 px-1.5 py-0.5 rounded shadow-sm animate-pulse">SOLD OUT</span>
+                                <span className="text-[10px] w-fit mt-1 font-medium bg-red-100 text-red-600 border border-red-200 px-1.5 py-0.5 rounded shadow-sm animate-pulse">SOLD OUT</span>
                               ) : isStockLimited ? (
-                                <span className="text-[10px] w-fit mt-1 font-black text-pink-600 bg-pink-50 border border-pink-100 px-1.5 py-0.5 rounded shadow-sm">잔여: {remaining}개 {wasCheckedByMe && <span className="text-[9px] text-teal-600">(기존 내 선택)</span>}</span>
+                                <span className="text-[10px] w-fit mt-1 font-medium text-pink-600 bg-pink-50 border border-pink-100 px-1.5 py-0.5 rounded shadow-sm">잔여: {remaining}개 {wasCheckedByMe && <span className="text-[9px] text-teal-600">(기존 내 선택)</span>}</span>
                               ) : null}
                               {opt.referenceLink && <a href={opt.referenceLink} target="_blank" rel="noopener noreferrer" className="text-[9px] text-blue-500 hover:underline mt-0.5 w-fit" onClick={e => e.stopPropagation()}>🔗 상세 명세 링크</a>}
                               {opt.imageUrl && <img src={opt.imageUrl} onClick={(e) => { e.preventDefault(); e.stopPropagation(); setZoomedImage(opt.imageUrl); }} className="mt-2 max-h-24 object-contain rounded border bg-white w-fit cursor-pointer hover:ring-2 hover:ring-blue-500 transition-all hover:scale-[1.02]" />}
@@ -950,11 +996,11 @@ const handlePrevSection = () => {
                           }`}>
                             <input type="checkbox" disabled={isOutOfStock} checked={isChecked} onChange={(e) => handleCheckboxChange(q.id, opt.label, e.target.checked)} className="w-3.5 h-3.5 accent-blue-600 rounded" />
                             <div className="flex flex-col flex-1">
-                              <span className={`font-bold ${isOutOfStock ? 'text-slate-400 line-through' : 'text-slate-700'}`}>{opt.label}</span>
+                              <span className={`font-medium ${isOutOfStock ? 'text-slate-400 line-through' : 'text-slate-700'}`}>{opt.label}</span>
                               {isOutOfStock ? (
-                                <span className="text-[10px] w-fit mt-1 font-black bg-red-100 text-red-600 border border-red-200 px-1.5 py-0.5 rounded shadow-sm animate-pulse">SOLD OUT</span>
+                                <span className="text-[10px] w-fit mt-1 font-medium bg-red-100 text-red-600 border border-red-200 px-1.5 py-0.5 rounded shadow-sm animate-pulse">SOLD OUT</span>
                               ) : isStockLimited ? (
-                                <span className="text-[10px] w-fit mt-1 font-black text-pink-600 bg-pink-50 border border-pink-100 px-1.5 py-0.5 rounded shadow-sm">잔여: {remaining}개 {wasCheckedByMe && <span className="text-[9px] text-teal-600">(기존 내 선택)</span>}</span>
+                                <span className="text-[10px] w-fit mt-1 font-medium text-pink-600 bg-pink-50 border border-pink-100 px-1.5 py-0.5 rounded shadow-sm">잔여: {remaining}개 {wasCheckedByMe && <span className="text-[9px] text-teal-600">(기존 내 선택)</span>}</span>
                               ) : null}
                               {opt.referenceLink && <a href={opt.referenceLink} target="_blank" rel="noopener noreferrer" className="text-[9px] text-blue-500 hover:underline mt-0.5 w-fit" onClick={e => e.stopPropagation()}>🔗 관련 링크</a>}
                               {opt.imageUrl && <img src={opt.imageUrl} onClick={(e) => { e.preventDefault(); e.stopPropagation(); setZoomedImage(opt.imageUrl); }} className="mt-2 max-h-24 object-contain rounded border bg-white w-fit cursor-pointer hover:ring-2 hover:ring-blue-500 transition-all hover:scale-[1.02]" />}
@@ -965,43 +1011,43 @@ const handlePrevSection = () => {
                     </div>
                   )}
      
-                  {q.type === 'TEXT_SHORT' && <input type="text" value={formData[q.id] || ''} onChange={(e) => handleInputChange(q.id, e.target.value)} className="w-full p-3 border border-slate-200 rounded-xl outline-none focus:border-blue-500 font-bold bg-slate-50 focus:bg-white text-xs" placeholder="답변 내용을 작성해 주세요." />}
-                  {q.type === 'TEXT_LONG' && <textarea value={formData[q.id] || ''} onChange={(e) => handleInputChange(q.id, e.target.value)} className="w-full p-3 border border-slate-200 rounded-xl outline-none focus:border-blue-500 font-bold bg-slate-50 focus:bg-white text-xs min-h-[100px] whitespace-pre-wrap" placeholder="세부적인 의견을 여러 줄로 입력하실 수 있습니다." />}
+                  {q.type === 'TEXT_SHORT' && <input type="text" value={formData[q.id] || ''} onChange={(e) => handleInputChange(q.id, e.target.value)} className="w-full p-3 border border-slate-200 rounded-xl outline-none focus:border-blue-500 font-medium bg-slate-50 focus:bg-white text-xs" placeholder="답변 내용을 작성해 주세요." />}
+                  {q.type === 'TEXT_LONG' && <textarea value={formData[q.id] || ''} onChange={(e) => handleInputChange(q.id, e.target.value)} className="w-full p-3 border border-slate-200 rounded-xl outline-none focus:border-blue-500 font-medium bg-slate-50 focus:bg-white text-xs min-h-[100px] whitespace-pre-wrap" placeholder="세부적인 의견을 여러 줄로 입력하실 수 있습니다." />}
                   
                   {q.type === 'SCALE' && (
                     <div className="flex items-center justify-between bg-slate-50 p-4 border border-slate-200 rounded-xl">
-                      <span className="font-black text-slate-400">매우 미흡</span>
+                      <span className="font-medium text-slate-400">매우 미흡</span>
                       <div className="flex gap-2">
                         {Array.from({ length: q.scaleMax || 5 }, (_, i) => i + 1).map((n) => (
-                          <button key={n} type="button" onClick={() => handleInputChange(q.id, n)} className={`w-8 h-8 rounded-full font-mono font-black border transition-all text-xs ${formData[q.id] === n ? 'bg-blue-600 text-white border-blue-600 shadow-md scale-110' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-100'}`}>{n}</button>
+                          <button key={n} type="button" onClick={() => handleInputChange(q.id, n)} className={`w-8 h-8 rounded-full font-mono font-medium border transition-all text-xs ${formData[q.id] === n ? 'bg-blue-600 text-white border-blue-600 shadow-md scale-110' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-100'}`}>{n}</button>
                         ))}
                       </div>
-                      <span className="font-black text-slate-600">매우 우수</span>
+                      <span className="font-medium text-slate-600">매우 우수</span>
                     </div>
                   )}
      
                   {q.type === 'SEARCH_ADDRESS' && (
                     <div className="space-y-2 bg-slate-50 p-4 rounded-xl border">
-                      <button type="button" onClick={() => openPostcodeEngine(q.id)} className="px-4 py-2 bg-slate-900 text-white font-black rounded-lg hover:bg-slate-800 transition-colors">🔍 주소지 검색 찾기</button>
+                      <button type="button" onClick={() => openPostcodeEngine(q.id)} className="px-4 py-2 bg-slate-900 text-white font-medium rounded-lg hover:bg-slate-800 transition-colors">🔍 주소지 검색 찾기</button>
                       {formData[q.id]?.roadAddress && (
-                        <div className="p-3 bg-white rounded border space-y-1 text-[10px] font-bold text-slate-700"><p>우편번호: <span className="text-blue-600">{formData[q.id]?.zipCode}</span></p><p>기본주소: {formData[q.id]?.roadAddress}</p></div>
+                        <div className="p-3 bg-white rounded border space-y-1 text-[10px] font-medium text-slate-700"><p>우편번호: <span className="text-blue-600">{formData[q.id]?.zipCode}</span></p><p>기본주소: {formData[q.id]?.roadAddress}</p></div>
                       )}
-                      <input type="text" placeholder="상세 건물명 및 동/호수" value={formData[q.id]?.detailAddress || ''} onChange={(e) => setFormData(prev => ({...prev, [q.id]: { ...(prev[q.id] || {}), detailAddress: e.target.value }}))} className="w-full p-2.5 border rounded-lg bg-white outline-none focus:border-blue-500 font-bold" />
+                      <input type="text" placeholder="상세 건물명 및 동/호수" value={formData[q.id]?.detailAddress || ''} onChange={(e) => setFormData(prev => ({...prev, [q.id]: { ...(prev[q.id] || {}), detailAddress: e.target.value }}))} className="w-full p-2.5 border rounded-lg bg-white outline-none focus:border-blue-500 font-medium" />
                     </div>
                   )}
      
-                  {q.type === 'CALENDAR' && <input type="date" value={formData[q.id] || ''} onChange={(e) => handleInputChange(q.id, e.target.value)} className="p-3 border rounded-xl bg-slate-50 font-black text-slate-700 outline-none focus:border-blue-500" />}
+                  {q.type === 'CALENDAR' && <input type="date" value={formData[q.id] || ''} onChange={(e) => handleInputChange(q.id, e.target.value)} className="p-3 border rounded-xl bg-slate-50 font-medium text-slate-700 outline-none focus:border-blue-500" />}
      
                   {q.type === 'FILE' && (
                     <div className="space-y-3 p-4 bg-slate-50 border border-slate-200 rounded-xl">
                       {q.templateFileName && (
-                        <div className="flex items-center justify-between bg-white p-3 rounded-lg border border-blue-100 shadow-sm"><div className="flex items-center gap-2"><span className="text-base">📥</span><div><p className="font-black text-slate-700">{q.templateFileName}</p><p className="text-[9px] text-slate-400 font-bold">작성 가이드라인 양식을 다운로드 하세요.</p></div></div><button type="button" onClick={() => { if (q.templateFileData) fetch(q.templateFileData).then(r => r.blob()).then(blob => saveAs(blob, q.templateFileName!)); }} className="px-3 py-1.5 bg-blue-50 text-blue-600 rounded font-black border border-blue-100 hover:bg-blue-100">양식 받기</button></div>
+                        <div className="flex items-center justify-between bg-white p-3 rounded-lg border border-blue-100 shadow-sm"><div className="flex items-center gap-2"><span className="text-base">📥</span><div><p className="font-medium text-slate-700">{q.templateFileName}</p><p className="text-[9px] text-slate-400 font-medium">작성 가이드라인 양식을 다운로드 하세요.</p></div></div><button type="button" onClick={() => { if (q.templateFileData) fetch(q.templateFileData).then(r => r.blob()).then(blob => saveAs(blob, q.templateFileName!)); }} className="px-3 py-1.5 bg-blue-50 text-blue-600 rounded font-medium border border-blue-100 hover:bg-blue-100">양식 받기</button></div>
                       )}
                       <div className="border-2 border-dashed border-slate-200 rounded-xl p-4 bg-white text-center">
                         {formData[q.id]?.fileName ? (
-                          <div className="flex items-center justify-between text-left font-bold text-slate-700"><span>📎 첨부됨: {formData[q.id].fileName}</span><button type="button" onClick={() => handleInputChange(q.id, null)} className="text-red-400 font-black hover:underline">취소</button></div>
+                          <div className="flex items-center justify-between text-left font-medium text-slate-700"><span>📎 첨부됨: {formData[q.id].fileName}</span><button type="button" onClick={() => handleInputChange(q.id, null)} className="text-red-400 font-medium hover:underline">취소</button></div>
                         ) : (
-                          <label className="cursor-pointer text-blue-600 font-black hover:underline">➕ 기재 완료한 파일 업로드 하기<input type="file" className="hidden" onChange={(e) => handleUserFileUpload(q.id, e)} accept=".hwp,.pdf,.doc,.docx,.xls,.xlsx" /></label>
+                          <label className="cursor-pointer text-blue-600 font-medium hover:underline">➕ 기재 완료한 파일 업로드 하기<input type="file" className="hidden" onChange={(e) => handleUserFileUpload(q.id, e)} accept=".hwp,.pdf,.doc,.docx,.xls,.xlsx" /></label>
                         )}
                       </div>
                     </div>
@@ -1012,12 +1058,12 @@ const handlePrevSection = () => {
      
      <div className="pt-4 flex justify-between gap-4">
               {hasSections && sectionHistory.length > 1 && (
-                <button type="button" onClick={handlePrevSection} className="px-5 py-3.5 bg-white border border-slate-300 rounded-xl font-black text-slate-600 shadow-sm hover:bg-slate-50">◀ 이전 단계</button>
+                <button type="button" onClick={handlePrevSection} className="px-5 py-3.5 bg-white border border-slate-300 rounded-xl font-medium text-slate-600 shadow-sm hover:bg-slate-50">◀ 이전 단계</button>
               )}
               {!isLastSection ? (
-                <button type="button" onClick={handleNextSection} className="flex-1 py-3.5 bg-blue-600 text-white font-black text-xs rounded-xl shadow-lg hover:bg-blue-700 transition-all">다음 단계 진행하기 ▶</button>
+                <button type="button" onClick={handleNextSection} className="flex-1 py-3.5 bg-blue-600 text-white font-medium text-xs rounded-xl shadow-lg hover:bg-blue-700 transition-all">다음 단계 진행하기 ▶</button>
               ) : (
-                <button type="button" onClick={handleSubmitForm} className="flex-1 py-3.5 bg-slate-900 text-white font-black text-xs rounded-xl shadow-lg hover:bg-black transition-all">💾 {activeFullScreenSurvey.isEditMode ? '수정 완료' : '최종 답변서 제출하기'}</button>
+                <button type="button" onClick={handleSubmitForm} className="flex-1 py-3.5 bg-slate-900 text-white font-medium text-xs rounded-xl shadow-lg hover:bg-black transition-all">💾 {activeFullScreenSurvey.isEditMode ? '수정 완료' : '최종 답변서 제출하기'}</button>
               )}
             </div>
           </div>
@@ -1029,8 +1075,8 @@ const handlePrevSection = () => {
         <div className="fixed inset-0 bg-slate-50 z-[500] overflow-y-auto flex flex-col animate-in slide-in-from-bottom-8 duration-300">
           <div className="sticky top-0 bg-white border-b border-slate-200 px-6 py-4 flex justify-between items-center shadow-sm z-10">
             <div className="flex items-center gap-4">
-              <button onClick={() => setViewSurveyHistory(null)} className="px-5 py-2.5 bg-slate-800 rounded-xl font-black text-xs text-white hover:bg-black">조회 종료</button>
-              <h1 className="text-base font-black text-slate-800">{viewSurveyHistory.title}</h1>
+              <button onClick={() => setViewSurveyHistory(null)} className="px-5 py-2.5 bg-slate-800 rounded-xl font-medium text-xs text-white hover:bg-black">조회 종료</button>
+              <h1 className="text-base font-medium text-slate-800">{viewSurveyHistory.title}</h1>
             </div>
           </div>
           <div className="flex-1 w-full max-w-[800px] mx-auto py-10 px-4 space-y-6 pb-32 relative">
@@ -1038,7 +1084,7 @@ const handlePrevSection = () => {
               <div className="fixed inset-0 z-[600] flex items-center justify-center bg-slate-900/90 backdrop-blur-sm p-4 cursor-zoom-out animate-in fade-in duration-200" onClick={() => setZoomedImage(null)}>
                 <div className="relative max-w-5xl max-h-[90vh] flex items-center justify-center">
                   <img src={zoomedImage} alt="Zoomed Area" className="max-w-full max-h-[85vh] object-contain rounded-2xl shadow-2xl cursor-default" onClick={(e) => e.stopPropagation()} />
-                  <button className="absolute -top-12 right-0 text-white font-black text-lg bg-black/40 hover:bg-black/80 w-9 h-9 rounded-full flex items-center justify-center transition-colors" onClick={() => setZoomedImage(null)}>✕</button>
+                  <button className="absolute -top-12 right-0 text-white font-medium text-lg bg-black/40 hover:bg-black/80 w-9 h-9 rounded-full flex items-center justify-center transition-colors" onClick={() => setZoomedImage(null)}>✕</button>
                 </div>
               </div>
             )}
@@ -1064,8 +1110,8 @@ const handlePrevSection = () => {
               }
               return (
                 <div key={q.id} className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm space-y-4">
-                  <label className="block text-sm font-black text-slate-800">{q.title}</label>
-                  <div className="w-full p-4 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 text-sm whitespace-pre-wrap text-left">
+                  <label className="block text-sm font-medium text-slate-800">{q.title}</label>
+                  <div className="w-full p-4 bg-slate-50 border border-slate-200 rounded-xl font-medium text-slate-700 text-sm whitespace-pre-wrap text-left">
                     {ansStr}
                   </div>
                 </div>

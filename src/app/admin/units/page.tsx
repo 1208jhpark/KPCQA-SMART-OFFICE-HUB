@@ -207,7 +207,7 @@ export default function AdminUnitsPage() {
               editable &&
               handleLiveUpdate(u.id, { sort_order: parseInt(e.target.value, 10) || 0 })
             }
-            className="w-12 text-center border-b border-transparent bg-transparent text-xs font-bold text-gray-500 disabled:opacity-70 disabled:cursor-default focus:outline-none focus:border-blue-500"
+            className="w-12 text-center border-b border-transparent bg-transparent text-xs font-medium text-gray-500 disabled:opacity-70 disabled:cursor-default focus:outline-none focus:border-blue-500"
           />
         </td>
 
@@ -224,7 +224,7 @@ export default function AdminUnitsPage() {
                   : { unit_type }
               );
             }}
-            className="p-1 border border-transparent rounded bg-transparent text-[10px] font-black uppercase disabled:cursor-not-allowed disabled:opacity-60 cursor-pointer"
+            className="p-1 border border-transparent rounded bg-transparent text-[10px] font-medium uppercase disabled:cursor-not-allowed disabled:opacity-60 cursor-pointer"
           >
             <option value="ORGANIZATION">ORGANIZATION</option>
             <option value="HQ">HQ</option>
@@ -250,7 +250,7 @@ export default function AdminUnitsPage() {
                 }
                 if (next !== u.unit_name) handleLiveUpdate(u.id, { unit_name: next });
               }}
-              className="p-1 border-b border-transparent focus:border-blue-500 focus:outline-none bg-transparent font-black text-slate-800 w-full transition-all disabled:text-slate-700 disabled:cursor-default text-xs"
+              className="p-1 border-b border-transparent focus:border-blue-500 focus:outline-none bg-transparent font-medium text-slate-800 w-full transition-all disabled:text-slate-700 disabled:cursor-default text-xs"
             />
             <input
               disabled={!editable}
@@ -263,7 +263,7 @@ export default function AdminUnitsPage() {
                 e.target.value !== (u.unit_name_en || '') &&
                 handleLiveUpdate(u.id, { unit_name_en: e.target.value.trim() })
               }
-              className="p-1 border-b border-transparent focus:border-blue-500 focus:outline-none bg-transparent font-bold text-slate-400 w-full transition-all disabled:cursor-default text-[10px]"
+              className="p-1 border-b border-transparent focus:border-blue-500 focus:outline-none bg-transparent font-medium text-slate-400 w-full transition-all disabled:cursor-default text-[10px]"
             />
           </div>
         </td>
@@ -282,18 +282,18 @@ export default function AdminUnitsPage() {
                 handleLiveUpdate(u.id, { unit_code: next });
               }
             }}
-            className="w-24 p-1.5 border border-slate-200 rounded-lg text-[11px] font-black font-mono text-indigo-700 bg-indigo-50/50 outline-none focus:border-indigo-400 disabled:opacity-70 disabled:cursor-default uppercase"
+            className="w-24 p-1.5 border border-slate-200 rounded-lg text-[11px] font-medium font-mono text-indigo-700 bg-indigo-50/50 outline-none focus:border-indigo-400 disabled:opacity-70 disabled:cursor-default uppercase"
             title="제작물 관리번호용 고정 코드 (변경 시 신규 발행에만 반영)"
           />
         </td>
 
         <td className="p-6">
           {u.unit_type === 'ORGANIZATION' ? (
-            <div className="text-gray-300 font-black text-[10px] italic bg-gray-50 py-2 px-3 rounded-lg border border-dashed border-gray-200 text-center">
+            <div className="text-gray-300 font-medium text-[10px] italic bg-gray-50 py-2 px-3 rounded-lg border border-dashed border-gray-200 text-center">
               최상위 법인 (상위 없음)
             </div>
           ) : mode === 'archive' ? (
-            <div className="text-xs font-bold text-slate-500 px-1">
+            <div className="text-xs font-medium text-slate-500 px-1">
               {parentLabel || (u.parent_id ? '(상위 없음/삭제됨)' : '최상위')}
             </div>
           ) : (
@@ -303,7 +303,7 @@ export default function AdminUnitsPage() {
               onChange={(e) =>
                 handleLiveUpdate(u.id, { parent_id: e.target.value || null })
               }
-              className="p-2 border border-gray-100 rounded-xl text-xs bg-white w-full max-w-[200px] font-black text-blue-600 disabled:text-slate-500 disabled:cursor-default cursor-pointer shadow-sm"
+              className="p-2 border border-gray-100 rounded-xl text-xs bg-white w-full max-w-[200px] font-medium text-blue-600 disabled:text-slate-500 disabled:cursor-default cursor-pointer shadow-sm"
             >
               <option value="">
                 {parentMissingFromActive && parentLabel
@@ -324,21 +324,21 @@ export default function AdminUnitsPage() {
         <td className="p-6 text-center">
           {mode === 'archive' ? (
             <div className="flex flex-col items-center gap-0.5">
-              <span className="text-xs font-black text-slate-500 tabular-nums">
+              <span className="text-xs font-medium text-slate-500 tabular-nums">
                 하위 {childCount}
               </span>
-              <span className="text-[10px] font-bold text-slate-400">
+              <span className="text-[10px] font-medium text-slate-400">
                 인원 {Number(u.member_count ?? 0)}
               </span>
             </div>
           ) : (
             <>
-              <span className="text-xs font-black text-slate-700 tabular-nums">
+              <span className="text-xs font-medium text-slate-700 tabular-nums">
                 {Number(u.member_count ?? 0)}
               </span>
-              <span className="text-[10px] font-bold text-slate-400 ml-0.5">명</span>
+              <span className="text-[10px] font-medium text-slate-400 ml-0.5">명</span>
               {childCount > 0 ? (
-                <div className="text-[10px] font-bold text-slate-400 mt-0.5">
+                <div className="text-[10px] font-medium text-slate-400 mt-0.5">
                   하위 {childCount}
                   {Number(u.active_child_count ?? 0) > 0
                     ? ` (사용중 ${u.active_child_count})`
@@ -356,7 +356,7 @@ export default function AdminUnitsPage() {
                 <button
                   type="button"
                   onClick={finishEdit}
-                  className="px-3 py-1.5 rounded-xl text-[10px] font-black transition-all border shadow-sm text-indigo-700 bg-indigo-50 border-indigo-200 hover:bg-indigo-100"
+                  className="px-3 py-1.5 rounded-xl text-[10px] font-medium transition-all border shadow-sm text-indigo-700 bg-indigo-50 border-indigo-200 hover:bg-indigo-100"
                 >
                   완료
                 </button>
@@ -364,7 +364,7 @@ export default function AdminUnitsPage() {
                 <button
                   type="button"
                   onClick={() => startEdit(u.id)}
-                  className="px-3 py-1.5 rounded-xl text-[10px] font-black transition-all border shadow-sm text-slate-700 bg-white border-slate-200 hover:bg-slate-50"
+                  className="px-3 py-1.5 rounded-xl text-[10px] font-medium transition-all border shadow-sm text-slate-700 bg-white border-slate-200 hover:bg-slate-50"
                 >
                   수정
                 </button>
@@ -372,7 +372,7 @@ export default function AdminUnitsPage() {
               <button
                 type="button"
                 onClick={() => markUnused(u)}
-                className="px-3 py-1.5 rounded-xl text-[10px] font-black transition-all border shadow-sm text-amber-700 bg-amber-50 border-amber-200 hover:bg-amber-100"
+                className="px-3 py-1.5 rounded-xl text-[10px] font-medium transition-all border shadow-sm text-amber-700 bg-amber-50 border-amber-200 hover:bg-amber-100"
                 title="미사용 아카이브로 이동 (하위 사용 중 조직이 없어야 함)"
               >
                 미사용
@@ -383,7 +383,7 @@ export default function AdminUnitsPage() {
               <button
                 type="button"
                 onClick={() => restoreActive(u)}
-                className="px-3 py-1.5 rounded-xl text-[10px] font-black transition-all border shadow-sm text-emerald-700 bg-emerald-50 border-emerald-200 hover:bg-emerald-100"
+                className="px-3 py-1.5 rounded-xl text-[10px] font-medium transition-all border shadow-sm text-emerald-700 bg-emerald-50 border-emerald-200 hover:bg-emerald-100"
                 title="사용 중 목록으로 복귀"
               >
                 다시 사용
@@ -392,7 +392,7 @@ export default function AdminUnitsPage() {
                 type="button"
                 onClick={() => handleDelete(u)}
                 disabled={childCount > 0}
-                className="px-3 py-1.5 rounded-xl text-[10px] font-black transition-all border shadow-sm text-rose-700 bg-rose-50 border-rose-200 hover:bg-rose-100 disabled:opacity-40 disabled:cursor-not-allowed"
+                className="px-3 py-1.5 rounded-xl text-[10px] font-medium transition-all border shadow-sm text-rose-700 bg-rose-50 border-rose-200 hover:bg-rose-100 disabled:opacity-40 disabled:cursor-not-allowed"
                 title={
                   childCount > 0
                     ? '하위 조직이 있어 삭제할 수 없습니다'
@@ -413,7 +413,7 @@ export default function AdminUnitsPage() {
   return (
     <div className="p-8 space-y-8 min-h-screen">
       {loadError ? (
-        <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-bold text-rose-700">
+        <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-medium text-rose-700">
           {loadError}
           <button
             type="button"
@@ -430,7 +430,7 @@ export default function AdminUnitsPage() {
 
       <div className="flex justify-between items-end gap-4 flex-wrap">
         <div>
-          <h2 className="text-3xl font-black text-slate-800 tracking-tight">
+          <h2 className="text-3xl font-medium text-slate-800 tracking-tight">
             전사 조직 관리 (ORGANIZATION)
           </h2>
         </div>
@@ -446,7 +446,7 @@ export default function AdminUnitsPage() {
                 parent_id: unit_type === 'ORGANIZATION' ? '' : newUnit.parent_id,
               });
             }}
-            className="p-2 border-0 rounded-xl text-xs font-bold bg-white outline-none"
+            className="p-2 border-0 rounded-xl text-xs font-medium bg-white outline-none"
           >
             <option value="ORGANIZATION">ORGANIZATION</option>
             <option value="HQ">HQ (본부)</option>
@@ -459,7 +459,7 @@ export default function AdminUnitsPage() {
             placeholder="새 조직 명칭 (국문)"
             value={newUnit.unit_name}
             onChange={(e) => setNewUnit({ ...newUnit, unit_name: e.target.value })}
-            className="p-2 border-0 rounded-xl text-xs w-40 outline-none font-bold"
+            className="p-2 border-0 rounded-xl text-xs w-40 outline-none font-medium"
           />
 
           <input
@@ -469,7 +469,7 @@ export default function AdminUnitsPage() {
             onChange={(e) =>
               setNewUnit({ ...newUnit, unit_code: e.target.value.toUpperCase() })
             }
-            className="p-2 border-0 rounded-xl text-xs w-28 outline-none font-black uppercase"
+            className="p-2 border-0 rounded-xl text-xs w-28 outline-none font-medium uppercase"
           />
 
           <input
@@ -477,14 +477,14 @@ export default function AdminUnitsPage() {
             placeholder="조직 명칭 (영문)"
             value={newUnit.unit_name_en}
             onChange={(e) => setNewUnit({ ...newUnit, unit_name_en: e.target.value })}
-            className="p-2 border-0 rounded-xl text-xs w-48 outline-none font-bold"
+            className="p-2 border-0 rounded-xl text-xs w-48 outline-none font-medium"
           />
 
           <select
             value={newUnit.unit_type === 'ORGANIZATION' ? '' : newUnit.parent_id}
             disabled={newUnit.unit_type === 'ORGANIZATION'}
             onChange={(e) => setNewUnit({ ...newUnit, parent_id: e.target.value })}
-            className="p-2 border-0 rounded-xl text-xs font-bold bg-white outline-none disabled:opacity-50"
+            className="p-2 border-0 rounded-xl text-xs font-medium bg-white outline-none disabled:opacity-50"
           >
             <option value="">
               {newUnit.unit_type === 'ORGANIZATION'
@@ -501,7 +501,7 @@ export default function AdminUnitsPage() {
           <button
             type="button"
             onClick={handleAdd}
-            className="bg-blue-600 hover:bg-blue-700 text-white px-5 py-2 rounded-xl text-xs font-black transition-colors"
+            className="bg-blue-600 hover:bg-blue-700 text-white px-5 py-2 rounded-xl text-xs font-medium transition-colors"
           >
             추가
           </button>
@@ -511,13 +511,13 @@ export default function AdminUnitsPage() {
       {/* 사용 중 */}
       <div className="bg-white rounded-[2.5rem] shadow-sm border border-gray-100 overflow-hidden">
         <div className="px-6 py-4 border-b border-gray-100 bg-slate-50/60 flex items-center justify-between">
-          <h3 className="text-xs font-black text-slate-700 tracking-widest uppercase">
+          <h3 className="text-xs font-medium text-slate-700 tracking-widest uppercase">
             사용 중 조직
           </h3>
-          <span className="text-[10px] font-bold text-slate-400">{activeUnits.length}건</span>
+          <span className="text-[10px] font-medium text-slate-400">{activeUnits.length}건</span>
         </div>
         <table className="w-full text-left text-sm">
-          <thead className="bg-gray-50/50 border-b font-bold text-gray-400 uppercase text-[10px] tracking-widest">
+          <thead className="bg-gray-50/50 border-b font-medium text-gray-400 uppercase text-[10px] tracking-widest">
             <tr>
               <th className="p-6 text-center">정렬</th>
               <th className="p-6">유형</th>
@@ -531,7 +531,7 @@ export default function AdminUnitsPage() {
           <tbody className="divide-y divide-gray-50">
             {activeUnits.length === 0 ? (
               <tr>
-                <td colSpan={7} className="p-10 text-center text-slate-400 text-xs font-bold">
+                <td colSpan={7} className="p-10 text-center text-slate-400 text-xs font-medium">
                   사용 중 조직이 없습니다.
                 </td>
               </tr>
@@ -549,19 +549,19 @@ export default function AdminUnitsPage() {
           onClick={() => setArchiveOpen((v) => !v)}
           className="w-full px-6 py-4 border-b border-slate-100 bg-slate-100/50 flex items-center justify-between text-left hover:bg-slate-100 transition-colors"
         >
-          <h3 className="text-xs font-black text-slate-600 tracking-widest uppercase">
+          <h3 className="text-xs font-medium text-slate-600 tracking-widest uppercase">
             미사용 아카이브
           </h3>
           <div className="flex items-center gap-3 shrink-0">
-            <span className="text-[10px] font-bold text-slate-400">{unusedUnits.length}건</span>
-            <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">
+            <span className="text-[10px] font-medium text-slate-400">{unusedUnits.length}건</span>
+            <span className="text-[10px] font-medium text-slate-500 uppercase tracking-widest">
               {archiveOpen ? '접기' : '펼치기'}
             </span>
           </div>
         </button>
         {archiveOpen ? (
           <table className="w-full text-left text-sm">
-            <thead className="bg-slate-50 border-b font-bold text-gray-400 uppercase text-[10px] tracking-widest">
+            <thead className="bg-slate-50 border-b font-medium text-gray-400 uppercase text-[10px] tracking-widest">
               <tr>
                 <th className="p-6 text-center">정렬</th>
                 <th className="p-6">유형</th>
@@ -575,7 +575,7 @@ export default function AdminUnitsPage() {
             <tbody className="divide-y divide-gray-50">
               {unusedUnits.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="p-10 text-center text-slate-400 text-xs font-bold">
+                  <td colSpan={7} className="p-10 text-center text-slate-400 text-xs font-medium">
                     미사용 조직이 없습니다.
                   </td>
                 </tr>

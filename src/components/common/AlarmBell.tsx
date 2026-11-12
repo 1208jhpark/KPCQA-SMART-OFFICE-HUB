@@ -377,7 +377,7 @@ export default function AlarmBell({ userKey = '' }: Props) {
       {open && (
         <div className="absolute right-0 top-full mt-2 w-[26rem] max-h-80 overflow-y-auto rounded-xl border border-slate-200 bg-white shadow-xl z-[80] text-left">
           {sortedItems.length === 0 ? (
-            <p className="px-4 py-6 text-[11px] font-bold text-slate-400 text-center">
+            <p className="px-4 py-6 text-[11px] font-medium text-slate-400 text-center">
               새 알람이 없습니다.
             </p>
           ) : (
@@ -398,7 +398,7 @@ export default function AlarmBell({ userKey = '' }: Props) {
                         className="min-w-0 flex-1 px-1.5 py-1.5 flex items-center justify-between gap-2 text-left disabled:opacity-60"
                       >
                         <span
-                          className={`text-[11px] font-bold leading-snug ${
+                          className={`text-[11px] font-medium leading-snug ${
                             fresh ? 'text-slate-800' : 'text-slate-400'
                           }`}
                         >
@@ -412,7 +412,7 @@ export default function AlarmBell({ userKey = '' }: Props) {
                           {item.label}
                         </span>
                         <span
-                          className={`shrink-0 min-w-6 text-center text-[10px] font-black rounded-md px-1.5 py-0.5 border ${
+                          className={`shrink-0 min-w-6 text-center text-[10px] font-medium rounded-md px-1.5 py-0.5 border ${
                             fresh
                               ? 'text-amber-700 bg-amber-50 border-amber-200'
                               : 'text-slate-400 bg-slate-100 border-slate-200'
@@ -431,7 +431,7 @@ export default function AlarmBell({ userKey = '' }: Props) {
                             e.stopPropagation();
                             void snoozeAlarm(item);
                           }}
-                          className="shrink-0 self-center px-2 py-1 rounded-md text-[9px] font-black tracking-tight border border-slate-200 text-slate-500 bg-white hover:bg-slate-100 hover:text-slate-700 disabled:opacity-50"
+                          className="shrink-0 self-center px-2 py-1 rounded-md text-[9px] font-medium tracking-tight border border-slate-200 text-slate-500 bg-white hover:bg-slate-100 hover:text-slate-700 disabled:opacity-50"
                         >
                           {snoozingId === item.id ? '처리중…' : `재알림(${ALARM_SNOOZE_DAYS}일)`}
                         </button>
@@ -448,10 +448,10 @@ export default function AlarmBell({ userKey = '' }: Props) {
                         }}
                         className="group/dismiss shrink-0 self-center h-6 min-w-6 px-1 inline-flex items-center justify-center rounded-md text-slate-300 hover:text-slate-600 hover:bg-slate-100 transition-colors disabled:opacity-50"
                       >
-                        <span className="text-[11px] font-black leading-none group-hover/dismiss:hidden" aria-hidden>
+                        <span className="text-[11px] font-medium leading-none group-hover/dismiss:hidden" aria-hidden>
                           {busy ? '…' : '✕'}
                         </span>
-                        <span className="hidden group-hover/dismiss:inline text-[9px] font-black tracking-tight whitespace-nowrap">
+                        <span className="hidden group-hover/dismiss:inline text-[9px] font-medium tracking-tight whitespace-nowrap">
                           삭제
                         </span>
                       </button>

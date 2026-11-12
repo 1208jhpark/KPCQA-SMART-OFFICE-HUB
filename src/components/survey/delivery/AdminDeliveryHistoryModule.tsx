@@ -2,10 +2,10 @@
 
 import { isSystemLv1User } from '@/lib/permission-utils';
      
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { usePathname } from 'next/navigation';
 import Link from 'next/link'; // 🚀 표준 규격 next/link로 복구
-import * as XLSX from 'xlsx';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
 import { getKSTDateString } from '@/utils/dateUtils';
@@ -16,6 +16,18 @@ import {
   SURVEY_DELIVERY_ADMIN_TABS,
 } from '@/lib/interface-step-tabs';
 import { userInSurveyTarget } from '@/lib/survey-target-match';
+import {
+  downloadExcelArrayBuffer,
+  makeSurveyPctBar,
+  surveyQuestionTypeLabel,
+  writeDeliveryHistoryListExcelBuffer,
+  writeSurveyResponseExcelBuffer,
+  writeSurveyResultAnalysisExcelBuffer,
+  type DeliveryHistoryListHeader,
+  type SurveyExcelAnswerSource,
+  type SurveyExcelQuestion,
+  type SurveyStatBlock,
+} from '@/lib/survey-general-active-excel';
   
 export default function AdminDeliveryHistoryModule() {
   const pathname = usePathname();
@@ -41,6 +53,8 @@ export default function AdminDeliveryHistoryModule() {
   const [selectedMonth, setSelectedMonth] = useState('ALL');
   const [searchTitleQuery, setSearchTitleQuery] = useState('');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [actionMenu, setActionMenu] = useState<{ id: string; top: number; left: number } | null>(null);
+  const actionMenuRef = useRef<HTMLDivElement | null>(null);
   const availableMonths = ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12'];
   
   // 🚀 [DB 연동 핵심]: 외부 캐시를 완벽히 차단하고 무조건 서버 DB만 바라보게 강제하는 함수
@@ -144,7 +158,7 @@ export default function AdminDeliveryHistoryModule() {
       const at = new Date(a.updatedAt || a.endDate || a.postDate || 0).getTime();
       const bt = new Date(b.updatedAt || b.endDate || b.postDate || 0).getTime();
       if (bt !== at) return bt - at;
-      return (Number(b.postNumber) || 0) - (Number(a.postNumber) || 0);
+      return String(b.code || '').localeCompare(String(a.code || ''), 'ko', { numeric: true });
     });
   }, [archivedSurveys, selectedYear, selectedMonth, searchTitleQuery]);
 
@@ -152,6 +166,39 @@ export default function AdminDeliveryHistoryModule() {
     setCurrentPage(1);
     setSelectedIds(new Set());
   }, [selectedYear, selectedMonth, searchTitleQuery]);
+
+  useEffect(() => {
+    if (!actionMenu) return;
+    const onDoc = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (actionMenuRef.current?.contains(t)) return;
+      if ((e.target as HTMLElement | null)?.closest?.('[data-action-kebab]')) return;
+      setActionMenu(null);
+    };
+    const onWin = () => setActionMenu(null);
+    document.addEventListener('mousedown', onDoc);
+    window.addEventListener('scroll', onWin, true);
+    window.addEventListener('resize', onWin);
+    return () => {
+      document.removeEventListener('mousedown', onDoc);
+      window.removeEventListener('scroll', onWin, true);
+      window.removeEventListener('resize', onWin);
+    };
+  }, [actionMenu]);
+
+  const openActionMenu = (e: React.MouseEvent<HTMLButtonElement>, id: string) => {
+    const width = 168;
+    const r = e.currentTarget.getBoundingClientRect();
+    setActionMenu((prev) =>
+      prev?.id === id
+        ? null
+        : {
+            id,
+            top: r.bottom + 4,
+            left: Math.min(Math.max(12, r.right - width), window.innerWidth - width - 12),
+          }
+    );
+  };
   
   const handleRestore = async (id: string) => {
     if (!requireEdit()) return;
@@ -178,27 +225,45 @@ export default function AdminDeliveryHistoryModule() {
     }
   };
      
- // 🚀 [LV_1 전용]: 보관함 내 테스트용 찌꺼기 완벽 소멸 엔진 (DB 연동)
- const handlePermanentDelete = async (id: string) => {
-  if (!isLv1) {
-    alert('영구 삭제는 LV_1만 가능합니다.');
-    return;
-  }
-  if (!confirm('경고: 선택한 아카이브 배달 명세 정보를 영구 삭제하시겠습니까?\n이 작업은 데이터베이스 파기 처리이며 복구할 수 없습니다.')) return;
-  
-  try {
-    const res = await fetch(`/api/survey/delivery?id=${id}`, { method: 'DELETE' });
-    if (res.ok) {
-      alert('시스템에서 해당 명세 공고가 완전히 영구 삭제되었습니다.');
-      fetchArchiveData(); // 🚀 [DB 연동] 삭제 후 서버 데이터 즉시 재동기화
-    } else {
-      alert('서버 처리 중 오류가 발생하여 삭제하지 못했습니다.');
+  // 🚀 [LV_1 전용]: 체크 선택 건 영구 삭제
+  const handlePermanentDeleteSelected = async () => {
+    if (!isLv1) {
+      alert('영구 삭제는 LV_1만 가능합니다.');
+      return;
     }
-  } catch (e) {
-    console.error(e);
-    alert('네트워크 오류로 삭제를 실패했습니다.');
-  }
-};
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0) {
+      alert('삭제할 항목을 체크박스로 선택해 주세요.');
+      return;
+    }
+    if (
+      !confirm(
+        `경고: 선택한 ${ids.length}건의 보관 배달 명세를 영구 삭제하시겠습니까?\n이 작업은 데이터베이스 파기 처리이며 복구할 수 없습니다.`
+      )
+    ) {
+      return;
+    }
+
+    try {
+      let ok = 0;
+      let fail = 0;
+      for (const id of ids) {
+        const res = await fetch(`/api/survey/delivery?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
+        if (res.ok) ok += 1;
+        else fail += 1;
+      }
+      setSelectedIds(new Set());
+      await fetchArchiveData();
+      if (fail === 0) {
+        alert(`${ok}건이 시스템에서 영구 삭제되었습니다.`);
+      } else {
+        alert(`삭제 완료 ${ok}건, 실패 ${fail}건이 발생했습니다.`);
+      }
+    } catch (e) {
+      console.error(e);
+      alert('네트워크 오류로 삭제를 실패했습니다.');
+    }
+  };
   
   const getTargetUsers = (survey: { target?: string | null; target_unit_ids?: unknown }) => {
     return users.filter((u) =>
@@ -227,152 +292,58 @@ export default function AdminDeliveryHistoryModule() {
     return false;
   };
 
-  const questionTypeLabel = (type: string) => {
-    if (type === 'CHOICE_SINGLE') return '단일선택';
-    if (type === 'CHOICE_MULTI') return '다중선택';
-    if (type === 'SCALE') return '만족도';
-    if (type === 'TEXT_SHORT') return '단답형';
-    if (type === 'TEXT_LONG') return '장문형';
-    if (type === 'FILE') return '파일첨부';
-    if (type === 'SEARCH_ADDRESS') return '주소검색';
-    if (type === 'CALENDAR') return '캘린더';
-    if (type === 'SECTION') return '섹션';
-    return type || '-';
-  };
-
-  /** 조사원문 — 원문텍스트 시트만 (빌더 질문·옵션) */
-  const handleDownloadQuestionnaireOriginal = async (survey: any) => {
-    if (!requireEdit()) return;
-
-    let fresh = survey;
-    try {
-      const res = await fetch(`/api/survey/delivery?t=${Date.now()}`, { cache: 'no-store' });
-      if (res.ok) {
-        const all = await res.json();
-        const found = Array.isArray(all) ? all.find((s: any) => s.id === survey.id) : null;
-        if (found) fresh = found;
-      }
-    } catch {
-      /* 목록 객체로 폴백 */
-    }
-
-    let questions: any[] = [];
-    try {
-      const raw = fresh.questions;
-      if (typeof raw === 'string') questions = JSON.parse(raw || '[]');
-      else if (Array.isArray(raw)) questions = raw;
-      else if (raw && typeof raw === 'object') questions = [raw];
-    } catch {
-      questions = [];
-    }
-    if (!Array.isArray(questions) || questions.length === 0) {
-      return alert('빌더에 저장된 조사 문항이 없습니다.\n현황판 → 빌더에서 문항을 저장한 뒤 다시 시도해주세요.');
-    }
-
-    const hasImage = (v: unknown) => {
-      const s = String(v || '').trim();
-      return !!s && (s.startsWith('data:image') || s.startsWith('http') || s.startsWith('/') || s.startsWith('blob:'));
-    };
-
-    const qCount = questions.filter((q) => q.type !== 'SECTION').length;
-    const textLines: string[] = [
-      `■ 게시명: ${fresh.title || ''}`,
-      `■ 식별코드: ${fresh.code || ''}`,
-      `■ 게시번호: ${fresh.postNumber ?? ''}`,
-      `■ 익명여부: ${fresh.isAnonymous ? '익명' : '기명'}`,
-      `■ 대상: ${fresh.target || ''}`,
-      `■ 기간: ${`${fresh.startDate || ''} ~ ${fresh.endDate || ''} ${fresh.endTime || ''}`.trim()}`,
-      `■ 문항수: ${qCount}`,
-      '',
-      '========== 조사 원문 (빌더 문항) ==========',
-      '',
-    ];
-
-    let qNo = 0;
-    questions.forEach((q: any) => {
-      const isSection = q.type === 'SECTION';
-      if (!isSection) qNo += 1;
-      const required = q.isRequired === true || q.required === true;
-      const title = String(q.title || '').trim() || '(제목 없음)';
-      const desc = String(q.description || '').trim();
-      const typeLabel = questionTypeLabel(q.type);
-      const opts = Array.isArray(q.options) ? q.options : [];
-
-      if (isSection) {
-        textLines.push(`[섹션] ${title}`);
-        if (desc) textLines.push(`  설명: ${desc}`);
-        if (hasImage(q.questionImageUrl) || hasImage(q.imageUrl)) textLines.push('  (이미지첨부됨)');
-        textLines.push('');
-        return;
-      }
-
-      textLines.push(`Q${qNo}. [${typeLabel}] ${required ? '(필수) ' : ''}${title}`);
-      if (desc) textLines.push(`  설명: ${desc}`);
-      if (hasImage(q.questionImageUrl) || hasImage(q.imageUrl) || hasImage(q.templateFileData)) {
-        textLines.push('  (이미지첨부됨)');
-      }
-      if (q.type === 'FILE' && q.templateFileName) {
-        textLines.push(`  서식파일: ${q.templateFileName}`);
-      }
-      if (q.type === 'SCALE') {
-        textLines.push(`  척도: 1 ~ ${q.scaleMax || 5}`);
-      } else if (opts.length === 0) {
-        if (q.type === 'CHOICE_SINGLE' || q.type === 'CHOICE_MULTI') {
-          textLines.push('  (선택지 없음)');
-        }
-      } else {
-        opts.forEach((o: any, oi: number) => {
-          const label = String(o?.label ?? o ?? '').trim() || `(옵션 ${oi + 1})`;
-          const stock = o?.stockLimit != null && String(o.stockLimit).trim() !== '' ? String(o.stockLimit) : '';
-          const link = o?.referenceLink ? String(o.referenceLink) : '';
-          const imgNote = hasImage(o?.imageUrl) ? ' (이미지첨부됨)' : '';
-          textLines.push(
-            `  ${oi + 1}) ${label}${stock ? ` [재고:${stock}]` : ''}${link ? ` [링크:${link}]` : ''}${imgNote}`
-          );
-        });
-      }
-      textLines.push('');
-    });
-
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(
-      wb,
-      XLSX.utils.aoa_to_sheet(textLines.map((line) => [line])),
-      '원문텍스트'
-    );
-    const safeTitle = String(fresh.title || 'delivery').replace(/[/\\?%*:|"<>]/g, '-').substring(0, 30);
-    XLSX.writeFile(wb, `[조사원문]_${safeTitle}.xlsx`);
-  };
-
-  const makePctBar = (pct: number) => {
-    const clamped = Math.max(0, Math.min(100, pct));
-    const filled = Math.round(clamped / 5);
-    return `${'█'.repeat(filled)}${'░'.repeat(20 - filled)}`;
-  };
-
   const isAnalysisAllowedQuestion = (q: any) => {
     if (!q || q.type === 'SECTION') return false;
     if (typeof q.allowAnalysis === 'boolean') return q.allowAnalysis;
-    // 구 데이터: 선택·만족도만 분석 (주소·이름 등 개인정보 제외)
     return q.type === 'CHOICE_SINGLE' || q.type === 'CHOICE_MULTI' || q.type === 'SCALE';
   };
 
-  const getAnalysisAnswerValue = (q: any, answers: Record<string, any> | undefined) => {
+  const getDeliveryAnswerValue = (q: SurveyExcelQuestion, answers: Record<string, any> | undefined) => {
     if (!answers) return null;
     if (q.type === 'SEARCH_ADDRESS') {
       const zipCode = answers[`${q.id}_zip`] || answers[q.id]?.zipCode;
       const roadAddress = answers[`${q.id}_road`] || answers[q.id]?.roadAddress;
       const detailAddress = answers[`${q.id}_detail`] || answers[q.id]?.detailAddress;
-      if (zipCode || roadAddress) {
-        return `[${zipCode || ''}] ${roadAddress || ''} ${detailAddress || ''}`.trim();
+      if (zipCode || roadAddress || detailAddress) {
+        return {
+          zipCode,
+          roadAddress,
+          detailAddress,
+        };
       }
       return null;
     }
     return answers[q.id];
   };
 
-  /** 단일 공고 분석결과 — 빌더 「분석 허용」문항만 */
-  const handleDownloadResultAnalysis = (survey: any) => {
+  const normalizeDeliveryAnswers = (questions: SurveyExcelQuestion[], answers: any) => {
+    const out: Record<string, unknown> = {};
+    questions.forEach((q) => {
+      out[q.id] = getDeliveryAnswerValue(q, answers);
+    });
+    return out;
+  };
+
+  const collectDeliveryAnswerSources = (
+    survey: any,
+    questions: SurveyExcelQuestion[]
+  ): SurveyExcelAnswerSource[] => {
+    return getTargetUsers(survey)
+      .filter((u) => responses[`${survey.id}_${u.email}`]?.isDone)
+      .map((u) => {
+        const resp = responses[`${survey.id}_${u.email}`];
+        return {
+          dept: u.dept || '-',
+          name: u.name || '-',
+          date: resp?.date || '-',
+          approvedAt: resp?.approvedAt || '미확인',
+          answers: normalizeDeliveryAnswers(questions, resp?.answers || {}),
+        };
+      });
+  };
+
+  /** 단일 공고 분석결과 — 현황판과 동일 양식 */
+  const handleDownloadResultAnalysis = async (survey: any) => {
     if (!requireEdit()) return;
 
     let parsedQuestions: any[] = [];
@@ -383,46 +354,22 @@ export default function AdminDeliveryHistoryModule() {
       parsedQuestions = [];
     }
 
-    const exportQuestions = parsedQuestions.filter(isAnalysisAllowedQuestion);
+    const exportQuestions = parsedQuestions.filter(isAnalysisAllowedQuestion) as SurveyExcelQuestion[];
     if (exportQuestions.length === 0) {
       return alert('분석 허용된 문항이 없습니다.\n빌더에서 문항별 「분석 허용」을 켠 뒤 다시 시도해주세요.');
     }
 
-    const targetUsers = getTargetUsers(survey);
-    const submittedUsers = targetUsers.filter((u) => responses[`${survey.id}_${u.email}`]?.isDone);
-    if (submittedUsers.length === 0) {
+    const GUIDE_MSG = 'ZIP 또는 Excel을 다운받아 확인바랍니다.';
+    const answerSources = collectDeliveryAnswerSources(survey, exportQuestions);
+    if (answerSources.length === 0) {
       return alert('본 공고에 제출된 응답이 없습니다.');
     }
 
-    const GUIDE_MSG = 'ZIP 또는 Excel을 다운받아 확인바랍니다.';
-    const pushStatRows = (
-      rows: (string | number)[][],
-      title: string,
-      typeLabel: string,
-      detailRows: (string | number)[][]
-    ) => {
-      detailRows.forEach((cols, i) => {
-        rows.push([
-          i === 0 ? title : '',
-          i === 0 ? typeLabel : '',
-          cols[0] ?? '',
-          cols[1] ?? '',
-          cols[2] ?? '',
-          cols[3] ?? '',
-        ]);
-      });
-      rows.push([]);
-    };
-
-    const rows: (string | number)[][] = [
-      ['공고명', survey.title],
-      ['응답 인원', submittedUsers.length],
-      [],
-      ['문항', '유형', '보기/점수', '응답수', '비율(%)', '그래프'],
-    ];
-
-    exportQuestions.forEach((q: any) => {
-      const typeLabel = questionTypeLabel(q.type);
+    const blocks: SurveyStatBlock[] = [];
+    exportQuestions.forEach((q: any, qIdx: number) => {
+      const typeLabel = surveyQuestionTypeLabel(q.type);
+      const qTitle = String(q.title || '').trim() || '(제목 없음)';
+      const questionNo = qIdx + 1;
 
       if (q.type === 'CHOICE_SINGLE' || q.type === 'CHOICE_MULTI') {
         const counts: Record<string, number> = {};
@@ -430,8 +377,8 @@ export default function AdminDeliveryHistoryModule() {
           counts[String(opt.label)] = 0;
         });
         let answered = 0;
-        submittedUsers.forEach((u) => {
-          const ans = getAnalysisAnswerValue(q, responses[`${survey.id}_${u.email}`]?.answers);
+        answerSources.forEach((src) => {
+          const ans = src.answers?.[q.id];
           if (ans === null || ans === undefined || ans === '') return;
           answered += 1;
           if (q.type === 'CHOICE_MULTI') {
@@ -450,13 +397,25 @@ export default function AdminDeliveryHistoryModule() {
           Object.keys(counts).length > 0
             ? Object.keys(counts)
             : (q.options || []).map((o: any) => String(o.label));
-        const detailRows: (string | number)[][] = labels.map((label: string) => {
+        const lines = labels.map((label: string) => {
           const count = counts[label] || 0;
           const pct = Math.round((count / denom) * 1000) / 10;
-          return [label, count, pct, makePctBar(pct)];
+          return {
+            option: label,
+            count,
+            pct,
+            graph: makeSurveyPctBar(pct),
+            kind: 'option' as const,
+          };
         });
-        detailRows.push(['(응답자 수)', answered, '', '']);
-        pushStatRows(rows, q.title, typeLabel, detailRows);
+        lines.push({
+          option: '(응답자 수)',
+          count: answered,
+          pct: '-',
+          graph: '',
+          kind: 'summary',
+        });
+        blocks.push({ questionNo, question: qTitle, typeLabel, lines });
         return;
       }
 
@@ -466,8 +425,8 @@ export default function AdminDeliveryHistoryModule() {
         for (let n = 1; n <= max; n++) counts[n] = 0;
         let sum = 0;
         let answered = 0;
-        submittedUsers.forEach((u) => {
-          const ans = getAnalysisAnswerValue(q, responses[`${survey.id}_${u.email}`]?.answers);
+        answerSources.forEach((src) => {
+          const ans = src.answers?.[q.id];
           if (ans === null || ans === undefined || ans === '') return;
           const n = Number(ans);
           if (!Number.isFinite(n)) return;
@@ -475,79 +434,117 @@ export default function AdminDeliveryHistoryModule() {
           sum += n;
           counts[n] = (counts[n] || 0) + 1;
         });
-        const detailRows: (string | number)[][] = [];
+        const lines: SurveyStatBlock['lines'] = [];
         for (let n = 1; n <= max; n++) {
           const count = counts[n] || 0;
           const pct = answered ? Math.round((count / answered) * 1000) / 10 : 0;
-          detailRows.push([`${n}점`, count, pct, makePctBar(pct)]);
+          lines.push({
+            option: `${n}점`,
+            count,
+            pct,
+            graph: makeSurveyPctBar(pct),
+            kind: 'option',
+          });
         }
-        detailRows.push(['평균', answered ? Math.round((sum / answered) * 100) / 100 : '-', '', '']);
-        detailRows.push(['(응답자 수)', answered, '', '']);
-        pushStatRows(rows, q.title, typeLabel, detailRows);
+        lines.push({
+          option: '평균',
+          count: answered ? Math.round((sum / answered) * 100) / 100 : '-',
+          pct: '-',
+          graph: '',
+          kind: 'average',
+        });
+        lines.push({
+          option: '(응답자 수)',
+          count: answered,
+          pct: '-',
+          graph: '',
+          kind: 'summary',
+        });
+        blocks.push({ questionNo, question: qTitle, typeLabel, lines });
         return;
       }
 
-      rows.push([q.title, typeLabel, GUIDE_MSG, '', '', '']);
-      rows.push([]);
+      blocks.push({
+        questionNo,
+        question: qTitle,
+        typeLabel,
+        lines: [
+          {
+            option: GUIDE_MSG,
+            count: '-',
+            pct: '-',
+            graph: '',
+            kind: 'guide',
+          },
+        ],
+      });
     });
 
-    const wb = XLSX.utils.book_new();
-    const safeTitle = String(survey.title || survey.code || '배달').replace(/[/\\?%*:|"<>]/g, '-');
-    const ws = XLSX.utils.aoa_to_sheet(rows);
-    ws['!cols'] = [
-      { wch: 36 },
-      { wch: 10 },
-      { wch: 42 },
-      { wch: 10 },
-      { wch: 10 },
-      { wch: 22 },
-    ];
-    XLSX.utils.book_append_sheet(wb, ws, `통계_${safeTitle}`.substring(0, 31));
-    XLSX.writeFile(wb, `[분석결과]_${safeTitle.substring(0, 30)}.xlsx`);
+    try {
+      const buffer = await writeSurveyResultAnalysisExcelBuffer(
+        [
+          {
+            title: String(survey.title || survey.code || '배달'),
+            responseCount: answerSources.length,
+            blocks,
+            textQuestions: exportQuestions.filter(
+              (q: any) => q.type === 'TEXT_SHORT' || q.type === 'TEXT_LONG'
+            ) as SurveyExcelQuestion[],
+            sources: answerSources,
+          },
+        ],
+        { variant: 'delivery' }
+      );
+      const safeTitle = String(survey.title || survey.code || '배달')
+        .replace(/[/\\?%*:|"<>]/g, '-')
+        .substring(0, 30);
+      downloadExcelArrayBuffer(buffer, `배달결과분석_${safeTitle}.xlsx`);
+    } catch (err) {
+      console.error(err);
+      alert('엑셀 다운로드에 실패했습니다.');
+    }
   };
 
-  const handleDownloadSingleExcel = (survey: any) => {
+  /** 단일 공고 개별응답 — 현황판과 동일 양식 */
+  const handleDownloadSingleExcel = async (survey: any) => {
     if (!requireEdit()) return;
-    let parsedQuestions = [];
+    let parsedQuestions: any[] = [];
     try {
-      parsedQuestions = typeof survey.questions === 'string' ? JSON.parse(survey.questions) : (survey.questions || []);
-    } catch (e) { parsedQuestions = []; }
-    const questions = parsedQuestions.length > 0 ? parsedQuestions : [{ id: 'dq1', title: '1. 상세 배송 주소지 정보 명세' }];
-    
-    const targetUsers = getTargetUsers(survey);
-    const submittedUsers = targetUsers.filter(u => responses[`${survey.id}_${u.email}`]?.isDone);
-    
-    if (submittedUsers.length === 0) return alert("본 공고에 신청된 명세 완료 데이터가 없어 엑셀을 출력할 수 없습니다.");
-    
-    const deptRow = ['제출조직(부서)', ...submittedUsers.map(u => u.dept)];
-    const nameRow = ['신청자이름', ...submittedUsers.map(u => u.name)];
-    const dateRow = ['접수일자', ...submittedUsers.map(u => responses[`${survey.id}_${u.email}`]?.date || '-')];
-    
-    const contentRows = questions.map((q: any) => {
-      const rowData = [q.title];
-      submittedUsers.forEach(u => {
-        const ans = responses[`${survey.id}_${u.email}`]?.answers;
-        if (!ans) {
-          rowData.push('(미입력)');
-        } else if (q.type === 'SEARCH_ADDRESS') {
-          rowData.push(formatAddressAnswer(q, ans));
-        } else {
-          const a = ans[q.id];
-          if (a === undefined || a === null || a === '') {
-            rowData.push('(미입력)');
-          } else {
-            rowData.push(Array.isArray(a) ? a.join(', ') : (a.fileName ? `[첨부파일] ${a.fileName}` : a));
-          }
-        }
-      });
-      return rowData;
-    });
-     
-    const ws = XLSX.utils.aoa_to_sheet([deptRow, nameRow, dateRow, ...contentRows]);
-    const wb = XLSX.utils.book_new();
-    const safeTitle = survey.title.replace(/[/\\?%*:|"<>]/g, '-').substring(0, 30);
-    XLSX.utils.book_append_sheet(wb, ws, safeTitle);
-    XLSX.writeFile(wb, `[사내배송_보관이력]_${safeTitle}.xlsx`);
+      parsedQuestions =
+        typeof survey.questions === 'string' ? JSON.parse(survey.questions) : survey.questions || [];
+    } catch {
+      parsedQuestions = [];
+    }
+    const questions = (
+      parsedQuestions.length > 0
+        ? parsedQuestions
+        : [{ id: 'dq1', title: '1. 상세 배송 주소지 정보 명세', type: 'TEXT_LONG' }]
+    ).filter((q: any) => q && q.type !== 'SECTION') as SurveyExcelQuestion[];
+
+    const sources = collectDeliveryAnswerSources(survey, questions);
+    if (sources.length === 0) {
+      return alert('본 공고에 신청된 명세 완료 데이터가 없어 엑셀을 출력할 수 없습니다.');
+    }
+
+    try {
+      const buffer = await writeSurveyResponseExcelBuffer(
+        [
+          {
+            title: String(survey.title || survey.code || '배달'),
+            questions,
+            sources,
+          },
+        ],
+        { variant: 'delivery' }
+      );
+      const safeTitle = String(survey.title || survey.code || '배달')
+        .replace(/[/\\?%*:|"<>]/g, '-')
+        .substring(0, 30);
+      downloadExcelArrayBuffer(buffer, `배달개별응답_${safeTitle}.xlsx`);
+    } catch (err) {
+      console.error(err);
+      alert('엑셀 다운로드에 실패했습니다.');
+    }
   };
   
   // 🚀 [기능 100% 보존]: ZIP 패키징 다운로드
@@ -600,40 +597,39 @@ export default function AdminDeliveryHistoryModule() {
     saveAs(content, `[사내배송명세집계]_${safeFolderTitle}.zip`);
   };
   
-  // 🚀 [기능 100% 보존]: 아카이브 대장 엑셀 추출
-  const handleExportListExcel = () => {
+  // 🚀 [기능 100% 보존]: 아카이브 대장 엑셀 추출 (결과엑셀 스타일 · 보관상태 제외)
+  const handleExportListExcel = async () => {
     if (!requireEdit()) return;
     const target = selectedIds.size > 0
       ? filteredHistory.filter((h) => selectedIds.has(h.id))
       : filteredHistory;
     if (target.length === 0) return alert('다운로드할 데이터가 없습니다.');
-    const exportData = target.map((h, idx) => {
+    const exportData: Array<Record<DeliveryHistoryListHeader, string | number>> = target.map((h, idx) => {
       const targetUsers = getTargetUsers(h);
       const done = targetUsers.filter(u => responses[`${h.id}_${u.email}`]?.isDone).length;
       const total = targetUsers.length;
   
       return {
-        'NO': target.length - idx,
-        '공고식별코드': h.code,
-        '게시번호': h.postNumber,
-        '게시일': h.postDate,
-        '배달 복지 공고명': h.title,
-        '신청분류': h.deliveryType === 'ALWAYS' ? '상시' : '기간',
-        '대상 범위': h.target,
-        '시작일': h.startDate,
-        '종료일': h.endDate,
-        '최종접수율': total > 0 ? Math.round((done/total)*100) + '%' : '0%',
-        '접수완료인원': done,
-        '미접수인원': total - done,
-        '보관 상태': h.status
+        NO: target.length - idx,
+        공고식별코드: h.code || '-',
+        게시일: h.postDate || '-',
+        게시명: h.title || '-',
+        신청분류: h.deliveryType === 'ALWAYS' ? '상시' : '기간',
+        '대상 범위': h.target || '-',
+        시작일: h.startDate || '-',
+        종료일: h.endDate || '-',
+        최종접수율: total > 0 ? Math.round((done / total) * 100) + '%' : '0%',
+        접수완료인원: done,
+        미접수인원: Math.max(0, total - done),
       };
     });
-  
-    const ws = XLSX.utils.json_to_sheet(exportData);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "배달아카이브대장");
-    const yearLabel = selectedYear === 'ALL' ? '전체' : `${selectedYear}년`;
-    XLSX.writeFile(wb, `사내복지_배달공고_보관이력_${yearLabel}.xlsx`);
+    try {
+      const buffer = await writeDeliveryHistoryListExcelBuffer(exportData);
+      const yearLabel = selectedYear === 'ALL' ? '전체' : `${selectedYear}년`;
+      downloadExcelArrayBuffer(buffer, `사내복지_배달공고_보관이력_${yearLabel}.xlsx`);
+    } catch {
+      alert('엑셀 다운로드에 실패했습니다.');
+    }
   };
   
   const totalPages = Math.max(1, Math.ceil(filteredHistory.length / itemsPerPage));
@@ -648,7 +644,7 @@ export default function AdminDeliveryHistoryModule() {
     setSelectedIds(next);
   };
 
-  const colSpan = isLv1 ? 16 : 15;
+  const colSpan = 13;
   
   if (loading) return <LoadingState />;
   
@@ -703,7 +699,7 @@ export default function AdminDeliveryHistoryModule() {
               <Link
                 key={tab.id}
                 href={tab.path}
-                className={`px-5 py-2 rounded-md text-xs font-black transition-all flex items-center gap-2 ${
+                className={`px-5 py-2 rounded-md text-xs font-medium transition-all flex items-center gap-2 ${
                   isActive ? tab.activeClass : 'text-slate-500 hover:text-slate-800'
                 }`}
               >
@@ -712,7 +708,7 @@ export default function AdminDeliveryHistoryModule() {
             );
           })}
         </div>
-        <p className="text-[10px] text-slate-400 font-bold px-3 hidden sm:block">
+        <p className="text-[10px] text-slate-400 font-medium px-3 hidden sm:block">
           ※ 탭을 클릭하여 진행 현황과 보관 이력을 전환합니다.
         </p>
       </div>
@@ -722,17 +718,31 @@ export default function AdminDeliveryHistoryModule() {
         <div className="p-4 px-6 bg-slate-200/70 border-b border-slate-300 flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-2">
             <div className="w-2.5 h-2.5 rounded-full bg-blue-600"></div>
-            <h2 className="text-sm font-black text-slate-800 tracking-tight">종료·보관 배달 복지 명세 대장</h2>
-            <span className="text-[11px] font-bold bg-slate-300/80 text-slate-700 px-2 py-0.5 rounded-md">{filteredHistory.length}건</span>
+            <h2 className="text-sm font-medium text-slate-800 tracking-tight">종료·보관 배달 복지 명세 대장</h2>
+            <span className="text-[11px] font-medium bg-slate-300/80 text-slate-700 px-2 py-0.5 rounded-md">{filteredHistory.length}건</span>
           </div>
 
           <div className="flex items-center gap-2 flex-wrap">
+            {isLv1 && (
+              <button
+                type="button"
+                onClick={() => void handlePermanentDeleteSelected()}
+                className={`px-3 py-1.5 rounded-lg text-[10px] font-medium shadow-sm transition-all whitespace-nowrap border ${
+                  selectedIds.size > 0
+                    ? 'bg-white border-red-200 text-red-600 hover:bg-red-50'
+                    : 'bg-white border-slate-200 text-slate-400 hover:bg-slate-50'
+                }`}
+                title="체크한 보관 공고를 영구 삭제합니다. (LV_1)"
+              >
+                {selectedIds.size > 0 ? `선택 삭제(LV_1) ${selectedIds.size}` : '선택 삭제(LV_1)'}
+              </button>
+            )}
             <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm">
-              <span className="text-[10px] font-black text-slate-400 uppercase">연도</span>
+              <span className="text-[10px] font-medium text-slate-400 uppercase">연도</span>
               <select
                 value={selectedYear}
                 onChange={(e) => setSelectedYear(e.target.value)}
-                className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent"
+                className="text-[11px] font-medium text-slate-800 outline-none cursor-pointer bg-transparent"
               >
                 <option value="ALL">전체</option>
                 {availableYears.map((year) => (
@@ -742,11 +752,11 @@ export default function AdminDeliveryHistoryModule() {
 
               <div className="w-px h-3.5 bg-slate-300 mx-0.5"></div>
 
-              <span className="text-[10px] font-black text-slate-400 uppercase">월별</span>
+              <span className="text-[10px] font-medium text-slate-400 uppercase">월별</span>
               <select
                 value={selectedMonth}
                 onChange={(e) => setSelectedMonth(e.target.value)}
-                className="text-[11px] font-black text-slate-800 outline-none cursor-pointer bg-transparent"
+                className="text-[11px] font-medium text-slate-800 outline-none cursor-pointer bg-transparent"
               >
                 <option value="ALL">전체</option>
                 {availableMonths.map((month) => (
@@ -762,15 +772,15 @@ export default function AdminDeliveryHistoryModule() {
                 placeholder="공고명 검색..."
                 value={searchTitleQuery}
                 onChange={(e) => setSearchTitleQuery(e.target.value)}
-                className="w-full pl-7 pr-3 py-1.5 bg-white border border-slate-200 rounded-lg text-[11px] font-bold outline-none focus:border-indigo-500 shadow-sm transition-colors"
+                className="w-full pl-7 pr-3 py-1.5 bg-white border border-slate-200 rounded-lg text-[11px] font-medium outline-none focus:border-indigo-500 shadow-sm transition-colors"
               />
             </div>
 
             <button
               type="button"
-              onClick={handleExportListExcel}
+              onClick={() => void handleExportListExcel()}
               disabled={!canEdit}
-              className={`px-3 py-1.5 rounded-lg text-[10px] font-black shadow-sm transition-all whitespace-nowrap ${canEdit ? 'bg-emerald-600 text-white hover:bg-emerald-700' : 'bg-slate-300 text-slate-500 cursor-not-allowed'}`}
+              className={`px-3 py-1.5 rounded-lg text-[10px] font-medium shadow-sm transition-all whitespace-nowrap ${canEdit ? 'bg-emerald-600 text-white hover:bg-emerald-700' : 'bg-slate-300 text-slate-500 cursor-not-allowed'}`}
             >
               {selectedIds.size > 0
                 ? `선택 EXCEL 다운로드(${selectedIds.size})`
@@ -781,7 +791,7 @@ export default function AdminDeliveryHistoryModule() {
 
         <div className="overflow-x-auto">
           <table className="w-full text-left font-medium min-w-[1400px]">
-            <thead className="bg-slate-100 text-slate-700 text-[10px] font-black uppercase tracking-widest border-b border-slate-200">
+            <thead className="bg-slate-100 text-slate-700 text-[10px] font-medium uppercase tracking-widest border-b border-slate-200">
               <tr>
                 <th className="py-3 pl-4 w-10 text-center">
                   <input
@@ -792,26 +802,23 @@ export default function AdminDeliveryHistoryModule() {
                   />
                 </th>
                 <th className="py-3 px-2 w-10 text-center">NO</th>
-                <th className="py-3 px-2 w-20 text-left">공고식별코드</th>
+                <th className="py-3 px-2 w-28 text-left">공고식별코드</th>
                 <th className="py-3 px-2 w-16 text-center text-slate-800">신청분류</th>
-                <th className="py-3 px-2 w-16 text-center text-slate-800">게시번호</th>
                 <th className="py-3 px-2 w-20 text-center">게시일</th>
-                <th className="py-3 px-4 w-[220px] text-left">배달 복지 공고명 / 포맷</th>
+                <th className="py-3 px-4 w-[220px] text-left">게시명</th>
                 <th className="py-3 px-2 w-24 text-center">대상 범위</th>
                 <th className="py-3 px-2 w-32 text-center">운영 신청 기간</th>
                 <th className="py-3 px-2 w-12 text-center border-l bg-slate-100/50">접수율</th>
                 <th className="py-3 px-2 w-12 text-center bg-teal-50/50 text-teal-600">접수</th>
                 <th className="py-3 px-2 w-14 text-center bg-red-50/50 text-red-600 border-r">미접수</th>
-                <th className="py-3 px-2 w-16 text-center">보관상태</th>
-                <th className="py-3 px-2 w-20 text-center border-l border-slate-200 whitespace-nowrap">복원(Edit)</th>
-                <th className="py-3 px-2 w-56 text-center bg-slate-50">응답 관리(Edit)</th>
-                {isLv1 && <th className="py-3 pr-4 w-24 text-center text-red-500">삭제(LV_1)</th>}
+                <th className="py-3 px-2 w-56 text-center border-l border-slate-200 bg-slate-50">응답 관리(Edit)</th>
+                <th className="py-3 pr-4 w-10 text-center">⋮</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 text-[11px]">
               {filteredHistory.length === 0 ? (
                 <tr>
-                  <td colSpan={colSpan} className="py-20 text-center text-slate-400 font-black text-sm">
+                  <td colSpan={colSpan} className="py-20 text-center text-slate-400 font-medium text-sm">
                     조건에 맞는 보관 배달 이력이 없습니다.
                   </td>
                 </tr>
@@ -836,70 +843,71 @@ export default function AdminDeliveryHistoryModule() {
                         className="accent-indigo-600 cursor-pointer w-3.5 h-3.5"
                       />
                     </td>
-                    <td className="py-2 text-center text-slate-400 font-bold align-middle tabular-nums">{filteredHistory.length - ((currentPage - 1) * itemsPerPage + i)}</td>
-                    <td className="py-2 px-2 text-left font-mono font-black text-slate-600 tracking-tighter align-middle">{s.code}</td>
+                    <td className="py-2 text-center text-slate-400 font-medium align-middle tabular-nums">{filteredHistory.length - ((currentPage - 1) * itemsPerPage + i)}</td>
+                    <td className="py-2 px-2 text-left font-mono font-medium text-slate-600 tracking-tighter align-middle whitespace-nowrap">{s.code}</td>
                     <td className="py-2 px-2 text-center align-middle">
-                      <span className={`px-1.5 py-0.5 rounded text-[8px] font-black ${s.deliveryType === 'ALWAYS' ? 'bg-pink-100 text-pink-700' : 'bg-amber-100 text-amber-700'}`}>
+                      <span className={`px-1.5 py-0.5 rounded text-[8px] font-medium ${s.deliveryType === 'ALWAYS' ? 'bg-pink-100 text-pink-700' : 'bg-amber-100 text-amber-700'}`}>
                         {s.deliveryType === 'ALWAYS' ? '상시' : '기간'}
                       </span>
                     </td>
-                    <td className="py-2 px-2 font-black text-center text-slate-800 text-[12px] align-middle tabular-nums">{s.postNumber}</td>
                     <td className="py-2 px-2 font-mono text-center text-slate-500 whitespace-nowrap align-middle tabular-nums">{s.postDate || '-'}</td>
                     <td className="py-2 px-4 text-left align-middle">
-                      <div className="font-black text-slate-800 text-[11px] line-clamp-1">{s.title}</div>
-                      <div className="text-[9px] text-slate-400 font-bold mt-0.5">{s.type || '배달 신청 포맷형'}</div>
+                      <div className="font-medium text-slate-800 text-[11px] line-clamp-1">{s.title}</div>
                     </td>
-                    <td className="py-2 px-2 font-bold text-slate-600 align-middle text-center">
+                    <td className="py-2 px-2 font-medium text-slate-600 align-middle text-center">
                       <div className="text-[10px] leading-tight truncate w-20 mx-auto" title={s.target}>
                         {s.target === '전사' ? '전사' : <span className="underline decoration-dashed decoration-slate-300">{s.target.split(',').length}개 부서 지정</span>}
                       </div>
                     </td>
                     <td className="py-2 px-2 text-slate-500 tracking-tighter text-center text-[9px] whitespace-nowrap align-middle"><div>{s.startDate} ~</div><div>{s.endDate}</div></td>
-                    <td className="py-2 px-2 text-center font-black text-slate-700 border-l bg-slate-50/30 align-middle tabular-nums">{rate}%</td>
-                    <td className="py-2 px-2 text-center text-teal-600 font-black bg-teal-50/30 align-middle tabular-nums">{done}명</td>
-                    <td className="py-2 px-2 text-center text-red-500 font-black bg-red-50/30 border-r align-middle tabular-nums">{notDone}명</td>
-                    <td className="py-2 px-2 text-center align-middle"><span className="px-2 py-0.5 rounded font-black text-[9px] bg-slate-200 text-slate-600">{s.status}</span></td>
-                    
-                    <td className="py-2 px-2 text-center align-middle border-l border-slate-200">
-                      <button onClick={() => handleRestore(s.id)} disabled={!canEdit} className={`w-full py-1.5 border rounded transition-all font-black text-[9px] whitespace-nowrap shadow-sm ${canEdit ? 'border-slate-300 bg-white text-slate-700 hover:bg-slate-900 hover:text-white' : 'border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed'}`}>🔄 복원</button>
-                    </td>
-                    
-                    <td className="py-2 px-2 align-middle bg-slate-50/20">
+                    <td className="py-2 px-2 text-center font-medium text-slate-700 border-l bg-slate-50/30 align-middle tabular-nums">{rate}%</td>
+                    <td className="py-2 px-2 text-center text-teal-600 font-medium bg-teal-50/30 align-middle tabular-nums">{done}명</td>
+                    <td className="py-2 px-2 text-center text-red-500 font-medium bg-red-50/30 border-r align-middle tabular-nums">{notDone}명</td>
+                    <td className="py-2 px-2 align-middle border-l border-slate-200 bg-slate-50/20">
                       <div className="flex items-center justify-center gap-1 max-w-[220px] mx-auto">
-                        <button onClick={() => handleDownloadZip(s)} disabled={!canEdit} className={`flex-1 py-1.5 rounded-lg shadow-sm transition-all font-black text-[9px] whitespace-nowrap flex items-center justify-center border ${canEdit ? 'bg-indigo-50 border-indigo-200 text-indigo-700 hover:bg-indigo-600 hover:text-white' : 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'}`}>
+                        <button onClick={() => handleDownloadZip(s)} disabled={!canEdit} className={`flex-1 py-1.5 rounded-lg shadow-sm transition-all font-medium text-[9px] whitespace-nowrap flex items-center justify-center border ${canEdit ? 'bg-indigo-50 border-indigo-200 text-indigo-700 hover:bg-indigo-600 hover:text-white' : 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'}`}>
                           ZIP
                         </button>
-                        <button onClick={() => handleDownloadSingleExcel(s)} disabled={!canEdit} className={`flex-1 py-1.5 rounded-lg shadow-sm transition-all font-black text-[9px] whitespace-nowrap flex items-center justify-center border ${canEdit ? 'bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-600 hover:text-white' : 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'}`}>
+                        <button onClick={() => void handleDownloadSingleExcel(s)} disabled={!canEdit} className={`flex-1 py-1.5 rounded-lg shadow-sm transition-all font-medium text-[9px] whitespace-nowrap flex items-center justify-center border ${canEdit ? 'bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-600 hover:text-white' : 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'}`}>
                           Excel
                         </button>
-                        <button
-                          type="button"
-                          onClick={() => handleDownloadQuestionnaireOriginal(s)}
-                          disabled={!canEdit}
-                          title="질문·선택지·유형 등 조사지 원문"
-                          className={`flex-1 py-1.5 rounded-lg shadow-sm transition-all font-black text-[9px] whitespace-nowrap flex items-center justify-center border ${canEdit ? 'bg-amber-50 border-amber-200 text-amber-800 hover:bg-amber-500 hover:text-white' : 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'}`}
+                        <Link
+                          href={`/survey/delivery/admin/survey-builder?id=${encodeURIComponent(s.id)}&from=history`}
+                          title="빌더에서 조사 원문 확인 · 엑셀 다운로드"
+                          className="flex-1 py-1.5 rounded-lg shadow-sm transition-all font-medium text-[9px] whitespace-nowrap flex items-center justify-center border bg-amber-50 border-amber-200 text-amber-800 hover:bg-amber-500 hover:text-white"
                         >
                           조사원문
-                        </button>
+                        </Link>
                         <button
                           type="button"
-                          onClick={() => handleDownloadResultAnalysis(s)}
+                          onClick={() => void handleDownloadResultAnalysis(s)}
                           disabled={!canEdit}
                           title="분석 허용 문항만 빈도·비율 통계"
-                          className={`flex-1 py-1.5 rounded-lg shadow-sm transition-all font-black text-[9px] whitespace-nowrap flex items-center justify-center border ${canEdit ? 'bg-slate-50 border-slate-300 text-slate-700 hover:bg-slate-800 hover:text-white' : 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'}`}
+                          className={`flex-1 py-1.5 rounded-lg shadow-sm transition-all font-medium text-[9px] whitespace-nowrap flex items-center justify-center border ${canEdit ? 'bg-slate-50 border-slate-300 text-slate-700 hover:bg-slate-800 hover:text-white' : 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'}`}
                         >
                           분석결과
                         </button>
                       </div>
                     </td>
-     
-                    {isLv1 && (
-                      <td className="py-2 pr-4 text-center align-middle">
-                        <button onClick={() => handlePermanentDelete(s.id)} className="w-full py-1.5 bg-white border border-red-200 text-red-500 rounded hover:bg-red-50 transition-all font-black text-[9px] whitespace-nowrap shadow-sm">
-                          🗑️ 삭제(LV_1)
-                        </button>
-                      </td>
-                    )}
+                    <td className="py-2 pr-4 text-center align-middle">
+                      <button
+                        type="button"
+                        data-action-kebab
+                        title="더보기"
+                        onClick={(e) => openActionMenu(e, s.id)}
+                        className={`inline-flex items-center justify-center w-7 h-7 rounded-lg transition-colors ${
+                          actionMenu?.id === s.id
+                            ? 'bg-slate-200 text-slate-800'
+                            : 'text-slate-500 hover:bg-slate-100 hover:text-slate-800'
+                        }`}
+                      >
+                        <svg viewBox="0 0 20 20" className="w-4 h-4" fill="currentColor" aria-hidden>
+                          <circle cx="10" cy="4.5" r="1.6" />
+                          <circle cx="10" cy="10" r="1.6" />
+                          <circle cx="10" cy="15.5" r="1.6" />
+                        </svg>
+                      </button>
+                    </td>
                   </tr>
                 );
               })}
@@ -914,6 +922,33 @@ export default function AdminDeliveryHistoryModule() {
           />
         )}
       </div>
+
+      {actionMenu &&
+        createPortal(
+          <div
+            ref={actionMenuRef}
+            style={{ top: actionMenu.top, left: actionMenu.left }}
+            className="fixed z-[500] w-[168px] rounded-xl border border-slate-200 bg-white shadow-lg py-1 text-left"
+          >
+            <button
+              type="button"
+              disabled={!canEdit}
+              title={!canEdit ? '복원 권한이 없습니다. (Edit)' : '현황판으로 복원 (게시중단)'}
+              className={`w-full px-3 py-2 text-left text-[11px] font-medium ${
+                canEdit ? 'text-slate-700 hover:bg-slate-50' : 'text-slate-400 cursor-not-allowed'
+              }`}
+              onClick={() => {
+                if (!canEdit) return;
+                const id = actionMenu.id;
+                setActionMenu(null);
+                void handleRestore(id);
+              }}
+            >
+              복원(Edit)
+            </button>
+          </div>,
+          document.body
+        )}
     </div>
   );
 }

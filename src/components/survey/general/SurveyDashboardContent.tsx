@@ -428,22 +428,22 @@ export default function SurveyDashboardContent() {
         </div>
       </div>
   
-      <div className="bg-white border border-slate-200 rounded-[2.5rem] shadow-sm overflow-hidden mt-6">
-      <div className="p-6 bg-slate-800 border-b border-slate-700 flex items-center justify-between">
-          <h3 className="text-sm font-medium text-white flex items-center gap-2"><span className="text-blue-500">●</span> {filterNudged ? '🚨 참여 요청 내역' : filterClosingToday ? '⏰ 오늘 마감 설문' : '진행 중인 전사 설문 리스트'}</h3>
+      <div className="bg-white border border-slate-200 rounded-lg shadow-sm overflow-hidden mt-6">
+      <div className="p-6 bg-gradient-to-r from-blue-700 to-indigo-800 border-b border-blue-800/60 flex items-center justify-between">
+          <h3 className="text-sm font-medium text-white flex items-center gap-2"><span className="text-sky-300">●</span> {filterNudged ? '🚨 참여 요청 내역' : filterClosingToday ? '⏰ 오늘 마감 설문' : '진행 중인 전사 설문 리스트'}</h3>
           <div className="flex items-center gap-2">
             {filterPending && <span className="text-[10px] font-medium bg-indigo-500 text-white px-2 py-0.5 rounded-full border border-indigo-600 animate-pulse">대상 내역 표시 중</span>}
             {filterNudged && <span className="text-[10px] font-medium bg-red-500 text-white px-2 py-0.5 rounded-full border border-red-600 animate-pulse">독촉 건만 표시 중</span>}
             {filterClosingToday && <span className="text-[10px] font-medium bg-red-50 text-red-600 px-2 py-0.5 rounded-full border border-red-200 animate-pulse">오늘 마감 건 표시 중</span>}
             
-            <span className="text-xs font-medium bg-slate-700 text-indigo-300 px-2.5 py-0.5 rounded-full border border-slate-600">조회 {filteredSurveys.length}건</span>
+            <span className="text-xs font-medium bg-white/15 text-blue-100 px-2.5 py-0.5 rounded-full border border-white/20">조회 {filteredSurveys.length}건</span>
           </div>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse">
             <thead className="bg-slate-100 text-slate-700 text-[10px] font-medium uppercase tracking-widest border-b border-slate-200">
               <tr>
-                <th className="py-4 pl-8 w-16 text-center">NO</th><th className="py-4 px-2 w-20 text-center whitespace-nowrap">게시번호</th><th className="py-4 px-3 w-32 text-center whitespace-nowrap">게시일</th><th className="py-4 px-4">게시명</th><th className="py-4 px-3 w-24 text-center">익명여부</th><th className="py-4 px-3 w-44 text-center">대상</th><th className="py-4 px-3 w-36 text-center">기간</th><th className="py-4 px-2 w-16 text-center">참여율</th><th className="py-4 px-2 w-16 text-center">참여</th><th className="py-4 px-2 w-16 text-center">미참여</th><th className="py-4 pr-8 w-32 text-center">상태 / 액션</th>
+                <th className="py-4 pl-8 w-16 text-center">NO</th><th className="py-4 px-2 w-28 text-center whitespace-nowrap">식별코드</th><th className="py-4 px-3 w-32 text-center whitespace-nowrap">게시일</th><th className="py-4 px-4">게시명</th><th className="py-4 px-3 w-24 text-center">익명여부</th><th className="py-4 px-3 w-44 text-center">대상</th><th className="py-4 px-3 w-36 text-center">기간</th><th className="py-4 px-2 w-16 text-center">참여율</th><th className="py-4 px-2 w-16 text-center">참여</th><th className="py-4 px-2 w-16 text-center">미참여</th><th className="py-4 pr-8 w-32 text-center">상태 / 액션</th>
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-slate-100 text-xs font-medium text-slate-700">
@@ -488,7 +488,7 @@ export default function SurveyDashboardContent() {
                     }`}
                   >
                     <td className="text-center text-slate-400 font-medium pl-8 py-4">{idx + 1}</td>
-                    <td className="text-center font-medium text-slate-600 px-2 py-4">{s.postNumber}</td>
+                    <td className="text-center font-mono font-medium text-slate-600 px-2 py-4 whitespace-nowrap">{s.code || '-'}</td>
                     <td className="text-center font-mono text-slate-500 px-3 py-4 whitespace-nowrap">{s.postDate || '-'}</td>
                     
                     <td className="px-4 py-4">

@@ -404,8 +404,8 @@ const handleSaveDraft = () => {
       My Delivery Mission
     </p>
     <div className="flex items-end gap-2 mt-1">
-      <h3 className="text-4xl font-black">{stats.myPendingCount}</h3>
-      <p className="text-xs font-bold mb-1 opacity-90">건의 참여할 배송 조사가 있습니다.</p>
+      <h3 className="text-4xl font-medium">{stats.myPendingCount}</h3>
+      <p className="text-xs font-medium mb-1 opacity-90">건의 참여할 배송 조사가 있습니다.</p>
     </div>
   </div>
   
@@ -416,7 +416,7 @@ const handleSaveDraft = () => {
         setFilterPending(!filterPending);
         setFilterNudged(false); 
       }} 
-      className={`shrink-0 text-[10px] font-black px-4 py-2 rounded-xl transition-all border shadow-sm ${
+      className={`shrink-0 text-[10px] font-medium px-4 py-2 rounded-xl transition-all border shadow-sm ${
         filterPending 
           ? 'bg-white text-emerald-800 border-white' 
           : 'bg-white/20 hover:bg-white/30 text-white border-white/20'
@@ -429,7 +429,7 @@ const handleSaveDraft = () => {
   
         <div className="xl:w-3/5 flex flex-col md:flex-row gap-4">
           <div className="flex-1 bg-white border border-slate-200 p-5 rounded-[2.5rem] shadow-sm flex items-center justify-between min-h-[120px]">
-            <div><p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">진행 중 조사</p><h3 className="text-3xl font-black text-slate-800 mt-1">{stats.ongoingCount} <span className="text-sm font-bold text-slate-400">건</span></h3></div>
+            <div><p className="text-[10px] font-medium text-slate-400 uppercase tracking-widest mb-1">진행 중 조사</p><h3 className="text-3xl font-medium text-slate-800 mt-1">{stats.ongoingCount} <span className="text-sm font-medium text-slate-400">건</span></h3></div>
             <div className="w-12 h-12 bg-blue-50 text-blue-600 rounded-2xl flex items-center justify-center text-2xl">🚚</div>
           </div>
     
@@ -445,7 +445,7 @@ const handleSaveDraft = () => {
               filterClosingToday ? 'bg-red-50 border-red-400 scale-[1.02] shadow-lg' : 'bg-white border-slate-200 hover:border-red-200 hover:bg-red-50/30'
             }`}
           >
-            <div><p className="text-[10px] font-black text-red-400 uppercase tracking-widest mb-1">오늘 마감</p><h3 className="text-3xl font-black text-red-600 mt-1">{stats.closingTodayCount} <span className="text-sm font-bold text-red-300">건</span></h3></div>
+            <div><p className="text-[10px] font-medium text-red-400 uppercase tracking-widest mb-1">오늘 마감</p><h3 className="text-3xl font-medium text-red-600 mt-1">{stats.closingTodayCount} <span className="text-sm font-medium text-red-300">건</span></h3></div>
             <div className={`w-12 h-12 rounded-2xl flex items-center justify-center text-2xl transition-all ${filterClosingToday ? 'bg-red-500 text-white animate-pulse' : 'bg-red-50'}`}>⏰</div>
           </div>
      
@@ -462,8 +462,8 @@ const handleSaveDraft = () => {
             }`}
           >
             <div>
-              <p className={`text-[10px] font-black uppercase tracking-widest mb-1 ${filterNudged ? 'text-red-100' : 'text-red-400'}`}>참여 요청</p>
-              <h3 className={`text-3xl font-black mt-1 ${filterNudged ? 'text-white' : 'text-red-600'}`}>{stats.nudgeCount} <span className={`text-sm font-bold ${filterNudged ? 'text-red-200' : 'text-red-300'}`}>건</span></h3>
+              <p className={`text-[10px] font-medium uppercase tracking-widest mb-1 ${filterNudged ? 'text-red-100' : 'text-red-400'}`}>참여 요청</p>
+              <h3 className={`text-3xl font-medium mt-1 ${filterNudged ? 'text-white' : 'text-red-600'}`}>{stats.nudgeCount} <span className={`text-sm font-medium ${filterNudged ? 'text-red-200' : 'text-red-300'}`}>건</span></h3>
             </div>
             <div className={`w-12 h-12 rounded-2xl flex items-center justify-center text-2xl transition-all ${
               filterNudged 
@@ -479,29 +479,29 @@ const handleSaveDraft = () => {
       </div>
   
       {/* 🚀 데이터시트 대장 */}
-      <div className="bg-white border border-slate-200 rounded-[2.5rem] shadow-sm overflow-hidden mt-6">
-        <div className="p-4 px-6 bg-slate-200/80 border-b border-slate-300 flex items-center justify-between">
+      <div className="bg-white border border-slate-200 rounded-lg shadow-sm overflow-hidden mt-6">
+        <div className="p-6 bg-gradient-to-r from-emerald-900 to-teal-900 border-b border-emerald-950/40 flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <div className="w-2.5 h-2.5 rounded-full bg-blue-600"></div>
-            <h2 className="text-xs font-black text-slate-800 tracking-tight">
+            <span className="text-emerald-300">●</span>
+            <h2 className="text-sm font-medium text-white tracking-tight">
               {filterNudged ? '🚨 긴급 참여 요청 내역' : '진행 중인 배달/조사 리스트'}
             </h2>
           </div>
           <div className="flex items-center gap-2">
-            {filterPending && <span className="text-[10px] font-black bg-indigo-500 text-white px-2 py-0.5 rounded-full border border-indigo-600 animate-pulse">대상 내역 표시 중</span>}
-            {filterNudged && <span className="text-[10px] font-black bg-red-500 text-white px-2 py-0.5 rounded-full border border-red-600 animate-pulse">독촉 건만 표시 중</span>}
+            {filterPending && <span className="text-[10px] font-medium bg-indigo-500 text-white px-2 py-0.5 rounded-full border border-indigo-600 animate-pulse">대상 내역 표시 중</span>}
+            {filterNudged && <span className="text-[10px] font-medium bg-red-500 text-white px-2 py-0.5 rounded-full border border-red-600 animate-pulse">독촉 건만 표시 중</span>}
             {/* 💡 요기 뱃지 추가! */}
-            {filterClosingToday && <span className="text-[10px] font-black bg-red-50 text-red-600 px-2 py-0.5 rounded-full border border-red-200 animate-pulse">오늘 마감 건 표시 중</span>}
-            <span className="text-[11px] font-bold bg-slate-300/80 text-slate-700 px-2 py-0.5 rounded-md">조회 {filteredSurveys.length}건</span>
+            {filterClosingToday && <span className="text-[10px] font-medium bg-red-50 text-red-600 px-2 py-0.5 rounded-full border border-red-200 animate-pulse">오늘 마감 건 표시 중</span>}
+            <span className="text-xs font-medium bg-white/15 text-emerald-100 px-2.5 py-0.5 rounded-full border border-white/20">조회 {filteredSurveys.length}건</span>
           </div>
         </div>
      
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse">
-            <thead className="bg-slate-100 text-slate-700 text-[10px] font-black uppercase tracking-widest border-b border-slate-200">
+            <thead className="bg-slate-100 text-slate-700 text-[10px] font-medium uppercase tracking-widest border-b border-slate-200">
               <tr>
                 <th className="py-4 pl-8 w-16 text-center">NO</th>
-                <th className="py-4 px-2 w-20 text-center whitespace-nowrap">게시번호</th>
+                <th className="py-4 px-2 w-28 text-center whitespace-nowrap">식별코드</th>
                 <th className="py-4 px-3 w-32 text-center whitespace-nowrap">게시일</th>
                 <th className="py-4 px-4">게시명</th>
                 <th className="py-4 px-3 w-24 text-center">신청분류</th>
@@ -513,9 +513,9 @@ const handleSaveDraft = () => {
                 <th className="py-4 pr-8 w-32 text-center">상태 / 액션</th>
               </tr>
             </thead>
-            <tbody className="bg-white divide-y divide-slate-100 text-xs font-bold text-slate-700">
+            <tbody className="bg-white divide-y divide-slate-100 text-xs font-medium text-slate-700">
               {paginatedSurveys.length === 0 ? (
-                <tr><td colSpan={11} className="py-24 text-center text-slate-400 font-bold bg-slate-50/30">조건에 맞는 배달/조사 내역이 없습니다.</td></tr>
+                <tr><td colSpan={11} className="py-24 text-center text-slate-400 font-medium bg-slate-50/30">조건에 맞는 배달/조사 내역이 없습니다.</td></tr>
               ) : paginatedSurveys.map((s, idx) => {
                 // 🚀 서버 GET_STATS: 대상인원 + 참여자수
                 const total = targetCounts[s.id] || 0;
@@ -555,8 +555,8 @@ const handleSaveDraft = () => {
                             : 'hover:bg-slate-50/50'
                     }`}
                   >
-                    <td className="text-center text-slate-400 font-black pl-8 py-4">{(currentPage - 1) * itemsPerPage + idx + 1}</td>
-                    <td className="text-center font-black text-slate-600 px-2 py-4">{s.postNumber}</td>
+                    <td className="text-center text-slate-400 font-medium pl-8 py-4">{(currentPage - 1) * itemsPerPage + idx + 1}</td>
+                    <td className="text-center font-mono font-medium text-slate-600 px-2 py-4 whitespace-nowrap">{s.code || '-'}</td>
                     <td className="text-center font-mono text-slate-500 px-3 py-4 whitespace-nowrap">{s.postDate || '-'}</td>
                     
                     <td className="px-4 py-4">
@@ -564,7 +564,7 @@ const handleSaveDraft = () => {
                         <div className="flex items-center gap-2">
                           <button 
                             onClick={() => isTargeted && !isSubmitted && !isTimeOver && handleOpenIntro(s)} 
-                            className={`font-black text-[12px] text-left line-clamp-1 ${!isTargeted || isTimeOver || isSubmitted ? 'text-slate-400 cursor-not-allowed' : 'text-slate-800 hover:text-blue-600 hover:underline'}`}
+                            className={`font-medium text-[12px] text-left line-clamp-1 ${!isTargeted || isTimeOver || isSubmitted ? 'text-slate-400 cursor-not-allowed' : 'text-slate-800 hover:text-blue-600 hover:underline'}`}
                             disabled={!isTargeted || isSubmitted || isTimeOver}
                           >
                             {s.title}
@@ -572,7 +572,7 @@ const handleSaveDraft = () => {
                           
                           {/* 💡 동적 D-Day 표시: D-Day는 빨강, D-1~D-3은 노랑으로 시각적 분리 */}
                           {dDayText && (
-                            <span className={`shrink-0 text-[8px] px-1.5 py-0.5 rounded font-black animate-pulse ${
+                            <span className={`shrink-0 text-[8px] px-1.5 py-0.5 rounded font-medium animate-pulse ${
                               dDayText === 'D-Day' 
                                 ? 'bg-red-600 text-white' 
                                 : 'bg-amber-400 text-amber-950'
@@ -581,10 +581,10 @@ const handleSaveDraft = () => {
                             </span>
                           )}
                           
-                          {isTimeOver && <span className="shrink-0 bg-slate-500 text-white text-[8px] px-1.5 py-0.5 rounded font-black">종료됨</span>}
+                          {isTimeOver && <span className="shrink-0 bg-slate-500 text-white text-[8px] px-1.5 py-0.5 rounded font-medium">종료됨</span>}
                         </div>
                         {isNudged && !isTimeOver && (
-                          <span className="inline-block bg-red-100 text-red-600 border border-red-200 text-[8px] px-2 py-0.5 rounded shadow-sm font-black animate-pulse">
+                          <span className="inline-block bg-red-100 text-red-600 border border-red-200 text-[8px] px-2 py-0.5 rounded shadow-sm font-medium animate-pulse">
                             🚨 관리자 참여 요청
                           </span>
                         )}
@@ -592,7 +592,7 @@ const handleSaveDraft = () => {
                     </td>
                     
                     <td className="text-center py-4 px-3">
-                      <span className={`px-2 py-0.5 rounded text-[9px] font-black ${s.deliveryType === 'ALWAYS' ? 'bg-pink-100 text-pink-700 border border-pink-200' : 'bg-amber-100 text-amber-700 border border-amber-200'}`}>
+                      <span className={`px-2 py-0.5 rounded text-[9px] font-medium ${s.deliveryType === 'ALWAYS' ? 'bg-pink-100 text-pink-700 border border-pink-200' : 'bg-amber-100 text-amber-700 border border-amber-200'}`}>
                         {s.deliveryType === 'ALWAYS' ? '상시' : '기간'}
                       </span>
                     </td>
@@ -603,29 +603,29 @@ const handleSaveDraft = () => {
                     <td className="text-center font-mono text-slate-500 text-[10px] px-3 py-4">
                       <div>{s.startDate} ~</div>
                       <div className={
-                        isTimeOver ? 'text-slate-400 font-bold' 
-                        : dDayText === 'D-Day' ? 'text-red-500 font-black' 
-                        : dDayText ? 'text-amber-500 font-black' 
+                        isTimeOver ? 'text-slate-400 font-medium' 
+                        : dDayText === 'D-Day' ? 'text-red-500 font-medium' 
+                        : dDayText ? 'text-amber-500 font-medium' 
                         : 'text-slate-600'
                       }>
                         {s.endDate} <span className="text-[8px]">({timeStr})</span>
                       </div>
                     </td>
                     
-                    <td className="text-center font-black text-slate-700 px-2 py-4">{rate}%</td>
-                    <td className="text-center font-black text-blue-600 px-2 py-4">{done}명</td>
-                    <td className="text-center font-black text-red-500 px-2 py-4">{notDone}명</td>
+                    <td className="text-center font-medium text-slate-700 px-2 py-4">{rate}%</td>
+                    <td className="text-center font-medium text-blue-600 px-2 py-4">{done}명</td>
+                    <td className="text-center font-medium text-red-500 px-2 py-4">{notDone}명</td>
      
                     <td className="text-center pr-8 py-4">
                     {!isTargeted ? (
-                       <button disabled className="px-4 py-1.5 rounded-lg font-black text-[10px] bg-slate-200 text-slate-500 cursor-not-allowed">🚫 대상아님</button>
+                       <button disabled className="px-4 py-1.5 rounded-lg font-medium text-[10px] bg-slate-200 text-slate-500 cursor-not-allowed">🚫 대상아님</button>
                       ) : isSubmitted ? (
                         <button 
                           onClick={() => {
                             const resp = myResponses[s.id];
                             alert(`📋 [내 배송지 접수 명세서]\n접수일시: ${resp.submittedAt}`);
                           }} 
-                          className="px-3 py-1.5 rounded-lg font-black text-[10px] transition-all whitespace-nowrap shadow-sm bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100"
+                          className="px-3 py-1.5 rounded-lg font-medium text-[10px] transition-all whitespace-nowrap shadow-sm bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100"
                         >
                         📬 제출완료
                       </button>
@@ -633,15 +633,15 @@ const handleSaveDraft = () => {
                       <button
                         disabled
                         title="기간종료 · 미접수"
-                        className="px-3 py-1.5 rounded-lg font-black text-[10px] bg-slate-100 text-slate-500 border border-slate-200 cursor-not-allowed leading-tight"
+                        className="px-3 py-1.5 rounded-lg font-medium text-[10px] bg-slate-100 text-slate-500 border border-slate-200 cursor-not-allowed leading-tight"
                       >
                         <span className="block">📥 미접수</span>
-                        <span className="block text-[8px] font-bold text-slate-400 mt-0.5">기간종료</span>
+                        <span className="block text-[8px] font-medium text-slate-400 mt-0.5">기간종료</span>
                       </button>
                     ) : (
                       <button 
                         onClick={() => handleOpenIntro(s)} 
-                        className={`px-4 py-1.5 rounded-lg font-black text-[10px] transition-all whitespace-nowrap shadow-sm ${
+                        className={`px-4 py-1.5 rounded-lg font-medium text-[10px] transition-all whitespace-nowrap shadow-sm ${
                           isNudged ? 'bg-red-600 text-white hover:bg-red-700 animate-bounce' : 'bg-blue-600 text-white hover:bg-blue-700'
                         }`}
                       >
@@ -661,7 +661,7 @@ const handleSaveDraft = () => {
             <button 
               disabled={currentPage === 1}
               onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
-              className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors"
+              className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-medium text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors"
             >
               이전
             </button>
@@ -669,7 +669,7 @@ const handleSaveDraft = () => {
               <button
                 key={i}
                 onClick={() => setCurrentPage(i + 1)}
-                className={`w-8 h-8 rounded-xl font-black text-xs transition-all ${currentPage === i + 1 ? 'bg-slate-800 text-white shadow-sm scale-105' : 'bg-white border border-slate-200 text-slate-500 hover:bg-slate-50'}`}
+                className={`w-8 h-8 rounded-xl font-medium text-xs transition-all ${currentPage === i + 1 ? 'bg-slate-800 text-white shadow-sm scale-105' : 'bg-white border border-slate-200 text-slate-500 hover:bg-slate-50'}`}
               >
                 {i + 1}
               </button>
@@ -677,7 +677,7 @@ const handleSaveDraft = () => {
             <button 
               disabled={currentPage === totalPages}
               onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))}
-              className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors"
+              className="px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl font-medium text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors"
             >
               다음
             </button>
@@ -689,18 +689,18 @@ const handleSaveDraft = () => {
         <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-sm z-[200] flex items-center justify-center p-4">
           <div className="bg-white w-[500px] rounded-[2rem] overflow-hidden shadow-2xl flex flex-col p-8 items-center text-center animate-in zoom-in duration-300">
             <div className="w-16 h-16 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center text-3xl mb-6">📦</div>
-            <h3 className="text-xl font-black text-slate-800 mb-4 whitespace-pre-wrap text-left w-full">{introModalSurvey.title}</h3>
+            <h3 className="text-xl font-medium text-slate-800 mb-4 whitespace-pre-wrap text-left w-full">{introModalSurvey.title}</h3>
             {introModalSurvey.description ? (
-              <p className="text-sm font-bold text-slate-500 bg-slate-50 p-4 rounded-xl w-full leading-relaxed mb-8 border border-slate-100 whitespace-pre-wrap text-left">
+              <p className="text-sm font-medium text-slate-500 bg-slate-50 p-4 rounded-xl w-full leading-relaxed mb-8 border border-slate-100 whitespace-pre-wrap text-left">
                 {introModalSurvey.description}
               </p>
             ) : (
-              <p className="text-sm font-bold text-slate-400 mb-8 whitespace-pre-wrap text-left w-full">수령하실 정확한 배송지 정보를 입력해 주세요.</p>
+              <p className="text-sm font-medium text-slate-400 mb-8 whitespace-pre-wrap text-left w-full">수령하실 정확한 배송지 정보를 입력해 주세요.</p>
             )}
             
             <div className="flex gap-3 w-full">
-              <button onClick={() => setIntroModalSurvey(null)} className="flex-1 py-3.5 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-xl font-black transition-colors">닫기</button>
-              <button onClick={handleStartSurvey} className="flex-[2] py-3.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-black shadow-lg transition-colors text-[13px]">
+              <button onClick={() => setIntroModalSurvey(null)} className="flex-1 py-3.5 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-xl font-medium transition-colors">닫기</button>
+              <button onClick={handleStartSurvey} className="flex-[2] py-3.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-medium shadow-lg transition-colors text-[13px]">
                 🚀 신청서 기재 시작하기
               </button>
             </div>
@@ -714,21 +714,21 @@ const handleSaveDraft = () => {
             <div className="flex items-center gap-4">
               <button onClick={() => {
                 if(confirm('작성을 중단하고 나가시겠습니까?\n저장하지 않은 내용은 사라집니다.')) setActiveFullScreenSurvey(null);
-              }} className="px-4 py-2 bg-slate-100 hover:bg-slate-200 rounded-xl font-black text-[12px] text-slate-600 transition-colors">
+              }} className="px-4 py-2 bg-slate-100 hover:bg-slate-200 rounded-xl font-medium text-[12px] text-slate-600 transition-colors">
                 ⬅️ 나가기
               </button>
               <div className="h-6 w-px bg-slate-200 mx-1"></div>
               <div>
-                <span className="text-[10px] font-black text-blue-600 bg-blue-50 px-2 py-0.5 rounded border border-blue-100">진행 중인 배송 신청</span>
-                <h1 className="text-base font-black text-slate-800 mt-1 whitespace-pre-wrap text-left">{activeFullScreenSurvey.title}</h1>
+                <span className="text-[10px] font-medium text-blue-600 bg-blue-50 px-2 py-0.5 rounded border border-blue-100">진행 중인 배송 신청</span>
+                <h1 className="text-base font-medium text-slate-800 mt-1 whitespace-pre-wrap text-left">{activeFullScreenSurvey.title}</h1>
               </div>
             </div>
             
             <div className="flex items-center gap-3">
-              <button onClick={handleSaveDraft} className="px-5 py-2.5 bg-slate-800 text-white rounded-xl text-xs font-black hover:bg-black transition-colors shadow-sm">
+              <button onClick={handleSaveDraft} className="px-5 py-2.5 bg-slate-800 text-white rounded-xl text-xs font-medium hover:bg-black transition-colors shadow-sm">
                 💾 중간 저장
               </button>
-              <button onClick={handleSubmitForm} className="px-6 py-2.5 bg-blue-600 text-white rounded-xl text-xs font-black shadow-md hover:bg-blue-700 transition-colors">
+              <button onClick={handleSubmitForm} className="px-6 py-2.5 bg-blue-600 text-white rounded-xl text-xs font-medium shadow-md hover:bg-blue-700 transition-colors">
                 🚀 최종 제출하기
               </button>
             </div>
@@ -736,8 +736,8 @@ const handleSaveDraft = () => {
      
           <div className="flex-1 w-full max-w-[800px] mx-auto py-10 px-4 pb-32 space-y-6">
             <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm mb-6 relative">
-              <h2 className="text-2xl font-black text-slate-900 mb-2 whitespace-pre-wrap text-left">{activeFullScreenSurvey.title}</h2>
-              {activeFullScreenSurvey.description && <p className="text-sm font-bold text-slate-500 leading-relaxed whitespace-pre-wrap text-left">{activeFullScreenSurvey.description}</p>}
+              <h2 className="text-2xl font-medium text-slate-900 mb-2 whitespace-pre-wrap text-left">{activeFullScreenSurvey.title}</h2>
+              {activeFullScreenSurvey.description && <p className="text-sm font-medium text-slate-500 leading-relaxed whitespace-pre-wrap text-left">{activeFullScreenSurvey.description}</p>}
             </div>
      
             {(() => {
@@ -749,7 +749,7 @@ const handleSaveDraft = () => {
 
               return visibleQuestions.map((q, qIdx) => (
                 <div key={q.id} className={`bg-white p-8 rounded-3xl border border-slate-200 shadow-sm space-y-4 relative ${q.type === 'SECTION' ? 'border-l-8 border-l-teal-600 bg-teal-50/10' : ''}`}>
-                  <label className="block text-base font-black text-slate-800">
+                  <label className="block text-base font-medium text-slate-800">
                     <span className="text-blue-500 mr-2">{qIdx + 1}.</span> {q.title} {q.isRequired && <span className="text-red-500 ml-1">*</span>}
                   </label>
 
@@ -767,9 +767,9 @@ const handleSaveDraft = () => {
                 
                 {(q.description || q.referenceLink) && (
                   <div className="p-4 bg-slate-50 border border-slate-100 rounded-xl space-y-2 mb-4">
-                    {q.description && <p className="text-xs font-bold text-slate-600 leading-relaxed whitespace-pre-wrap text-left">{q.description}</p>}
+                    {q.description && <p className="text-xs font-medium text-slate-600 leading-relaxed whitespace-pre-wrap text-left">{q.description}</p>}
                     {q.referenceLink && (
-                      <a href={q.referenceLink} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-50 text-blue-600 border border-blue-200 rounded-lg text-[10px] font-black hover:bg-blue-100 transition-colors w-fit">
+                      <a href={q.referenceLink} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-50 text-blue-600 border border-blue-200 rounded-lg text-[10px] font-medium hover:bg-blue-100 transition-colors w-fit">
                         🔗 첨부된 참조 링크 열기
                       </a>
                     )}
@@ -813,7 +813,7 @@ const handleSaveDraft = () => {
                           />
                           <div className="flex flex-col gap-1.5 flex-1">
                           <div className="flex items-center gap-2 flex-wrap">
-                              <span className={`font-bold text-sm whitespace-pre-wrap text-left ${isOutOfStock ? 'text-slate-400 line-through' : 'text-slate-700'}`}>{opt.label}</span>
+                              <span className={`font-medium text-sm whitespace-pre-wrap text-left ${isOutOfStock ? 'text-slate-400 line-through' : 'text-slate-700'}`}>{opt.label}</span>
                               
                               {/* 🚀 [연동 갭 해결 2]: 사은품/물품 옵션별 개별 외부 참조 링크 표출 */}
                               {opt.referenceLink && (
@@ -822,18 +822,18 @@ const handleSaveDraft = () => {
                                   target="_blank" 
                                   rel="noopener noreferrer" 
                                   onClick={(e) => e.stopPropagation()} // 라벨 클릭으로 인한 체크방지
-                                  className="inline-flex items-center gap-1 text-[10px] text-blue-500 hover:text-blue-700 hover:underline bg-blue-50 border border-blue-200 px-1.5 py-0.5 rounded font-black shrink-0"
+                                  className="inline-flex items-center gap-1 text-[10px] text-blue-500 hover:text-blue-700 hover:underline bg-blue-50 border border-blue-200 px-1.5 py-0.5 rounded font-medium shrink-0"
                                 >
                                   🔗 상세정보
                                 </a>
                               )}
 
                               {isOutOfStock ? (
-                                <span className="text-[10px] font-black bg-red-100 text-red-600 border border-red-200 px-1.5 py-0.5 rounded shadow-sm animate-pulse">
+                                <span className="text-[10px] font-medium bg-red-100 text-red-600 border border-red-200 px-1.5 py-0.5 rounded shadow-sm animate-pulse">
                                   SOLD OUT (재고없음)
                                 </span>
                               ) : isStockLimited ? (
-                                <span className="text-[10px] font-bold text-pink-500 bg-pink-50 border border-pink-100 px-1.5 py-0.5 rounded">
+                                <span className="text-[10px] font-medium text-pink-500 bg-pink-50 border border-pink-100 px-1.5 py-0.5 rounded">
                                   잔여: {remaining}개
                                 </span>
                               ) : null}
@@ -853,33 +853,33 @@ const handleSaveDraft = () => {
                     })}
                   </div>
                 ) : q.type === 'TEXT_LONG' ? (
-                  <textarea value={formData[q.id] || ''} onChange={e => setFormData({...formData, [q.id]: e.target.value})} className="w-full p-4 bg-slate-50 border border-slate-200 rounded-xl font-bold outline-none focus:border-blue-500 focus:bg-white transition-colors min-h-[120px] text-sm whitespace-pre-wrap text-left" placeholder="상세한 내역을 자유롭게 기재해 주세요." />
+                  <textarea value={formData[q.id] || ''} onChange={e => setFormData({...formData, [q.id]: e.target.value})} className="w-full p-4 bg-slate-50 border border-slate-200 rounded-xl font-medium outline-none focus:border-blue-500 focus:bg-white transition-colors min-h-[120px] text-sm whitespace-pre-wrap text-left" placeholder="상세한 내역을 자유롭게 기재해 주세요." />
                 ) : q.type === 'TEXT_SHORT' ? (
-                  <input type="text" value={formData[q.id] || ''} onChange={e => setFormData({...formData, [q.id]: e.target.value})} className="w-full p-4 bg-slate-50 border border-slate-200 rounded-xl font-bold outline-none focus:border-blue-500 focus:bg-white transition-colors text-sm" placeholder="정보를 입력하세요." />
+                  <input type="text" value={formData[q.id] || ''} onChange={e => setFormData({...formData, [q.id]: e.target.value})} className="w-full p-4 bg-slate-50 border border-slate-200 rounded-xl font-medium outline-none focus:border-blue-500 focus:bg-white transition-colors text-sm" placeholder="정보를 입력하세요." />
                 ) : q.type === 'SEARCH_ADDRESS' ? (
                   <div className="space-y-2 bg-slate-50 p-4 border border-slate-200 rounded-xl relative z-0">
                     <div className="flex items-center gap-2">
                       <div className="flex items-center gap-2 border bg-white px-3 py-2 rounded-xl shadow-sm">
-                        <span className="font-black text-slate-400 text-[10px] uppercase">우편번호</span>
-                        <input type="text" value={formData[`${q.id}_zip`] || ''} className="w-20 font-mono text-center font-black text-blue-600 bg-transparent outline-none" readOnly placeholder="자동검색" />
+                        <span className="font-medium text-slate-400 text-[10px] uppercase">우편번호</span>
+                        <input type="text" value={formData[`${q.id}_zip`] || ''} className="w-20 font-mono text-center font-medium text-blue-600 bg-transparent outline-none" readOnly placeholder="자동검색" />
                       </div>
-                      <button type="button" onClick={() => handleOpenUserPostcode(q.id)} className="px-5 py-2.5 bg-slate-900 text-white rounded-xl font-black text-xs hover:bg-slate-800 transition-transform active:scale-95 shadow-sm">
+                      <button type="button" onClick={() => handleOpenUserPostcode(q.id)} className="px-5 py-2.5 bg-slate-900 text-white rounded-xl font-medium text-xs hover:bg-slate-800 transition-transform active:scale-95 shadow-sm">
                         🔍 우편번호 검색
                       </button>
                     </div>
-                    <input type="text" value={formData[`${q.id}_road`] || ''} placeholder="기본 도로명 주소" className="w-full p-3 border border-slate-200 rounded-xl bg-white text-slate-700 font-bold outline-none shadow-sm whitespace-pre-wrap text-left" readOnly />
+                    <input type="text" value={formData[`${q.id}_road`] || ''} placeholder="기본 도로명 주소" className="w-full p-3 border border-slate-200 rounded-xl bg-white text-slate-700 font-medium outline-none shadow-sm whitespace-pre-wrap text-left" readOnly />
                     <div className="flex items-center border border-blue-300 rounded-xl px-3 bg-white shadow-sm focus-within:ring-2 focus-within:ring-blue-200">
-                      <span className="font-black text-blue-600 whitespace-nowrap text-xs pr-2">상세주소 :</span>
-                      <input type="text" value={formData[`${q.id}_detail`] || ''} onChange={(e) => setFormData({ ...formData, [`${q.id}_detail`]: e.target.value })} placeholder="동, 호수 및 건물 상세 주소 기입" className="w-full p-3 text-sm font-bold text-slate-800 outline-none bg-transparent whitespace-pre-wrap text-left" />
+                      <span className="font-medium text-blue-600 whitespace-nowrap text-xs pr-2">상세주소 :</span>
+                      <input type="text" value={formData[`${q.id}_detail`] || ''} onChange={(e) => setFormData({ ...formData, [`${q.id}_detail`]: e.target.value })} placeholder="동, 호수 및 건물 상세 주소 기입" className="w-full p-3 text-sm font-medium text-slate-800 outline-none bg-transparent whitespace-pre-wrap text-left" />
                     </div>
                   </div>
                 ) : q.type === 'CALENDAR' ? (
                   <div className="space-y-3 bg-slate-50 p-4 border border-slate-200 rounded-xl relative z-0">
-                    <input type="date" value={formData[q.id] || ''} onChange={(e) => setFormData({ ...formData, [q.id]: e.target.value })} className="p-3 border border-slate-300 rounded-xl text-sm font-black outline-none focus:border-blue-500 text-slate-700 bg-white shadow-sm" />
+                    <input type="date" value={formData[q.id] || ''} onChange={(e) => setFormData({ ...formData, [q.id]: e.target.value })} className="p-3 border border-slate-300 rounded-xl text-sm font-medium outline-none focus:border-blue-500 text-slate-700 bg-white shadow-sm" />
                     {formData[q.id] && (
                       <div className="p-3 bg-blue-50 border border-blue-100 rounded-xl flex items-center gap-2">
                         <span className="text-blue-500 text-base">📅</span>
-                        <span className="text-sm font-black text-slate-800">요청일 변환: <span className="text-blue-600 underline font-extrabold">{formatDeliveryDate(formData[q.id])}</span></span>
+                        <span className="text-sm font-medium text-slate-800">요청일 변환: <span className="text-blue-600 underline font-medium">{formatDeliveryDate(formData[q.id])}</span></span>
                       </div>
                     )}
                   </div>
@@ -888,7 +888,7 @@ const handleSaveDraft = () => {
                     {Array.from({ length: q.scaleMax || 5 }).map((_, sIdx) => {
                       const score = sIdx + 1;
                       return (
-                        <button key={score} type="button" onClick={() => setFormData({...formData, [q.id]: score})} className={`w-12 h-12 rounded-xl font-black text-sm transition-all ${formData[q.id] === score ? 'bg-blue-600 text-white shadow-md scale-110' : 'bg-slate-100 text-slate-400 hover:bg-slate-200'}`}>
+                        <button key={score} type="button" onClick={() => setFormData({...formData, [q.id]: score})} className={`w-12 h-12 rounded-xl font-medium text-sm transition-all ${formData[q.id] === score ? 'bg-blue-600 text-white shadow-md scale-110' : 'bg-slate-100 text-slate-400 hover:bg-slate-200'}`}>
                           {score}
                         </button>
                       );
@@ -898,14 +898,14 @@ const handleSaveDraft = () => {
                   <div className="p-5 bg-slate-50 border border-slate-200 rounded-xl space-y-3 relative z-0">
                     {q.templateFileName && (
                       <div className="flex justify-between items-center bg-white p-3 rounded-lg border border-slate-200 shadow-sm relative z-0">
-                        <span className="text-xs font-bold text-slate-600">📋 첨부된 안내 서식: <span className="font-black text-slate-800 whitespace-pre-wrap text-left">{q.templateFileName}</span></span>
-                        <button type="button" onClick={() => fetch(q.templateFileData).then(r=>r.blob()).then(b=>saveAs(b, q.templateFileName))} className="bg-slate-800 text-white px-3 py-1.5 rounded-lg text-[10px] font-black hover:bg-black transition-colors shrink-0">다운로드</button>
+                        <span className="text-xs font-medium text-slate-600">📋 첨부된 안내 서식: <span className="font-medium text-slate-800 whitespace-pre-wrap text-left">{q.templateFileName}</span></span>
+                        <button type="button" onClick={() => fetch(q.templateFileData).then(r=>r.blob()).then(b=>saveAs(b, q.templateFileName))} className="bg-slate-800 text-white px-3 py-1.5 rounded-lg text-[10px] font-medium hover:bg-black transition-colors shrink-0">다운로드</button>
                       </div>
                     )}
                     <label className="block w-full cursor-pointer bg-white border-2 border-dashed border-blue-200 p-6 rounded-xl text-center hover:bg-blue-50 transition-colors relative z-0">
                       <span className="text-2xl mb-2 block">📤</span>
-                      <span className="text-xs font-black text-blue-600">제출할 파일을 선택하여 업로드하세요.</span>
-                      {formData[q.id]?.fileName && <div className="mt-3 text-[11px] font-bold text-slate-500 bg-slate-100 py-1.5 px-3 rounded-full inline-block whitespace-pre-wrap text-left">{formData[q.id].fileName}</div>}
+                      <span className="text-xs font-medium text-blue-600">제출할 파일을 선택하여 업로드하세요.</span>
+                      {formData[q.id]?.fileName && <div className="mt-3 text-[11px] font-medium text-slate-500 bg-slate-100 py-1.5 px-3 rounded-full inline-block whitespace-pre-wrap text-left">{formData[q.id].fileName}</div>}
                       <input type="file" onChange={(e) => { const file = e.target.files?.[0]; if (file) setFormData({...formData, [q.id]: { fileName: file.name } }); }} className="hidden" />
                     </label>
                   </div>
@@ -915,7 +915,7 @@ const handleSaveDraft = () => {
             })()}
      
             <div className="flex justify-center pt-8">
-              <button onClick={handleSubmitForm} className="px-10 py-4 bg-blue-600 text-white rounded-full text-sm font-black shadow-xl hover:bg-blue-700 hover:scale-105 transition-all">
+              <button onClick={handleSubmitForm} className="px-10 py-4 bg-blue-600 text-white rounded-full text-sm font-medium shadow-xl hover:bg-blue-700 hover:scale-105 transition-all">
                 🚀 배송지 명세 최종 접수
               </button>
             </div>
@@ -936,7 +936,7 @@ const handleSaveDraft = () => {
               onClick={(e) => e.stopPropagation()} 
             />
             <button 
-              className="absolute -top-12 right-0 text-white font-black text-lg bg-black/40 hover:bg-black/80 w-9 h-9 rounded-full flex items-center justify-center transition-colors z-[610]"
+              className="absolute -top-12 right-0 text-white font-medium text-lg bg-black/40 hover:bg-black/80 w-9 h-9 rounded-full flex items-center justify-center transition-colors z-[610]"
               onClick={() => setZoomedImage(null)}
             >
               ✕
