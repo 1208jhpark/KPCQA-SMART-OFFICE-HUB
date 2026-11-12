@@ -45,16 +45,19 @@ async function downloadExcelJsFile(buffer: ArrayBuffer, filename: string) {
 }
 
 function excelUserLabel(row: {
-  userName?: string;
-  pickupName?: string;
-  pickupType?: string;
-  status?: string;
+  userName?: string | null;
+  pickupName?: string | null;
+  pickupType?: string | null;
+  status?: string | null;
 }) {
   const { name, tag } = applicantParts(row);
   return tag ? `${name}(${tag})` : name;
 }
 
-function excelReturnConfirmLabel(row: { userConfirmedBy?: string; returnType?: string }) {
+function excelReturnConfirmLabel(row: {
+  userConfirmedBy?: string | null;
+  returnType?: string | null;
+}) {
   const name = String(row.userConfirmedBy || '').trim();
   if (!name) return '-';
   const kind = String(row.returnType || '').toUpperCase();
@@ -595,10 +598,10 @@ function returnDesignationLabel(row: {
 }
 
 function applicantParts(row: {
-  userName?: string;
-  pickupName?: string;
-  pickupType?: string;
-  status?: string;
+  userName?: string | null;
+  pickupName?: string | null;
+  pickupType?: string | null;
+  status?: string | null;
 }) {
   const applicant = String(row.userName || '').trim();
   const pickup = String(row.pickupName || '').trim();
@@ -1103,7 +1106,7 @@ export function BoardPanel({
               .filter(Boolean)
           )
         );
-        setMyUnitName(fromApi || fromCards[0] || '');
+        setMyUnitName(String(fromApi || fromCards[0] || ''));
       }
       if (typeof data.isLv1 === 'boolean') setIsLv1(Boolean(data.isLv1));
       if (unitRes?.ok) {

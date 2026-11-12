@@ -109,7 +109,12 @@ export default function DeptModule() {
   const [assetListOpen, setAssetListOpen] = useState(false);
   const [showStatusFilter, setShowStatusFilter] = useState<'all' | 'done' | 'pending' | 'nudge'>('all');
   const [confirmAuditModal, setConfirmAuditModal] = useState<any | null>(null);
-  const [infoEditDraft, setInfoEditDraft] = useState({ code: '', model: '', sn: '', spec: '' });
+  const [infoEditDraft, setInfoEditDraft] = useState<Record<InfoCorrectionField, string>>({
+    model: '',
+    sn: '',
+    brand: '',
+    spec: '',
+  });
   
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 10;
@@ -560,9 +565,9 @@ export default function DeptModule() {
   const openInfoCorrectionModal = (asset: any) => {
     if (!isSharedAsset(asset)) return;
     setInfoEditDraft({
-      code: getDisplayFieldValue(asset, 'code').value,
       model: getDisplayFieldValue(asset, 'model').value,
       sn: getDisplayFieldValue(asset, 'sn').value,
+      brand: getDisplayFieldValue(asset, 'brand').value,
       spec: getDisplayFieldValue(asset, 'spec').value,
     });
     setConfirmAuditModal({
@@ -1395,9 +1400,9 @@ export default function DeptModule() {
                   <div className="space-y-3">
                     <p className="text-[10px] font-medium text-slate-400">수정 요청 내용</p>
                     {([
-                      ['code', '자산번호'],
                       ['model', '모델명'],
                       ['sn', 'S/N'],
+                      ['brand', '제조사'],
                       ['spec', '기본 사양'],
                     ] as [InfoCorrectionField, string][]).map(([key, label]) => {
                       const original = String(confirmAuditModal[key] ?? '') || '-';
@@ -1437,9 +1442,9 @@ export default function DeptModule() {
                 </p>
                 <div className="overflow-y-auto flex-1 pr-2 space-y-3 scrollbar-hide mb-2">
                   {([
-                    ['code', '자산번호'],
                     ['model', '모델명'],
                     ['sn', 'S/N'],
+                    ['brand', '제조사'],
                     ['spec', '기본 사양'],
                   ] as [InfoCorrectionField, string][]).map(([key, label]) => {
                     const original = String(confirmAuditModal[key] ?? '') || '-';

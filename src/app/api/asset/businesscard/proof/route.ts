@@ -104,7 +104,6 @@ export async function GET(req: Request) {
     const row = await prisma.businessCardRequest.findUnique({
       where: { id },
       select: {
-        id: true,
         userEmail: true,
         ...PROOF_SELECT,
       },

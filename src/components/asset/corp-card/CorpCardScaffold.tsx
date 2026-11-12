@@ -125,7 +125,9 @@ export default function CorpCardScaffold({
   }, [lead, showPermissionChips, summaryPath]);
 
   const showChips =
-    showPermissionChips && permissionSummary && isSystemLv1User(currentUser);
+    showPermissionChips &&
+    permissionSummary &&
+    isSystemLv1User(currentUser as { roles?: unknown; role?: unknown } | null);
   const chipMaster =
     bannerTone === 'emerald'
       ? 'bg-white/10 border-white/25 text-emerald-50'
