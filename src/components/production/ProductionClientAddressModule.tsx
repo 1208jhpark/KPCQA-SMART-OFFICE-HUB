@@ -79,7 +79,7 @@ function displayUpdatedDate(createdAt: unknown, updatedAt: unknown): string {
     const createdMs = new Date(createdAt as string | Date).getTime();
     if (Number.isFinite(createdMs) && updatedMs <= createdMs + 2000) return '-';
   }
-  return getKSTDateString(updatedAt) || '-';
+  return getKSTDateString(updatedAt as string | number | Date) || '-';
 }
 
 const emptyClientForm = {

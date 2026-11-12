@@ -404,7 +404,7 @@ export default function ProductionApplyHistory() {
       };
       sheet.columns.forEach((col) => {
         let max = 8;
-        col.eachCell({ includeEmpty: true }, (cell) => {
+        col.eachCell?.({ includeEmpty: true }, (cell) => {
           const w = displayWidth(cell.value);
           if (w > max) max = w;
         });

@@ -3340,23 +3340,22 @@ function DeptArchivePanelContent({ variant = 'dept' }: DeptArchivePanelProps) {
                                             : '명세 대조 검수 대상 선택'
                                         }
                                       />
-                                      {!confirmed &&
-                                        (inspect === 'match' ? (
-                                          <span className="font-medium text-emerald-600 whitespace-nowrap">
-                                            일치{matchCount > 0 ? ` ${matchCount}건` : ''}
-                                          </span>
-                                        ) : inspect === 'mismatch' ? (
-                                          <span
-                                            className="font-medium text-rose-600 whitespace-nowrap"
-                                            title={`일치 ${matchCount}건 / 불일치 ${mismatchCount}건`}
-                                          >
-                                            불일치 {mismatchCount}건 / 일치 {matchCount}건
-                                          </span>
-                                        ) : (
-                                          <span className="font-medium text-slate-400 whitespace-nowrap">
-                                            미검수
-                                          </span>
-                                        ))}
+                                      {inspect === 'match' ? (
+                                        <span className="font-medium text-emerald-600 whitespace-nowrap">
+                                          일치{matchCount > 0 ? ` ${matchCount}건` : ''}
+                                        </span>
+                                      ) : inspect === 'mismatch' ? (
+                                        <span
+                                          className="font-medium text-rose-600 whitespace-nowrap"
+                                          title={`일치 ${matchCount}건 / 불일치 ${mismatchCount}건`}
+                                        >
+                                          불일치 {mismatchCount}건 / 일치 {matchCount}건
+                                        </span>
+                                      ) : (
+                                        <span className="font-medium text-slate-400 whitespace-nowrap">
+                                          미검수
+                                        </span>
+                                      )}
                                     </div>
                                   );
                                 })()}

@@ -560,7 +560,9 @@ const GRID_BORDER = {
 
 function toArrayBuffer(data: ArrayBuffer | Uint8Array): ArrayBuffer {
   if (data instanceof ArrayBuffer) return data;
-  return data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
+  const copy = new Uint8Array(data.byteLength);
+  copy.set(data);
+  return copy.buffer;
 }
 
 function rgbToArgb(rgb: unknown): string | null {
@@ -678,7 +680,7 @@ function paintOriginalSheet(dest: ExcelWorkbook, src: XLSX.WorkSheet, name: stri
     lastC = Math.max(lastC, addr.c);
     const dCell = destWs.getCell(addr.r + 1, addr.c + 1);
     dCell.value = cellDisplayValue(cell);
-    if (cell.z && cell.z !== 'General') dCell.numFmt = cell.z;
+    if (cell.z && cell.z !== 'General') dCell.numFmt = String(cell.z);
     const fillRgb = rgbToArgb((cell.s as { fgColor?: { rgb?: string } } | undefined)?.fgColor?.rgb);
     const pattern = (cell.s as { patternType?: string } | undefined)?.patternType;
     if (fillRgb && pattern === 'solid') {
@@ -825,8 +827,9 @@ export async function downloadOfficeOrderFileBundle(
 
   if (pdfs.length > 0) {
     const bytes = await mergePdfs(pdfs);
+    const pdfBytes = new Uint8Array(bytes);
     triggerBlobDownload(
-      new Blob([bytes], { type: 'application/pdf' }),
+      new Blob([pdfBytes], { type: 'application/pdf' }),
       `${baseName}_합본.pdf`
     );
   }

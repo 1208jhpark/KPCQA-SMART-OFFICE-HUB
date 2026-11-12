@@ -111,7 +111,7 @@ export async function writeCorpCardMasterHistoryExcelBuffer(
       return v;
     });
     const excelRow = sheet.addRow(values);
-    const lineCount = values.reduce((max, v) => {
+    const lineCount = values.reduce<number>((max, v) => {
       const n = String(v ?? '').split('\n').length;
       return Math.max(max, n);
     }, 1);
