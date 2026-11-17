@@ -331,7 +331,7 @@ export async function PATCH(req: Request) {
         return NextResponse.json({ error: '중복된 ID가 있습니다.' }, { status: 400 });
       }
 
-      const placeholders = orderedIds.map((_, i) => `$${i + 2}`).join(', ');
+      const placeholders = orderedIds.map((_id: string, i: number) => `$${i + 2}`).join(', ');
       const owned = await prisma.$queryRawUnsafe<{ id: string }[]>(
         `SELECT id FROM "ScheduleWorkBoardItem"
          WHERE unit_id = $1 AND id IN (${placeholders})`,
