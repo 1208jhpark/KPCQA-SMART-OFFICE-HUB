@@ -1,6 +1,6 @@
 'use client';
 
-import React, { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
+import React, { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { saveAs } from 'file-saver';
 import {
   formatKSTDateTimeMinute,
@@ -53,133 +53,20 @@ function itemCoversDate(item: WorkItem, dateStr: string) {
   return dateStr >= span.start && dateStr <= span.end;
 }
 
-/** 연한 하늘색 등록 / 연한 로즈 긴급 (텍스트는 진하게) */
-function itemBarStyle(item: WorkItem): { backgroundColor: string; color: string } {
-  if (isUrgent(item)) {
-    return { backgroundColor: '#fecdd3', color: '#9f1239' }; // rose-200 / rose-800
-  }
-  const lines = Array.isArray(item.lines) ? item.lines : [];
-  const st = lines.length
-    ? deriveProjectStatus(lines)
-    : normalizeStatus(item.status) || 'TODO';
-  if (st === 'DONE') {
-    return { backgroundColor: '#bbf7d0', color: '#166534' }; // emerald-200
-  }
-  // 할 일·진행 중 — 연한 하늘색
-  return { backgroundColor: '#bae6fd', color: '#0c4a6e' }; // sky-200 / sky-900
-}
-
 type DayCell = { dateStr: string; day: number };
 
-type WbSeg = {
-  key: string;
-  title: string;
-  backgroundColor: string;
-  color: string;
-  startCol: number;
-  endCol: number;
-  item: WorkItem;
-};
-
-const MAX_WB_LANES = 3;
-const WB_LANE_H = 14;
-
-function segmentsOverlap(a: { startCol: number; endCol: number }, b: { startCol: number; endCol: number }) {
-  return !(a.endCol < b.startCol || a.startCol > b.endCol);
+function itemBoardStatus(item: WorkItem): WorkStatus {
+  const lines = Array.isArray(item.lines) ? item.lines : [];
+  if (lines.length) return deriveProjectStatus(lines);
+  return (normalizeStatus(item.status) || 'TODO') as WorkStatus;
 }
 
-function layoutWorkWeekLanes(week: Array<DayCell | null>, items: WorkItem[]): WbSeg[][] {
-  const segs: WbSeg[] = [];
+function countDayByStatus(items: WorkItem[]): Record<WorkStatus, number> {
+  const counts: Record<WorkStatus, number> = { TODO: 0, DOING: 0, DONE: 0 };
   for (const item of items) {
-    const span = itemDateSpan(item);
-    if (!span) continue;
-    let startCol = -1;
-    let endCol = -1;
-    for (let c = 0; c < 7; c++) {
-      const cell = week[c];
-      if (!cell) continue;
-      if (cell.dateStr >= span.start && cell.dateStr <= span.end) {
-        if (startCol < 0) startCol = c;
-        endCol = c;
-      }
-    }
-    if (startCol < 0) continue;
-    const style = itemBarStyle(item);
-    segs.push({
-      key: `p-${item.id}-${week[startCol]?.dateStr || startCol}`,
-      title: item.title,
-      backgroundColor: style.backgroundColor,
-      color: style.color,
-      startCol,
-      endCol,
-      item,
-    });
+    counts[itemBoardStatus(item)] += 1;
   }
-  segs.sort((a, b) => {
-    if (a.startCol !== b.startCol) return a.startCol - b.startCol;
-    const da = a.endCol - a.startCol;
-    const db = b.endCol - b.startCol;
-    if (da !== db) return db - da;
-    return a.title.localeCompare(b.title, 'ko');
-  });
-  const lanes: WbSeg[][] = [];
-  for (const seg of segs) {
-    let placed = false;
-    for (const lane of lanes) {
-      if (!lane.some((x) => segmentsOverlap(x, seg))) {
-        lane.push(seg);
-        placed = true;
-        break;
-      }
-    }
-    if (!placed) lanes.push([seg]);
-  }
-  return lanes;
-}
-
-function renderWbLaneRow(lane: WbSeg[], onSegClick: (seg: WbSeg) => void) {
-  const sorted = [...lane].sort((a, b) => a.startCol - b.startCol);
-  const nodes: React.ReactNode[] = [];
-  let col = 0;
-  for (const seg of sorted) {
-    while (col < seg.startCol) {
-      nodes.push(<div key={`pad-${col}`} className="min-w-0" />);
-      col += 1;
-    }
-    const span = seg.endCol - seg.startCol + 1;
-    nodes.push(
-      <button
-        key={seg.key}
-        type="button"
-        onClick={(e) => {
-          e.stopPropagation();
-          onSegClick(seg);
-        }}
-        title={
-          isUrgent(seg.item)
-            ? `긴급 · ${seg.title}`
-            : seg.title
-        }
-        className="min-w-0 truncate rounded-sm px-1 text-[10px] font-medium text-left hover:opacity-90"
-        style={{
-          gridColumn: `span ${span}`,
-          height: WB_LANE_H,
-          lineHeight: `${WB_LANE_H}px`,
-          backgroundColor: seg.backgroundColor,
-          color: seg.color,
-        }}
-      >
-        {isUrgent(seg.item) ? '! ' : ''}
-        {seg.title}
-      </button>
-    );
-    col = seg.endCol + 1;
-  }
-  while (col < 7) {
-    nodes.push(<div key={`pad-end-${col}`} className="min-w-0" />);
-    col += 1;
-  }
-  return nodes;
+  return counts;
 }
 
 type FormLine = {
@@ -200,6 +87,25 @@ const STATUS_LABEL: Record<WorkStatus, string> = {
   TODO: '할 일',
   DOING: '진행 중',
   DONE: '완료',
+};
+
+/** 보드/행 상태 토글 — 선택 시 진한 색 */
+const STATUS_BTN: Record<
+  WorkStatus,
+  { idle: string; active: string }
+> = {
+  TODO: {
+    idle: 'border-slate-200 bg-slate-50 text-slate-500 hover:border-slate-300 hover:bg-slate-100',
+    active: 'border-slate-700 bg-slate-700 text-white shadow-sm',
+  },
+  DOING: {
+    idle: 'border-sky-200 bg-sky-50 text-sky-600 hover:border-sky-300 hover:bg-sky-100',
+    active: 'border-sky-600 bg-sky-600 text-white shadow-sm',
+  },
+  DONE: {
+    idle: 'border-emerald-200 bg-emerald-50 text-emerald-600 hover:border-emerald-300 hover:bg-emerald-100',
+    active: 'border-emerald-600 bg-emerald-600 text-white shadow-sm',
+  },
 };
 
 function pad2(n: number) {
@@ -921,12 +827,24 @@ export default function WorkBoardModule() {
   const [formBoardDate, setFormBoardDate] = useState('');
   const [formDueDate, setFormDueDate] = useState('');
   const [formUrgent, setFormUrgent] = useState(false);
+  /** 칸반 열 (세부분야 없으면 이 값으로 이동) */
+  const [formStatus, setFormStatus] = useState<WorkStatus>('TODO');
   /** true면 보드 일자 변경 시 마감일도 같이 맞춤 */
   const [dueFollowsBoard, setDueFollowsBoard] = useState(true);
   const [formLines, setFormLines] = useState<FormLine[]>([newFormLine()]);
   const [presetBusy, setPresetBusy] = useState(false);
   /** 카드 세부분야 펼침 */
   const [expandedIds, setExpandedIds] = useState<Record<string, boolean>>({});
+  /** 컬럼 내 드래그 재정렬 (ref로 즉시 판정 — setState는 시각용) */
+  const dragRef = useRef<{ id: string; col: WorkStatus } | null>(null);
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [dragOverId, setDragOverId] = useState<string | null>(null);
+
+  const clearDrag = useCallback(() => {
+    dragRef.current = null;
+    setDragId(null);
+    setDragOverId(null);
+  }, []);
 
   const monthRange = useMemo(() => {
     const from = ymd(viewYear, viewMonth, 1);
@@ -1010,6 +928,15 @@ export default function WorkBoardModule() {
         : ((normalizeStatus(item.status) || 'TODO') as WorkStatus);
       map[key].push(item);
     }
+    const cmp = (a: WorkItem, b: WorkItem) => {
+      const sa = Number(a.sort_order ?? 0);
+      const sb = Number(b.sort_order ?? 0);
+      if (sa !== sb) return sa - sb;
+      return String(a.createdAt || '').localeCompare(String(b.createdAt || ''));
+    };
+    map.TODO.sort(cmp);
+    map.DOING.sort(cmp);
+    map.DONE.sort(cmp);
     return map;
   }, [dayItems]);
 
@@ -1034,11 +961,6 @@ export default function WorkBoardModule() {
     return rows;
   }, [cells]);
 
-  const weekLayouts = useMemo(
-    () => weeks.map((week) => layoutWorkWeekLanes(week, monthItems)),
-    [weeks, monthItems]
-  );
-
   const shiftMonth = (delta: number) => {
     let m = viewMonth + delta;
     let y = viewYear;
@@ -1057,6 +979,49 @@ export default function WorkBoardModule() {
     setSelectedDate(ymd(y, m, dayNum));
   };
 
+  const persistColumnOrder = useCallback(
+    async (orderedIds: string[]) => {
+      try {
+        const res = await fetch('/api/schedule/work-board', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'reorder', orderedIds }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          alert(String(data.error || '순서 저장에 실패했습니다.'));
+          void load();
+        }
+      } catch {
+        alert('순서 저장에 실패했습니다.');
+        void load();
+      }
+    },
+    [load]
+  );
+
+  const reorderInColumn = useCallback(
+    (col: WorkStatus, fromId: string, toId: string) => {
+      if (!fromId || !toId || fromId === toId) return;
+      const list = byStatus[col];
+      const fromIdx = list.findIndex((i) => i.id === fromId);
+      const toIdx = list.findIndex((i) => i.id === toId);
+      if (fromIdx < 0 || toIdx < 0 || fromIdx === toIdx) return;
+      const next = [...list];
+      const [moved] = next.splice(fromIdx, 1);
+      next.splice(toIdx, 0, moved);
+      const orderedIds = next.map((i) => i.id);
+      const orderMap = new Map(orderedIds.map((id, i) => [id, i]));
+      setMonthItems((prev) =>
+        prev.map((item) =>
+          orderMap.has(item.id) ? { ...item, sort_order: orderMap.get(item.id)! } : item
+        )
+      );
+      void persistColumnOrder(orderedIds);
+    },
+    [byStatus, persistColumnOrder]
+  );
+
   const openCreate = (dateStr?: string) => {
     const board = asYmd(dateStr, asYmd(selectedDate, today));
     setSelectedDate(board);
@@ -1067,6 +1032,7 @@ export default function WorkBoardModule() {
     setFormBoardDate(board);
     setFormDueDate(board);
     setFormUrgent(false);
+    setFormStatus('TODO');
     setDueFollowsBoard(true);
     setFormLines([newFormLine('TODO')]);
     setModalOpen(true);
@@ -1089,16 +1055,26 @@ export default function WorkBoardModule() {
     setFormUrgent(isUrgent(item));
     setDueFollowsBoard(!item.due_date || item.due_date === board);
     const lines = Array.isArray(item.lines) ? item.lines : [];
-    setFormLines(
-      lines.length
-        ? lines.map((l) => ({
-            key: l.id || newFormLine().key,
-            area: l.area || '',
-            assignee_name: l.assignee_name || '',
-            status: (normalizeStatus(l.status) || 'TODO') as WorkStatus,
+    const mapped = lines.length
+      ? lines.map((l) => ({
+          key: l.id || newFormLine().key,
+          area: l.area || '',
+          assignee_name: l.assignee_name || '',
+          status: (normalizeStatus(l.status) || 'TODO') as WorkStatus,
+        }))
+      : [newFormLine((normalizeStatus(item.status) || 'TODO') as WorkStatus)];
+    const boardSt = lines.length
+      ? deriveProjectStatus(
+          mapped.map((l) => ({
+            id: l.key,
+            area: l.area.trim() || '세부',
+            assignee_name: l.assignee_name.trim(),
+            status: l.status,
           }))
-        : [newFormLine((normalizeStatus(item.status) || 'TODO') as WorkStatus)]
-    );
+        )
+      : ((normalizeStatus(item.status) || 'TODO') as WorkStatus);
+    setFormStatus(boardSt);
+    setFormLines(mapped);
     setModalOpen(true);
   };
 
@@ -1199,6 +1175,16 @@ export default function WorkBoardModule() {
         status: l.status,
       }))
       .filter((l) => l.area || l.assignee_name);
+    const status = lines.length
+      ? deriveProjectStatus(
+          lines.map((l, i) => ({
+            id: String(l.id || `L${i + 1}`),
+            area: l.area || '세부',
+            assignee_name: l.assignee_name,
+            status: l.status,
+          }))
+        )
+      : formStatus;
 
     setSaving(true);
     try {
@@ -1208,6 +1194,7 @@ export default function WorkBoardModule() {
         board_date: boardDate,
         due_date: formDueDate.trim() || null,
         urgent: formUrgent,
+        status,
         lines,
         ...(editId ? { id: editId } : {}),
       };
@@ -1270,18 +1257,6 @@ export default function WorkBoardModule() {
       setSaving(false);
     }
   };
-
-  const previewStatus = useMemo(() => {
-    const lines = formLines
-      .filter((l) => l.area.trim() || l.assignee_name.trim())
-      .map((l) => ({
-        id: l.key,
-        area: l.area.trim() || '세부',
-        assignee_name: l.assignee_name.trim(),
-        status: l.status,
-      }));
-    return deriveProjectStatus(lines);
-  }, [formLines]);
 
   return (
     <div className="h-[calc(100dvh-3.5rem)] bg-slate-50 font-sans flex flex-col overflow-hidden">
@@ -1411,162 +1386,101 @@ export default function WorkBoardModule() {
                   </div>
 
                   <div className="flex-1 min-h-0 flex flex-col overflow-y-auto">
-                    {weeks.map((week, wi) => {
-                      const lanes = weekLayouts[wi] || [];
-                      const visibleLanes = lanes.slice(0, MAX_WB_LANES);
-                      const hiddenLanes = lanes.slice(MAX_WB_LANES);
-                      return (
-                        <div
-                          key={`week-${wi}`}
-                          className="border-t border-slate-200 bg-white flex-1 min-h-0 flex flex-col"
-                        >
-                          <div className="grid grid-cols-7 gap-px bg-slate-100 shrink-0">
-                            {week.map((cell, col) => {
-                              if (!cell) {
-                                return (
-                                  <div
-                                    key={`e-${wi}-${col}`}
-                                    className="bg-slate-50/80 min-h-[22px] px-1 pt-0.5"
-                                  />
-                                );
-                              }
-                              const dayList = itemsByDate.get(cell.dateStr) || [];
-                              const isSelected = cell.dateStr === selectedDate;
-                              const isToday = cell.dateStr === today;
-                              const isHoliday = holidays.has(cell.dateStr);
-                              const dow = col;
-                              return (
-                                <div
-                                  key={cell.dateStr}
-                                  role="button"
-                                  tabIndex={0}
-                                  onClick={() => setSelectedDate(cell.dateStr)}
-                                  onDoubleClick={() => openCreate(cell.dateStr)}
-                                  onKeyDown={(e) => {
-                                    if (e.key === 'Enter' || e.key === ' ') {
-                                      e.preventDefault();
-                                      setSelectedDate(cell.dateStr);
-                                    }
-                                  }}
-                                  className={`min-h-[22px] px-1 pt-0.5 text-left cursor-pointer ${
-                                    isSelected
-                                      ? 'bg-indigo-50/90'
-                                      : isToday
-                                        ? 'bg-indigo-50/40'
-                                        : 'bg-white hover:bg-slate-50'
+                    {weeks.map((week, wi) => (
+                      <div
+                        key={`week-${wi}`}
+                        className="border-t border-slate-200 grid grid-cols-7 gap-px bg-slate-100 flex-1 min-h-[88px]"
+                      >
+                        {week.map((cell, col) => {
+                          if (!cell) {
+                            return (
+                              <div
+                                key={`e-${wi}-${col}`}
+                                className="bg-slate-50/80 min-h-[88px] px-1 py-0.5"
+                              />
+                            );
+                          }
+                          const dayList = itemsByDate.get(cell.dateStr) || [];
+                          const counts = countDayByStatus(dayList);
+                          const isSelected = cell.dateStr === selectedDate;
+                          const isToday = cell.dateStr === today;
+                          const isHoliday = holidays.has(cell.dateStr);
+                          const holidayName = holidays.get(cell.dateStr) || null;
+                          const dow = col;
+                          return (
+                            <div
+                              key={cell.dateStr}
+                              role="button"
+                              tabIndex={0}
+                              onClick={() => setSelectedDate(cell.dateStr)}
+                              onDoubleClick={() => openCreate(cell.dateStr)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter' || e.key === ' ') {
+                                  e.preventDefault();
+                                  setSelectedDate(cell.dateStr);
+                                }
+                              }}
+                              className={`min-h-[88px] px-1 py-0.5 text-left cursor-pointer ${
+                                isSelected
+                                  ? 'bg-indigo-50/90'
+                                  : isToday
+                                    ? 'bg-indigo-50/40'
+                                    : 'bg-white hover:bg-slate-50'
+                              }`}
+                            >
+                              <div className="flex items-center justify-between gap-0.5">
+                                <span
+                                  className={`inline-flex items-center justify-center w-5 h-5 rounded-full text-[12px] font-normal tabular-nums ${
+                                    isToday
+                                      ? 'bg-indigo-600 text-white'
+                                      : isHoliday || dow === 0
+                                        ? 'text-rose-500'
+                                        : dow === 6
+                                          ? 'text-indigo-500'
+                                          : 'text-slate-700'
                                   }`}
                                 >
-                                  <div className="flex items-center justify-between gap-0.5">
-                                    <span
-                                      className={`inline-flex items-center justify-center w-5 h-5 rounded-full text-[12px] font-normal tabular-nums ${
-                                        isToday
-                                          ? 'bg-indigo-600 text-white'
-                                          : isHoliday || dow === 0
-                                            ? 'text-rose-500'
-                                            : dow === 6
-                                              ? 'text-indigo-500'
-                                              : 'text-slate-700'
-                                      }`}
-                                    >
-                                      {cell.day}
-                                    </span>
-                                    {dayList.length > 0 ? (
-                                      <span className="text-[9px] font-medium tabular-nums text-slate-400">
-                                        ({dayList.length})
-                                      </span>
-                                    ) : null}
-                                  </div>
-                                </div>
-                              );
-                            })}
-                          </div>
-
-                          <div
-                            className="relative grid grid-cols-7 gap-px bg-slate-100 flex-1 min-h-[64px]"
-                            style={{
-                              minHeight: Math.max(56, visibleLanes.length * (WB_LANE_H + 2) + 16),
-                            }}
-                          >
-                            {week.map((cell, col) => {
-                              const isSelected = cell?.dateStr === selectedDate;
-                              const isTodayCell = cell?.dateStr === today;
-                              const holidayName = cell
-                                ? holidays.get(cell.dateStr) || null
-                                : null;
-                              return (
-                                <div
-                                  key={`bg-${wi}-${col}`}
-                                  role={cell ? 'button' : undefined}
-                                  tabIndex={cell ? 0 : undefined}
-                                  onClick={() => cell && setSelectedDate(cell.dateStr)}
-                                  onDoubleClick={() => cell && openCreate(cell.dateStr)}
-                                  className={`min-h-full px-0.5 pt-0.5 ${
-                                    !cell
-                                      ? 'bg-slate-50/80'
-                                      : isSelected
-                                        ? 'bg-indigo-50/90'
-                                        : isTodayCell
-                                          ? 'bg-indigo-50/30'
-                                          : 'bg-white hover:bg-slate-50 cursor-pointer'
-                                  }`}
+                                  {cell.day}
+                                </span>
+                                {dayList.length > 0 ? (
+                                  <span className="text-[9px] font-medium tabular-nums text-slate-400">
+                                    {dayList.length}건
+                                  </span>
+                                ) : null}
+                              </div>
+                              {holidayName ? (
+                                <p
+                                  className="truncate text-[9px] font-medium leading-tight mt-0.5"
+                                  style={{ color: KR_HOLIDAY_COLOR }}
+                                  title={holidayName}
                                 >
-                                  {holidayName ? (
-                                    <p
-                                      className="truncate text-[9px] font-medium leading-tight"
-                                      style={{ color: KR_HOLIDAY_COLOR }}
-                                      title={holidayName}
-                                    >
-                                      {holidayName}
+                                  {holidayName}
+                                </p>
+                              ) : null}
+                              {dayList.length > 0 ? (
+                                <div className="mt-1 space-y-0.5">
+                                  {counts.TODO > 0 ? (
+                                    <p className="truncate rounded-sm px-1 py-px text-[10px] font-semibold tabular-nums bg-slate-200 text-slate-600">
+                                      할일 {counts.TODO}건
+                                    </p>
+                                  ) : null}
+                                  {counts.DOING > 0 ? (
+                                    <p className="truncate rounded-sm px-1 py-px text-[10px] font-semibold tabular-nums bg-sky-200 text-sky-900">
+                                      진행중 {counts.DOING}건
+                                    </p>
+                                  ) : null}
+                                  {counts.DONE > 0 ? (
+                                    <p className="truncate rounded-sm px-1 py-px text-[10px] font-semibold tabular-nums bg-emerald-200 text-emerald-800">
+                                      완료 {counts.DONE}건
                                     </p>
                                   ) : null}
                                 </div>
-                              );
-                            })}
-
-                            <div className="absolute inset-0 pointer-events-none flex flex-col gap-px py-0.5 pt-3.5">
-                              {visibleLanes.map((lane, li) => (
-                                <div
-                                  key={`lane-${wi}-${li}`}
-                                  className="grid grid-cols-7 gap-x-0.5 px-0.5 pointer-events-auto"
-                                >
-                                  {renderWbLaneRow(lane, (seg) => {
-                                    setSelectedDate(
-                                      week[seg.startCol]?.dateStr ||
-                                        asYmd(selectedDate, today)
-                                    );
-                                    openEdit(seg.item);
-                                  })}
-                                </div>
-                              ))}
-                              {hiddenLanes.length > 0 ? (
-                                <div className="grid grid-cols-7 gap-x-0.5 px-0.5 pointer-events-auto">
-                                  {week.map((cell, col) => {
-                                    if (!cell) return <div key={`more-e-${col}`} />;
-                                    const more = hiddenLanes.filter((lane) =>
-                                      lane.some((s) => s.startCol <= col && col <= s.endCol)
-                                    ).length;
-                                    if (more <= 0) return <div key={`more-${col}`} />;
-                                    return (
-                                      <button
-                                        key={`more-${col}`}
-                                        type="button"
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          setSelectedDate(cell.dateStr);
-                                        }}
-                                        className="text-left text-[10px] font-normal text-indigo-500 px-0.5 hover:underline truncate"
-                                      >
-                                        +{more}
-                                      </button>
-                                    );
-                                  })}
-                                </div>
                               ) : null}
                             </div>
-                          </div>
-                        </div>
-                      );
-                    })}
+                          );
+                        })}
+                      </div>
+                    ))}
                   </div>
                 </div>
               )}
@@ -1629,8 +1543,8 @@ export default function WorkBoardModule() {
               </div>
               <p className="text-[11px] text-slate-500 leading-snug">
                 세부분야 상태가 모두 진행 중이면 진행 중 보드로, 모두 완료면 완료 보드로
-                이동합니다. 달력의 월 다운은 월간 일자별, 우측 일 다운은 선택일 보드
-                전체입니다.
+                이동합니다. 오른쪽 ⋮⋮ 을 끌어 같은 열 안에서 순서를 바꿀 수 있습니다.
+                달력의 월 다운은 월간 일자별, 우측 일 다운은 선택일 보드 전체입니다.
               </p>
             </div>
 
@@ -1665,40 +1579,54 @@ export default function WorkBoardModule() {
                     {byStatus[col.key].length === 0 ? (
                       <li className="py-4 text-center text-[11px] text-slate-400">없음</li>
                     ) : (
-                      byStatus[col.key].map((item) => {
+                      byStatus[col.key].map((item, index) => {
                         const lines = Array.isArray(item.lines) ? item.lines : [];
                         const expanded = Boolean(expandedIds[item.id]);
+                        const isDragging = dragId === item.id;
+                        const isDropTarget =
+                          dragOverId === item.id && dragId !== null && dragId !== item.id;
                         return (
                           <li
                             key={item.id}
+                            onDragOver={(e) => {
+                              const drag = dragRef.current;
+                              if (!drag || drag.col !== col.key || drag.id === item.id) return;
+                              e.preventDefault();
+                              e.dataTransfer.dropEffect = 'move';
+                              if (dragOverId !== item.id) setDragOverId(item.id);
+                            }}
+                            onDragLeave={() => {
+                              if (dragOverId === item.id) setDragOverId(null);
+                            }}
+                            onDrop={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              const drag = dragRef.current;
+                              const fromId =
+                                drag?.id || e.dataTransfer.getData('text/plain') || '';
+                              const fromCol = drag?.col || col.key;
+                              if (fromCol === col.key && fromId && fromId !== item.id) {
+                                reorderInColumn(col.key, fromId, item.id);
+                              }
+                              clearDrag();
+                            }}
                             className={`rounded-md border hover:border-rose-300 ${
-                              isUrgent(item)
-                                ? 'border-rose-300 bg-rose-50'
-                                : 'border-slate-200 bg-white hover:border-slate-300'
+                              isDragging ? 'opacity-50' : ''
+                            } ${
+                              isDropTarget
+                                ? 'border-sky-400 ring-1 ring-sky-300'
+                                : isUrgent(item)
+                                  ? 'border-rose-300 bg-rose-50'
+                                  : 'border-slate-200 bg-white hover:border-slate-300'
                             }`}
                           >
                             <div className="flex items-center gap-1 px-1.5 py-1 min-h-[28px]">
-                              {lines.length > 0 ? (
-                                <button
-                                  type="button"
-                                  title={expanded ? '세부분야 접기' : '세부분야 펼치기'}
-                                  onClick={() =>
-                                    setExpandedIds((m) => ({
-                                      ...m,
-                                      [item.id]: !m[item.id],
-                                    }))
-                                  }
-                                  className={`shrink-0 inline-flex items-center justify-center w-6 h-6 rounded border text-[12px] font-semibold leading-none ${
-                                    expanded
-                                      ? 'border-slate-300 bg-slate-100 text-slate-700'
-                                      : 'border-slate-200 bg-white text-slate-600 hover:border-slate-400 hover:bg-slate-50'
-                                  }`}
-                                >
-                                  {expanded ? '▼' : '▶'}
-                                </button>
-                              ) : (
-                                <span className="w-6 shrink-0" />
-                              )}
+                              <span
+                                className="shrink-0 w-4 text-center tabular-nums text-[10px] font-semibold text-slate-400"
+                                title={`순서 ${index + 1}`}
+                              >
+                                {index + 1}
+                              </span>
                               <button
                                 type="button"
                                 onClick={() => openEdit(item)}
@@ -1718,6 +1646,48 @@ export default function WorkBoardModule() {
                                   긴급
                                 </span>
                               ) : null}
+                              {lines.length > 0 ? (
+                                <button
+                                  type="button"
+                                  title={expanded ? '세부분야 접기' : '세부분야 펼치기'}
+                                  onClick={() =>
+                                    setExpandedIds((m) => ({
+                                      ...m,
+                                      [item.id]: !m[item.id],
+                                    }))
+                                  }
+                                  className={`shrink-0 inline-flex items-center justify-center w-6 h-6 rounded border text-[12px] font-semibold leading-none ${
+                                    expanded
+                                      ? 'border-slate-300 bg-slate-100 text-slate-700'
+                                      : 'border-slate-200 bg-white text-slate-600 hover:border-slate-400 hover:bg-slate-50'
+                                  }`}
+                                >
+                                  {expanded ? '▼' : '▶'}
+                                </button>
+                              ) : null}
+                              <span
+                                role="button"
+                                tabIndex={0}
+                                draggable={!saving}
+                                title="끌어서 위·아래 순서 변경"
+                                aria-label="순서 변경"
+                                onDragStart={(e) => {
+                                  e.stopPropagation();
+                                  dragRef.current = { id: item.id, col: col.key };
+                                  setDragId(item.id);
+                                  setDragOverId(null);
+                                  e.dataTransfer.effectAllowed = 'move';
+                                  e.dataTransfer.setData('text/plain', item.id);
+                                  e.dataTransfer.setData(
+                                    'application/x-work-board-col',
+                                    col.key
+                                  );
+                                }}
+                                onDragEnd={() => clearDrag()}
+                                className="shrink-0 inline-flex h-6 w-6 items-center justify-center rounded border border-transparent text-[11px] leading-none text-slate-400 cursor-grab active:cursor-grabbing select-none hover:border-slate-200 hover:bg-slate-50 hover:text-slate-600"
+                              >
+                                ⋮⋮
+                              </span>
                             </div>
 
                             {expanded && lines.length > 0 ? (
@@ -1777,15 +1747,23 @@ export default function WorkBoardModule() {
         <div className="fixed inset-0 z-[400] flex items-center justify-center bg-slate-900/40 p-4">
           <form
             onSubmit={(e) => void submit(e)}
-            className="w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-2xl bg-white shadow-xl border border-slate-200 p-5 space-y-3"
+            className="w-full max-w-3xl max-h-[90vh] overflow-y-auto rounded-2xl bg-white shadow-xl border border-slate-200 p-6 space-y-4"
           >
             <div className="flex items-start justify-between gap-3">
               <h2 className="text-base font-semibold text-slate-900">
                 {editId ? '프로젝트 수정' : '공유 프로젝트 추가'}
               </h2>
-              <p className="text-[11px] text-slate-500 shrink-0">
-                보드 → <span className="font-medium text-slate-800">{STATUS_LABEL[previewStatus]}</span>
-              </p>
+              <button
+                type="button"
+                onClick={() => setFormUrgent((v) => !v)}
+                className={`shrink-0 h-8 px-3 rounded-lg text-[12px] font-semibold border transition-colors ${
+                  formUrgent
+                    ? 'bg-rose-500 border-rose-500 text-white hover:bg-rose-600'
+                    : 'bg-white border-slate-200 text-slate-600 hover:border-rose-300 hover:text-rose-600'
+                }`}
+              >
+                긴급처리
+              </button>
             </div>
 
             <div className="flex items-end gap-2">
@@ -1799,17 +1777,6 @@ export default function WorkBoardModule() {
                   placeholder="예: A사 제안서, 봄 캠페인"
                 />
               </label>
-              <button
-                type="button"
-                onClick={() => setFormUrgent((v) => !v)}
-                className={`shrink-0 h-10 px-3 rounded-lg text-[12px] font-semibold border transition-colors ${
-                  formUrgent
-                    ? 'bg-rose-500 border-rose-500 text-white hover:bg-rose-600'
-                    : 'bg-white border-slate-200 text-slate-600 hover:border-rose-300 hover:text-rose-600'
-                }`}
-              >
-                긴급처리
-              </button>
             </div>
 
             <div className="grid grid-cols-2 gap-3">
@@ -1882,7 +1849,7 @@ export default function WorkBoardModule() {
                   </button>
                 </div>
               </div>
-              <div className="hidden sm:grid grid-cols-[1fr_1fr_6.5rem_2rem] gap-1.5 px-0.5">
+              <div className="hidden sm:grid grid-cols-[1fr_1fr_auto_2rem] gap-1.5 px-0.5">
                 <span className="text-[10px] text-slate-400">세부분야</span>
                 <span className="text-[10px] text-slate-400">담당자</span>
                 <span className="text-[10px] text-slate-400">상태</span>
@@ -1892,7 +1859,7 @@ export default function WorkBoardModule() {
                 {formLines.map((line, idx) => (
                   <li
                     key={line.key}
-                    className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_6.5rem_2rem] gap-1.5 items-center"
+                    className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_auto_2rem] gap-1.5 items-center"
                   >
                     <input
                       value={line.area}
@@ -1918,25 +1885,52 @@ export default function WorkBoardModule() {
                       placeholder="담당자"
                       className="w-full rounded-lg border border-slate-200 px-2.5 py-1.5 text-[12px] outline-none focus:border-slate-400"
                     />
-                    <select
-                      value={line.status}
-                      onChange={(e) =>
-                        setFormLines((rows) =>
-                          rows.map((r, i) =>
-                            i === idx
-                              ? { ...r, status: e.target.value as WorkStatus }
-                              : r
-                          )
-                        )
-                      }
-                      className="w-full rounded-lg border border-slate-200 px-2 py-1.5 text-[12px] outline-none focus:border-slate-400 bg-white"
+                    <div
+                      className="inline-flex gap-0.5 p-0.5 rounded-lg bg-slate-100 border border-slate-200"
+                      role="group"
+                      aria-label="세부분야 상태"
                     >
-                      {COLUMNS.map((c) => (
-                        <option key={c.key} value={c.key}>
-                          {c.label}
-                        </option>
-                      ))}
-                    </select>
+                      {COLUMNS.map((c) => {
+                        const on = line.status === c.key;
+                        return (
+                          <button
+                            key={c.key}
+                            type="button"
+                            title={c.label}
+                            onClick={() => {
+                              setFormLines((rows) => {
+                                const next = rows.map((r, i) =>
+                                  i === idx ? { ...r, status: c.key } : r
+                                );
+                                const filled = next.filter(
+                                  (r) => r.area.trim() || r.assignee_name.trim()
+                                );
+                                if (filled.length) {
+                                  setFormStatus(
+                                    deriveProjectStatus(
+                                      filled.map((r) => ({
+                                        id: r.key,
+                                        area: r.area.trim() || '세부',
+                                        assignee_name: r.assignee_name.trim(),
+                                        status: r.status,
+                                      }))
+                                    )
+                                  );
+                                } else {
+                                  setFormStatus(c.key);
+                                }
+                                return next;
+                              });
+                            }}
+                            className={`h-7 min-w-[2.75rem] px-1.5 rounded-md border text-[10px] font-semibold transition-colors ${
+                              on ? STATUS_BTN[c.key].active : STATUS_BTN[c.key].idle
+                            }`}
+                          >
+                            {c.label}
+                          </button>
+                        );
+                      })}
+                    </div>
                     <button
                       type="button"
                       disabled={formLines.length <= 1}
@@ -1958,19 +1952,7 @@ export default function WorkBoardModule() {
             </div>
 
             <div className="flex items-end justify-between gap-3 pt-1">
-              <div className="min-w-0 flex flex-col items-start gap-1.5">
-                {editId ? (
-                  <button
-                    type="button"
-                    disabled={saving}
-                    onClick={() => void removeById(editId, formTitle.trim() || '프로젝트')}
-                    className="rounded-lg px-3 py-2 text-[13px] font-medium text-rose-600 hover:bg-rose-50 disabled:opacity-50"
-                  >
-                    삭제
-                  </button>
-                ) : (
-                  <span />
-                )}
+              <div className="min-w-0">
                 {editId ? (
                   <div className="px-1 space-y-0.5 text-[10px] font-medium text-slate-400 leading-snug">
                     <p>
@@ -1984,9 +1966,21 @@ export default function WorkBoardModule() {
                       </p>
                     ) : null}
                   </div>
-                ) : null}
+                ) : (
+                  <span />
+                )}
               </div>
               <div className="flex gap-2 shrink-0">
+                {editId ? (
+                  <button
+                    type="button"
+                    disabled={saving}
+                    onClick={() => void removeById(editId, formTitle.trim() || '프로젝트')}
+                    className="rounded-lg px-3 py-2 text-[13px] font-medium text-rose-600 hover:bg-rose-50 disabled:opacity-50"
+                  >
+                    삭제
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   onClick={closeModal}

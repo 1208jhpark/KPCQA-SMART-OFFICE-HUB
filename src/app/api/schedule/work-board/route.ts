@@ -181,7 +181,6 @@ export async function GET(req: Request) {
          WHERE unit_id = $1 AND board_date = $2
          ORDER BY
            CASE status WHEN 'TODO' THEN 0 WHEN 'DOING' THEN 1 WHEN 'DONE' THEN 2 ELSE 3 END,
-           COALESCE(urgent, false) DESC,
            sort_order ASC,
            "createdAt" ASC`,
         unitId,
@@ -197,7 +196,6 @@ export async function GET(req: Request) {
            AND board_date <= $3
          ORDER BY board_date ASC,
            CASE status WHEN 'TODO' THEN 0 WHEN 'DOING' THEN 1 WHEN 'DONE' THEN 2 ELSE 3 END,
-           COALESCE(urgent, false) DESC,
            sort_order ASC,
            "createdAt" ASC`,
         unitId,
@@ -211,7 +209,6 @@ export async function GET(req: Request) {
          WHERE unit_id = $1
          ORDER BY
            CASE status WHEN 'TODO' THEN 0 WHEN 'DOING' THEN 1 WHEN 'DONE' THEN 2 ELSE 3 END,
-           COALESCE(urgent, false) DESC,
            sort_order ASC,
            "createdAt" ASC`,
         unitId
@@ -310,7 +307,7 @@ export async function POST(req: Request) {
   }
 }
 
-/** PATCH — 수정 / 세부분야 상태 변경 (칸반 열 자동 반영) */
+/** PATCH — 수정 / 세부분야 상태 변경 / 컬럼 내 순서 변경 */
 export async function PATCH(req: Request) {
   try {
     const auth = await authorizeWorkBoard();
@@ -321,6 +318,43 @@ export async function PATCH(req: Request) {
     }
 
     const body = await req.json();
+
+    if (String(body.action || '').trim() === 'reorder') {
+      const orderedIds = Array.isArray(body.orderedIds)
+        ? body.orderedIds.map((v: unknown) => String(v || '').trim()).filter(Boolean)
+        : [];
+      if (!orderedIds.length) {
+        return NextResponse.json({ error: '순서 목록이 없습니다.' }, { status: 400 });
+      }
+      const unique = [...new Set(orderedIds)];
+      if (unique.length !== orderedIds.length) {
+        return NextResponse.json({ error: '중복된 ID가 있습니다.' }, { status: 400 });
+      }
+
+      const placeholders = orderedIds.map((_, i) => `$${i + 2}`).join(', ');
+      const owned = await prisma.$queryRawUnsafe<{ id: string }[]>(
+        `SELECT id FROM "ScheduleWorkBoardItem"
+         WHERE unit_id = $1 AND id IN (${placeholders})`,
+        unitId,
+        ...orderedIds
+      );
+      if (owned.length !== orderedIds.length) {
+        return NextResponse.json({ error: '다른 소속 카드는 정렬할 수 없습니다.' }, { status: 403 });
+      }
+
+      for (let i = 0; i < orderedIds.length; i++) {
+        await prisma.$executeRawUnsafe(
+          `UPDATE "ScheduleWorkBoardItem"
+           SET sort_order = $1, "updatedAt" = NOW()
+           WHERE id = $2 AND unit_id = $3`,
+          i,
+          orderedIds[i],
+          unitId
+        );
+      }
+      return NextResponse.json({ ok: true, orderedIds });
+    }
+
     const id = String(body.id || '').trim();
     if (!id) return NextResponse.json({ error: 'ID가 없습니다.' }, { status: 400 });
 
@@ -371,7 +405,18 @@ export async function PATCH(req: Request) {
       lines = next;
     }
 
-    const status = lines ? deriveProjectStatus(lines) : null;
+    // 세부분야가 있으면 행 상태로 칸반 열 결정, 없으면(빈 배열 포함) body.status 사용
+    let status: WorkStatus | null = null;
+    if (lines && lines.length > 0) {
+      status = deriveProjectStatus(lines);
+    } else if (lines && lines.length === 0) {
+      status = normalizeWorkStatus(body.status) || 'TODO';
+    } else if (body.status !== undefined) {
+      status = normalizeWorkStatus(body.status);
+      if (!status) {
+        return NextResponse.json({ error: '상태값이 올바르지 않습니다.' }, { status: 400 });
+      }
+    }
     const linesJson = lines ? serializeWorkBoardLines(lines) : null;
     const primaryAssignee = lines
       ? lines.find((l) => l.assignee_name)?.assignee_name || ''
