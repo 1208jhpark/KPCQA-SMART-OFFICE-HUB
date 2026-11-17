@@ -1,0 +1,48 @@
+---
+description: 경로/기능 요청 시 Prisma 스키마↔마이그레이션 필요 여부 기본 점검
+alwaysApply: true
+---
+
+# Schema ↔ Migration checklist (deploy P2022 방지)
+
+배포 PC에서 `migrate deploy`만으로는 **migration 파일이 없는** 스키마 변경을 막을 수 없다.  
+(로컬 DB에만 칼럼이 있으면 개발 PC는 통과하고 QA에서 `P2022` / `칼럼` 없음이 난다.)
+
+## When to run this checklist
+
+Do this **by default** when the user asks about a **path/menu/feature** that touches data, or when changing Prisma models / API that query models — especially `/asset`, `/production`, `/marketing`, `/equipment`, `/survey`, `/schedule`, `/admin`.
+
+## Checklist (before saying “마이그레이션 불필요”)
+
+1. **Identify models** used by that path (route handlers, `prisma.<model>.*`, raw SQL table names).
+2. **For each new/changed scalar field** in `prisma/schema.prisma`:
+   - Confirm a matching `CREATE TABLE` / `ADD COLUMN` exists under `prisma/migrations/**/migration.sql`.
+   - Prefer searching the quoted column name, e.g. `"dispatchedDate"`, `"note"`.
+3. **If schema has a field with no migration SQL** → say **마이그레이션 필요**, create `ADD COLUMN IF NOT EXISTS` (or proper migrate) **before** claiming done / before deploy.
+4. **Never** rely only on local `findMany` success — local may already have the column via earlier `db push` / manual ALTER.
+5. After adding a migration, remind deploy order: `git pull` → `npm run db:migrate` → `npx prisma generate` → `npm run build` → `npm run start`.
+
+## Quick audit commands (dev PC)
+
+```powershell
+npx prisma migrate status
+npx prisma migrate diff --from-url "$env:DATABASE_URL" --to-schema-datamodel prisma/schema.prisma --script
+```
+
+Stricter (needs shadow DB):
+
+```powershell
+npx prisma migrate diff --from-migrations prisma/migrations --to-schema-datamodel prisma/schema.prisma --shadow-database-url "postgresql://.../smart_office_shadow?schema=public" --script
+```
+
+- Empty / only harmless default tweaks → OK to say no migration needed for missing columns.
+- Any `ADD COLUMN` / `CREATE TABLE` in the diff → **migration required**.
+
+## Response habit
+
+When answering path checks, include one short line:
+
+- `마이그레이션: 불필요 (관련 칼럼 migration 확인됨)` or
+- `마이그레이션: 필요 — <Table.column> 파일 추가`
+
+Do not skip this line for DB-backed features.

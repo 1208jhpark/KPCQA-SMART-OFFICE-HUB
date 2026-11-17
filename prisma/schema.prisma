@@ -559,6 +559,8 @@ model ScheduleWorkBoardItem {
   assignee_email  String?
   creator_name    String?
   creator_email   String?
+  updated_by_name  String?
+  updated_by_email String?
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 

@@ -2,13 +2,18 @@
 
 import React, { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
 import { saveAs } from 'file-saver';
-import { getKSTDateString, getKSTNowYearMonth } from '@/utils/dateUtils';
+import {
+  formatKSTDateTimeMinute,
+  getKSTDateString,
+  getKSTNowYearMonth,
+} from '@/utils/dateUtils';
 import { getKrHolidaysForYear, KR_HOLIDAY_COLOR } from '@/utils/krHolidays';
 import {
   deriveProjectStatus,
   type WorkBoardLine,
   type WorkStatus,
 } from '@/lib/work-board-lines';
+import ScheduleBoardMembers from '@/components/schedule/ScheduleBoardMembers';
 
 type WorkItem = {
   id: string;
@@ -22,6 +27,11 @@ type WorkItem = {
   lines?: WorkBoardLine[];
   assignee_name?: string | null;
   creator_name?: string | null;
+  creator_email?: string | null;
+  updated_by_name?: string | null;
+  updated_by_email?: string | null;
+  createdAt?: string | Date | null;
+  updatedAt?: string | Date | null;
 };
 
 function isUrgent(item: { urgent?: boolean | null }) {
@@ -900,6 +910,12 @@ export default function WorkBoardModule() {
   const [saving, setSaving] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
+  const [editMeta, setEditMeta] = useState<{
+    creator_name?: string | null;
+    updated_by_name?: string | null;
+    createdAt?: string | Date | null;
+    updatedAt?: string | Date | null;
+  } | null>(null);
   const [formTitle, setFormTitle] = useState('');
   const [formNote, setFormNote] = useState('');
   const [formBoardDate, setFormBoardDate] = useState('');
@@ -1045,6 +1061,7 @@ export default function WorkBoardModule() {
     const board = asYmd(dateStr, asYmd(selectedDate, today));
     setSelectedDate(board);
     setEditId(null);
+    setEditMeta(null);
     setFormTitle('');
     setFormNote('');
     setFormBoardDate(board);
@@ -1059,6 +1076,12 @@ export default function WorkBoardModule() {
     const board = item.board_date || selectedDate;
     const due = item.due_date || board;
     setEditId(item.id);
+    setEditMeta({
+      creator_name: item.creator_name,
+      updated_by_name: item.updated_by_name,
+      createdAt: item.createdAt,
+      updatedAt: item.updatedAt,
+    });
     setFormTitle(item.title || '');
     setFormNote(item.note || '');
     setFormBoardDate(board);
@@ -1158,6 +1181,7 @@ export default function WorkBoardModule() {
     if (saving) return;
     setModalOpen(false);
     setEditId(null);
+    setEditMeta(null);
   };
 
   const submit = async (e: FormEvent) => {
@@ -1200,6 +1224,7 @@ export default function WorkBoardModule() {
       setSelectedDate(asYmd(boardDate, today));
       setModalOpen(false);
       setEditId(null);
+      setEditMeta(null);
       await load();
     } finally {
       setSaving(false);
@@ -1239,6 +1264,7 @@ export default function WorkBoardModule() {
       }
       setModalOpen(false);
       setEditId(null);
+      setEditMeta(null);
       await load();
     } finally {
       setSaving(false);
@@ -1260,17 +1286,7 @@ export default function WorkBoardModule() {
   return (
     <div className="h-[calc(100dvh-3.5rem)] bg-slate-50 font-sans flex flex-col overflow-hidden">
       <div className="w-full max-w-[1760px] mx-auto flex-1 min-h-0 flex flex-col px-4 md:px-6 pt-5 pb-5 gap-4">
-        <header className="shrink-0">
-          <p className="text-[10px] font-medium text-slate-500 uppercase tracking-widest">
-            Work Board
-          </p>
-          <h1 className="text-lg font-semibold text-slate-900 tracking-tight">
-            공유 프로젝트 업무 보드
-            {unitName ? (
-              <span className="ml-2 text-sm font-normal text-slate-500">· {unitName}</span>
-            ) : null}
-          </h1>
-        </header>
+        <ScheduleBoardMembers />
 
         {error ? (
           <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-[13px] text-amber-800">
@@ -1941,20 +1957,36 @@ export default function WorkBoardModule() {
               </p>
             </div>
 
-            <div className="flex items-center justify-between gap-2 pt-1">
-              {editId ? (
-                <button
-                  type="button"
-                  disabled={saving}
-                  onClick={() => void removeById(editId, formTitle.trim() || '프로젝트')}
-                  className="rounded-lg px-3 py-2 text-[13px] font-medium text-rose-600 hover:bg-rose-50 disabled:opacity-50"
-                >
-                  삭제
-                </button>
-              ) : (
-                <span />
-              )}
-              <div className="flex gap-2">
+            <div className="flex items-end justify-between gap-3 pt-1">
+              <div className="min-w-0 flex flex-col items-start gap-1.5">
+                {editId ? (
+                  <button
+                    type="button"
+                    disabled={saving}
+                    onClick={() => void removeById(editId, formTitle.trim() || '프로젝트')}
+                    className="rounded-lg px-3 py-2 text-[13px] font-medium text-rose-600 hover:bg-rose-50 disabled:opacity-50"
+                  >
+                    삭제
+                  </button>
+                ) : (
+                  <span />
+                )}
+                {editId ? (
+                  <div className="px-1 space-y-0.5 text-[10px] font-medium text-slate-400 leading-snug">
+                    <p>
+                      생성자 · {String(editMeta?.creator_name || '').trim() || '-'} ·{' '}
+                      {formatKSTDateTimeMinute(editMeta?.createdAt)}
+                    </p>
+                    {String(editMeta?.updated_by_name || '').trim() ? (
+                      <p>
+                        최근 수정자 · {String(editMeta?.updated_by_name || '').trim()} ·{' '}
+                        {formatKSTDateTimeMinute(editMeta?.updatedAt)}
+                      </p>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+              <div className="flex gap-2 shrink-0">
                 <button
                   type="button"
                   onClick={closeModal}

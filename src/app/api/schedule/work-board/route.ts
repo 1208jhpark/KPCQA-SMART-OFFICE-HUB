@@ -35,13 +35,15 @@ type WorkRow = {
   assignee_email: string | null;
   creator_name: string | null;
   creator_email: string | null;
+  updated_by_name: string | null;
+  updated_by_email: string | null;
   createdAt: Date;
   updatedAt: Date;
 };
 
 const SELECT_COLS = `id, unit_id, unit_name, title, note, status, sort_order,
   board_date, due_date, COALESCE(urgent, false) AS urgent, lines, assignee_name, assignee_email,
-  creator_name, creator_email, "createdAt", "updatedAt"`;
+  creator_name, creator_email, updated_by_name, updated_by_email, "createdAt", "updatedAt"`;
 
 function authorizeWorkBoard() {
   return authorizeAnyMenuPaths([...SCHEDULE_MENU_PATHS]);
@@ -135,6 +137,12 @@ function ensureTable() {
         );
         await prisma.$executeRawUnsafe(
           `ALTER TABLE "ScheduleWorkBoardItem" ADD COLUMN IF NOT EXISTS "urgent" BOOLEAN NOT NULL DEFAULT false`
+        );
+        await prisma.$executeRawUnsafe(
+          `ALTER TABLE "ScheduleWorkBoardItem" ADD COLUMN IF NOT EXISTS "updated_by_name" TEXT`
+        );
+        await prisma.$executeRawUnsafe(
+          `ALTER TABLE "ScheduleWorkBoardItem" ADD COLUMN IF NOT EXISTS "updated_by_email" TEXT`
         );
         await prisma.$executeRawUnsafe(`
           CREATE INDEX IF NOT EXISTS "ScheduleWorkBoardItem_unit_id_status_sort_order_idx"
@@ -269,8 +277,9 @@ export async function POST(req: Request) {
     await prisma.$executeRawUnsafe(
       `INSERT INTO "ScheduleWorkBoardItem"
         (id, unit_id, unit_name, title, note, status, sort_order, board_date, due_date, urgent, lines,
-         assignee_name, assignee_email, creator_name, creator_email, "createdAt", "updatedAt")
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,NULL,$13,$14,NOW(),NOW())`,
+         assignee_name, assignee_email, creator_name, creator_email,
+         updated_by_name, updated_by_email, "createdAt", "updatedAt")
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,NULL,$13,$14,NULL,NULL,NOW(),NOW())`,
       id,
       unitId,
       unitName || null,
@@ -384,6 +393,8 @@ export async function PATCH(req: Request) {
          assignee_name = CASE WHEN $12::text IS NULL THEN assignee_name
                               WHEN $12 = '' THEN NULL
                               ELSE $12 END,
+         updated_by_name = $14,
+         updated_by_email = $15,
          "updatedAt" = NOW()
        WHERE id = $1 AND unit_id = $13`,
       id,
@@ -404,7 +415,9 @@ export async function PATCH(req: Request) {
       urgent,
       linesJson,
       primaryAssignee,
-      unitId
+      unitId,
+      auth.user.name || null,
+      auth.user.email || null
     );
 
     const rows = await prisma.$queryRawUnsafe<WorkRow[]>(
