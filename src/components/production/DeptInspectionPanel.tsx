@@ -1744,7 +1744,7 @@ export default function DeptInspectionPanel() {
                                 allDispatched ? 'text-slate-500' : 'text-indigo-700'
                               }`}
                             >
-                              →그룹웨어 결재 ↗
+                              사무용품(다과)신청서 ↗
                             </a>
                           </td>
                         ) : null}

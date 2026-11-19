@@ -4463,9 +4463,9 @@ return (
         <div className="w-full max-w-lg rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl">
           <h3 className="text-base font-medium text-slate-900">메일 바로가기 경로 설정</h3>
           <p className="mt-2 text-[11px] font-medium leading-relaxed text-slate-500">
-            기본 경로가 이미 들어 있습니다. 전체 URL을 붙여넣어도{' '}
-            <span className="text-slate-700">token·currentemail은 저장 시 자동 제거</span>됩니다.
-            (token은 세션용, 메일은 열 때 로그인 계정으로 붙입니다.)
+            기본 경로는 그룹웨어 메일 작성 메뉴입니다. 전체 URL을 붙여넣어도{' '}
+            <span className="text-slate-700">token·currentemail 등 세션/개인 값은 저장 시 자동 제거</span>
+            되고, 메일 작성에 필요한 메뉴 쿼리만 남깁니다.
           </p>
           <input
             type="text"

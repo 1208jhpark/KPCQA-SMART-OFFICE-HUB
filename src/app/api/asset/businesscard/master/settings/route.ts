@@ -12,6 +12,10 @@ import {
   resolveUserDutyOptions,
   resolveUserGradeOptions,
 } from '@/lib/user-job-options';
+import {
+  DEFAULT_GROUPWARE_MAIL_SHORTCUT_URL,
+  sanitizeGroupwareMailShortcutUrl,
+} from '@/lib/groupware-mail-shortcut';
 
 export const dynamic = 'force-dynamic';
 
@@ -86,8 +90,6 @@ async function writeStatementColMap(colMap: ReturnType<typeof normalizeStatement
   );
 }
 
-const DEFAULT_BC_MAIL_SHORTCUT_URL = 'https://ep.kpcqa.or.kr/mail2/writeMailView.do?';
-
 async function readMailShortcutUrl() {
   try {
     const rows = await prisma.$queryRaw<Array<{ bc_mail_shortcut_url: string | null }>>`
@@ -100,13 +102,14 @@ async function readMailShortcutUrl() {
 }
 
 async function writeMailShortcutUrl(url: string) {
+  const next = sanitizeGroupwareMailShortcutUrl(url);
   await prisma.$executeRawUnsafe(
     `INSERT INTO "SystemConfig" (id, "bc_mail_shortcut_url", "updatedAt")
      VALUES ('global', $1, NOW())
      ON CONFLICT (id) DO UPDATE SET
        "bc_mail_shortcut_url" = EXCLUDED."bc_mail_shortcut_url",
        "updatedAt" = NOW()`,
-    url
+    next
   );
 }
 
@@ -173,7 +176,9 @@ async function buildSettingsPayload() {
   return {
     sheetsPerPack: await readSheetsPerPack(),
     statementColMap: await readStatementColMap(),
-    mailShortcutUrl: storedMail || DEFAULT_BC_MAIL_SHORTCUT_URL,
+    mailShortcutUrl: sanitizeGroupwareMailShortcutUrl(
+      storedMail || DEFAULT_GROUPWARE_MAIL_SHORTCUT_URL
+    ),
     mailSubjectTemplate: mailTemplates.subjectTemplate,
     mailBodyTemplate: mailTemplates.bodyTemplate,
     /** /admin/users 직책·직급 옵션 — 명함 신청·마스터 편집 드롭다운 */
